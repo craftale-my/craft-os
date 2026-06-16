@@ -1,0 +1,93 @@
+import { useState, FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
+
+export function LoginPage() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const { signIn, staff } = useAuth()
+  const navigate = useNavigate()
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    const { error } = await signIn(email, password)
+    setLoading(false)
+    if (error) {
+      setError('Invalid email or password.')
+      return
+    }
+    const isManager = staff?.rank === 'manager' || staff?.rank === 'supervisor'
+    navigate(isManager ? '/dashboard' : '/profile', { replace: true })
+  }
+
+  return (
+    <div className="min-h-screen bg-cream flex items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+
+        {/* Logo */}
+        <div className="mb-10 text-center">
+          <h1 className="font-display text-4xl font-bold text-[#3D2B1F] mb-1 tracking-tight">
+            Craft OS
+          </h1>
+          <p className="text-brown-muted text-sm tracking-widest uppercase">
+            Craftale Staff Portal
+          </p>
+          <div className="mt-4 mx-auto w-12 h-px bg-[#C4A882]" />
+        </div>
+
+        <form
+          onSubmit={handleSubmit}
+          className="bg-white rounded-2xl shadow-card p-8 space-y-5"
+        >
+          <div>
+            <label className="block text-xs text-brown-muted mb-1.5 font-medium tracking-widest uppercase">
+              Email
+            </label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              className="w-full bg-canvas border border-border-mid rounded-lg px-3.5 py-2.5 text-sm text-brown-dark placeholder-brown-faint focus:outline-none focus:border-[#8B6344] focus:ring-2 focus:ring-[#8B634420] transition-all"
+              placeholder="you@craftale.com"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-brown-muted mb-1.5 font-medium tracking-widest uppercase">
+              Password
+            </label>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="w-full bg-canvas border border-border-mid rounded-lg px-3.5 py-2.5 text-sm text-brown-dark placeholder-brown-faint focus:outline-none focus:border-[#8B6344] focus:ring-2 focus:ring-[#8B634420] transition-all"
+              placeholder="••••••••"
+            />
+          </div>
+
+          {error && (
+            <p className="text-red-600 text-sm">{error}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-brown-btn hover:bg-brown-btn-hover disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-lg py-2.5 text-sm transition-colors"
+          >
+            {loading ? 'Signing in…' : 'Sign In'}
+          </button>
+        </form>
+
+        <p className="text-center text-xs text-brown-faint mt-6">
+          Contact your manager if you can't access your account.
+        </p>
+      </div>
+    </div>
+  )
+}
