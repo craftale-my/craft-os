@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, LayoutDashboard, CheckSquare, ClipboardList,
-  UserCheck, Users, LogOut, Menu, X,
+  UserCheck, Users, LogOut, Menu, X, Settings,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
@@ -32,6 +32,10 @@ const MGMT_NAV: NavItem[] = [
   { id: 'reviews',    label: 'Reviews',           to: '/dashboard', icon: ClipboardList,   scrollTo: 'reviews-section' },
   { id: 'probation',  label: 'Probation Reviews', to: '/dashboard', icon: UserCheck,       scrollTo: 'probation-section' },
   { id: 'staff-mgmt', label: 'Staff Management',  to: '/dashboard', icon: Users,           scrollTo: 'staff-section' },
+]
+
+const SETTINGS_NAV: NavItem[] = [
+  { id: 'settings', label: 'Settings', to: '/settings', icon: Settings, activePaths: ['/settings'] },
 ]
 
 function isActive(item: NavItem, pathname: string): boolean {
@@ -77,6 +81,7 @@ function SidebarContent({ onNavigate, onClose }: {
   const { staff, signOut } = useAuth()
   const { pathname } = useLocation()
   const isManager = staff?.rank === 'supervisor' || staff?.rank === 'manager'
+  const isCompanyManager = staff?.rank === 'manager'
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -128,6 +133,9 @@ function SidebarContent({ onNavigate, onClose }: {
             </p>
             <div className="space-y-0.5">
               {MGMT_NAV.map(item => (
+                <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
+              ))}
+              {isCompanyManager && SETTINGS_NAV.map(item => (
                 <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
               ))}
             </div>

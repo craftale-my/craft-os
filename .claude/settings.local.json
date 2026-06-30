@@ -11,7 +11,21 @@
       "Bash(curl -s http://localhost:5173)",
       "Bash(npx vite *)",
       "Bash(git init *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git check-ignore *)",
+      "Bash(git commit *)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git push *)",
+      "Bash(gh auth *)",
+      "mcp__Claude_in_Chrome__find",
+      "mcp__Claude_in_Chrome__browser_batch",
+      "mcp__Claude_in_Chrome__computer",
+      "mcp__Claude_in_Chrome__get_page_text",
+      "mcp__Claude_in_Chrome__read_console_messages",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "Bash(awk '/General Settings module/,0' /Users/USER/Desktop/Craft_OS/supabase/schema.sql)",
+      "mcp__Claude_in_Chrome__navigate"
     ]
   }
 }

@@ -309,3 +309,168 @@ create policy "probation_insert" on probation_reviews for insert
   with check (current_rank() in ('supervisor','manager'));
 create policy "probation_update" on probation_reviews for update
   using (current_rank() in ('supervisor','manager'));
+
+-- Registration requests (self-service staff registration)
+create table if not exists registration_requests (
+  id uuid primary key default gen_random_uuid(),
+  full_name text not null,
+  email text not null unique,
+  phone text,
+  branch text,
+  department text,
+  employment_type text,
+  status text not null default 'pending'
+    check (status in ('pending','approved','rejected')),
+  reviewed_by uuid references staff(id),
+  reviewed_at timestamptz,
+  rejection_reason text,
+  created_at timestamptz not null default now()
+);
+
+alter table registration_requests enable row level security;
+
+create policy "registration_requests_insert" on registration_requests for insert
+  to anon, authenticated with check (true);
+create policy "registration_requests_manage" on registration_requests for all
+  using (current_rank() in ('supervisor','manager'));
+
+-- =============================================
+-- General Settings module
+-- =============================================
+
+-- Company settings (single row)
+create table if not exists company_settings (
+  id uuid primary key default gen_random_uuid(),
+  company_name text default 'Craftale Sdn Bhd',
+  cafe_name text default 'Craft Cafe',
+  logo_url text,
+  company_culture text,
+  contact_email text,
+  contact_phone text,
+  address text,
+  updated_at timestamptz default now()
+);
+
+insert into company_settings (id)
+values ('00000000-0000-0000-0000-000000000001')
+on conflict do nothing;
+
+-- Branches
+create table if not exists branches (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  address text,
+  pic_staff_id uuid references staff(id),
+  operating_hours text,
+  is_active boolean default true,
+  created_at timestamptz default now()
+);
+
+insert into branches (name, address)
+select v.name, v.address
+from (values
+  ('Cheras', 'Taman Connaught, Cheras'),
+  ('Puchong', 'Bandar Puteri, Puchong')
+) as v(name, address)
+where not exists (select 1 from branches);
+
+-- Roles / positions
+create table if not exists roles (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  rank text not null check (rank in ('trainee','junior','senior','supervisor','manager')),
+  department text,
+  description text,
+  permissions jsonb default '{}',
+  is_active boolean default true,
+  created_at timestamptz default now()
+);
+
+insert into roles (name, rank, department) values
+  ('Trainee Barista', 'trainee', 'barista'),
+  ('Junior Barista', 'junior', 'barista'),
+  ('Senior Barista', 'senior', 'barista'),
+  ('Barista Supervisor', 'supervisor', 'barista'),
+  ('Cafe Manager', 'manager', 'barista'),
+  ('Bakery Trainee', 'trainee', 'bakery'),
+  ('Baker', 'junior', 'bakery'),
+  ('Senior Baker', 'senior', 'bakery'),
+  ('Kitchen Crew', 'junior', 'kitchen'),
+  ('Senior Kitchen', 'senior', 'kitchen')
+on conflict (name) do nothing;
+
+-- XP & scoring rules
+create table if not exists system_rules (
+  id uuid primary key default gen_random_uuid(),
+  key text not null unique,
+  value text not null,
+  label text,
+  description text,
+  updated_at timestamptz default now()
+);
+
+insert into system_rules (key, value, label, description) values
+  ('xp_per_level', '500', 'XP per level', 'XP needed to advance one level'),
+  ('late_deduction', '10', 'Late deduction (%)', 'Score deducted per late instance in monthly review'),
+  ('review_weight_attendance', '30', 'Attendance weight (%)', 'Weight of attendance in final score'),
+  ('review_weight_attitude', '15', 'Attitude weight (%)', 'Weight of attitude in final score'),
+  ('review_weight_efficiency', '20', 'Efficiency weight (%)', 'Weight of efficiency in final score'),
+  ('review_weight_coffee', '20', 'Coffee skill weight (%)', 'Weight of coffee skill in final score'),
+  ('review_weight_service', '15', 'Service weight (%)', 'Weight of service quality in final score'),
+  ('probation_days', '3', 'Probation days', 'Number of probation days for new trainees')
+on conflict (key) do nothing;
+
+-- Notification settings
+create table if not exists notification_settings (
+  id uuid primary key default gen_random_uuid(),
+  event_type text not null unique,
+  label text,
+  enabled boolean default true,
+  notify_staff boolean default true,
+  notify_supervisor boolean default true,
+  notify_manager boolean default false
+);
+
+insert into notification_settings (event_type, label, notify_staff, notify_supervisor, notify_manager) values
+  ('mission_approved', 'Mission Approved', true, false, false),
+  ('mission_rejected', 'Mission Rejected', true, false, false),
+  ('level_up', 'Staff Level Up', true, true, true),
+  ('review_due', 'Monthly Review Due', true, true, true),
+  ('probation_due', 'Probation Review Due', false, true, true),
+  ('registration_request', 'New Registration Request', false, true, true),
+  ('onboarding_completed', 'Staff Completed Onboarding', false, true, true)
+on conflict (event_type) do nothing;
+
+alter table company_settings enable row level security;
+alter table branches enable row level security;
+alter table roles enable row level security;
+alter table system_rules enable row level security;
+alter table notification_settings enable row level security;
+
+create policy "settings_manage" on company_settings for all
+  using (current_rank() = 'manager');
+
+create policy "branches_select" on branches for select to authenticated using (true);
+create policy "branches_manage" on branches for all
+  using (current_rank() = 'manager');
+
+create policy "roles_select" on roles for select to authenticated using (true);
+create policy "roles_manage" on roles for all
+  using (current_rank() = 'manager');
+
+create policy "rules_select" on system_rules for select to authenticated using (true);
+create policy "rules_manage" on system_rules for all
+  using (current_rank() = 'manager');
+
+create policy "notifications_manage" on notification_settings for all
+  using (current_rank() = 'manager');
+
+-- Storage bucket for company logo / assets
+insert into storage.buckets (id, name, public)
+values ('company-assets', 'company-assets', true)
+on conflict (id) do nothing;
+
+create policy "company_assets_public_read" on storage.objects for select
+  using (bucket_id = 'company-assets');
+create policy "company_assets_manager_write" on storage.objects for all
+  using (bucket_id = 'company-assets' and current_rank() = 'manager');

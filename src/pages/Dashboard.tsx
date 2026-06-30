@@ -14,6 +14,23 @@ import { StarRating } from '../components/StarRating'
 const CURRENT_MONTH = new Date().getMonth() + 1
 const CURRENT_YEAR = new Date().getFullYear()
 
+interface RegRequest {
+  id: string
+  full_name: string
+  email: string
+  phone: string | null
+  branch: string | null
+  department: string | null
+  employment_type: string | null
+  status: 'pending' | 'approved' | 'rejected'
+  rejection_reason: string | null
+  created_at: string
+}
+
+function genTempPassword(): string {
+  return Math.random().toString(36).slice(-8) + 'A1!'
+}
+
 // ─── Avatar (shared across pages) ────────────────────────────────────────────
 
 export function Avatar({
@@ -176,6 +193,264 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+// ─── ApproveRegModal ──────────────────────────────────────────────────────────
+
+function ApproveRegModal({
+  request,
+  reviewerId,
+  onClose,
+  onApproved,
+}: {
+  request: RegRequest
+  reviewerId: string | undefined
+  onClose: () => void
+  onApproved: (creds: { email: string; password: string }) => void
+}) {
+  const [password, setPassword] = useState(genTempPassword())
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleApprove() {
+    if (!supabaseAdmin) {
+      setError('Service role key not configured. Add VITE_SUPABASE_SERVICE_ROLE_KEY to .env.local')
+      return
+    }
+    if (password.length < 6) {
+      setError('Temporary password must be at least 6 characters.')
+      return
+    }
+    setSaving(true)
+    setError('')
+
+    const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+      email: request.email,
+      password,
+      email_confirm: true,
+    })
+    if (createErr || !created.user) {
+      setError(createErr?.message ?? 'Failed to create user')
+      setSaving(false)
+      return
+    }
+
+    const { error: profileErr } = await supabaseAdmin.from('staff').insert({
+      id: created.user.id,
+      name: request.full_name,
+      rank: 'trainee',
+      branch: request.branch,
+      department: request.department ? (DEPT_STORE[request.department] ?? null) : null,
+      employment_type: request.employment_type,
+      contact_number: request.phone,
+      onboarding_completed: false,
+      joined_at: new Date().toISOString().split('T')[0],
+    })
+    if (profileErr) {
+      setError(profileErr.message)
+      setSaving(false)
+      return
+    }
+
+    await supabase
+      .from('registration_requests')
+      .update({ status: 'approved', reviewed_by: reviewerId ?? null, reviewed_at: new Date().toISOString() })
+      .eq('id', request.id)
+
+    setSaving(false)
+    onApproved({ email: request.email, password })
+  }
+
+  const inputCls =
+    'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0]">
+          <h2 className="font-bold text-brown-dark text-lg">Approve Registration</h2>
+          <button onClick={onClose} className="text-brown-faint hover:text-brown-dark text-xl leading-none">✕</button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+          <div className="bg-white rounded-lg border border-[#E8DDD0] p-3 space-y-1">
+            <p className="text-sm font-semibold text-brown-dark">{request.full_name}</p>
+            <p className="text-xs text-brown-faint">{request.email}</p>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-brown-medium mb-1">Temporary Password</label>
+            <div className="flex gap-2">
+              <input
+                className={inputCls}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                onClick={() => setPassword(genTempPassword())}
+                className="px-3 py-2 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors flex-shrink-0"
+              >
+                Regenerate
+              </button>
+            </div>
+            <p className="text-xs text-brown-faint mt-1">Share this with {request.full_name.split(' ')[0]} after approving.</p>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleApprove}
+              disabled={saving}
+              className="flex-1 py-2.5 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors disabled:opacity-60"
+            >
+              {saving ? 'Approving...' : 'Approve & Create Account'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── RejectRegModal ───────────────────────────────────────────────────────────
+
+function RejectRegModal({
+  request,
+  reviewerId,
+  onClose,
+  onRejected,
+}: {
+  request: RegRequest
+  reviewerId: string | undefined
+  onClose: () => void
+  onRejected: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function handleReject() {
+    setSaving(true)
+    await supabase
+      .from('registration_requests')
+      .update({
+        status: 'rejected',
+        reviewed_by: reviewerId ?? null,
+        reviewed_at: new Date().toISOString(),
+        rejection_reason: reason.trim() || null,
+      })
+      .eq('id', request.id)
+    setSaving(false)
+    onRejected()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0]">
+          <h2 className="font-bold text-brown-dark text-lg">Reject Registration</h2>
+          <button onClick={onClose} className="text-brown-faint hover:text-brown-dark text-xl leading-none">✕</button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <div className="bg-white rounded-lg border border-[#E8DDD0] p-3 space-y-1">
+            <p className="text-sm font-semibold text-brown-dark">{request.full_name}</p>
+            <p className="text-xs text-brown-faint">{request.email}</p>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-brown-medium mb-1">Reason (optional)</label>
+            <textarea
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40] resize-none"
+              placeholder="e.g. Branch already fully staffed"
+            />
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleReject}
+              disabled={saving}
+              className="flex-1 py-2.5 rounded-xl bg-[#C0624A] text-white text-sm font-semibold hover:bg-[#A8503A] transition-colors disabled:opacity-60"
+            >
+              {saving ? 'Rejecting...' : 'Reject Request'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── CredentialsModal ─────────────────────────────────────────────────────────
+
+function CredentialsModal({
+  email,
+  password,
+  onClose,
+}: {
+  email: string
+  password: string
+  onClose: () => void
+}) {
+  const [copied, setCopied] = useState(false)
+
+  function copy() {
+    navigator.clipboard.writeText(`Email: ${email}\nTemporary password: ${password}`)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0]">
+          <h2 className="font-bold text-brown-dark text-lg">Account Created ✅</h2>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <p className="text-sm text-brown-medium">Share these login details with the new staff member:</p>
+          <div className="bg-white rounded-lg border border-[#E8DDD0] p-4 space-y-2">
+            <div>
+              <p className="text-xs text-brown-faint">Email</p>
+              <p className="text-sm font-semibold text-brown-dark">{email}</p>
+            </div>
+            <div>
+              <p className="text-xs text-brown-faint">Temporary Password</p>
+              <p className="text-sm font-semibold text-brown-dark">{password}</p>
+            </div>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button
+              type="button"
+              onClick={copy}
+              className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+            >
+              {copied ? 'Copied ✓' : 'Copy Details'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors"
+            >
+              Done
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -422,6 +697,12 @@ export default function Dashboard() {
   const [probations, setProbations] = useState<ProbationReview[]>([])
   const [startingProbation, setStartingProbation] = useState<string | null>(null)
   const pendingRef = useRef<HTMLDivElement>(null)
+  const regRef = useRef<HTMLDivElement>(null)
+  const [regRequests, setRegRequests] = useState<RegRequest[]>([])
+  const [regTab, setRegTab] = useState<'pending' | 'rejected'>('pending')
+  const [approveTarget, setApproveTarget] = useState<RegRequest | null>(null)
+  const [rejectTarget, setRejectTarget] = useState<RegRequest | null>(null)
+  const [newCredentials, setNewCredentials] = useState<{ email: string; password: string } | null>(null)
 
   const isManager = currentStaff?.rank === 'manager'
   const isSupervisor = currentStaff?.rank === 'supervisor' || isManager
@@ -454,6 +735,14 @@ export default function Dashboard() {
     if (completionsRes.data) setCompletions(completionsRes.data as MissionCompletion[])
     if (reviewsRes.data) setReviews(reviewsRes.data as MonthlyReview[])
     if (probationsRes.data) setProbations(probationsRes.data as ProbationReview[])
+
+    const { data: regData } = await supabase
+      .from('registration_requests')
+      .select('*')
+      .in('status', ['pending', 'rejected'])
+      .order('created_at', { ascending: false })
+    if (regData) setRegRequests(regData as RegRequest[])
+
     setLoading(false)
   }
 
@@ -476,6 +765,10 @@ export default function Dashboard() {
     if (!s.last_level_up_at) return false
     return Date.now() - new Date(s.last_level_up_at).getTime() < 7 * 24 * 60 * 60 * 1000
   }).length
+
+  const pendingRegRequests = regRequests.filter(r => r.status === 'pending')
+  const rejectedRegRequests = regRequests.filter(r => r.status === 'rejected')
+  const visibleRegRequests = regTab === 'pending' ? pendingRegRequests : rejectedRegRequests
 
   const deptBreakdown: Record<string, number> = {}
   allStaff.forEach(s => {
@@ -543,6 +836,17 @@ export default function Dashboard() {
     loadAll()
   }
 
+  function handleRegApproved(creds: { email: string; password: string }) {
+    setApproveTarget(null)
+    setNewCredentials(creds)
+    loadAll()
+  }
+
+  function handleRegRejected() {
+    setRejectTarget(null)
+    loadAll()
+  }
+
   function exportReviewsCSV() {
     const header = ['Name', 'Rank', 'Department', 'Late Count', 'Attendance', 'Attitude', 'Efficiency', 'Coffee', 'Service', 'Final Score']
     const rows = completedReviews.map(r => {
@@ -585,6 +889,29 @@ export default function Dashboard() {
       {showAddModal && (
         <AddStaffModal onClose={() => setShowAddModal(false)} onCreated={loadAll} />
       )}
+      {approveTarget && (
+        <ApproveRegModal
+          request={approveTarget}
+          reviewerId={currentStaff?.id}
+          onClose={() => setApproveTarget(null)}
+          onApproved={handleRegApproved}
+        />
+      )}
+      {rejectTarget && (
+        <RejectRegModal
+          request={rejectTarget}
+          reviewerId={currentStaff?.id}
+          onClose={() => setRejectTarget(null)}
+          onRejected={handleRegRejected}
+        />
+      )}
+      {newCredentials && (
+        <CredentialsModal
+          email={newCredentials.email}
+          password={newCredentials.password}
+          onClose={() => setNewCredentials(null)}
+        />
+      )}
 
       <div className="max-w-7xl mx-auto px-4 py-8 lg:px-8">
 
@@ -607,7 +934,7 @@ export default function Dashboard() {
         </div>
 
         {/* Summary cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
           <div className="bg-white rounded-2xl p-4 border border-[#E8DDD0]">
             <p className="text-xs text-brown-faint font-medium mb-1">Total Staff</p>
             <p className="text-3xl font-bold text-brown-dark">{allStaff.length}</p>
@@ -619,6 +946,17 @@ export default function Dashboard() {
               ))}
             </div>
           </div>
+
+          {pendingRegRequests.length > 0 && (
+            <div
+              className="bg-white rounded-2xl p-4 border border-[#E8DDD0] cursor-pointer hover:border-[#C4813A60] transition-colors"
+              onClick={() => regRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            >
+              <p className="text-xs text-brown-faint font-medium mb-1">Registration Requests</p>
+              <p className="text-3xl font-bold text-[#2E6E9E]">{pendingRegRequests.length}</p>
+              <p className="text-xs text-brown-faint mt-2">Awaiting approval</p>
+            </div>
+          )}
 
           <div
             className="bg-white rounded-2xl p-4 border border-[#E8DDD0] cursor-pointer hover:border-[#C4813A60] transition-colors"
@@ -821,6 +1159,89 @@ export default function Dashboard() {
                 </section>
               )
             })()}
+
+            {/* ── Registration Requests ── */}
+            {regRequests.length > 0 && (
+              <section ref={regRef}>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-base font-bold text-brown-dark flex items-center gap-2">
+                    Registration Requests
+                  </h2>
+                  <div className="flex gap-1 bg-white rounded-lg border border-[#E8DDD0] p-0.5">
+                    {(['pending', 'rejected'] as const).map(tab => (
+                      <button
+                        key={tab}
+                        onClick={() => setRegTab(tab)}
+                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors ${
+                          regTab === tab ? 'bg-[#C4813A] text-white' : 'text-brown-muted hover:bg-[#F5EDE0]'
+                        }`}
+                      >
+                        {tab === 'pending' ? `Pending (${pendingRegRequests.length})` : `Rejected (${rejectedRegRequests.length})`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {visibleRegRequests.length === 0 ? (
+                  <div className="bg-white rounded-xl border border-[#E8DDD0] px-6 py-8 text-center">
+                    <p className="text-sm text-brown-faint">No {regTab} requests.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {visibleRegRequests.map(req => (
+                      <div
+                        key={req.id}
+                        className="bg-white rounded-xl border border-[#E8DDD0] p-4 flex flex-col sm:flex-row sm:items-center gap-3"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-brown-dark">{req.full_name}</p>
+                          <p className="text-xs text-brown-muted">{req.email}</p>
+                          <div className="flex flex-wrap gap-2 mt-1">
+                            {req.branch && (
+                              <span className="text-xs bg-canvas text-brown-muted px-2 py-0.5 rounded-full border border-[#E8DDD0]">
+                                {req.branch.includes('Connaught') ? 'Cheras' : req.branch.includes('Puteri') ? 'Puchong' : req.branch}
+                              </span>
+                            )}
+                            {req.department && (
+                              <span className="text-xs bg-canvas text-brown-muted px-2 py-0.5 rounded-full border border-[#E8DDD0]">
+                                {req.department}
+                              </span>
+                            )}
+                            {req.employment_type && (
+                              <span className="text-xs bg-canvas text-brown-muted px-2 py-0.5 rounded-full border border-[#E8DDD0]">
+                                {req.employment_type}
+                              </span>
+                            )}
+                            {req.phone && (
+                              <span className="text-xs text-brown-faint">{req.phone}</span>
+                            )}
+                          </div>
+                          {req.status === 'rejected' && req.rejection_reason && (
+                            <p className="text-xs text-[#C06242] mt-1 italic">"{req.rejection_reason}"</p>
+                          )}
+                          <p className="text-xs text-brown-faint mt-1">{formatTimeAgo(req.created_at)}</p>
+                        </div>
+                        {req.status === 'pending' && (
+                          <div className="flex gap-2 flex-shrink-0">
+                            <button
+                              onClick={() => setRejectTarget(req)}
+                              className="px-3 py-1.5 text-xs rounded-lg border border-[#E8DDD0] text-brown-muted hover:bg-[#FCF0EC] hover:border-[#C06242] hover:text-[#C06242] transition-colors"
+                            >
+                              Reject
+                            </button>
+                            <button
+                              onClick={() => setApproveTarget(req)}
+                              className="px-3 py-1.5 text-xs rounded-lg bg-[#3D7A50] hover:bg-[#2E6040] text-white font-semibold transition-colors"
+                            >
+                              Approve
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
 
             {/* ── Pending Mission Approvals ── */}
             <section ref={pendingRef}>

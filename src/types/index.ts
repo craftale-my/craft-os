@@ -319,3 +319,85 @@ export const DEPT_STORE: Record<string, string> = {
   'Kitchen':             'kitchen',
   'Other':               'other',
 }
+
+// ─── Settings module ──────────────────────────────────────────────────────────
+
+export interface CompanySettings {
+  id: string
+  company_name: string | null
+  cafe_name: string | null
+  logo_url: string | null
+  company_culture: string | null
+  contact_email: string | null
+  contact_phone: string | null
+  address: string | null
+  updated_at: string | null
+}
+
+export interface Branch {
+  id: string
+  name: string
+  address: string | null
+  pic_staff_id: string | null
+  operating_hours: string | null
+  is_active: boolean
+  created_at: string
+  pic?: Staff | null
+}
+
+export type PermissionKey =
+  | 'view_own_profile'
+  | 'complete_missions'
+  | 'view_team_dashboard'
+  | 'approve_missions'
+  | 'rate_skills'
+  | 'manage_staff'
+  | 'manage_tasks'
+  | 'view_all_reviews'
+  | 'conduct_reviews'
+  | 'access_settings'
+
+export const PERMISSION_LABELS: Record<PermissionKey, string> = {
+  view_own_profile:    'View Own Profile',
+  complete_missions:   'Complete Missions',
+  view_team_dashboard: 'View Team Dashboard',
+  approve_missions:    'Approve Missions',
+  rate_skills:         'Rate Skills',
+  manage_staff:        'Manage Staff',
+  manage_tasks:        'Manage Tasks',
+  view_all_reviews:    'View All Reviews',
+  conduct_reviews:     'Conduct Reviews',
+  access_settings:     'Access Settings',
+}
+
+export const PERMISSION_KEYS = Object.keys(PERMISSION_LABELS) as PermissionKey[]
+
+export interface Role {
+  id: string
+  name: string
+  rank: Rank
+  department: string | null
+  description: string | null
+  permissions: Partial<Record<PermissionKey, boolean>>
+  is_active: boolean
+  created_at: string
+}
+
+export interface SystemRule {
+  id: string
+  key: string
+  value: string
+  label: string | null
+  description: string | null
+  updated_at: string | null
+}
+
+export interface NotificationSetting {
+  id: string
+  event_type: string
+  label: string | null
+  enabled: boolean
+  notify_staff: boolean
+  notify_supervisor: boolean
+  notify_manager: boolean
+}

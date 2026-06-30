@@ -4,12 +4,14 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ProtectedRoute, OnboardingRoute } from './components/ProtectedRoute'
 import { Sidebar } from './components/Sidebar'
 import { LoginPage } from './pages/Login'
+import { RegisterPage } from './pages/Register'
 import { OnboardingPage } from './pages/Onboarding'
 import DashboardPage from './pages/Dashboard'
 import { StaffProfilePage } from './pages/StaffProfile'
 import { MissionsPage } from './pages/Missions'
 import ProbationReviewPage from './pages/ProbationReview'
 import TasksPage from './pages/Tasks'
+import SettingsPage from './pages/Settings'
 
 function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -26,6 +28,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/profile" replace /> : <LoginPage />} />
+      <Route path="/register" element={user ? <Navigate to="/profile" replace /> : <RegisterPage />} />
 
       <Route
         path="/onboarding"
@@ -86,6 +89,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout><TasksPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute requireRank={['manager']}>
+            <AppLayout><SettingsPage /></AppLayout>
           </ProtectedRoute>
         }
       />
