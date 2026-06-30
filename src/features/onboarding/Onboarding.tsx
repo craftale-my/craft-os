@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
-import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../../shared/lib/supabase'
+import { useAuth } from '../auth/AuthContext'
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 

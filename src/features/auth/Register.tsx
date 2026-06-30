@@ -1,7 +1,7 @@
 import { useState, FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
-import { BRANCHES, DEPARTMENTS, EMPLOYMENT_TYPES } from '../types'
+import { supabase } from '../../shared/lib/supabase'
+import { BRANCHES, DEPARTMENTS, EMPLOYMENT_TYPES } from '../../shared/types'
 
 export function RegisterPage() {
   const [form, setForm] = useState({

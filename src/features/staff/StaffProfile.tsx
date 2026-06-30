@@ -1,22 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, Navigate, Link } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
-import { useAuth } from '../contexts/AuthContext'
-import { ErrorBoundary } from '../components/ErrorBoundary'
-import { StarRating } from '../components/StarRating'
-import { ScoreChart } from '../components/ScoreChart'
-import type { Staff, Mission, MissionCompletion, SkillRating, VerificationType, MonthlyReview, ProbationReview } from '../types'
+import { supabase } from '../../shared/lib/supabase'
+import { useAuth } from '../auth/AuthContext'
+import { ErrorBoundary } from '../../shared/components/ErrorBoundary'
+import { StarRating } from '../../shared/components/StarRating'
+import { ScoreChart } from '../../shared/components/ScoreChart'
+import type { Staff, Mission, MissionCompletion, SkillRating, VerificationType, MonthlyReview, ProbationReview } from '../../shared/types'
 import {
   SKILL_CATEGORIES, MISSION_CATEGORY_LABELS, RANK_LABELS, getProbationDay,
   VERIFICATION_CONFIG,
   BRANCHES, DEPARTMENTS, EMPLOYMENT_TYPES, GENDERS, DEPT_LABELS, DEPT_STORE,
   REVIEW_CATEGORIES, MONTHS_FULL, calcFinalScore, getScoreConfig,
-} from '../types'
-import { RankBadge } from '../components/RankBadge'
-import { XPBar } from '../components/XPBar'
-import { SkillDots } from '../components/SkillDots'
+} from '../../shared/types'
+import { RankBadge } from '../../shared/components/RankBadge'
+import { XPBar } from '../../shared/components/XPBar'
+import { SkillDots } from '../../shared/components/SkillDots'
 import { Avatar } from './Dashboard'
-import { canPromote } from '../lib/xp'
+import { canPromote } from '../../shared/lib/xp'
 
 type Tab = 'missions' | 'skills' | 'personal' | 'reviews' | 'history'
 
@@ -141,6 +141,14 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
     } catch { /* silent */ }
   }
 
+  async function handleSetStatus(status: 'active' | 'resigned') {
+    if (!staffId) return
+    try {
+      await supabase.from('staff').update({ status }).eq('id', staffId)
+      await refreshAll()
+    } catch { /* silent */ }
+  }
+
   // ── Render states ────────────────────────────────────────────────────────────
 
   if (authLoading || loading) {
@@ -211,6 +219,11 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
               <div className="flex items-center gap-3 flex-wrap mb-1">
                 <h1 className="font-display text-xl font-bold text-brown-dark">{staff.name}</h1>
                 <RankBadge rank={staff.rank} size="sm" />
+                {staff.status === 'resigned' && (
+                  <span className="text-xs text-[#9E4A30] border border-[#C0624240] bg-[#C0624210] rounded-full px-2 py-0.5 font-medium">
+                    Resigned
+                  </span>
+                )}
                 {promote && (
                   <span className="text-xs text-[#C4813A] border border-[#C4813A40] bg-[#C4813A0C] rounded-full px-2 py-0.5">
                     Ready to Promote
@@ -287,6 +300,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         {isManager && !isSelf && (
           <div className="mt-6 space-y-4">
             <ManagerNotesCard staff={staff} onSaved={refreshAll} />
+            <EmploymentStatusCard staff={staff} onSetStatus={handleSetStatus} />
             <DangerZoneCard staff={staff} onReset={handleReset} />
           </div>
         )}
@@ -1138,6 +1152,8 @@ function PersonalInfoTab({
 
   return (
     <div className="space-y-4">
+      {canEdit && <AvatarUploadCard staff={staff} onSaved={onSaved} />}
+
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest">Personal Details</p>
         {canEdit && !editing && (
@@ -1265,6 +1281,55 @@ function PersonalInfoTab({
   )
 }
 
+// ─── Avatar Upload ────────────────────────────────────────────────────────────
+
+function AvatarUploadCard({ staff, onSaved }: { staff: Staff; onSaved: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    if (!file.type.startsWith('image/')) { setError('Please choose an image file.'); return }
+    if (file.size > 5 * 1024 * 1024) { setError('Image must be under 5MB.'); return }
+    setUploading(true); setError('')
+    try {
+      const ext = file.name.split('.').pop() ?? 'jpg'
+      const filePath = `${staff.id}/${Date.now()}.${ext}`
+      const { error: upErr } = await supabase.storage.from('staff-avatars').upload(filePath, file, {
+        contentType: file.type, upsert: true,
+      })
+      if (upErr) throw upErr
+      const url = supabase.storage.from('staff-avatars').getPublicUrl(filePath).data.publicUrl
+      const { error: updErr } = await supabase.from('staff').update({ avatar: url }).eq('id', staff.id)
+      if (updErr) throw updErr
+      onSaved()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-card p-5 flex items-center gap-4">
+      <Avatar name={staff.name} avatar={staff.avatar} />
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-brown-dark">Profile Photo</p>
+        <p className="text-xs text-brown-muted mt-0.5">JPG or PNG, up to 5MB.</p>
+        {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+      </div>
+      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+      <button onClick={() => fileRef.current?.click()} disabled={uploading}
+        className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-[#8B634440] text-[#8B6344] bg-[#8B634408] hover:bg-[#8B634418] transition-colors disabled:opacity-50">
+        {uploading ? 'Uploading…' : staff.avatar ? 'Change' : 'Upload'}
+      </button>
+    </div>
+  )
+}
+
 // ─── Manager Cards ────────────────────────────────────────────────────────────
 
 function ManagerNotesCard({ staff, onSaved }: { staff: Staff; onSaved: () => void }) {
@@ -1296,6 +1361,65 @@ function ManagerNotesCard({ staff, onSaved }: { staff: Staff; onSaved: () => voi
         }`}>
         {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save Notes'}
       </button>
+    </div>
+  )
+}
+
+function EmploymentStatusCard({ staff, onSetStatus }: { staff: Staff; onSetStatus: (s: 'active' | 'resigned') => Promise<void> }) {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const resigned = staff.status === 'resigned'
+
+  async function apply(next: 'active' | 'resigned') {
+    setBusy(true); await onSetStatus(next); setBusy(false); setConfirming(false)
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-card p-5">
+      <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest mb-4">Employment Status</p>
+      {resigned ? (
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-brown-dark">
+              {staff.name} is <span className="text-[#9E4A30] font-semibold">Resigned</span>
+            </p>
+            <p className="text-xs text-brown-muted mt-0.5">
+              Hidden from scheduling and blocked from logging in. All historical records are kept.
+            </p>
+          </div>
+          <button onClick={() => apply('active')} disabled={busy}
+            className="shrink-0 text-xs text-[#3D7A50] border border-[#5B9E6A40] bg-[#5B9E6A0C] hover:bg-[#5B9E6A18] px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50">
+            {busy ? 'Reactivating…' : 'Reactivate'}
+          </button>
+        </div>
+      ) : !confirming ? (
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-brown-dark">Active employee</p>
+            <p className="text-xs text-brown-muted mt-0.5">
+              Mark as resigned to remove from scheduling and block login. Records are retained and can be restored anytime.
+            </p>
+          </div>
+          <button onClick={() => setConfirming(true)}
+            className="shrink-0 text-xs text-[#9E4A30] border border-[#C0624235] bg-[#C0624208] hover:bg-[#C0624218] px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap">
+            Mark as Resigned
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm text-brown-dark">
+            Mark <strong>{staff.name}</strong> as resigned? They'll disappear from scheduling and won't be able to log in. You can reactivate them later — no data is deleted.
+          </p>
+          <div className="flex gap-2">
+            <button onClick={() => apply('resigned')} disabled={busy}
+              className="text-xs bg-[#C06242] hover:bg-[#A85030] text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50">
+              {busy ? 'Saving…' : 'Yes, Mark as Resigned'}
+            </button>
+            <button onClick={() => setConfirming(false)}
+              className="text-xs text-brown-muted hover:text-brown-dark px-3 py-2 transition-colors">Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

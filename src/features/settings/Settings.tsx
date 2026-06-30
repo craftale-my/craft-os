@@ -1,15 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
-import { supabase } from '../lib/supabase'
+import { supabase } from '../../shared/lib/supabase'
+import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import type {
-  CompanySettings, Branch, Role, SystemRule, NotificationSetting, Staff, Rank,
-} from '../types'
-import { RANK_LABELS, PERMISSION_KEYS, PERMISSION_LABELS } from '../types'
+  CompanySettings, Branch, Role, SystemRule, NotificationSetting, Staff, Rank, ShiftType,
+} from '../../shared/types'
+import { RANK_LABELS, PERMISSION_KEYS, PERMISSION_LABELS, DEPT_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 
 const TABS = [
   { id: 'company',       label: 'Company Info',       icon: '🏢' },
   { id: 'branches',       label: 'Branches',           icon: '🏪' },
   { id: 'roles',          label: 'Roles & Permissions', icon: '👔' },
   { id: 'rules',          label: 'XP & Scoring Rules',  icon: '⚡' },
+  { id: 'shifts',         label: 'Shift Types',        icon: '🕐' },
   { id: 'notifications',  label: 'Notifications',      icon: '🔔' },
   { id: 'data',           label: 'Data & Export',      icon: '📊' },
 ] as const
@@ -675,17 +677,6 @@ function NotificationsTab({ settings, onRefresh }: { settings: NotificationSetti
 
 // ─── Data & Export ──────────────────────────────────────────────────────────────
 
-function toCSV(header: string[], rows: (string | number | null)[][]): string {
-  return [header, ...rows].map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')
-}
-
-function downloadCSV(filename: string, csv: string) {
-  const a = document.createElement('a')
-  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv)
-  a.download = filename
-  a.click()
-}
-
 function DataExportTab({ staffCount, missionCount }: { staffCount: number; missionCount: number }) {
   const [exporting, setExporting] = useState('')
 
@@ -785,6 +776,189 @@ function DataExportTab({ staffCount, missionCount }: { staffCount: number; missi
   )
 }
 
+// ─── Shift Types tab ─────────────────────────────────────────────────────────
+
+const SHIFT_DEPTS = ['barista', 'bakery', 'kitchen', 'office', 'service crew', 'other']
+
+function ShiftTypesTab() {
+  const [shiftTypes, setShiftTypes] = useState<ShiftType[]>([])
+  const [editing, setEditing] = useState<Partial<ShiftType> | null>(null)
+  const [saving, setSaving] = useState(false)
+  const { toast, show } = useToast()
+
+  async function load() {
+    const { data } = await supabase.from('shift_types').select('*').order('department').order('start_time')
+    if (data) setShiftTypes(data as ShiftType[])
+  }
+
+  useEffect(() => { load() }, [])
+
+  async function save() {
+    if (!editing) return
+    setSaving(true)
+    if (editing.id) {
+      await supabase.from('shift_types').update({
+        name: editing.name,
+        start_time: editing.start_time,
+        end_time: editing.end_time,
+        break_minutes: editing.break_minutes ?? 0,
+        department: editing.department,
+        is_active: editing.is_active,
+      }).eq('id', editing.id)
+      show('Shift type updated')
+    } else {
+      await supabase.from('shift_types').insert({
+        department: editing.department ?? 'barista',
+        name: editing.name ?? 'New Shift',
+        start_time: editing.start_time ?? '09:00',
+        end_time: editing.end_time ?? '17:00',
+        break_minutes: editing.break_minutes ?? 0,
+        color: DEPT_SHIFT_COLORS[editing.department ?? 'barista'] ?? '#8B6344',
+      })
+      show('Shift type added')
+    }
+    setSaving(false)
+    setEditing(null)
+    load()
+  }
+
+  async function toggleActive(st: ShiftType) {
+    await supabase.from('shift_types').update({ is_active: !st.is_active }).eq('id', st.id)
+    load()
+  }
+
+  const grouped: Record<string, ShiftType[]> = {}
+  shiftTypes.forEach(st => {
+    if (!grouped[st.department]) grouped[st.department] = []
+    grouped[st.department].push(st)
+  })
+
+  const inputCls2 = 'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+
+  return (
+    <div className="space-y-6">
+      {toast && <Toast message={toast} />}
+
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-bold text-brown-dark">Shift Types</h2>
+          <p className="text-xs text-brown-faint mt-0.5">Define shifts for each department.</p>
+        </div>
+        <button
+          onClick={() => setEditing({ department: 'barista', name: '', start_time: '09:00', end_time: '17:00', break_minutes: 60, is_active: true })}
+          className="px-3 py-1.5 rounded-lg bg-[#C4813A] text-white text-xs font-semibold hover:bg-[#A86C2C] transition-colors"
+        >
+          + Add Shift
+        </button>
+      </div>
+
+      {Object.entries(grouped).map(([dept, shifts]) => {
+        const color = DEPT_SHIFT_COLORS[dept] ?? '#8B7355'
+        return (
+          <div key={dept}>
+            <p className="text-xs font-bold uppercase tracking-widest mb-2" style={{ color }}>
+              {DEPT_LABELS[dept] ?? dept}
+            </p>
+            <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
+              {shifts.map(st => (
+                <div key={st.id} className="flex items-center gap-3 px-4 py-3">
+                  <div className="w-1.5 h-8 rounded-full flex-shrink-0" style={{ background: color }} />
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-semibold ${st.is_active ? 'text-brown-dark' : 'text-brown-faint line-through'}`}>
+                      {st.name}
+                    </p>
+                    <p className="text-xs text-brown-faint">
+                      {st.start_time.slice(0,5)} – {st.end_time.slice(0,5)}
+                      {st.break_minutes > 0 && ` · Break ${st.break_minutes}min`}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => toggleActive(st)}
+                    className={`text-xs font-medium px-2 py-0.5 rounded-full transition-colors ${
+                      st.is_active ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F5EDE0] text-brown-faint'
+                    }`}
+                  >
+                    {st.is_active ? 'Active' : 'Inactive'}
+                  </button>
+                  <button
+                    onClick={() => setEditing({ ...st })}
+                    className="text-xs text-brown-faint hover:text-brown-dark transition-colors px-2 py-1"
+                  >
+                    Edit
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })}
+
+      {/* Edit / Add modal */}
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40">
+          <div className="w-full sm:max-w-sm bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0E8DC]">
+              <h3 className="font-bold text-brown-dark">{editing.id ? 'Edit Shift Type' : 'Add Shift Type'}</h3>
+              <button onClick={() => setEditing(null)} className="p-1 text-brown-faint hover:text-brown-dark">✕</button>
+            </div>
+            <div className="px-5 py-5 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-brown-medium mb-1">Department</label>
+                <select
+                  className={inputCls2}
+                  value={editing.department ?? 'barista'}
+                  onChange={e => setEditing(p => ({ ...p, department: e.target.value }))}
+                >
+                  {SHIFT_DEPTS.map(d => <option key={d} value={d}>{DEPT_LABELS[d] ?? d}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-brown-medium mb-1">Shift Name</label>
+                <input
+                  className={inputCls2}
+                  value={editing.name ?? ''}
+                  onChange={e => setEditing(p => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. Morning"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-brown-medium mb-1">Start Time</label>
+                  <input type="time" className={inputCls2} value={editing.start_time?.slice(0,5) ?? ''} onChange={e => setEditing(p => ({ ...p, start_time: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-brown-medium mb-1">End Time</label>
+                  <input type="time" className={inputCls2} value={editing.end_time?.slice(0,5) ?? ''} onChange={e => setEditing(p => ({ ...p, end_time: e.target.value }))} />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-brown-medium mb-1">Break Duration (minutes)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={5}
+                  className={inputCls2}
+                  value={editing.break_minutes ?? 60}
+                  onChange={e => setEditing(p => ({ ...p, break_minutes: Math.max(0, Number(e.target.value)) }))}
+                  placeholder="e.g. 60"
+                />
+                <p className="text-xs text-brown-faint mt-1">How long staff may rest per shift. Used for the break countdown when clocking out for a break.</p>
+              </div>
+              <button
+                onClick={save}
+                disabled={saving || !editing.name}
+                className="w-full py-2.5 rounded-xl bg-[#C4813A] text-white font-semibold text-sm hover:bg-[#A86C2C] disabled:opacity-50 transition-colors"
+              >
+                {saving ? 'Saving…' : editing.id ? 'Save Changes' : 'Add Shift Type'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Settings page ──────────────────────────────────────────────────────────────
 
 export default function SettingsPage() {
@@ -865,6 +1039,9 @@ export default function SettingsPage() {
             )}
             {tab === 'rules' && (
               <RulesTab rules={rules} onRefresh={loadAll} />
+            )}
+            {tab === 'shifts' && (
+              <ShiftTypesTab />
             )}
             {tab === 'notifications' && (
               <NotificationsTab settings={notifications} onRefresh={loadAll} />

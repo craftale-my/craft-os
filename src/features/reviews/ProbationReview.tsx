@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
-import type { Staff, ProbationReview } from '../types'
-import { PROBATION_CHECKLIST, getProbationDay, RANK_LABELS } from '../types'
-import { Avatar } from './Dashboard'
+import { supabase } from '../../shared/lib/supabase'
+import type { Staff, ProbationReview } from '../../shared/types'
+import { PROBATION_CHECKLIST, getProbationDay, RANK_LABELS } from '../../shared/types'
+import { Avatar } from '../../shared/components/Avatar'
 
 type Checks = Record<string, boolean | null>
 type CL = typeof PROBATION_CHECKLIST

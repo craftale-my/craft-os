@@ -474,3 +474,216 @@ create policy "company_assets_public_read" on storage.objects for select
   using (bucket_id = 'company-assets');
 create policy "company_assets_manager_write" on storage.objects for all
   using (bucket_id = 'company-assets' and current_rank() = 'manager');
+
+-- =============================================
+-- HR module: Attendance, Salary, Leave, Claims
+-- =============================================
+
+-- ATTENDANCE
+create table if not exists attendance (
+  id uuid primary key default gen_random_uuid(),
+  staff_id uuid references staff(id),
+  date date not null,
+  clock_in timestamptz,
+  clock_out timestamptz,
+  status text default 'present'
+    check (status in ('present','absent','late','half_day','public_holiday','on_leave')),
+  late_minutes int default 0,
+  notes text,
+  recorded_by uuid references staff(id),
+  created_at timestamptz default now(),
+  unique(staff_id, date)
+);
+
+alter table attendance enable row level security;
+
+create policy "attendance_select_own" on attendance for select to authenticated
+  using (staff_id = auth.uid() or current_rank() in ('supervisor','manager'));
+create policy "attendance_manage" on attendance for all to authenticated
+  using (current_rank() in ('supervisor','manager'));
+create policy "attendance_self_clock" on attendance for insert to authenticated
+  with check (staff_id = auth.uid());
+create policy "attendance_self_update" on attendance for update to authenticated
+  using (staff_id = auth.uid());
+
+-- SALARY RECORDS
+create table if not exists salary_records (
+  id uuid primary key default gen_random_uuid(),
+  staff_id uuid references staff(id),
+  month int not null,
+  year int not null,
+  basic_salary numeric(10,2) default 0,
+  allowances numeric(10,2) default 0,
+  overtime numeric(10,2) default 0,
+  deductions numeric(10,2) default 0,
+  bonus numeric(10,2) default 0,
+  gross_salary numeric(10,2) generated always as
+    (basic_salary + allowances + overtime + bonus - deductions) stored,
+  epf_employee numeric(10,2) default 0,
+  socso_employee numeric(10,2) default 0,
+  eis_employee numeric(10,2) default 0,
+  pcb numeric(10,2) default 0,
+  net_salary numeric(10,2) generated always as
+    (basic_salary + allowances + overtime + bonus - deductions
+     - epf_employee - socso_employee - eis_employee - pcb) stored,
+  payment_date date,
+  payment_method text default 'bank_transfer'
+    check (payment_method in ('bank_transfer','cash','cheque')),
+  notes text,
+  created_by uuid references staff(id),
+  created_at timestamptz default now(),
+  unique(staff_id, month, year)
+);
+
+alter table salary_records enable row level security;
+
+create policy "salary_select_own" on salary_records for select to authenticated
+  using (staff_id = auth.uid() or current_rank() = 'manager');
+create policy "salary_manage" on salary_records for all to authenticated
+  using (current_rank() = 'manager');
+
+-- LEAVE
+create table if not exists leave_entitlements (
+  id uuid primary key default gen_random_uuid(),
+  staff_id uuid references staff(id),
+  year int not null,
+  annual_entitled int default 8,
+  annual_used int default 0,
+  medical_entitled int default 14,
+  medical_used int default 0,
+  emergency_entitled int default 3,
+  emergency_used int default 0,
+  unpaid_used int default 0,
+  unique(staff_id, year)
+);
+
+create table if not exists leave_requests (
+  id uuid primary key default gen_random_uuid(),
+  staff_id uuid references staff(id),
+  leave_type text not null
+    check (leave_type in ('annual','medical','emergency','unpaid','maternity','paternity','public_holiday')),
+  start_date date not null,
+  end_date date not null,
+  total_days int not null,
+  reason text,
+  attachment_url text,
+  status text default 'pending'
+    check (status in ('pending','approved','rejected','cancelled')),
+  reviewed_by uuid references staff(id),
+  reviewed_at timestamptz,
+  rejection_reason text,
+  created_at timestamptz default now()
+);
+
+alter table leave_entitlements enable row level security;
+alter table leave_requests enable row level security;
+
+create policy "leave_select_own" on leave_requests for select to authenticated
+  using (staff_id = auth.uid() or current_rank() in ('supervisor','manager'));
+create policy "leave_create_own" on leave_requests for insert to authenticated
+  with check (staff_id = auth.uid());
+create policy "leave_cancel_own" on leave_requests for update to authenticated
+  using (staff_id = auth.uid() and status = 'pending');
+create policy "leave_manage" on leave_requests for all to authenticated
+  using (current_rank() in ('supervisor','manager'));
+
+create policy "entitlements_select_own" on leave_entitlements for select to authenticated
+  using (staff_id = auth.uid() or current_rank() in ('supervisor','manager'));
+create policy "entitlements_manage" on leave_entitlements for all to authenticated
+  using (current_rank() in ('supervisor','manager'));
+create policy "entitlements_self_upsert" on leave_entitlements for insert to authenticated
+  with check (staff_id = auth.uid());
+
+-- CLAIMS
+create table if not exists claims (
+  id uuid primary key default gen_random_uuid(),
+  staff_id uuid references staff(id),
+  claim_type text not null
+    check (claim_type in ('transport','parking','meal','medical','phone','uniform','other')),
+  amount numeric(10,2) not null,
+  description text not null,
+  receipt_url text,
+  claim_date date not null,
+  status text default 'pending'
+    check (status in ('pending','approved','rejected')),
+  reviewed_by uuid references staff(id),
+  reviewed_at timestamptz,
+  rejection_reason text,
+  paid_at timestamptz,
+  created_at timestamptz default now()
+);
+
+alter table claims enable row level security;
+
+create policy "claims_select_own" on claims for select to authenticated
+  using (staff_id = auth.uid() or current_rank() in ('supervisor','manager'));
+create policy "claims_create_own" on claims for insert to authenticated
+  with check (staff_id = auth.uid());
+create policy "claims_manage" on claims for all to authenticated
+  using (current_rank() in ('supervisor','manager'));
+
+-- Storage buckets for HR attachments
+insert into storage.buckets (id, name, public)
+values ('claim-receipts', 'claim-receipts', true)
+on conflict (id) do nothing;
+insert into storage.buckets (id, name, public)
+values ('leave-attachments', 'leave-attachments', true)
+on conflict (id) do nothing;
+
+create policy "claim_receipts_read" on storage.objects for select
+  using (bucket_id = 'claim-receipts');
+create policy "claim_receipts_write" on storage.objects for insert to authenticated
+  with check (bucket_id = 'claim-receipts');
+
+create policy "leave_attachments_read" on storage.objects for select
+  using (bucket_id = 'leave-attachments');
+create policy "leave_attachments_write" on storage.objects for insert to authenticated
+  with check (bucket_id = 'leave-attachments');
+
+-- =============================================
+-- Phase 2 migration: Resign status, shift break duration, staff avatars
+-- Idempotent — safe to run on the existing database via the Supabase SQL editor.
+--
+-- NOTE: the `shift_types` and `scheduled_shifts` tables and the GPS/selfie
+-- columns on `branches`/`attendance` already exist in the live database but are
+-- not (yet) defined above in this file. The statements below only ADD to them.
+-- =============================================
+
+-- 1) Staff resignation status ------------------------------------------------
+-- Resigned staff keep all historical data (salary, attendance, tasks, etc.);
+-- they are only hidden from scheduling and blocked from logging in.
+alter table staff add column if not exists status text not null default 'active'
+  check (status in ('active','resigned'));
+
+-- 2) Shift break as a DURATION (minutes) instead of fixed start/end times -----
+alter table shift_types add column if not exists break_minutes int not null default 60;
+-- (legacy break_start / break_end columns are kept but no longer used)
+
+-- Global fallback break duration used when a staff has no scheduled shift today
+insert into system_rules (key, value, label, description) values
+  ('default_break_minutes', '60', 'Default break (minutes)', 'Break duration used when no shift is scheduled for the day')
+on conflict (key) do nothing;
+
+-- 3) Break clock tracking on attendance --------------------------------------
+alter table attendance add column if not exists break_start           timestamptz; -- clocked out for break
+alter table attendance add column if not exists break_end             timestamptz; -- clocked back in from break
+alter table attendance add column if not exists break_minutes         int;         -- actual minutes taken
+alter table attendance add column if not exists break_late            boolean not null default false;
+alter table attendance add column if not exists break_overrun_minutes int not null default 0;
+
+-- 4) Staff avatars storage bucket --------------------------------------------
+insert into storage.buckets (id, name, public)
+values ('staff-avatars', 'staff-avatars', true)
+on conflict (id) do nothing;
+
+drop policy if exists "staff_avatars_read" on storage.objects;
+create policy "staff_avatars_read" on storage.objects for select
+  using (bucket_id = 'staff-avatars');
+
+drop policy if exists "staff_avatars_write" on storage.objects;
+create policy "staff_avatars_write" on storage.objects for insert to authenticated
+  with check (bucket_id = 'staff-avatars');
+
+drop policy if exists "staff_avatars_update" on storage.objects;
+create policy "staff_avatars_update" on storage.objects for update to authenticated
+  using (bucket_id = 'staff-avatars');

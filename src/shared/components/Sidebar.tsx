@@ -3,11 +3,12 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, LayoutDashboard, CheckSquare, ClipboardList,
   UserCheck, Users, LogOut, Menu, X, Settings,
+  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../../features/auth/AuthContext'
 import { RankBadge } from './RankBadge'
-import { Avatar } from '../pages/Dashboard'
+import { Avatar } from './Avatar'
 
 interface NavItem {
   id: string
@@ -26,8 +27,16 @@ const STAFF_NAV: NavItem[] = [
   { id: 'missions',    label: 'Missions',   to: '/missions', icon: Target, activePaths: ['/missions'] },
 ]
 
+const HR_NAV: NavItem[] = [
+  { id: 'hr-attendance', label: 'Attendance',     to: '/hr/attendance', icon: CalendarCheck, activePaths: ['/hr/attendance'] },
+  { id: 'hr-salary',     label: 'Salary Records', to: '/hr/salary',     icon: Wallet,         activePaths: ['/hr/salary'] },
+  { id: 'hr-leave',      label: 'Leave',          to: '/hr/leave',      icon: Palmtree,       activePaths: ['/hr/leave'] },
+  { id: 'hr-claims',     label: 'Claims',         to: '/hr/claims',     icon: Receipt,        activePaths: ['/hr/claims'] },
+]
+
 const MGMT_NAV: NavItem[] = [
   { id: 'team-dash',  label: 'Team Dashboard',    to: '/dashboard', icon: LayoutDashboard, activePaths: ['/dashboard', '/staff/'] },
+  { id: 'schedule',   label: 'Schedule',          to: '/schedule',  icon: CalendarDays,    activePaths: ['/schedule'] },
   { id: 'tasks',      label: 'Tasks',             to: '/tasks',     icon: CheckSquare,     activePaths: ['/tasks'] },
   { id: 'reviews',    label: 'Reviews',           to: '/dashboard', icon: ClipboardList,   scrollTo: 'reviews-section' },
   { id: 'probation',  label: 'Probation Reviews', to: '/dashboard', icon: UserCheck,       scrollTo: 'probation-section' },
@@ -87,8 +96,9 @@ function SidebarContent({ onNavigate, onClose }: {
     <div className="flex flex-col h-full min-h-0">
       {/* Logo */}
       <div className="flex items-center justify-between px-4 pt-5 pb-4 flex-shrink-0">
-        <Link to="/" className="font-display text-xl font-bold text-[#F5F0E8] tracking-wide">
-          Craft OS
+        <Link to="/" className="flex items-center gap-2.5">
+          <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
+          <span className="font-display text-xl font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
         </Link>
         {onClose && (
           <button onClick={onClose} className="text-[#D4C4B0] hover:text-[#F5F0E8] p-1">
@@ -120,6 +130,18 @@ function SidebarContent({ onNavigate, onClose }: {
           </p>
           <div className="space-y-0.5">
             {STAFF_NAV.map(item => (
+              <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="border-t border-[#5A3A22] mb-3" />
+          <p className="px-3 mb-1.5 text-[10px] font-bold text-[#8B7355] uppercase tracking-widest">
+            HR
+          </p>
+          <div className="space-y-0.5">
+            {HR_NAV.map(item => (
               <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
             ))}
           </div>
@@ -175,7 +197,10 @@ export function Sidebar() {
         <button onClick={() => setMobileOpen(true)} className="text-[#D4C4B0] hover:text-[#F5F0E8] p-1">
           <Menu size={22} />
         </button>
-        <span className="font-display text-lg font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
+        <span className="flex items-center gap-2">
+          <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-7 h-7 rounded-full object-cover" />
+          <span className="font-display text-lg font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
+        </span>
         <div className="w-7" />
       </header>
 

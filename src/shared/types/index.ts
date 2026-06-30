@@ -3,12 +3,15 @@ export type MissionCategory = 'espresso' | 'milk' | 'service' | 'ops' | 'knowled
 export type CompletionStatus = 'pending' | 'approved' | 'rejected'
 export type VerificationType = 'photo' | 'supervisor' | 'both'
 
+export type StaffStatus = 'active' | 'resigned'
+
 export interface Staff {
   id: string
   name: string
   avatar: string | null
   rank: Rank
   is_active: boolean
+  status: StaffStatus
   level: number
   xp: number
   department: string | null
@@ -342,6 +345,9 @@ export interface Branch {
   operating_hours: string | null
   is_active: boolean
   created_at: string
+  latitude: number | null
+  longitude: number | null
+  radius_meters: number | null
   pic?: Staff | null
 }
 
@@ -400,4 +406,197 @@ export interface NotificationSetting {
   notify_staff: boolean
   notify_supervisor: boolean
   notify_manager: boolean
+}
+
+// ─── HR module ──────────────────────────────────────────────────────────────────
+
+export type AttendanceStatus = 'present' | 'absent' | 'late' | 'half_day' | 'public_holiday' | 'on_leave'
+
+export const ATTENDANCE_STATUS_LABELS: Record<AttendanceStatus, string> = {
+  present: 'Present',
+  absent: 'Absent',
+  late: 'Late',
+  half_day: 'Half Day',
+  public_holiday: 'Public Holiday',
+  on_leave: 'On Leave',
+}
+
+export const ATTENDANCE_STATUS_COLORS: Record<AttendanceStatus, string> = {
+  present: '#3D7A50',
+  absent: '#9E4A30',
+  late: '#C4813A',
+  half_day: '#2E6E9E',
+  public_holiday: '#7B5EA8',
+  on_leave: '#8B7355',
+}
+
+export interface Attendance {
+  id: string
+  staff_id: string
+  date: string
+  clock_in: string | null
+  clock_out: string | null
+  status: AttendanceStatus
+  late_minutes: number
+  notes: string | null
+  recorded_by: string | null
+  created_at: string
+  clock_in_photo_url: string | null
+  clock_out_photo_url: string | null
+  clock_in_lat: number | null
+  clock_in_lng: number | null
+  clock_in_distance_m: number | null
+  clock_out_lat: number | null
+  clock_out_lng: number | null
+  clock_out_distance_m: number | null
+  // break tracking
+  break_start: string | null          // when staff clocked OUT for break
+  break_end: string | null            // when staff clocked back IN from break
+  break_minutes: number | null        // actual break duration taken
+  break_late: boolean                 // true if break exceeded the allowed duration
+  break_overrun_minutes: number       // minutes over the allowed break duration
+  staff?: Staff
+}
+
+export interface SalaryRecord {
+  id: string
+  staff_id: string
+  month: number
+  year: number
+  basic_salary: number
+  allowances: number
+  overtime: number
+  deductions: number
+  bonus: number
+  gross_salary: number
+  epf_employee: number
+  socso_employee: number
+  eis_employee: number
+  pcb: number
+  net_salary: number
+  payment_date: string | null
+  payment_method: 'bank_transfer' | 'cash' | 'cheque'
+  notes: string | null
+  created_by: string | null
+  created_at: string
+  staff?: Staff
+}
+
+export type LeaveType = 'annual' | 'medical' | 'emergency' | 'unpaid' | 'maternity' | 'paternity' | 'public_holiday'
+
+export const LEAVE_TYPE_LABELS: Record<LeaveType, string> = {
+  annual: 'Annual Leave',
+  medical: 'Medical Leave',
+  emergency: 'Emergency Leave',
+  unpaid: 'Unpaid Leave',
+  maternity: 'Maternity Leave',
+  paternity: 'Paternity Leave',
+  public_holiday: 'Public Holiday',
+}
+
+export interface LeaveEntitlement {
+  id: string
+  staff_id: string
+  year: number
+  annual_entitled: number
+  annual_used: number
+  medical_entitled: number
+  medical_used: number
+  emergency_entitled: number
+  emergency_used: number
+  unpaid_used: number
+}
+
+export interface LeaveRequest {
+  id: string
+  staff_id: string
+  leave_type: LeaveType
+  start_date: string
+  end_date: string
+  total_days: number
+  reason: string | null
+  attachment_url: string | null
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled'
+  reviewed_by: string | null
+  reviewed_at: string | null
+  rejection_reason: string | null
+  created_at: string
+  staff?: Staff
+}
+
+export type ClaimType = 'transport' | 'parking' | 'meal' | 'medical' | 'phone' | 'uniform' | 'other'
+
+export const CLAIM_TYPE_LABELS: Record<ClaimType, string> = {
+  transport: 'Transport',
+  parking: 'Parking',
+  meal: 'Meal',
+  medical: 'Medical',
+  phone: 'Phone',
+  uniform: 'Uniform',
+  other: 'Other',
+}
+
+export interface Claim {
+  id: string
+  staff_id: string
+  claim_type: ClaimType
+  amount: number
+  description: string
+  receipt_url: string | null
+  claim_date: string
+  status: 'pending' | 'approved' | 'rejected'
+  reviewed_by: string | null
+  reviewed_at: string | null
+  rejection_reason: string | null
+  paid_at: string | null
+  created_at: string
+  staff?: Staff
+}
+
+// ─── Shift Scheduling ─────────────────────────────────────────────────────────
+
+export interface ShiftType {
+  id: string
+  department: string
+  name: string
+  start_time: string
+  end_time: string
+  break_start: string | null   // legacy — no longer used, kept for back-compat
+  break_end: string | null     // legacy — no longer used, kept for back-compat
+  break_minutes: number        // allowed break duration per shift, in minutes
+  color: string
+  is_active: boolean
+  created_at: string
+}
+
+/** Fallback break duration (minutes) when a staff has no scheduled shift for the day. */
+export const DEFAULT_BREAK_MINUTES = 60
+
+export interface ScheduledShift {
+  id: string
+  staff_id: string
+  shift_type_id: string
+  branch_id: string | null
+  date: string
+  status: 'scheduled' | 'confirmed' | 'swapped' | 'cancelled'
+  notes: string | null
+  created_by: string | null
+  created_at: string
+}
+
+export const DEPT_SHIFT_COLORS: Record<string, string> = {
+  barista:        '#C4813A',
+  bakery:         '#8B6344',
+  kitchen:        '#C0624B',
+  office:         '#4A8FBF',
+  'service crew': '#6B8F5E',
+  other:          '#8B7355',
+}
+
+export function calcAnnualEntitlement(joinedAt: string | null): number {
+  if (!joinedAt) return 8
+  const years = (Date.now() - new Date(joinedAt).getTime()) / (1000 * 60 * 60 * 24 * 365.25)
+  if (years >= 5) return 16
+  if (years >= 2) return 12
+  return 8
 }

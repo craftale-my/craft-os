@@ -1,6 +1,6 @@
 import { Navigate } from 'react-router-dom'
-import { useAuth } from '../contexts/AuthContext'
-import type { Rank } from '../types'
+import { useAuth } from './AuthContext'
+import type { Rank } from '../../shared/types'
 
 interface Props {
   children: React.ReactNode

@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
-import { supabaseAdmin } from '../lib/supabase-admin'
-import type { Staff, MissionCompletion, MonthlyReview, ProbationReview } from '../types'
+import { supabase } from '../../shared/lib/supabase'
+import { supabaseAdmin } from '../../shared/lib/supabase-admin'
+import type { Staff, MissionCompletion, MonthlyReview, ProbationReview } from '../../shared/types'
 import {
   RANK_LABELS, RANK_COLORS,
   DEPT_LABELS, DEPT_STORE, BRANCHES, DEPARTMENTS,
   calcFinalScore, getScoreConfig, REVIEW_CATEGORIES, MONTHS_FULL,
   getProbationDay,
-} from '../types'
-import { StarRating } from '../components/StarRating'
+} from '../../shared/types'
+import { StarRating } from '../../shared/components/StarRating'
 
 const CURRENT_MONTH = new Date().getMonth() + 1
 const CURRENT_YEAR = new Date().getFullYear()
@@ -529,6 +529,10 @@ function SupervisorReviewCard({
   onComplete: () => void
 }) {
   const [lateCount, setLateCount] = useState(review.late_count ?? 0)
+  const [autoLateCount, setAutoLateCount] = useState<number | null>(null)
+  // Only treat late_count as a deliberate override if a supervisor has already submitted this review before
+  // (the column defaults to 0 for fresh rows, so 0 alone doesn't mean "manually set").
+  const [lateOverridden, setLateOverridden] = useState(review.sup_submitted_at != null)
   const [ratings, setRatings] = useState<Record<RatingKey, number>>({
     attitude: 0, efficiency: 0, coffee_skill: 0, service: 0,
   })
@@ -537,6 +541,24 @@ function SupervisorReviewCard({
   const [expanded, setExpanded] = useState(false)
 
   const staff = review.staff as Staff | undefined
+
+  useEffect(() => {
+    if (!expanded || autoLateCount != null) return
+    const start = `${review.year}-${String(review.month).padStart(2, '0')}-01`
+    const lastDay = new Date(review.year, review.month, 0).getDate()
+    const end = `${review.year}-${String(review.month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    supabase
+      .from('attendance')
+      .select('id', { count: 'exact', head: true })
+      .eq('staff_id', review.staff_id)
+      .eq('status', 'late')
+      .gte('date', start)
+      .lte('date', end)
+      .then(({ count }) => {
+        setAutoLateCount(count ?? 0)
+        if (!lateOverridden) setLateCount(count ?? 0)
+      })
+  }, [expanded])
 
   const allRated = Object.values(ratings).every(v => v > 0)
 
@@ -613,15 +635,24 @@ function SupervisorReviewCard({
 
           {/* Late count */}
           <div className="flex items-center gap-3">
-            <span className="text-xs font-semibold text-brown-medium flex-1">Times Late This Month</span>
+            <div className="flex-1">
+              <span className="text-xs font-semibold text-brown-medium">Times Late This Month</span>
+              <p className="text-xs text-brown-faint mt-0.5">
+                {autoLateCount == null
+                  ? 'Checking attendance records…'
+                  : lateOverridden
+                  ? `Manually set — attendance shows ${autoLateCount}`
+                  : `Auto-detected from attendance records`}
+              </p>
+            </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setLateCount(c => Math.max(0, c - 1))}
+                onClick={() => { setLateOverridden(true); setLateCount(c => Math.max(0, c - 1)) }}
                 className="w-7 h-7 rounded-full border border-[#D4C5B0] text-brown-dark font-bold hover:bg-[#F5EDE0] transition-colors"
               >−</button>
               <span className="w-6 text-center text-sm font-bold text-brown-dark">{lateCount}</span>
               <button
-                onClick={() => setLateCount(c => Math.min(10, c + 1))}
+                onClick={() => { setLateOverridden(true); setLateCount(c => Math.min(10, c + 1)) }}
                 className="w-7 h-7 rounded-full border border-[#D4C5B0] text-brown-dark font-bold hover:bg-[#F5EDE0] transition-colors"
               >+</button>
             </div>
@@ -692,6 +723,7 @@ export default function Dashboard() {
   const [filterBranch, setFilterBranch] = useState('')
   const [filterDept, setFilterDept] = useState('')
   const [filterRank, setFilterRank] = useState('')
+  const [filterStatus, setFilterStatus] = useState<'active' | 'resigned' | ''>('active')
   const [startingReviews, setStartingReviews] = useState(false)
   const [reviewRefresh, setReviewRefresh] = useState(0)
   const [probations, setProbations] = useState<ProbationReview[]>([])
@@ -758,10 +790,13 @@ export default function Dashboard() {
       .then(({ data }) => { if (data) setReviews(data as MonthlyReview[]) })
   }, [reviewRefresh])
 
+  // Active staff (resigned are retained but excluded from active operations/counts)
+  const activeStaff = allStaff.filter(s => s.status !== 'resigned')
+
   // Derived counts
   const pendingCompletions = completions.filter(c => c.status === 'pending')
-  const onboardingCount = allStaff.filter(s => !s.onboarding_completed && s.rank !== 'manager').length
-  const levelUpCount = allStaff.filter(s => {
+  const onboardingCount = activeStaff.filter(s => !s.onboarding_completed && s.rank !== 'manager').length
+  const levelUpCount = activeStaff.filter(s => {
     if (!s.last_level_up_at) return false
     return Date.now() - new Date(s.last_level_up_at).getTime() < 7 * 24 * 60 * 60 * 1000
   }).length
@@ -771,7 +806,7 @@ export default function Dashboard() {
   const visibleRegRequests = regTab === 'pending' ? pendingRegRequests : rejectedRegRequests
 
   const deptBreakdown: Record<string, number> = {}
-  allStaff.forEach(s => {
+  activeStaff.forEach(s => {
     const key = s.department ?? 'other'
     deptBreakdown[key] = (deptBreakdown[key] ?? 0) + 1
   })
@@ -792,13 +827,14 @@ export default function Dashboard() {
     if (filterBranch && s.branch !== filterBranch) return false
     if (filterDept && s.department !== filterDept) return false
     if (filterRank && s.rank !== filterRank) return false
+    if (filterStatus && (s.status ?? 'active') !== filterStatus) return false
     return true
   })
 
   async function handleStartReviews() {
     if (!isManager) return
     setStartingReviews(true)
-    const nonManagers = allStaff.filter(s => s.rank !== 'manager')
+    const nonManagers = allStaff.filter(s => s.rank !== 'manager' && s.status !== 'resigned')
     const records = nonManagers.map(s => ({
       staff_id: s.id,
       month: CURRENT_MONTH,
@@ -937,7 +973,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
           <div className="bg-white rounded-2xl p-4 border border-[#E8DDD0]">
             <p className="text-xs text-brown-faint font-medium mb-1">Total Staff</p>
-            <p className="text-3xl font-bold text-brown-dark">{allStaff.length}</p>
+            <p className="text-3xl font-bold text-brown-dark">{activeStaff.length}</p>
             <div className="mt-2 space-y-0.5">
               {Object.entries(deptBreakdown).slice(0, 3).map(([dept, count]) => (
                 <p key={dept} className="text-xs text-brown-faint">
@@ -1083,7 +1119,7 @@ export default function Dashboard() {
             {isSupervisor && (() => {
               const activeStaffIds = new Set(probations.map(p => p.staff_id))
               const traineesWithoutProbation = allStaff.filter(
-                s => s.rank === 'trainee' && !activeStaffIds.has(s.id)
+                s => s.rank === 'trainee' && s.status !== 'resigned' && !activeStaffIds.has(s.id)
               )
               const hasAnything = probations.length > 0 || traineesWithoutProbation.length > 0
               if (!hasAnything) return null
@@ -1302,6 +1338,11 @@ export default function Dashboard() {
                     <option key={r} value={r}>{RANK_LABELS[r]}</option>
                   ))}
                 </select>
+                <select className={selectCls} value={filterStatus} onChange={e => setFilterStatus(e.target.value as 'active' | 'resigned' | '')}>
+                  <option value="active">Active</option>
+                  <option value="resigned">Resigned</option>
+                  <option value="">All statuses</option>
+                </select>
               </div>
 
               <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-hidden">
@@ -1326,8 +1367,15 @@ export default function Dashboard() {
                           <div className="flex items-center gap-2.5">
                             <Avatar name={s.name} avatar={s.avatar} size="sm" />
                             <div>
-                              <p className="font-medium text-brown-dark text-sm">{s.name}</p>
-                              {!s.onboarding_completed && s.rank !== 'manager' && (
+                              <p className="font-medium text-brown-dark text-sm flex items-center gap-1.5">
+                                {s.name}
+                                {s.status === 'resigned' && (
+                                  <span className="text-[10px] font-semibold text-[#9E4A30] bg-[#C0624212] border border-[#C0624230] px-1.5 py-0.5 rounded-full">
+                                    Resigned
+                                  </span>
+                                )}
+                              </p>
+                              {!s.onboarding_completed && s.rank !== 'manager' && s.status !== 'resigned' && (
                                 <p className="text-xs text-[#C4813A]">Onboarding</p>
                               )}
                             </div>

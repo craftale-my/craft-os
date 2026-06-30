@@ -27,3 +27,10 @@ dist-ssr
 .env
 .env.local
 .env.*.local
+.vercel
+
+# Database dumps / backups (may contain credentials or staff PII — keep out of git)
+backups/
+
+# Local Claude settings (machine-specific; may contain secrets)
+.claude/settings.local.json

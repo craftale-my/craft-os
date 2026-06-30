@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { Paperclip, MessageSquare } from 'lucide-react'
-import { supabase } from '../lib/supabase'
-import { useAuth } from '../contexts/AuthContext'
-import type { Staff } from '../types'
-import { Avatar } from './Dashboard'
+import { supabase } from '../../shared/lib/supabase'
+import { useAuth } from '../auth/AuthContext'
+import type { Staff } from '../../shared/types'
+import { Avatar } from '../../shared/components/Avatar'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

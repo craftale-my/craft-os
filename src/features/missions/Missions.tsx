@@ -1,8 +1,8 @@
 import { useEffect, useState, FormEvent } from 'react'
-import { supabase } from '../lib/supabase'
-import type { Mission, MissionCategory, VerificationType } from '../types'
-import { MISSION_CATEGORY_LABELS, RANK_LABELS, VERIFICATION_CONFIG } from '../types'
-import type { Rank } from '../types'
+import { supabase } from '../../shared/lib/supabase'
+import type { Mission, MissionCategory, VerificationType } from '../../shared/types'
+import { MISSION_CATEGORY_LABELS, RANK_LABELS, VERIFICATION_CONFIG } from '../../shared/types'
+import type { Rank } from '../../shared/types'
 
 export function MissionsPage() {
   const [missions, setMissions] = useState<Mission[]>([])

@@ -1,6 +1,6 @@
 import { useState, FormEvent } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from './AuthContext'
 
 export function LoginPage() {
   const [email, setEmail] = useState('')
@@ -30,6 +30,11 @@ export function LoginPage() {
 
         {/* Logo */}
         <div className="mb-10 text-center">
+          <img
+            src="/craft-logo.jpg"
+            alt="Craft Cafe"
+            className="w-20 h-20 mx-auto mb-3 rounded-full object-cover"
+          />
           <h1 className="font-display text-4xl font-bold text-[#3D2B1F] mb-1 tracking-tight">
             Craft OS
           </h1>

@@ -1,17 +1,22 @@
 import type { ReactNode } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { AuthProvider, useAuth } from './contexts/AuthContext'
-import { ProtectedRoute, OnboardingRoute } from './components/ProtectedRoute'
-import { Sidebar } from './components/Sidebar'
-import { LoginPage } from './pages/Login'
-import { RegisterPage } from './pages/Register'
-import { OnboardingPage } from './pages/Onboarding'
-import DashboardPage from './pages/Dashboard'
-import { StaffProfilePage } from './pages/StaffProfile'
-import { MissionsPage } from './pages/Missions'
-import ProbationReviewPage from './pages/ProbationReview'
-import TasksPage from './pages/Tasks'
-import SettingsPage from './pages/Settings'
+import { AuthProvider, useAuth } from './features/auth/AuthContext'
+import { ProtectedRoute, OnboardingRoute } from './features/auth/ProtectedRoute'
+import { Sidebar } from './shared/components/Sidebar'
+import { LoginPage } from './features/auth/Login'
+import { RegisterPage } from './features/auth/Register'
+import { OnboardingPage } from './features/onboarding/Onboarding'
+import DashboardPage from './features/staff/Dashboard'
+import { StaffProfilePage } from './features/staff/StaffProfile'
+import { MissionsPage } from './features/missions/Missions'
+import ProbationReviewPage from './features/reviews/ProbationReview'
+import TasksPage from './features/tasks/Tasks'
+import SettingsPage from './features/settings/Settings'
+import HrAttendancePage from './features/hr/HrAttendance'
+import HrSalaryPage from './features/hr/HrSalary'
+import HrLeavePage from './features/hr/HrLeave'
+import HrClaimsPage from './features/hr/HrClaims'
+import SchedulePage from './features/schedule/Schedule'
 
 function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -22,8 +27,33 @@ function AppLayout({ children }: { children: ReactNode }) {
   )
 }
 
+function DeactivatedScreen() {
+  const { signOut } = useAuth()
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-[#F5F0E8] px-6 text-center">
+      <div className="text-4xl mb-4">🔒</div>
+      <h1 className="text-xl font-bold text-brown-dark mb-2">Account Deactivated</h1>
+      <p className="text-sm text-brown-muted max-w-sm mb-6">
+        This account has been marked as resigned and can no longer access Craft OS.
+        Please contact your manager if you believe this is a mistake.
+      </p>
+      <button
+        onClick={signOut}
+        className="px-5 py-2.5 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors"
+      >
+        Sign Out
+      </button>
+    </div>
+  )
+}
+
 function AppRoutes() {
   const { user, staff } = useAuth()
+
+  // Resigned staff are blocked from using the app entirely (data is retained).
+  if (user && staff?.status === 'resigned') {
+    return <DeactivatedScreen />
+  }
 
   return (
     <Routes>
@@ -89,6 +119,51 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout><TasksPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/hr/attendance"
+        element={
+          <ProtectedRoute>
+            <AppLayout><HrAttendancePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/hr/salary"
+        element={
+          <ProtectedRoute>
+            <AppLayout><HrSalaryPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/hr/leave"
+        element={
+          <ProtectedRoute>
+            <AppLayout><HrLeavePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/hr/claims"
+        element={
+          <ProtectedRoute>
+            <AppLayout><HrClaimsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/schedule"
+        element={
+          <ProtectedRoute requireRank={['supervisor', 'manager']}>
+            <AppLayout><SchedulePage /></AppLayout>
           </ProtectedRoute>
         }
       />
