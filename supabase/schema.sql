@@ -104,8 +104,10 @@ $$;
 create policy "staff_select" on staff for select using (true);
 create policy "staff_insert" on staff for insert
   with check (current_rank() in ('manager'));
+-- Supervisors need staff updates too: probation hire/eliminate writes
+-- onboarding_completed / is_active on the trainee's row.
 create policy "staff_update" on staff for update
-  using (id = auth.uid() or current_rank() in ('manager'));
+  using (id = auth.uid() or current_rank() in ('supervisor','manager'));
 
 -- Mission policies
 create policy "missions_select" on missions for select using (true);
@@ -641,12 +643,78 @@ create policy "leave_attachments_write" on storage.objects for insert to authent
   with check (bucket_id = 'leave-attachments');
 
 -- =============================================
+-- Attendance GPS + selfie verification, branch geofencing
+-- (added to production out-of-band; defined here so fresh databases match)
+-- =============================================
+
+alter table attendance add column if not exists clock_in_photo_url  text;
+alter table attendance add column if not exists clock_out_photo_url text;
+alter table attendance add column if not exists clock_in_lat        double precision;
+alter table attendance add column if not exists clock_in_lng        double precision;
+alter table attendance add column if not exists clock_in_distance_m int;
+alter table attendance add column if not exists clock_out_lat        double precision;
+alter table attendance add column if not exists clock_out_lng        double precision;
+alter table attendance add column if not exists clock_out_distance_m int;
+
+alter table branches add column if not exists latitude      double precision;
+alter table branches add column if not exists longitude     double precision;
+alter table branches add column if not exists radius_meters int;
+
+-- =============================================
+-- Shift Scheduling: shift_types + scheduled_shifts
+-- =============================================
+
+create table if not exists shift_types (
+  id uuid primary key default gen_random_uuid(),
+  department text not null default 'barista',
+  name text not null,
+  start_time time not null,
+  end_time time not null,
+  break_start time,                       -- legacy, no longer used
+  break_end time,                         -- legacy, no longer used
+  break_minutes int not null default 60,  -- allowed break duration per shift
+  color text not null default '#8B6344',
+  is_active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists scheduled_shifts (
+  id uuid primary key default gen_random_uuid(),
+  staff_id uuid not null references staff(id) on delete cascade,
+  shift_type_id uuid not null references shift_types(id) on delete cascade,
+  branch_id uuid references branches(id),
+  date date not null,
+  status text not null default 'scheduled'
+    check (status in ('scheduled','confirmed','swapped','cancelled')),
+  notes text,
+  created_by uuid references staff(id),
+  created_at timestamptz not null default now(),
+  unique (staff_id, date)  -- one shift per staff per day (app upserts on staff_id,date)
+);
+
+alter table shift_types enable row level security;
+alter table scheduled_shifts enable row level security;
+
+drop policy if exists "shift_types_select" on shift_types;
+create policy "shift_types_select" on shift_types for select to authenticated using (true);
+drop policy if exists "shift_types_manage" on shift_types;
+create policy "shift_types_manage" on shift_types for all
+  using (current_rank() = 'manager');
+
+drop policy if exists "scheduled_shifts_select" on scheduled_shifts;
+create policy "scheduled_shifts_select" on scheduled_shifts for select to authenticated using (true);
+drop policy if exists "scheduled_shifts_manage" on scheduled_shifts;
+create policy "scheduled_shifts_manage" on scheduled_shifts for all
+  using (current_rank() in ('supervisor','manager'));
+
+-- =============================================
 -- Phase 2 migration: Resign status, shift break duration, staff avatars
 -- Idempotent — safe to run on the existing database via the Supabase SQL editor.
 --
--- NOTE: the `shift_types` and `scheduled_shifts` tables and the GPS/selfie
--- columns on `branches`/`attendance` already exist in the live database but are
--- not (yet) defined above in this file. The statements below only ADD to them.
+-- NOTE: if the live database is missing tables/columns defined earlier in this
+-- file (e.g. shift_types, scheduled_shifts, probation_reviews, staff columns),
+-- run supabase/catchup-2026-07-02.sql instead — it contains everything the
+-- current code needs, in one idempotent script.
 -- =============================================
 
 -- 1) Staff resignation status ------------------------------------------------
@@ -680,10 +748,22 @@ drop policy if exists "staff_avatars_read" on storage.objects;
 create policy "staff_avatars_read" on storage.objects for select
   using (bucket_id = 'staff-avatars');
 
+-- Writes are scoped to the uploader's own folder (`<staff_id>/...`); managers may
+-- write anywhere (they can upload avatars for other staff).
 drop policy if exists "staff_avatars_write" on storage.objects;
 create policy "staff_avatars_write" on storage.objects for insert to authenticated
-  with check (bucket_id = 'staff-avatars');
+  with check (
+    bucket_id = 'staff-avatars'
+    and ((storage.foldername(name))[1] = auth.uid()::text or current_rank() = 'manager')
+  );
 
 drop policy if exists "staff_avatars_update" on storage.objects;
 create policy "staff_avatars_update" on storage.objects for update to authenticated
-  using (bucket_id = 'staff-avatars');
+  using (
+    bucket_id = 'staff-avatars'
+    and ((storage.foldername(name))[1] = auth.uid()::text or current_rank() = 'manager')
+  )
+  with check (
+    bucket_id = 'staff-avatars'
+    and ((storage.foldername(name))[1] = auth.uid()::text or current_rank() = 'manager')
+  );

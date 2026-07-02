@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, Navigate, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
+import { supabaseAdmin } from '../../shared/lib/supabase-admin'
 import { useAuth } from '../auth/AuthContext'
 import { ErrorBoundary } from '../../shared/components/ErrorBoundary'
 import { StarRating } from '../../shared/components/StarRating'
@@ -1277,6 +1278,14 @@ function PersonalInfoTab({
           </div>
         </div>
       )}
+
+      {/* Security — self-service password change */}
+      {isSelf && (
+        <>
+          <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest pt-2">Security</p>
+          <ChangePasswordCard email={email} />
+        </>
+      )}
     </div>
   )
 }
@@ -1298,9 +1307,16 @@ function AvatarUploadCard({ staff, onSaved }: { staff: Staff; onSaved: () => voi
     try {
       const ext = file.name.split('.').pop() ?? 'jpg'
       const filePath = `${staff.id}/${Date.now()}.${ext}`
-      const { error: upErr } = await supabase.storage.from('staff-avatars').upload(filePath, file, {
+      let { error: upErr } = await supabase.storage.from('staff-avatars').upload(filePath, file, {
         contentType: file.type, upsert: true,
       })
+      // Until the staff-avatars storage policies are applied in Supabase, authenticated
+      // uploads are blocked by RLS — fall back to the admin client (same pattern as staff creation).
+      if (upErr && supabaseAdmin && /row-level security|unauthorized|bucket not found/i.test(upErr.message)) {
+        ;({ error: upErr } = await supabaseAdmin.storage.from('staff-avatars').upload(filePath, file, {
+          contentType: file.type, upsert: true,
+        }))
+      }
       if (upErr) throw upErr
       const url = supabase.storage.from('staff-avatars').getPublicUrl(filePath).data.publicUrl
       const { error: updErr } = await supabase.from('staff').update({ avatar: url }).eq('id', staff.id)
@@ -1326,6 +1342,99 @@ function AvatarUploadCard({ staff, onSaved }: { staff: Staff; onSaved: () => voi
         className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-[#8B634440] text-[#8B6344] bg-[#8B634408] hover:bg-[#8B634418] transition-colors disabled:opacity-50">
         {uploading ? 'Uploading…' : staff.avatar ? 'Change' : 'Upload'}
       </button>
+    </div>
+  )
+}
+
+// ─── Change Password ──────────────────────────────────────────────────────────
+
+function ChangePasswordCard({ email }: { email: string }) {
+  const [open, setOpen] = useState(false)
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState(false)
+
+  function reset() {
+    setCurrent(''); setNext(''); setConfirm(''); setError('')
+  }
+
+  async function submit() {
+    setError('')
+    if (next.length < 6) { setError('New password must be at least 6 characters.'); return }
+    if (next !== confirm) { setError('New passwords do not match.'); return }
+    if (next === current) { setError('New password must be different from your current password.'); return }
+    setSaving(true)
+    try {
+      // Verify the current password before allowing the change
+      const { error: authErr } = await supabase.auth.signInWithPassword({ email, password: current })
+      if (authErr) {
+        // 400 = invalid credentials; anything else (network, rate limit) gets the real message
+        setError(authErr.status === 400 ? 'Current password is incorrect.' : authErr.message)
+        return
+      }
+      const { error: updErr } = await supabase.auth.updateUser({ password: next })
+      if (updErr) { setError(updErr.message); return }
+      reset()
+      setSuccess(true)
+      setTimeout(() => { setSuccess(false); setOpen(false) }, 3000)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-card p-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium text-brown-dark">Password</p>
+          <p className="text-xs text-brown-muted mt-0.5">Change the password you use to sign in.</p>
+        </div>
+        {!open && !success && (
+          <button onClick={() => setOpen(true)}
+            className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-[#8B634440] text-[#8B6344] bg-[#8B634408] hover:bg-[#8B634418] transition-colors">
+            Change Password
+          </button>
+        )}
+        {success && (
+          <span className="text-xs font-medium text-[#3D7A50] bg-[#EBF5EE] px-3 py-1.5 rounded-lg">✓ Password updated</span>
+        )}
+      </div>
+
+      {open && (
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className={labelCls}>Current Password</label>
+            <input type="password" autoComplete="current-password" value={current}
+              onChange={e => setCurrent(e.target.value)} className={inputCls} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>New Password</label>
+              <input type="password" autoComplete="new-password" value={next}
+                onChange={e => setNext(e.target.value)} placeholder="Min 6 characters" className={inputCls} />
+            </div>
+            <div>
+              <label className={labelCls}>Confirm New Password</label>
+              <input type="password" autoComplete="new-password" value={confirm}
+                onChange={e => setConfirm(e.target.value)} className={inputCls} />
+            </div>
+          </div>
+          {error && <p className="text-red-600 text-xs">{error}</p>}
+          <div className="flex gap-2">
+            <button onClick={submit} disabled={saving || !current || !next || !confirm}
+              className="text-sm bg-brown-btn hover:bg-brown-btn-hover disabled:opacity-50 text-white px-4 py-2 rounded-lg transition-colors font-medium">
+              {saving ? 'Updating…' : 'Update Password'}
+            </button>
+            <button onClick={() => { reset(); setOpen(false) }} disabled={saving}
+              className="text-sm text-brown-muted hover:text-brown-dark px-3 py-2 transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
