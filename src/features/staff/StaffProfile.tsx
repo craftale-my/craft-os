@@ -133,21 +133,23 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
   async function handleReset() {
     if (!staffId) return
-    try {
-      await Promise.all([
-        supabase.from('staff').update({ xp: 0, level: 1, last_level_up_at: null }).eq('id', staffId),
-        supabase.from('mission_completions').delete().eq('staff_id', staffId),
-      ])
-      await refreshAll()
-    } catch { /* silent */ }
+    const [staffRes, compRes] = await Promise.all([
+      supabase.from('staff').update({ xp: 0, level: 1, last_level_up_at: null }).eq('id', staffId),
+      supabase.from('mission_completions').delete().eq('staff_id', staffId),
+    ])
+    if (staffRes.error) throw staffRes.error
+    if (compRes.error) throw compRes.error
+    await refreshAll()
   }
 
   async function handleSetStatus(status: 'active' | 'resigned') {
     if (!staffId) return
-    try {
-      await supabase.from('staff').update({ status }).eq('id', staffId)
-      await refreshAll()
-    } catch { /* silent */ }
+    // Supabase update() resolves with { error } rather than throwing, so we
+    // must check it explicitly and surface it — otherwise a failed update
+    // (e.g. missing column, RLS denial) looks like "nothing happened".
+    const { error } = await supabase.from('staff').update({ status }).eq('id', staffId)
+    if (error) throw error
+    await refreshAll()
   }
 
   // ── Render states ────────────────────────────────────────────────────────────
@@ -1477,15 +1479,27 @@ function ManagerNotesCard({ staff, onSaved }: { staff: Staff; onSaved: () => voi
 function EmploymentStatusCard({ staff, onSetStatus }: { staff: Staff; onSetStatus: (s: 'active' | 'resigned') => Promise<void> }) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
   const resigned = staff.status === 'resigned'
 
   async function apply(next: 'active' | 'resigned') {
-    setBusy(true); await onSetStatus(next); setBusy(false); setConfirming(false)
+    setBusy(true); setError('')
+    try {
+      await onSetStatus(next)
+      setConfirming(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not update status. Please try again.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
     <div className="bg-white rounded-xl shadow-card p-5">
       <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest mb-4">Employment Status</p>
+      {error && (
+        <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3">{error}</p>
+      )}
       {resigned ? (
         <div className="flex items-center justify-between gap-4">
           <div>
@@ -1533,12 +1547,21 @@ function EmploymentStatusCard({ staff, onSetStatus }: { staff: Staff; onSetStatu
   )
 }
 
-function DangerZoneCard({ staff, onReset }: { staff: Staff; onReset: () => void }) {
+function DangerZoneCard({ staff, onReset }: { staff: Staff; onReset: () => Promise<void> }) {
   const [confirming, setConfirming] = useState(false)
   const [resetting, setResetting]   = useState(false)
+  const [error, setError]           = useState('')
 
   async function doReset() {
-    setResetting(true); await onReset(); setResetting(false); setConfirming(false)
+    setResetting(true); setError('')
+    try {
+      await onReset()
+      setConfirming(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not reset progress. Please try again.')
+    } finally {
+      setResetting(false)
+    }
   }
 
   return (
@@ -1562,6 +1585,7 @@ function DangerZoneCard({ staff, onReset }: { staff: Staff; onReset: () => void 
           <p className="text-sm text-brown-dark">
             Are you sure? This will permanently erase <strong>{staff.name}'s</strong> XP, level, and all mission history. This cannot be undone.
           </p>
+          {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
           <div className="flex gap-2">
             <button onClick={doReset} disabled={resetting}
               className="text-xs bg-[#C06242] hover:bg-[#A85030] text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50">
