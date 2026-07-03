@@ -355,6 +355,7 @@ const STATUS_OPTIONS: AttendanceStatus[] = ['present', 'late', 'absent', 'half_d
 function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: string | undefined }) {
   const [date, setDate] = useState(todayStr())
   const [records, setRecords] = useState<Record<string, Attendance>>({})
+  const [breaksByAtt, setBreaksByAtt] = useState<Record<string, AttendanceBreak[]>>({})
   const [filterBranch, setFilterBranch] = useState('')
   const [filterDept, setFilterDept] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
@@ -362,9 +363,19 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
 
   async function load() {
     const { data } = await supabase.from('attendance').select('*').eq('date', date)
+    const rows = (data as Attendance[] | null) ?? []
     const map: Record<string, Attendance> = {}
-    ;(data as Attendance[] | null)?.forEach(r => { map[r.staff_id] = r })
+    rows.forEach(r => { map[r.staff_id] = r })
     setRecords(map)
+
+    const attIds = rows.map(r => r.id)
+    if (attIds.length === 0) { setBreaksByAtt({}); return }
+    const { data: brk } = await supabase.from('attendance_breaks').select('*').in('attendance_id', attIds)
+    const bmap: Record<string, AttendanceBreak[]> = {}
+    ;(brk as AttendanceBreak[] | null)?.forEach(b => {
+      ;(bmap[b.attendance_id] ??= []).push(b)
+    })
+    setBreaksByAtt(bmap)
   }
 
   useEffect(() => { load() }, [date])
@@ -470,16 +481,19 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
                     {rec.clock_out && <span>Out: <span className="font-medium text-brown-medium">{fmtTime(rec.clock_out)}</span></span>}
                   </div>
 
-                  {/* Break */}
-                  {rec.break_minutes != null && (
-                    <span className={`flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
-                      rec.break_late ? 'bg-[#FDF3F0] text-[#9E4A30]' : 'bg-[#FBF0E6] text-[#8B5E2E]'
-                    }`}>
-                      <Coffee size={10} />
-                      Break {rec.break_minutes}m
-                      {rec.break_late ? ` (+${rec.break_overrun_minutes}m ⚠️)` : ' ✓'}
-                    </span>
-                  )}
+                  {/* Breaks (per-break from attendance_breaks) */}
+                  {(breaksByAtt[rec.id] ?? [])
+                    .filter(b => b.clock_in_time != null)
+                    .sort((a, b) => a.break_number - b.break_number)
+                    .map(b => (
+                      <span key={b.id} className={`flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
+                        b.is_overtime ? 'bg-[#FDF3F0] text-[#9E4A30]' : 'bg-[#FBF0E6] text-[#8B5E2E]'
+                      }`}>
+                        <Coffee size={10} />
+                        B{b.break_number} {b.duration_minutes}m
+                        {b.is_overtime ? ` (+${b.overtime_minutes}m ⚠️)` : ' ✓'}
+                      </span>
+                    ))}
 
                   {/* GPS distance */}
                   {distM != null && (
