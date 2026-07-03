@@ -47,8 +47,26 @@ function DeactivatedScreen() {
   )
 }
 
+function AuthSpinner() {
+  return (
+    <div className="min-h-screen bg-cream flex items-center justify-center">
+      <div className="w-8 h-8 rounded-full border-2 border-[#8B6344] border-t-transparent animate-spin" />
+    </div>
+  )
+}
+
 function AppRoutes() {
-  const { user, staff } = useAuth()
+  const { user, staff, loading } = useAuth()
+
+  // Auth is still settling. `user && !staff` covers the post-login window where
+  // the session exists but the staff profile hasn't been fetched yet — without
+  // this guard the app briefly renders routes with no staff and ping-pongs
+  // between /profile and /login (blank screen until you refresh).
+  // A genuinely missing staff row signs the user out (see AuthContext), which
+  // clears `user` and drops through to /login rather than spinning forever.
+  if (loading || (user && !staff)) {
+    return <AuthSpinner />
+  }
 
   // Resigned staff are blocked from using the app entirely (data is retained).
   if (user && staff?.status === 'resigned') {
@@ -57,8 +75,8 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/login" element={user ? <Navigate to="/profile" replace /> : <LoginPage />} />
-      <Route path="/register" element={user ? <Navigate to="/profile" replace /> : <RegisterPage />} />
+      <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+      <Route path="/register" element={user ? <Navigate to="/" replace /> : <RegisterPage />} />
 
       <Route
         path="/onboarding"

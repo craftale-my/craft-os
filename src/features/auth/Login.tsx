@@ -7,7 +7,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const { signIn, staff } = useAuth()
+  const { signIn } = useAuth()
   const navigate = useNavigate()
 
   async function handleSubmit(e: FormEvent) {
@@ -20,8 +20,10 @@ export function LoginPage() {
       setError('Invalid email or password.')
       return
     }
-    const isManager = staff?.rank === 'manager' || staff?.rank === 'supervisor'
-    navigate(isManager ? '/dashboard' : '/profile', { replace: true })
+    // Go to the index route, which redirects by rank once the staff profile has
+    // loaded. Reading staff?.rank here is unreliable — the profile fetch kicked
+    // off by the auth state change hasn't resolved yet.
+    navigate('/', { replace: true })
   }
 
   return (

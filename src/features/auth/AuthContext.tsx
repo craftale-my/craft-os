@@ -22,11 +22,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   async function fetchStaff(userId: string) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('staff')
       .select('*')
       .eq('id', userId)
       .single()
+
+    // If the auth session is valid but the staff row no longer exists (e.g. it
+    // was deleted while the user was logged in), signing them out prevents an
+    // infinite /profile ↔ /login redirect loop ("Maximum update depth exceeded"):
+    // StaffProfile redirects to /login on a missing profile, while /login
+    // redirects an authenticated user back to /profile. PGRST116 = "no rows
+    // returned"; we intentionally do NOT sign out on transient/network errors.
+    if (!data && error?.code === 'PGRST116') {
+      setStaff(null)
+      await supabase.auth.signOut()
+      return
+    }
+
     setStaff(data ?? null)
   }
 
