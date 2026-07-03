@@ -600,3 +600,22 @@ export function calcAnnualEntitlement(joinedAt: string | null): number {
   if (years >= 2) return 12
   return 8
 }
+
+export interface BreakOvertimeResult {
+  durationMinutes: number
+  overtimeMinutes: number
+  isOvertime: boolean
+}
+
+/** Compute a break's actual length and overtime against the allowed minutes. */
+export function computeBreakOvertime(
+  clockOutIso: string,
+  clockInIso: string,
+  allowedMinutes: number,
+): BreakOvertimeResult {
+  const durationMinutes = Math.round(
+    (new Date(clockInIso).getTime() - new Date(clockOutIso).getTime()) / 60000,
+  )
+  const overtimeMinutes = Math.max(0, durationMinutes - allowedMinutes)
+  return { durationMinutes, overtimeMinutes, isOvertime: overtimeMinutes > 0 }
+}
