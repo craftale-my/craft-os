@@ -801,7 +801,8 @@ function ShiftTypesTab() {
         name: editing.name,
         start_time: editing.start_time,
         end_time: editing.end_time,
-        break_minutes: editing.break_minutes ?? 0,
+        break1_duration_minutes: editing.break1_duration_minutes ?? 0,
+        break2_duration_minutes: editing.break2_duration_minutes ?? 0,
         department: editing.department,
         is_active: editing.is_active,
       }).eq('id', editing.id)
@@ -812,7 +813,8 @@ function ShiftTypesTab() {
         name: editing.name ?? 'New Shift',
         start_time: editing.start_time ?? '09:00',
         end_time: editing.end_time ?? '17:00',
-        break_minutes: editing.break_minutes ?? 0,
+        break1_duration_minutes: editing.break1_duration_minutes ?? 0,
+        break2_duration_minutes: editing.break2_duration_minutes ?? 0,
         color: DEPT_SHIFT_COLORS[editing.department ?? 'barista'] ?? '#8B6344',
       })
       show('Shift type added')
@@ -845,7 +847,7 @@ function ShiftTypesTab() {
           <p className="text-xs text-brown-faint mt-0.5">Define shifts for each department.</p>
         </div>
         <button
-          onClick={() => setEditing({ department: 'barista', name: '', start_time: '09:00', end_time: '17:00', break_minutes: 60, is_active: true })}
+          onClick={() => setEditing({ department: 'barista', name: '', start_time: '09:00', end_time: '17:00', break1_duration_minutes: 60, break2_duration_minutes: 0, is_active: true })}
           className="px-3 py-1.5 rounded-lg bg-[#C4813A] text-white text-xs font-semibold hover:bg-[#A86C2C] transition-colors"
         >
           + Add Shift
@@ -869,7 +871,8 @@ function ShiftTypesTab() {
                     </p>
                     <p className="text-xs text-brown-faint">
                       {st.start_time.slice(0,5)} – {st.end_time.slice(0,5)}
-                      {st.break_minutes > 0 && ` · Break ${st.break_minutes}min`}
+                      {st.break1_duration_minutes > 0 && ` · Break 1 ${st.break1_duration_minutes}min`}
+                      {st.break2_duration_minutes > 0 && ` · Break 2 ${st.break2_duration_minutes}min`}
                     </p>
                   </div>
                   <button
@@ -931,18 +934,32 @@ function ShiftTypesTab() {
                   <input type="time" className={inputCls2} value={editing.end_time?.slice(0,5) ?? ''} onChange={e => setEditing(p => ({ ...p, end_time: e.target.value }))} />
                 </div>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-brown-medium mb-1">Break Duration (minutes)</label>
-                <input
-                  type="number"
-                  min={0}
-                  step={5}
-                  className={inputCls2}
-                  value={editing.break_minutes ?? 60}
-                  onChange={e => setEditing(p => ({ ...p, break_minutes: Math.max(0, Number(e.target.value)) }))}
-                  placeholder="e.g. 60"
-                />
-                <p className="text-xs text-brown-faint mt-1">How long staff may rest per shift. Used for the break countdown when clocking out for a break.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-brown-medium mb-1">Break 1 Duration (min)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={5}
+                    className={inputCls2}
+                    value={editing.break1_duration_minutes ?? 0}
+                    onChange={e => setEditing(p => ({ ...p, break1_duration_minutes: Math.max(0, Number(e.target.value)) }))}
+                    placeholder="e.g. 60"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-brown-medium mb-1">Break 2 Duration (min)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    step={5}
+                    className={inputCls2}
+                    value={editing.break2_duration_minutes ?? 0}
+                    onChange={e => setEditing(p => ({ ...p, break2_duration_minutes: Math.max(0, Number(e.target.value)) }))}
+                    placeholder="e.g. 60"
+                  />
+                </div>
+                <p className="text-xs text-brown-faint mt-1 col-span-2">Allowed rest per break. 0 = no break. Used for the break countdown when clocking out.</p>
               </div>
               <button
                 onClick={save}
