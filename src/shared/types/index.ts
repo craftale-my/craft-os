@@ -563,9 +563,23 @@ export interface ShiftType {
   end_time: string
   break_start: string | null   // legacy — no longer used, kept for back-compat
   break_end: string | null     // legacy — no longer used, kept for back-compat
-  break_minutes: number        // allowed break duration per shift, in minutes
+  break_minutes: number        // legacy single-break duration — superseded by break1/break2
+  break1_duration_minutes: number // allowed duration of break 1 (0 = no break 1)
+  break2_duration_minutes: number // allowed duration of break 2 (0 = no break 2)
   color: string
   is_active: boolean
+  created_at: string
+}
+
+export interface AttendanceBreak {
+  id: string
+  attendance_id: string
+  break_number: 1 | 2
+  clock_out_time: string | null
+  clock_in_time: string | null
+  duration_minutes: number | null
+  overtime_minutes: number
+  is_overtime: boolean
   created_at: string
 }
 
