@@ -490,7 +490,7 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
                         b.is_overtime ? 'bg-[#FDF3F0] text-[#9E4A30]' : 'bg-[#FBF0E6] text-[#8B5E2E]'
                       }`}>
                         <Coffee size={10} />
-                        B{b.break_number} {b.duration_minutes}m
+                        B{b.break_number} {b.duration_minutes ?? 0}m
                         {b.is_overtime ? ` (+${b.overtime_minutes}m ⚠️)` : ' ✓'}
                       </span>
                     ))}
@@ -934,7 +934,7 @@ function MyAttendance({ staff }: { staff: Staff }) {
                     <p className="text-xs text-brown-faint uppercase tracking-widest font-semibold flex items-center gap-1.5">
                       <Coffee size={13} /> Break {n}
                     </p>
-                    <span className="text-[11px] text-brown-faint">{allowed} min allowed</span>
+                    {!done && <span className="text-[11px] text-brown-faint">{allowed} min allowed</span>}
                   </div>
 
                   {locked && (
@@ -957,7 +957,7 @@ function MyAttendance({ staff }: { staff: Staff }) {
                       row?.is_overtime ? 'bg-[#FDF3F0] text-[#9E4A30]' : 'bg-[#EBF5EE] text-[#2E5E3A]'
                     }`}>
                       {row?.is_overtime ? <AlertTriangle size={14} /> : <CheckCircle size={14} />}
-                      Break {n} taken: {row?.duration_minutes} min
+                      Break {n} taken: {row?.duration_minutes ?? 0} min
                       {row?.is_overtime ? ` · ${row?.overtime_minutes} min over limit` : ' · on time'}
                     </div>
                   )}
