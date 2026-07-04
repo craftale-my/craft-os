@@ -563,9 +563,23 @@ export interface ShiftType {
   end_time: string
   break_start: string | null   // legacy — no longer used, kept for back-compat
   break_end: string | null     // legacy — no longer used, kept for back-compat
-  break_minutes: number        // allowed break duration per shift, in minutes
+  break_minutes: number        // legacy single-break duration — superseded by break1/break2
+  break1_duration_minutes: number // allowed duration of break 1 (0 = no break 1)
+  break2_duration_minutes: number // allowed duration of break 2 (0 = no break 2)
   color: string
   is_active: boolean
+  created_at: string
+}
+
+export interface AttendanceBreak {
+  id: string
+  attendance_id: string
+  break_number: 1 | 2
+  clock_out_time: string | null
+  clock_in_time: string | null
+  duration_minutes: number | null
+  overtime_minutes: number
+  is_overtime: boolean
   created_at: string
 }
 
@@ -599,4 +613,23 @@ export function calcAnnualEntitlement(joinedAt: string | null): number {
   if (years >= 5) return 16
   if (years >= 2) return 12
   return 8
+}
+
+export interface BreakOvertimeResult {
+  durationMinutes: number
+  overtimeMinutes: number
+  isOvertime: boolean
+}
+
+/** Compute a break's actual length and overtime against the allowed minutes. */
+export function computeBreakOvertime(
+  clockOutIso: string,
+  clockInIso: string,
+  allowedMinutes: number,
+): BreakOvertimeResult {
+  const durationMinutes = Math.round(
+    (new Date(clockInIso).getTime() - new Date(clockOutIso).getTime()) / 60000,
+  )
+  const overtimeMinutes = Math.max(0, durationMinutes - allowedMinutes)
+  return { durationMinutes, overtimeMinutes, isOvertime: overtimeMinutes > 0 }
 }

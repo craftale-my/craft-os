@@ -41,7 +41,7 @@ function fmtTime(t: string): string {
 function shiftHours(st: ShiftType): number {
   const [sh, sm] = st.start_time.split(':').map(Number)
   const [eh, em] = st.end_time.split(':').map(Number)
-  const breakMins = st.break_minutes ?? 0
+  const breakMins = (st.break1_duration_minutes ?? 0) + (st.break2_duration_minutes ?? 0)
   return ((eh * 60 + em) - (sh * 60 + sm) - breakMins) / 60
 }
 
@@ -131,7 +131,8 @@ function AssignModal({
                         </p>
                         <p className="text-xs text-brown-faint">
                           {fmtTime(st.start_time)} – {fmtTime(st.end_time)}
-                          {st.break_minutes > 0 && ` · Break ${st.break_minutes}min`}
+                          {st.break1_duration_minutes > 0 && ` · B1 ${st.break1_duration_minutes}min`}
+                          {st.break2_duration_minutes > 0 && ` · B2 ${st.break2_duration_minutes}min`}
                         </p>
                       </div>
                       {isSelected && <span className="text-xs font-bold" style={{ color }}>✓</span>}
@@ -377,7 +378,8 @@ function DayView({
                 </p>
                 <p className="text-xs text-brown-faint mt-0.5">
                   {fmtTime(st.start_time)} – {fmtTime(st.end_time)}
-                  {st.break_start && ` · Break ${fmtTime(st.break_start)}–${fmtTime(st.break_end!)}`}
+                  {st.break1_duration_minutes > 0 && ` · B1 ${st.break1_duration_minutes}min`}
+                  {st.break2_duration_minutes > 0 && ` · B2 ${st.break2_duration_minutes}min`}
                   {' · '}{shiftHours(st).toFixed(1)}h
                 </p>
               </div>

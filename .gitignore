@@ -34,3 +34,6 @@ backups/
 
 # Local Claude settings (machine-specific; may contain secrets)
 .claude/settings.local.json
+
+# Subagent-driven-development scratch state
+.superpowers/

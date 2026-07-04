@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
-import type { Staff, Attendance, AttendanceStatus } from '../../shared/types'
-import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES } from '../../shared/types'
+import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType } from '../../shared/types'
+import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { Avatar } from '../../shared/components/Avatar'
 import { Camera, MapPin, CheckCircle, X, AlertTriangle, RefreshCw, ZoomIn, Coffee } from 'lucide-react'
@@ -355,6 +355,7 @@ const STATUS_OPTIONS: AttendanceStatus[] = ['present', 'late', 'absent', 'half_d
 function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: string | undefined }) {
   const [date, setDate] = useState(todayStr())
   const [records, setRecords] = useState<Record<string, Attendance>>({})
+  const [breaksByAtt, setBreaksByAtt] = useState<Record<string, AttendanceBreak[]>>({})
   const [filterBranch, setFilterBranch] = useState('')
   const [filterDept, setFilterDept] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
@@ -362,9 +363,19 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
 
   async function load() {
     const { data } = await supabase.from('attendance').select('*').eq('date', date)
+    const rows = (data as Attendance[] | null) ?? []
     const map: Record<string, Attendance> = {}
-    ;(data as Attendance[] | null)?.forEach(r => { map[r.staff_id] = r })
+    rows.forEach(r => { map[r.staff_id] = r })
     setRecords(map)
+
+    const attIds = rows.map(r => r.id)
+    if (attIds.length === 0) { setBreaksByAtt({}); return }
+    const { data: brk } = await supabase.from('attendance_breaks').select('*').in('attendance_id', attIds)
+    const bmap: Record<string, AttendanceBreak[]> = {}
+    ;(brk as AttendanceBreak[] | null)?.forEach(b => {
+      ;(bmap[b.attendance_id] ??= []).push(b)
+    })
+    setBreaksByAtt(bmap)
   }
 
   useEffect(() => { load() }, [date])
@@ -470,16 +481,19 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
                     {rec.clock_out && <span>Out: <span className="font-medium text-brown-medium">{fmtTime(rec.clock_out)}</span></span>}
                   </div>
 
-                  {/* Break */}
-                  {rec.break_minutes != null && (
-                    <span className={`flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
-                      rec.break_late ? 'bg-[#FDF3F0] text-[#9E4A30]' : 'bg-[#FBF0E6] text-[#8B5E2E]'
-                    }`}>
-                      <Coffee size={10} />
-                      Break {rec.break_minutes}m
-                      {rec.break_late ? ` (+${rec.break_overrun_minutes}m ⚠️)` : ' ✓'}
-                    </span>
-                  )}
+                  {/* Breaks (per-break from attendance_breaks) */}
+                  {(breaksByAtt[rec.id] ?? [])
+                    .filter(b => b.clock_in_time != null)
+                    .sort((a, b) => a.break_number - b.break_number)
+                    .map(b => (
+                      <span key={b.id} className={`flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
+                        b.is_overtime ? 'bg-[#FDF3F0] text-[#9E4A30]' : 'bg-[#FBF0E6] text-[#8B5E2E]'
+                      }`}>
+                        <Coffee size={10} />
+                        B{b.break_number} {b.duration_minutes ?? 0}m
+                        {b.is_overtime ? ` (+${b.overtime_minutes}m ⚠️)` : ' ✓'}
+                      </span>
+                    ))}
 
                   {/* GPS distance */}
                   {distM != null && (
@@ -634,7 +648,9 @@ function MyAttendance({ staff }: { staff: Staff }) {
   const [clockModal, setClockModal] = useState<'in' | 'out' | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
   const [viewPhoto, setViewPhoto] = useState<string | null>(null)
-  const [breakAllowed, setBreakAllowed] = useState(DEFAULT_BREAK_MINUTES)
+  const [break1Allowed, setBreak1Allowed] = useState(0)
+  const [break2Allowed, setBreak2Allowed] = useState(0)
+  const [breaks, setBreaks] = useState<AttendanceBreak[]>([])
   const [breakBusy, setBreakBusy] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
 
@@ -652,68 +668,93 @@ function MyAttendance({ staff }: { staff: Staff }) {
     setToday(t ?? null)
   }
 
-  // Determine how many break minutes are allowed today: from today's scheduled
-  // shift if any, otherwise the company default rule, otherwise the hard default.
+  // Determine today's break allowances from the scheduled shift (break 1 & 2).
+  // With no shift, fall back to the company default rule for break 1 only.
   async function loadBreakAllowance() {
     const { data: shiftRow } = await supabase
       .from('scheduled_shifts')
-      .select('shift_type:shift_types(break_minutes)')
+      .select('shift_type:shift_types(break1_duration_minutes,break2_duration_minutes)')
       .eq('staff_id', staff.id)
       .eq('date', todayStr())
       .maybeSingle()
-    const shiftBreak = (shiftRow as { shift_type?: { break_minutes?: number } } | null)?.shift_type?.break_minutes
-    if (shiftBreak != null) { setBreakAllowed(shiftBreak); return }
-
+    const st = (shiftRow as { shift_type?: Pick<ShiftType, 'break1_duration_minutes' | 'break2_duration_minutes'> } | null)?.shift_type
+    if (st) {
+      setBreak1Allowed(st.break1_duration_minutes ?? 0)
+      setBreak2Allowed(st.break2_duration_minutes ?? 0)
+      return
+    }
     const { data: ruleRow } = await supabase
       .from('system_rules')
       .select('value')
       .eq('key', 'default_break_minutes')
       .maybeSingle()
     const ruleVal = ruleRow ? parseInt((ruleRow as { value: string }).value) : NaN
-    setBreakAllowed(Number.isFinite(ruleVal) ? ruleVal : DEFAULT_BREAK_MINUTES)
+    setBreak1Allowed(Number.isFinite(ruleVal) ? ruleVal : DEFAULT_BREAK_MINUTES)
+    setBreak2Allowed(0)
+  }
+
+  // Load today's break rows (may be empty, or hold break 1 and/or break 2).
+  async function loadBreaks(attendanceId: string | undefined) {
+    if (!attendanceId) { setBreaks([]); return }
+    const { data } = await supabase
+      .from('attendance_breaks')
+      .select('*')
+      .eq('attendance_id', attendanceId)
+      .order('break_number')
+    setBreaks((data as AttendanceBreak[]) ?? [])
   }
 
   useEffect(() => { load(); loadBreakAllowance() }, [])
+  useEffect(() => { loadBreaks(today?.id) }, [today?.id])
+
+  // Break rows by number, and which one is currently in progress.
+  const break1 = breaks.find(b => b.break_number === 1) ?? null
+  const break2 = breaks.find(b => b.break_number === 2) ?? null
+  const activeBreak = breaks.find(b => b.clock_out_time && !b.clock_in_time) ?? null
+  const onBreak = !!activeBreak
 
   // Tick every second while on break so the countdown stays live.
-  const onBreak = !!today?.break_start && !today?.break_end
   useEffect(() => {
     if (!onBreak) return
     const id = setInterval(() => setNowMs(Date.now()), 1000)
     return () => clearInterval(id)
   }, [onBreak])
 
-  async function handleBreakOut() {
+  async function startBreak(breakNumber: 1 | 2, allowed: number) {
     if (!today) return
     setBreakBusy(true)
     const nowIso = new Date().toISOString()
-    await supabase.from('attendance').update({ break_start: nowIso }).eq('id', today.id)
+    await supabase.from('attendance_breaks').upsert({
+      attendance_id: today.id,
+      break_number: breakNumber,
+      clock_out_time: nowIso,
+    }, { onConflict: 'attendance_id,break_number' })
     setBreakBusy(false)
     setNowMs(Date.now())
-    setSuccessMsg(`Break started — ${breakAllowed} min allowed ☕`)
-    load()
+    setSuccessMsg(`Break ${breakNumber} started — ${allowed} min allowed ☕`)
+    loadBreaks(today.id)
     setTimeout(() => setSuccessMsg(null), 5000)
   }
 
-  async function handleBreakIn() {
-    if (!today?.break_start) return
+  async function endBreak(row: AttendanceBreak, allowed: number) {
+    if (!row.clock_out_time) return
     setBreakBusy(true)
-    const end = new Date()
-    const takenMin = Math.round((end.getTime() - new Date(today.break_start).getTime()) / 60000)
-    const overrun = Math.max(0, takenMin - breakAllowed)
-    await supabase.from('attendance').update({
-      break_end: end.toISOString(),
-      break_minutes: takenMin,
-      break_late: overrun > 0,
-      break_overrun_minutes: overrun,
-    }).eq('id', today.id)
+    const endIso = new Date().toISOString()
+    const { durationMinutes, overtimeMinutes, isOvertime } =
+      computeBreakOvertime(row.clock_out_time, endIso, allowed)
+    await supabase.from('attendance_breaks').update({
+      clock_in_time: endIso,
+      duration_minutes: durationMinutes,
+      overtime_minutes: overtimeMinutes,
+      is_overtime: isOvertime,
+    }).eq('id', row.id)
     setBreakBusy(false)
     setSuccessMsg(
-      overrun > 0
-        ? `Back from break — ${takenMin} min (${overrun} min over) ⚠️`
-        : `Back from break — ${takenMin} min ✓`
+      isOvertime
+        ? `Back from break ${row.break_number} — ${durationMinutes} min (${overtimeMinutes} min over) ⚠️`
+        : `Back from break ${row.break_number} — ${durationMinutes} min ✓`
     )
-    load()
+    loadBreaks(row.attendance_id)
     setTimeout(() => setSuccessMsg(null), 6000)
   }
 
@@ -754,11 +795,17 @@ function MyAttendance({ staff }: { staff: Staff }) {
   const canClockIn = !today?.clock_in
   const canClockOut = !!today?.clock_in && !today?.clock_out
 
-  // Break state
-  const breakDone = !!today?.break_end
-  const canBreakOut = !!today?.clock_in && !today?.clock_out && !today?.break_start
-  const breakDeadlineMs = today?.break_start
-    ? new Date(today.break_start).getTime() + breakAllowed * 60000
+  // Which breaks are available given clock state + shift allowances.
+  const clockedInNotOut = !!today?.clock_in && !today?.clock_out
+  const break1Complete = !!break1?.clock_in_time
+  // Break section shows at all only if this shift has any break, or a row exists.
+  const hasAnyBreak = break1Allowed > 0 || break2Allowed > 0 || breaks.length > 0
+  // Break 2 only unlocks once break 1 is complete AND the shift defines a break 2.
+  const break2Unlocked = break2Allowed > 0 && break1Complete
+
+  const allowedFor = (n: 1 | 2) => (n === 1 ? break1Allowed : break2Allowed)
+  const breakDeadlineMs = activeBreak?.clock_out_time
+    ? new Date(activeBreak.clock_out_time).getTime() + allowedFor(activeBreak.break_number) * 60000
     : 0
   const breakRemainingMs = breakDeadlineMs - nowMs
   const breakOver = onBreak && breakRemainingMs < 0
@@ -868,59 +915,76 @@ function MyAttendance({ staff }: { staff: Staff }) {
         </div>
 
         {/* ── Break section (separate from attendance clock) ── */}
-        {today?.clock_in && (
-          <div className="border-t border-[#F0E8DC] px-5 py-4">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-xs text-brown-faint uppercase tracking-widest font-semibold flex items-center gap-1.5">
-                <Coffee size={13} /> Break
-              </p>
-              <span className="text-[11px] text-brown-faint">{breakAllowed} min allowed</span>
-            </div>
+        {today?.clock_in && hasAnyBreak && (
+          <div className="border-t border-[#F0E8DC] px-5 py-4 space-y-4">
+            {([1, 2] as const).map(n => {
+              const allowed = allowedFor(n)
+              const row = n === 1 ? break1 : break2
+              // Skip break 2 entirely if the shift has no break 2 and no row exists.
+              if (n === 2 && break2Allowed === 0 && !break2) return null
+              // Break 2 is locked until break 1 completes.
+              const locked = n === 2 && !break2Unlocked && !break2
+              const inProgress = !!row?.clock_out_time && !row?.clock_in_time
+              const done = !!row?.clock_in_time
+              const canStart = clockedInNotOut && !row && !onBreak && (n === 1 ? break1Allowed > 0 : break2Unlocked)
 
-            {/* Live countdown while on break */}
-            {onBreak && (
-              <div className={`mb-3 rounded-xl px-4 py-3 text-center ${breakOver ? 'bg-[#FDF3F0]' : 'bg-[#FBF0E6]'}`}>
-                <p className={`text-2xl font-bold tabular-nums ${breakOver ? 'text-[#9E4A30]' : 'text-[#C4813A]'}`}>
-                  {fmtCountdown(breakRemainingMs)}
-                </p>
-                <p className={`text-xs mt-0.5 ${breakOver ? 'text-[#9E4A30]' : 'text-brown-faint'}`}>
-                  {breakOver ? 'Over allowed break time — please clock back in' : 'Time remaining'}
-                </p>
-              </div>
-            )}
+              return (
+                <div key={n}>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs text-brown-faint uppercase tracking-widest font-semibold flex items-center gap-1.5">
+                      <Coffee size={13} /> Break {n}
+                    </p>
+                    {!done && <span className="text-[11px] text-brown-faint">{allowed} min allowed</span>}
+                  </div>
 
-            {/* Completed break summary */}
-            {breakDone && (
-              <div className={`mb-3 flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-xl ${
-                today?.break_late ? 'bg-[#FDF3F0] text-[#9E4A30]' : 'bg-[#EBF5EE] text-[#2E5E3A]'
-              }`}>
-                {today?.break_late ? <AlertTriangle size={14} /> : <CheckCircle size={14} />}
-                Break taken: {today?.break_minutes} min
-                {today?.break_late ? ` · ${today?.break_overrun_minutes} min over limit` : ' · on time'}
-              </div>
-            )}
+                  {locked && (
+                    <p className="text-xs text-brown-faint italic px-1">Available after Break 1.</p>
+                  )}
 
-            {/* Break buttons */}
-            {!breakDone && (
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={handleBreakOut}
-                  disabled={!canBreakOut || breakBusy}
-                  className="py-3 flex flex-col items-center gap-0.5 rounded-xl border border-[#C4813A40] text-sm font-bold text-[#C4813A] bg-[#FBF0E6] hover:bg-[#F6E6D4] disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
-                >
-                  <span className="text-lg">☕</span>
-                  Break Clock-Out
-                </button>
-                <button
-                  onClick={handleBreakIn}
-                  disabled={!onBreak || breakBusy}
-                  className="py-3 flex flex-col items-center gap-0.5 rounded-xl border border-[#3D7A5040] text-sm font-bold text-[#3D7A50] bg-[#EBF5EE] hover:bg-[#DCEFE2] disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
-                >
-                  <span className="text-lg">🔙</span>
-                  Break Clock-In
-                </button>
-              </div>
-            )}
+                  {inProgress && (
+                    <div className={`mb-2 rounded-xl px-4 py-3 text-center ${breakOver ? 'bg-[#FDF3F0]' : 'bg-[#FBF0E6]'}`}>
+                      <p className={`text-2xl font-bold tabular-nums ${breakOver ? 'text-[#9E4A30]' : 'text-[#C4813A]'}`}>
+                        {fmtCountdown(breakRemainingMs)}
+                      </p>
+                      <p className={`text-xs mt-0.5 ${breakOver ? 'text-[#9E4A30]' : 'text-brown-faint'}`}>
+                        {breakOver ? 'Over allowed break time — please clock back in' : 'Time remaining'}
+                      </p>
+                    </div>
+                  )}
+
+                  {done && (
+                    <div className={`flex items-center gap-2 text-xs font-medium px-3 py-2 rounded-xl ${
+                      row?.is_overtime ? 'bg-[#FDF3F0] text-[#9E4A30]' : 'bg-[#EBF5EE] text-[#2E5E3A]'
+                    }`}>
+                      {row?.is_overtime ? <AlertTriangle size={14} /> : <CheckCircle size={14} />}
+                      Break {n} taken: {row?.duration_minutes ?? 0} min
+                      {row?.is_overtime ? ` · ${row?.overtime_minutes} min over limit` : ' · on time'}
+                    </div>
+                  )}
+
+                  {!done && !locked && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => startBreak(n, allowed)}
+                        disabled={!canStart || breakBusy}
+                        className="py-3 flex flex-col items-center gap-0.5 rounded-xl border border-[#C4813A40] text-sm font-bold text-[#C4813A] bg-[#FBF0E6] hover:bg-[#F6E6D4] disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <span className="text-lg">☕</span>
+                        Break {n} Clock-Out
+                      </button>
+                      <button
+                        onClick={() => row && endBreak(row, allowed)}
+                        disabled={!inProgress || breakBusy}
+                        className="py-3 flex flex-col items-center gap-0.5 rounded-xl border border-[#3D7A5040] text-sm font-bold text-[#3D7A50] bg-[#EBF5EE] hover:bg-[#DCEFE2] disabled:opacity-35 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <span className="text-lg">🔙</span>
+                        Break {n} Clock-In
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

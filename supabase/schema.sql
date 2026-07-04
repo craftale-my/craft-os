@@ -767,3 +767,64 @@ create policy "staff_avatars_update" on storage.objects for update to authentica
     bucket_id = 'staff-avatars'
     and ((storage.foldername(name))[1] = auth.uid()::text or current_rank() = 'manager')
   );
+
+-- =============================================
+-- Phase 4 migration: Two-break attendance
+-- Idempotent — safe to run on the existing database via the Supabase SQL editor.
+-- =============================================
+
+-- 1) Two independent break durations per shift ------------------------------
+-- 0 means that break does not exist for the shift. The legacy single
+-- break_minutes column is kept but no longer written by the app.
+alter table shift_types add column if not exists break1_duration_minutes int not null default 0;
+alter table shift_types add column if not exists break2_duration_minutes int not null default 0;
+
+-- One-time migration of the old single break into break 1 (only where break 1
+-- is still the default 0 and a legacy value exists).
+update shift_types set break1_duration_minutes = break_minutes
+  where break1_duration_minutes = 0 and coalesce(break_minutes, 0) > 0;
+
+-- 2) Per-break clock records -------------------------------------------------
+create table if not exists attendance_breaks (
+  id uuid primary key default gen_random_uuid(),
+  attendance_id uuid not null references attendance(id) on delete cascade,
+  break_number int not null check (break_number in (1, 2)),
+  clock_out_time timestamptz,          -- staff started the break
+  clock_in_time  timestamptz,          -- staff ended the break
+  duration_minutes int,                -- actual minutes taken
+  overtime_minutes int not null default 0,
+  is_overtime boolean not null default false,
+  created_at timestamptz not null default now(),
+  unique (attendance_id, break_number)
+);
+
+alter table attendance_breaks enable row level security;
+
+-- Staff can read their own break rows; supervisors/managers read all.
+drop policy if exists "attendance_breaks_select" on attendance_breaks;
+create policy "attendance_breaks_select" on attendance_breaks for select to authenticated
+  using (
+    exists (
+      select 1 from attendance a
+      where a.id = attendance_id
+        and (a.staff_id = auth.uid() or current_rank() in ('supervisor','manager'))
+    )
+  );
+
+-- Staff can insert/update break rows for their own attendance day.
+drop policy if exists "attendance_breaks_self_insert" on attendance_breaks;
+create policy "attendance_breaks_self_insert" on attendance_breaks for insert to authenticated
+  with check (
+    exists (select 1 from attendance a where a.id = attendance_id and a.staff_id = auth.uid())
+  );
+
+drop policy if exists "attendance_breaks_self_update" on attendance_breaks;
+create policy "attendance_breaks_self_update" on attendance_breaks for update to authenticated
+  using (
+    exists (select 1 from attendance a where a.id = attendance_id and a.staff_id = auth.uid())
+  );
+
+-- Supervisors/managers may manage all break rows.
+drop policy if exists "attendance_breaks_manage" on attendance_breaks;
+create policy "attendance_breaks_manage" on attendance_breaks for all to authenticated
+  using (current_rank() in ('supervisor','manager'));
