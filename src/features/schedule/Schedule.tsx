@@ -378,7 +378,8 @@ function DayView({
                 </p>
                 <p className="text-xs text-brown-faint mt-0.5">
                   {fmtTime(st.start_time)} – {fmtTime(st.end_time)}
-                  {st.break_start && ` · Break ${fmtTime(st.break_start)}–${fmtTime(st.break_end!)}`}
+                  {st.break1_duration_minutes > 0 && ` · B1 ${st.break1_duration_minutes}min`}
+                  {st.break2_duration_minutes > 0 && ` · B2 ${st.break2_duration_minutes}min`}
                   {' · '}{shiftHours(st).toFixed(1)}h
                 </p>
               </div>
