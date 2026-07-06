@@ -119,6 +119,9 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
       joined_at: new Date().toISOString().split('T')[0],
     })
     if (profileErr) {
+      // Roll back the just-created auth user so a failed staff insert doesn't
+      // leave an orphan that blocks re-creating this email later.
+      await supabaseAdmin.auth.admin.deleteUser(authData.user.id)
       setError(profileErr.message)
       setSaving(false)
       return
@@ -228,19 +231,39 @@ function ApproveRegModal({
     setSaving(true)
     setError('')
 
+    // 1. Create the auth user — or recover one left behind by a previously
+    //    interrupted approval, so a half-finished attempt no longer dead-ends
+    //    every retry with "a user with this email has already been registered".
+    let userId: string
+    let createdNow = false
     const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
       email: request.email,
       password,
       email_confirm: true,
     })
-    if (createErr || !created.user) {
+    if (created?.user) {
+      userId = created.user.id
+      createdNow = true
+    } else if (createErr && /already/i.test(createErr.message)) {
+      const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 })
+      const existing = list?.users.find(u => u.email?.toLowerCase() === request.email.toLowerCase())
+      if (!existing) {
+        setError(createErr.message)
+        setSaving(false)
+        return
+      }
+      userId = existing.id
+      // Reset the password so the temp password shown to the manager is valid.
+      await supabaseAdmin.auth.admin.updateUserById(userId, { password, email_confirm: true })
+    } else {
       setError(createErr?.message ?? 'Failed to create user')
       setSaving(false)
       return
     }
 
-    const { error: profileErr } = await supabaseAdmin.from('staff').insert({
-      id: created.user.id,
+    // 2. Create the staff row (idempotent on id).
+    const { error: profileErr } = await supabaseAdmin.from('staff').upsert({
+      id: userId,
       name: request.full_name,
       email: request.email,
       rank: 'trainee',
@@ -250,8 +273,11 @@ function ApproveRegModal({
       contact_number: request.phone,
       onboarding_completed: false,
       joined_at: new Date().toISOString().split('T')[0],
-    })
+    }, { onConflict: 'id' })
     if (profileErr) {
+      // Roll back a just-created auth user so it can't become an orphan that
+      // blocks every future approval of this email.
+      if (createdNow) await supabaseAdmin.auth.admin.deleteUser(userId)
       setError(profileErr.message)
       setSaving(false)
       return
