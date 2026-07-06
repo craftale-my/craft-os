@@ -5,10 +5,12 @@ import { supabaseAdmin } from '../../shared/lib/supabase-admin'
 import type { Staff, MissionCompletion, MonthlyReview, ProbationReview } from '../../shared/types'
 import {
   RANK_LABELS, RANK_COLORS,
-  DEPT_LABELS, DEPT_STORE, BRANCHES, DEPARTMENTS,
+  DEPT_LABELS, DEPT_STORE, BRANCHES,
   calcFinalScore, getScoreConfig, REVIEW_CATEGORIES, MONTHS_FULL,
   getProbationDay,
 } from '../../shared/types'
+import { useLookups } from '../../shared/lib/lookups'
+import { useCan } from '../../shared/lib/permissions'
 import { StarRating } from '../../shared/components/StarRating'
 
 const CURRENT_MONTH = new Date().getMonth() + 1
@@ -80,6 +82,7 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const { activeDepartments } = useLookups()
 
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }))
@@ -114,7 +117,7 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
       email: form.email.trim(),
       rank: form.rank,
       branch: form.branch || null,
-      department: form.department ? (DEPT_STORE[form.department] ?? null) : null,
+      department: form.department || null,
       onboarding_completed: form.rank === 'manager',
       joined_at: new Date().toISOString().split('T')[0],
     })
@@ -177,7 +180,7 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
             <label className={labelCls}>Department</label>
             <select className={inputCls} value={form.department} onChange={set('department')}>
               <option value="">Select...</option>
-              {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+              {activeDepartments.map(d => <option key={d.slug} value={d.slug}>{d.name}</option>)}
             </select>
           </div>
           <div className="flex gap-3 pt-1">
@@ -268,7 +271,9 @@ function ApproveRegModal({
       email: request.email,
       rank: 'trainee',
       branch: request.branch,
-      department: request.department ? (DEPT_STORE[request.department] ?? null) : null,
+      // request.department is a department slug for new requests; DEPT_STORE
+      // converts any legacy display-string values from older requests.
+      department: request.department ? (DEPT_STORE[request.department] ?? request.department) : null,
       employment_type: request.employment_type,
       contact_number: request.phone,
       onboarding_completed: false,
@@ -741,6 +746,8 @@ function SupervisorReviewCard({
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const { deptName } = useLookups()
+  const { ownBranchOnly } = useCan()
   const [currentStaff, setCurrentStaff] = useState<Staff | null>(null)
   const [allStaff, setAllStaff] = useState<Staff[]>([])
   const [completions, setCompletions] = useState<MissionCompletion[]>([])
@@ -818,8 +825,12 @@ export default function Dashboard() {
       .then(({ data }) => { if (data) setReviews(data as MonthlyReview[]) })
   }, [reviewRefresh])
 
+  // Supervisors (no all_branches capability) only see their own branch.
+  const myBranchId = currentStaff?.branch_id
+  const inBranchScope = (s: Staff) => !ownBranchOnly || !myBranchId || s.branch_id === myBranchId
+
   // Active staff (resigned are retained but excluded from active operations/counts)
-  const activeStaff = allStaff.filter(s => s.status !== 'resigned')
+  const activeStaff = allStaff.filter(s => s.status !== 'resigned' && inBranchScope(s))
 
   // Derived counts
   const pendingCompletions = completions.filter(c => c.status === 'pending')
@@ -851,6 +862,7 @@ export default function Dashboard() {
 
   // Staff table filter
   const filteredStaff = allStaff.filter(s => {
+    if (!inBranchScope(s)) return false
     if (search && !s.name.toLowerCase().includes(search.toLowerCase())) return false
     if (filterBranch && s.branch !== filterBranch) return false
     if (filterDept && s.department !== filterDept) return false
@@ -1267,7 +1279,7 @@ export default function Dashboard() {
                             )}
                             {req.department && (
                               <span className="text-xs bg-canvas text-brown-muted px-2 py-0.5 rounded-full border border-[#E8DDD0]">
-                                {req.department}
+                                {deptName(req.department) || req.department}
                               </span>
                             )}
                             {req.employment_type && (

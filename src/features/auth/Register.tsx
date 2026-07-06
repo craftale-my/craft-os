@@ -1,7 +1,8 @@
 import { useState, FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { BRANCHES, DEPARTMENTS, EMPLOYMENT_TYPES } from '../../shared/types'
+import { BRANCHES } from '../../shared/types'
+import { useLookups } from '../../shared/lib/lookups'
 
 export function RegisterPage() {
   const [form, setForm] = useState({
@@ -15,6 +16,7 @@ export function RegisterPage() {
   const [loading, setLoading] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState('')
+  const { activeDepartments, activeEmploymentTypes } = useLookups()
 
   const set =
     (k: string) =>
@@ -156,9 +158,9 @@ export function RegisterPage() {
               className="w-full bg-canvas border border-border-mid rounded-lg px-3.5 py-2.5 text-sm text-brown-dark focus:outline-none focus:border-[#8B6344] focus:ring-2 focus:ring-[#8B634420] transition-all"
             >
               <option value="">Select department…</option>
-              {DEPARTMENTS.map(d => (
-                <option key={d} value={d}>
-                  {d}
+              {activeDepartments.map(d => (
+                <option key={d.slug} value={d.slug}>
+                  {d.name}
                 </option>
               ))}
             </select>
@@ -175,7 +177,7 @@ export function RegisterPage() {
               className="w-full bg-canvas border border-border-mid rounded-lg px-3.5 py-2.5 text-sm text-brown-dark focus:outline-none focus:border-[#8B6344] focus:ring-2 focus:ring-[#8B634420] transition-all"
             >
               <option value="">Select employment type…</option>
-              {EMPLOYMENT_TYPES.map(t => (
+              {activeEmploymentTypes.map(t => (
                 <option key={t} value={t}>
                   {t}
                 </option>

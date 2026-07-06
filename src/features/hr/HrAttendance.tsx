@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
+import { useCan } from '../../shared/lib/permissions'
 import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType } from '../../shared/types'
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
@@ -1046,15 +1047,21 @@ function MyAttendance({ staff }: { staff: Staff }) {
 
 export default function HrAttendancePage() {
   const { staff } = useAuth()
+  const { can, ownBranchOnly } = useCan()
   const [allStaff, setAllStaff] = useState<Staff[]>([])
   const [view, setView] = useState<'daily' | 'monthly'>('daily')
-  const isManager = staff?.rank === 'supervisor' || staff?.rank === 'manager'
+  const canSeeTeam = can('manage_hr')
 
   useEffect(() => {
     supabase.from('staff').select('*').order('name').then(({ data }) => { if (data) setAllStaff(data as Staff[]) })
   }, [])
 
   if (!staff) return null
+
+  // Supervisors (no all_branches capability) only see their own branch's team.
+  const scopedStaff = ownBranchOnly && staff.branch_id
+    ? allStaff.filter(s => s.branch_id === staff.branch_id)
+    : allStaff
 
   return (
     <div className="min-h-screen bg-cream-light">
@@ -1069,7 +1076,7 @@ export default function HrAttendancePage() {
           <MyAttendance staff={staff} />
         </section>
 
-        {isManager && (
+        {canSeeTeam && (
           <section>
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-base font-bold text-brown-dark">Team Attendance</h2>
@@ -1088,9 +1095,9 @@ export default function HrAttendancePage() {
               </div>
             </div>
             {view === 'daily' ? (
-              <DailyRoster allStaff={allStaff} managerId={staff.id} />
+              <DailyRoster allStaff={scopedStaff} managerId={staff.id} />
             ) : (
-              <MonthlyGrid allStaff={allStaff} />
+              <MonthlyGrid allStaff={scopedStaff} />
             )}
           </section>
         )}

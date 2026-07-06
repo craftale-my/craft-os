@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
+import { useLookups } from '../../shared/lib/lookups'
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
@@ -11,15 +12,7 @@ const BRANCHES = [
   'Other',
 ]
 
-const DEPARTMENTS = [
-  'Barista (Full Time)',
-  'Service Crew',
-  'Bakery',
-  'Kitchen',
-  'Other',
-]
-
-const EMPLOYMENT_TYPES = ['Full Time / Contract', 'Part Time']
+// Departments and employment types are loaded dynamically via useLookups(); see InfoStep.
 
 const COMPANY_VALUES = [
   {
@@ -114,18 +107,10 @@ export function OnboardingPage() {
     setSaving(true)
     setSubmitError('')
 
-    // Normalise department to lowercase for filter compatibility
-    const deptMap: Record<string, string> = {
-      'Barista (Full Time)': 'barista',
-      'Service Crew':        'service crew',
-      'Bakery':              'bakery',
-      'Kitchen':             'kitchen',
-    }
-
     const { error } = await supabase.from('staff').update({
       name:                 formData.fullName,
       nickname:             formData.nickname || null,
-      department:           deptMap[formData.department] ?? formData.department.toLowerCase(),
+      department:           formData.department || null,   // already a department slug
       branch:               formData.branch,
       employment_type:      formData.employmentType,
       ic_number:            formData.icNumber,
@@ -334,6 +319,7 @@ function InfoStep({
   onBack: () => void
   onNext: () => void
 }) {
+  const { activeDepartments, activeEmploymentTypes } = useLookups()
   return (
     <div className="space-y-8">
       {/* Branch */}
@@ -356,14 +342,14 @@ function InfoStep({
       {/* Department */}
       <FormSection title="Your department" required>
         <div className="space-y-2">
-          {DEPARTMENTS.map(d => (
+          {activeDepartments.map(d => (
             <RadioTile
-              key={d}
-              value={d}
-              selected={formData.department === d}
+              key={d.slug}
+              value={d.slug}
+              selected={formData.department === d.slug}
               onChange={v => onUpdate('department', v)}
             >
-              {d}
+              {d.name}
             </RadioTile>
           ))}
         </div>
@@ -373,7 +359,7 @@ function InfoStep({
       {/* Employment Type */}
       <FormSection title="Employment type" required>
         <div className="space-y-2">
-          {EMPLOYMENT_TYPES.map(t => (
+          {activeEmploymentTypes.map(t => (
             <RadioTile
               key={t}
               value={t}
@@ -540,10 +526,11 @@ function ConfirmStep({
   onBack: () => void
   onSubmit: () => void
 }) {
+  const { deptName } = useLookups()
   const sections: { label: string; value: string }[][] = [
     [
       { label: 'Branch',           value: formData.branch },
-      { label: 'Department',       value: formData.department },
+      { label: 'Department',       value: deptName(formData.department) || formData.department },
       { label: 'Employment',       value: formData.employmentType },
     ],
     [

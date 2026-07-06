@@ -10,9 +10,10 @@ import type { Staff, Mission, MissionCompletion, SkillRating, VerificationType, 
 import {
   SKILL_CATEGORIES, MISSION_CATEGORY_LABELS, RANK_LABELS, getProbationDay,
   VERIFICATION_CONFIG,
-  BRANCHES, DEPARTMENTS, EMPLOYMENT_TYPES, GENDERS, DEPT_LABELS, DEPT_STORE,
+  BRANCHES, GENDERS,
   REVIEW_CATEGORIES, MONTHS_FULL, calcFinalScore, getScoreConfig,
 } from '../../shared/types'
+import { useLookups } from '../../shared/lib/lookups'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
@@ -36,6 +37,7 @@ const CURRENT_YEAR  = now.getFullYear()
 export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
   const { id } = useParams<{ id: string }>()
   const { user, staff: currentStaff, loading: authLoading, refreshStaff } = useAuth()
+  const { deptName } = useLookups()
   const staffId = selfView ? currentStaff?.id : id
 
   const [staff, setStaff]           = useState<Staff | null>(null)
@@ -234,7 +236,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
                 )}
               </div>
               <p className="text-xs text-brown-faint capitalize mb-3">
-                {DEPT_LABELS[staff.department ?? ''] ?? staff.department ?? '—'} · Level {staff.level}
+                {deptName(staff.department) || '—'} · Level {staff.level}
               </p>
               <XPBar xp={staff.xp ?? 0} level={staff.level ?? 1} />
             </div>
@@ -1115,7 +1117,8 @@ function PersonalInfoTab({
   staff: Staff; isSelf: boolean; isManager: boolean; email: string; authEmail: string; onSaved: () => void
 }) {
   const canEdit = isSelf || (isManager && !isSelf)
-  const deptDisplay = staff.department ? (DEPT_LABELS[staff.department] ?? staff.department) : ''
+  const { departmentOptions, deptName, employmentTypeOptions } = useLookups()
+  const deptDisplay = deptName(staff.department)   // slug → display label
   const [editing, setEditing]   = useState(false)
   const [saving, setSaving]     = useState(false)
   const [saveError, setSaveError] = useState('')
@@ -1123,7 +1126,7 @@ function PersonalInfoTab({
   const [form, setForm] = useState<PersonalFormData>({
     fullName: staff.name ?? '', nickname: staff.nickname ?? '', gender: staff.gender ?? '',
     contactNumber: staff.contact_number ?? '', address: staff.address ?? '',
-    branch: staff.branch ?? '', department: deptDisplay,
+    branch: staff.branch ?? '', department: staff.department ?? '',   // store the slug
     employmentType: staff.employment_type ?? '', workingExperience: staff.working_experience ?? '',
     education: staff.education ?? '', rank: staff.rank, level: String(staff.level),
   })
@@ -1139,7 +1142,7 @@ function PersonalInfoTab({
         name: form.fullName, nickname: form.nickname || null, gender: form.gender || null,
         contact_number: form.contactNumber || null, address: form.address || null,
         branch: form.branch || null,
-        department: form.department ? (DEPT_STORE[form.department] ?? form.department.toLowerCase()) : null,
+        department: form.department || null,   // already a department slug
         employment_type: form.employmentType || null,
         working_experience: form.workingExperience || null, education: form.education || null,
       }
@@ -1154,7 +1157,7 @@ function PersonalInfoTab({
   function cancel() {
     setForm({ fullName: staff.name ?? '', nickname: staff.nickname ?? '', gender: staff.gender ?? '',
       contactNumber: staff.contact_number ?? '', address: staff.address ?? '', branch: staff.branch ?? '',
-      department: deptDisplay, employmentType: staff.employment_type ?? '',
+      department: staff.department ?? '', employmentType: staff.employment_type ?? '',
       workingExperience: staff.working_experience ?? '', education: staff.education ?? '',
       rank: staff.rank, level: String(staff.level) })
     setSaveError(''); setEditing(false)
@@ -1204,8 +1207,8 @@ function PersonalInfoTab({
         {editing ? (
           <div className="space-y-4">
             <PISelectRow label="Branch"          value={form.branch}         options={BRANCHES}         onChange={v => update('branch', v)} />
-            <PISelectRow label="Department"      value={form.department}     options={DEPARTMENTS}      onChange={v => update('department', v)} />
-            <PISelectRow label="Employment Type" value={form.employmentType} options={EMPLOYMENT_TYPES} onChange={v => update('employmentType', v)} />
+            <PISelectRowKV label="Department"    value={form.department}     options={departmentOptions(staff.department)} onChange={v => update('department', v)} />
+            <PISelectRow label="Employment Type" value={form.employmentType} options={employmentTypeOptions(staff.employment_type)} onChange={v => update('employmentType', v)} />
           </div>
         ) : (
           <div className="space-y-2">
@@ -1712,12 +1715,29 @@ function PITextareaRow({ label, value, onChange }: { label: string; value: strin
   )
 }
 function PISelectRow({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
+  // Include the current value even if it isn't in the option list, so the select
+  // stays pre-filled instead of falling back to "— Select —".
+  const opts = value && !options.includes(value) ? [value, ...options] : options
   return (
     <div>
       <label className={labelCls}>{label}</label>
       <select value={value} onChange={e => onChange(e.target.value)} className={inputCls}>
         <option value="">— Select —</option>
-        {options.map(o => <option key={o} value={o}>{o}</option>)}
+        {opts.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  )
+}
+
+function PISelectRowKV({ label, value, options, onChange }: {
+  label: string; value: string; options: { slug: string; name: string }[]; onChange: (v: string) => void
+}) {
+  return (
+    <div>
+      <label className={labelCls}>{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)} className={inputCls}>
+        <option value="">— Select —</option>
+        {options.map(o => <option key={o.slug} value={o.slug}>{o.name}</option>)}
       </select>
     </div>
   )

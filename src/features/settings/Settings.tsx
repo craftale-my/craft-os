@@ -2,18 +2,26 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import type {
-  CompanySettings, Branch, Role, SystemRule, NotificationSetting, Staff, Rank, ShiftType,
+  CompanySettings, Branch, Role, SystemRule, NotificationSetting, Staff, Rank, ShiftType, Department, EmploymentType,
+  SystemRole, Capability,
 } from '../../shared/types'
-import { RANK_LABELS, PERMISSION_KEYS, PERMISSION_LABELS, DEPT_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
+import {
+  RANK_LABELS, DEPT_LABELS, DEPT_SHIFT_COLORS,
+  SYSTEM_ROLES, SYSTEM_ROLE_LABELS, SYSTEM_ROLE_DESC, CAPABILITIES,
+} from '../../shared/types'
+import { useLookups } from '../../shared/lib/lookups'
+import { useCan } from '../../shared/lib/permissions'
 
 const TABS = [
-  { id: 'company',       label: 'Company Info',       icon: '🏢' },
-  { id: 'branches',       label: 'Branches',           icon: '🏪' },
+  { id: 'company',        label: 'Company Info',        icon: '🏢' },
+  { id: 'branches',       label: 'Branches',            icon: '🏪' },
+  { id: 'departments',    label: 'Departments',         icon: '🏷️' },
+  { id: 'employment',     label: 'Employment Types',    icon: '📋' },
   { id: 'roles',          label: 'Roles & Permissions', icon: '👔' },
   { id: 'rules',          label: 'XP & Scoring Rules',  icon: '⚡' },
-  { id: 'shifts',         label: 'Shift Types',        icon: '🕐' },
-  { id: 'notifications',  label: 'Notifications',      icon: '🔔' },
-  { id: 'data',           label: 'Data & Export',      icon: '📊' },
+  { id: 'shifts',         label: 'Shift Types',         icon: '🕐' },
+  { id: 'notifications',  label: 'Notifications',       icon: '🔔' },
+  { id: 'data',           label: 'Data & Export',       icon: '📊' },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -325,6 +333,221 @@ function BranchesTab({ branches, staffOptions, onRefresh }: {
   )
 }
 
+// ─── Departments ───────────────────────────────────────────────────────────────
+
+function DepartmentsTab() {
+  const { departments, refresh } = useLookups()
+  const { toast, show } = useToast()
+  const [editing, setEditing] = useState<{ id?: string; name: string } | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function save() {
+    if (!editing || !editing.name.trim()) return
+    setSaving(true); setError('')
+    if (editing.id) {
+      const { error: err } = await supabase.from('departments').update({ name: editing.name.trim() }).eq('id', editing.id)
+      if (err) { setError(err.message); setSaving(false); return }
+      show('Department updated')
+    } else {
+      // slug is the canonical stored value; derived once from the name, then fixed.
+      const slug = editing.name.trim().toLowerCase()
+      const { error: err } = await supabase.from('departments').insert({ name: editing.name.trim(), slug })
+      if (err) {
+        setError(/duplicate|unique/i.test(err.message) ? 'A department with that name already exists.' : err.message)
+        setSaving(false); return
+      }
+      show('Department added')
+    }
+    setSaving(false); setEditing(null); await refresh()
+  }
+
+  async function toggleStatus(d: Department) {
+    await supabase.from('departments').update({ status: d.status === 'active' ? 'inactive' : 'active' }).eq('id', d.id)
+    await refresh()
+  }
+
+  return (
+    <div className="space-y-6">
+      {toast && <Toast message={toast} />}
+
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-bold text-brown-dark">Departments</h2>
+          <p className="text-xs text-brown-faint mt-0.5">Shown in registration, onboarding and profile dropdowns. Deactivating hides a department from new selections without affecting existing staff.</p>
+        </div>
+        <button
+          onClick={() => { setEditing({ name: '' }); setError('') }}
+          className="px-3 py-1.5 rounded-lg bg-[#C4813A] text-white text-xs font-semibold hover:bg-[#A86C2C] transition-colors flex-shrink-0"
+        >
+          + Add Department
+        </button>
+      </div>
+
+      <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
+        {departments.length === 0 && (
+          <p className="px-4 py-6 text-xs text-brown-faint text-center">
+            No departments yet. Add one, or run the departments migration if the list looks empty.
+          </p>
+        )}
+        {departments.map(d => (
+          <div key={d.id} className="flex items-center gap-3 px-4 py-3">
+            <div className="flex-1 min-w-0">
+              <p className={`text-sm font-semibold ${d.status === 'active' ? 'text-brown-dark' : 'text-brown-faint line-through'}`}>{d.name}</p>
+              <p className="text-[11px] text-brown-faint">{d.slug}</p>
+            </div>
+            <button
+              onClick={() => toggleStatus(d)}
+              className={`text-xs font-medium px-2 py-0.5 rounded-full transition-colors ${
+                d.status === 'active' ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F5EDE0] text-brown-faint'
+              }`}
+            >
+              {d.status === 'active' ? 'Active' : 'Inactive'}
+            </button>
+            <button onClick={() => { setEditing({ id: d.id, name: d.name }); setError('') }} className="text-xs text-brown-faint hover:text-brown-dark transition-colors px-2 py-1">Edit</button>
+          </div>
+        ))}
+      </div>
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40">
+          <div className="w-full sm:max-w-sm bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0E8DC]">
+              <h3 className="font-bold text-brown-dark">{editing.id ? 'Edit Department' : 'Add Department'}</h3>
+              <button onClick={() => setEditing(null)} className="p-1 text-brown-faint hover:text-brown-dark">✕</button>
+            </div>
+            <div className="px-5 py-5 space-y-4">
+              <div>
+                <label className={labelCls}>Department Name</label>
+                <input
+                  className={inputCls}
+                  value={editing.name}
+                  autoFocus
+                  onChange={e => setEditing(p => p && { ...p, name: e.target.value })}
+                  placeholder="e.g. Kitchen Prep"
+                />
+              </div>
+              {error && <p className="text-xs text-red-600">{error}</p>}
+              <button
+                onClick={save}
+                disabled={saving || !editing.name.trim()}
+                className="w-full py-2.5 rounded-xl bg-[#C4813A] text-white font-semibold text-sm hover:bg-[#A86C2C] disabled:opacity-50 transition-colors"
+              >
+                {saving ? 'Saving…' : editing.id ? 'Save Changes' : 'Add Department'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Employment Types ────────────────────────────────────────────────────────
+
+function EmploymentTypesTab() {
+  const { employmentTypes, refresh } = useLookups()
+  const { toast, show } = useToast()
+  const [editing, setEditing] = useState<{ id?: string; name: string } | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function save() {
+    if (!editing || !editing.name.trim()) return
+    setSaving(true); setError('')
+    if (editing.id) {
+      const { error: err } = await supabase.from('employment_types').update({ name: editing.name.trim() }).eq('id', editing.id)
+      if (err) { setError(err.message); setSaving(false); return }
+      show('Employment type updated')
+    } else {
+      const { error: err } = await supabase.from('employment_types').insert({ name: editing.name.trim() })
+      if (err) {
+        setError(/duplicate|unique/i.test(err.message) ? 'That employment type already exists.' : err.message)
+        setSaving(false); return
+      }
+      show('Employment type added')
+    }
+    setSaving(false); setEditing(null); await refresh()
+  }
+
+  async function toggleStatus(e: EmploymentType) {
+    await supabase.from('employment_types').update({ status: e.status === 'active' ? 'inactive' : 'active' }).eq('id', e.id)
+    await refresh()
+  }
+
+  return (
+    <div className="space-y-6">
+      {toast && <Toast message={toast} />}
+
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-bold text-brown-dark">Employment Types</h2>
+          <p className="text-xs text-brown-faint mt-0.5">Shown in registration, onboarding and profile dropdowns. Deactivating hides a type from new selections without affecting existing staff.</p>
+        </div>
+        <button
+          onClick={() => { setEditing({ name: '' }); setError('') }}
+          className="px-3 py-1.5 rounded-lg bg-[#C4813A] text-white text-xs font-semibold hover:bg-[#A86C2C] transition-colors flex-shrink-0"
+        >
+          + Add Type
+        </button>
+      </div>
+
+      <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
+        {employmentTypes.length === 0 && (
+          <p className="px-4 py-6 text-xs text-brown-faint text-center">
+            No employment types yet. Add one, or run the migration if the list looks empty.
+          </p>
+        )}
+        {employmentTypes.map(e => (
+          <div key={e.id} className="flex items-center gap-3 px-4 py-3">
+            <p className={`flex-1 min-w-0 text-sm font-semibold ${e.status === 'active' ? 'text-brown-dark' : 'text-brown-faint line-through'}`}>{e.name}</p>
+            <button
+              onClick={() => toggleStatus(e)}
+              className={`text-xs font-medium px-2 py-0.5 rounded-full transition-colors ${
+                e.status === 'active' ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F5EDE0] text-brown-faint'
+              }`}
+            >
+              {e.status === 'active' ? 'Active' : 'Inactive'}
+            </button>
+            <button onClick={() => { setEditing({ id: e.id, name: e.name }); setError('') }} className="text-xs text-brown-faint hover:text-brown-dark transition-colors px-2 py-1">Edit</button>
+          </div>
+        ))}
+      </div>
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40">
+          <div className="w-full sm:max-w-sm bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0E8DC]">
+              <h3 className="font-bold text-brown-dark">{editing.id ? 'Edit Employment Type' : 'Add Employment Type'}</h3>
+              <button onClick={() => setEditing(null)} className="p-1 text-brown-faint hover:text-brown-dark">✕</button>
+            </div>
+            <div className="px-5 py-5 space-y-4">
+              <div>
+                <label className={labelCls}>Name</label>
+                <input
+                  className={inputCls}
+                  value={editing.name}
+                  autoFocus
+                  onChange={ev => setEditing(p => p && { ...p, name: ev.target.value })}
+                  placeholder="e.g. Internship"
+                />
+              </div>
+              {error && <p className="text-xs text-red-600">{error}</p>}
+              <button
+                onClick={save}
+                disabled={saving || !editing.name.trim()}
+                className="w-full py-2.5 rounded-xl bg-[#C4813A] text-white font-semibold text-sm hover:bg-[#A86C2C] disabled:opacity-50 transition-colors"
+              >
+                {saving ? 'Saving…' : editing.id ? 'Save Changes' : 'Add Type'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Roles & Permissions ───────────────────────────────────────────────────────
 
 function RoleModal({ role, onClose, onSaved }: {
@@ -408,104 +631,178 @@ function RoleModal({ role, onClose, onSaved }: {
   )
 }
 
-function RolesTab({ roles, onRefresh }: { roles: Role[]; onRefresh: () => void }) {
+function RolesTab({ roles, allStaff, onRefresh }: { roles: Role[]; allStaff: Staff[]; onRefresh: () => void }) {
+  const { isOwner } = useCan()
+  const [sub, setSub] = useState<'titles' | 'system'>('titles')
+
+  const subTabs: { id: 'titles' | 'system'; label: string }[] = [
+    { id: 'titles', label: 'Job Titles' },
+    ...(isOwner ? [{ id: 'system' as const, label: 'System Roles' }] : []),
+  ]
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-base font-bold text-brown-dark">Roles & Permissions</h2>
+        <p className="text-xs text-brown-faint mt-0.5">
+          Job Titles are display headlines. System Roles control access to Craft OS.
+        </p>
+      </div>
+
+      <div className="flex gap-1 bg-white rounded-lg border border-[#E8DDD0] p-0.5 w-fit">
+        {subTabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setSub(t.id)}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+              sub === t.id ? 'bg-[#C4813A] text-white' : 'text-brown-muted hover:bg-[#F5EDE0]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === 'titles' && <JobTitlesTab roles={roles} onRefresh={onRefresh} />}
+      {sub === 'system' && isOwner && <SystemRolesTab allStaff={allStaff} onRefresh={onRefresh} />}
+    </div>
+  )
+}
+
+// ── Job Titles (display-only headlines; no access control) ──
+
+function JobTitlesTab({ roles, onRefresh }: { roles: Role[]; onRefresh: () => void }) {
   const [modalTarget, setModalTarget] = useState<Partial<Role> | null | 'new'>(null)
-  const { toast, show } = useToast()
 
   async function toggleActive(r: Role) {
     await supabase.from('roles').update({ is_active: !r.is_active }).eq('id', r.id)
     onRefresh()
   }
 
-  async function togglePermission(r: Role, key: string) {
-    if (r.rank === 'manager') return
-    const next = { ...r.permissions, [key]: !r.permissions?.[key as keyof typeof r.permissions] }
-    await supabase.from('roles').update({ permissions: next }).eq('id', r.id)
-    onRefresh()
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-brown-faint">Assigned to staff as a headline (e.g. "Senior Barista"). Does not change access or rank.</p>
+        <button
+          onClick={() => setModalTarget('new')}
+          className="px-3 py-1.5 rounded-lg bg-[#C4813A] text-white text-xs font-semibold hover:bg-[#A86C2C] transition-colors flex-shrink-0"
+        >
+          + Add Job Title
+        </button>
+      </div>
+      <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-hidden overflow-x-auto">
+        <table className="w-full text-sm min-w-[480px]">
+          <thead>
+            <tr className="border-b border-[#EDE5D8]">
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Name</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Rank</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Department</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Status</th>
+              <th className="text-right px-4 py-2.5 text-xs font-semibold text-brown-faint">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {roles.map((r, i) => (
+              <tr key={r.id} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
+                <td className="px-4 py-2.5 font-medium text-brown-dark">{r.name}</td>
+                <td className="px-4 py-2.5 text-brown-faint">{RANK_LABELS[r.rank]}</td>
+                <td className="px-4 py-2.5 text-brown-faint">{r.department ?? '—'}</td>
+                <td className="px-4 py-2.5">
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${r.is_active ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F0E8DC] text-brown-faint'}`}>
+                    {r.is_active ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                  <button onClick={() => setModalTarget(r)} className="text-xs font-semibold text-[#C4813A] mr-3 hover:underline">Edit</button>
+                  <button onClick={() => toggleActive(r)} className="text-xs font-semibold text-brown-muted hover:underline">
+                    {r.is_active ? 'Deactivate' : 'Activate'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {modalTarget && (
+        <RoleModal
+          role={modalTarget === 'new' ? null : modalTarget}
+          onClose={() => setModalTarget(null)}
+          onSaved={onRefresh}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── System Roles (Owner-only: capability matrix + staff assignment) ──
+
+function SystemRolesTab({ allStaff, onRefresh }: { allStaff: Staff[]; onRefresh: () => void }) {
+  const { roleCaps, refresh: refreshLookups } = useLookups()
+  const { toast, show } = useToast()
+  const [savingRole, setSavingRole] = useState<SystemRole | null>(null)
+  const [savingStaff, setSavingStaff] = useState<string | null>(null)
+
+  async function toggleCap(role: SystemRole, cap: Capability) {
+    if (role === 'owner') return                 // owner is always fully privileged
+    if (cap === 'manage_system_roles') return    // owner-only by design, not grantable here
+    setSavingRole(role)
+    const next = { ...roleCaps[role], [cap]: !roleCaps[role]?.[cap] }
+    await supabase.from('system_role_permissions').upsert(
+      { system_role: role, permissions: next, updated_at: new Date().toISOString() },
+      { onConflict: 'system_role' },
+    )
+    await refreshLookups()
+    setSavingRole(null)
     show('Permissions updated')
   }
+
+  async function assignRole(staffId: string, role: SystemRole) {
+    setSavingStaff(staffId)
+    await supabase.from('staff').update({ system_role: role }).eq('id', staffId)
+    setSavingStaff(null)
+    onRefresh()
+    show('System role updated')
+  }
+
+  const activeStaff = allStaff.filter(s => s.status !== 'resigned')
 
   return (
     <div className="space-y-8">
       {toast && <Toast message={toast} />}
 
-      {/* Role list */}
+      {/* Capability matrix */}
       <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-bold text-brown-dark">Role List</h3>
-          <button
-            onClick={() => setModalTarget('new')}
-            className="px-3 py-1.5 rounded-lg bg-[#C4813A] text-white text-xs font-semibold hover:bg-[#A86C2C] transition-colors"
-          >
-            + Add New Role
-          </button>
-        </div>
-        <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-hidden overflow-x-auto">
-          <table className="w-full text-sm min-w-[480px]">
-            <thead>
-              <tr className="border-b border-[#EDE5D8]">
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Name</th>
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Rank</th>
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Department</th>
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Status</th>
-                <th className="text-right px-4 py-2.5 text-xs font-semibold text-brown-faint">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {roles.map((r, i) => (
-                <tr key={r.id} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
-                  <td className="px-4 py-2.5 font-medium text-brown-dark">{r.name}</td>
-                  <td className="px-4 py-2.5 text-brown-faint">{RANK_LABELS[r.rank]}</td>
-                  <td className="px-4 py-2.5 text-brown-faint">{r.department ?? '—'}</td>
-                  <td className="px-4 py-2.5">
-                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${r.is_active ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F0E8DC] text-brown-faint'}`}>
-                      {r.is_active ? 'Active' : 'Inactive'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                    <button onClick={() => setModalTarget(r)} className="text-xs font-semibold text-[#C4813A] mr-3 hover:underline">Edit</button>
-                    <button onClick={() => toggleActive(r)} className="text-xs font-semibold text-brown-muted hover:underline">
-                      {r.is_active ? 'Deactivate' : 'Activate'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Permission matrix */}
-      <div>
-        <h3 className="text-sm font-bold text-brown-dark mb-3">Permission Matrix</h3>
-        <p className="text-xs text-brown-faint mb-3">Managers always have full permissions and cannot be changed.</p>
+        <h3 className="text-sm font-bold text-brown-dark mb-1">Permission Matrix</h3>
+        <p className="text-xs text-brown-faint mb-3">Owner is always fully privileged. Changes take effect across navigation, routes and data access.</p>
         <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-x-auto">
           <table className="w-full text-xs min-w-[900px]">
             <thead>
               <tr className="border-b border-[#EDE5D8]">
                 <th className="text-left px-4 py-2.5 font-semibold text-brown-faint sticky left-0 bg-white">Role</th>
-                {PERMISSION_KEYS.map(k => (
-                  <th key={k} className="px-2 py-2.5 font-semibold text-brown-faint text-center whitespace-nowrap">
-                    {PERMISSION_LABELS[k]}
-                  </th>
+                {CAPABILITIES.map(c => (
+                  <th key={c.key} className="px-2 py-2.5 font-semibold text-brown-faint text-center whitespace-nowrap">{c.label}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {roles.map((r, i) => (
-                <tr key={r.id} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
-                  <td className="px-4 py-2 font-medium text-brown-dark sticky left-0 bg-white whitespace-nowrap">{r.name}</td>
-                  {PERMISSION_KEYS.map(k => {
-                    const isManager = r.rank === 'manager'
-                    const checked = isManager ? true : !!r.permissions?.[k]
+              {SYSTEM_ROLES.map((role, i) => (
+                <tr key={role} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
+                  <td className="px-4 py-2 sticky left-0 bg-white whitespace-nowrap">
+                    <span className="font-medium text-brown-dark">{SYSTEM_ROLE_LABELS[role]}</span>
+                    {savingRole === role && <span className="text-[10px] text-brown-faint ml-1">…</span>}
+                  </td>
+                  {CAPABILITIES.map(c => {
+                    const locked = role === 'owner' || c.key === 'manage_system_roles'
+                    const checked = role === 'owner' ? true : !!roleCaps[role]?.[c.key]
                     return (
-                      <td key={k} className="px-2 py-2 text-center">
+                      <td key={c.key} className="px-2 py-2 text-center">
                         <button
-                          onClick={() => togglePermission(r, k)}
-                          disabled={isManager}
+                          onClick={() => toggleCap(role, c.key)}
+                          disabled={locked}
                           className={`w-5 h-5 rounded-md inline-flex items-center justify-center text-[11px] font-bold transition-colors ${
                             checked ? 'bg-[#3D7A50] text-white' : 'bg-[#F0E8DC] text-brown-faint'
-                          } ${isManager ? 'opacity-70 cursor-not-allowed' : 'hover:opacity-80'}`}
+                          } ${locked ? 'opacity-60 cursor-not-allowed' : 'hover:opacity-80'}`}
                         >
                           {checked ? '✓' : '✗'}
                         </button>
@@ -517,15 +814,37 @@ function RolesTab({ roles, onRefresh }: { roles: Role[]; onRefresh: () => void }
             </tbody>
           </table>
         </div>
+        <div className="mt-2 space-y-0.5">
+          {SYSTEM_ROLES.map(role => (
+            <p key={role} className="text-[11px] text-brown-faint">
+              <span className="font-semibold text-brown-muted">{SYSTEM_ROLE_LABELS[role]}:</span> {SYSTEM_ROLE_DESC[role]}
+            </p>
+          ))}
+        </div>
       </div>
 
-      {modalTarget && (
-        <RoleModal
-          role={modalTarget === 'new' ? null : modalTarget}
-          onClose={() => setModalTarget(null)}
-          onSaved={onRefresh}
-        />
-      )}
+      {/* Staff assignment */}
+      <div>
+        <h3 className="text-sm font-bold text-brown-dark mb-3">Assign System Roles</h3>
+        <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
+          {activeStaff.map(s => (
+            <div key={s.id} className="flex items-center gap-3 px-4 py-2.5">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-brown-dark truncate">{s.name}</p>
+                <p className="text-[11px] text-brown-faint">{RANK_LABELS[s.rank]}</p>
+              </div>
+              <select
+                value={s.system_role}
+                disabled={savingStaff === s.id}
+                onChange={e => assignRole(s.id, e.target.value as SystemRole)}
+                className="px-2.5 py-1.5 rounded-lg border border-[#D4C5B0] bg-white text-xs text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40] disabled:opacity-50"
+              >
+                {SYSTEM_ROLES.map(r => <option key={r} value={r}>{SYSTEM_ROLE_LABELS[r]}</option>)}
+              </select>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
@@ -1051,8 +1370,14 @@ export default function SettingsPage() {
             {tab === 'branches' && (
               <BranchesTab branches={branches} staffOptions={supervisorOptions} onRefresh={loadAll} />
             )}
+            {tab === 'departments' && (
+              <DepartmentsTab />
+            )}
+            {tab === 'employment' && (
+              <EmploymentTypesTab />
+            )}
             {tab === 'roles' && (
-              <RolesTab roles={roles} onRefresh={loadAll} />
+              <RolesTab roles={roles} allStaff={allStaff} onRefresh={loadAll} />
             )}
             {tab === 'rules' && (
               <RulesTab rules={rules} onRefresh={loadAll} />

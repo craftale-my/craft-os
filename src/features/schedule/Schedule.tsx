@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
+import { useCan } from '../../shared/lib/permissions'
 import type { Staff, ShiftType, ScheduledShift } from '../../shared/types'
 import { BRANCHES, DEPT_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
@@ -561,6 +562,7 @@ function MyScheduleView({
 
 export default function SchedulePage() {
   const { staff } = useAuth()
+  const { ownBranchOnly } = useCan()
   const [allStaff, setAllStaff] = useState<Staff[]>([])
   const [shiftTypes, setShiftTypes] = useState<ShiftType[]>([])
   const [weekShifts, setWeekShifts] = useState<ScheduledShift[]>([])
@@ -577,6 +579,11 @@ export default function SchedulePage() {
   weekEnd.setDate(weekEnd.getDate() + 6)
 
   const isManager = staff?.rank === 'supervisor' || staff?.rank === 'manager'
+
+  // Supervisors (no all_branches capability) only schedule their own branch.
+  const scopedStaff = ownBranchOnly && staff?.branch_id
+    ? allStaff.filter(s => s.branch_id === staff.branch_id)
+    : allStaff
 
   useEffect(() => {
     supabase.from('staff').select('*').order('name').then(({ data }) => {
@@ -726,7 +733,7 @@ export default function SchedulePage() {
 
             {view === 'week' ? (
               <WeekView
-                allStaff={allStaff}
+                allStaff={scopedStaff}
                 shiftTypes={shiftTypes}
                 weekDays={weekDays}
                 shiftMap={shiftMap}
@@ -739,7 +746,7 @@ export default function SchedulePage() {
               />
             ) : (
               <DayView
-                allStaff={allStaff}
+                allStaff={scopedStaff}
                 shiftTypes={shiftTypes}
                 selectedDay={selectedDay}
                 setSelectedDay={setSelectedDay}

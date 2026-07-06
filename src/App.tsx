@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './features/auth/AuthContext'
+import { LookupsProvider } from './shared/lib/lookups'
+import { effectiveSystemRole } from './shared/lib/permissions'
 import { ProtectedRoute, OnboardingRoute } from './features/auth/ProtectedRoute'
 import { Sidebar } from './shared/components/Sidebar'
 import { LoginPage } from './features/auth/Login'
@@ -90,7 +92,7 @@ function AppRoutes() {
       <Route
         path="/dashboard"
         element={
-          <ProtectedRoute requireRank={['supervisor', 'manager']}>
+          <ProtectedRoute requireCap="view_team">
             <AppLayout><DashboardPage /></AppLayout>
           </ProtectedRoute>
         }
@@ -99,7 +101,7 @@ function AppRoutes() {
       <Route
         path="/staff/:id"
         element={
-          <ProtectedRoute requireRank={['supervisor', 'manager']}>
+          <ProtectedRoute requireCap="view_team">
             <AppLayout><StaffProfilePage /></AppLayout>
           </ProtectedRoute>
         }
@@ -117,7 +119,7 @@ function AppRoutes() {
       <Route
         path="/probation/:staffId"
         element={
-          <ProtectedRoute requireRank={['supervisor', 'manager']}>
+          <ProtectedRoute requireCap="conduct_reviews">
             <AppLayout><ProbationReviewPage /></AppLayout>
           </ProtectedRoute>
         }
@@ -126,7 +128,7 @@ function AppRoutes() {
       <Route
         path="/missions"
         element={
-          <ProtectedRoute requireRank={['manager']}>
+          <ProtectedRoute requireCap="manage_missions">
             <AppLayout><MissionsPage /></AppLayout>
           </ProtectedRoute>
         }
@@ -135,7 +137,7 @@ function AppRoutes() {
       <Route
         path="/tasks"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute requireCap="view_team">
             <AppLayout><TasksPage /></AppLayout>
           </ProtectedRoute>
         }
@@ -180,7 +182,7 @@ function AppRoutes() {
       <Route
         path="/schedule"
         element={
-          <ProtectedRoute requireRank={['supervisor', 'manager']}>
+          <ProtectedRoute requireCap="manage_schedule">
             <AppLayout><SchedulePage /></AppLayout>
           </ProtectedRoute>
         }
@@ -189,7 +191,7 @@ function AppRoutes() {
       <Route
         path="/settings"
         element={
-          <ProtectedRoute requireRank={['manager']}>
+          <ProtectedRoute requireCap="access_settings">
             <AppLayout><SettingsPage /></AppLayout>
           </ProtectedRoute>
         }
@@ -200,7 +202,7 @@ function AppRoutes() {
         element={
           user
             ? <Navigate to={
-                staff?.rank === 'manager' || staff?.rank === 'supervisor'
+                effectiveSystemRole(staff) !== 'staff'
                   ? '/dashboard'
                   : '/profile'
               } replace />
@@ -217,9 +219,11 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <div className="min-h-screen bg-cream text-brown-dark font-body">
-          <AppRoutes />
-        </div>
+        <LookupsProvider>
+          <div className="min-h-screen bg-cream text-brown-dark font-body">
+            <AppRoutes />
+          </div>
+        </LookupsProvider>
       </AuthProvider>
     </BrowserRouter>
   )

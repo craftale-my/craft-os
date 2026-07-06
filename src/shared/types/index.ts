@@ -5,12 +5,109 @@ export type VerificationType = 'photo' | 'supervisor' | 'both'
 
 export type StaffStatus = 'active' | 'resigned'
 
+// ─── System roles (access control — separate from rank/XP and job title) ──────
+
+export type SystemRole = 'owner' | 'admin' | 'hr' | 'manager' | 'supervisor' | 'staff'
+
+export const SYSTEM_ROLES: SystemRole[] = ['owner', 'admin', 'hr', 'manager', 'supervisor', 'staff']
+
+export const SYSTEM_ROLE_LABELS: Record<SystemRole, string> = {
+  owner:      'Owner',
+  admin:      'Admin',
+  hr:         'HR',
+  manager:    'Manager',
+  supervisor: 'Supervisor',
+  staff:      'Staff',
+}
+
+export const SYSTEM_ROLE_DESC: Record<SystemRole, string> = {
+  owner:      'Full access, incl. system-role assignment',
+  admin:      'Full access to all operations',
+  hr:         'Attendance, salary, leave, claims & staff profiles',
+  manager:    'All operations across every branch',
+  supervisor: 'Own branch only',
+  staff:      'Own profile only',
+}
+
+/** Capabilities that gate navigation, routes and queries. */
+export type Capability =
+  | 'view_team'        // team dashboard, staff list, approvals area
+  | 'manage_staff'     // add staff, approve registrations, edit others
+  | 'manage_schedule'  // scheduling
+  | 'conduct_reviews'  // monthly / probation reviews
+  | 'manage_missions'  // mission CRUD
+  | 'view_salary'      // salary records
+  | 'manage_hr'        // attendance / leave / claims management
+  | 'all_branches'     // see data across every branch (false ⇒ own branch only)
+  | 'access_settings'  // company settings
+  | 'manage_system_roles' // owner-only; assign system roles + edit matrix
+
+export const CAPABILITIES: { key: Capability; label: string }[] = [
+  { key: 'view_team',           label: 'View Team' },
+  { key: 'manage_staff',        label: 'Manage Staff' },
+  { key: 'manage_schedule',     label: 'Manage Schedule' },
+  { key: 'conduct_reviews',     label: 'Conduct Reviews' },
+  { key: 'manage_missions',     label: 'Manage Missions' },
+  { key: 'view_salary',         label: 'View Salary' },
+  { key: 'manage_hr',           label: 'Manage HR' },
+  { key: 'all_branches',        label: 'All Branches' },
+  { key: 'access_settings',     label: 'Access Settings' },
+  { key: 'manage_system_roles', label: 'Manage System Roles' },
+]
+
+type CapMap = Partial<Record<Capability, boolean>>
+
+/** Built-in defaults. Owner can override per-role in Settings → System Roles. */
+export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
+  owner: {
+    view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
+    manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
+    access_settings: true, manage_system_roles: true,
+  },
+  admin: {
+    view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
+    manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
+    access_settings: true, manage_system_roles: false,
+  },
+  hr: {
+    view_team: true, manage_staff: true, manage_schedule: false, conduct_reviews: false,
+    manage_missions: false, view_salary: true, manage_hr: true, all_branches: true,
+    access_settings: false, manage_system_roles: false,
+  },
+  manager: {
+    view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
+    manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
+    access_settings: true, manage_system_roles: false,
+  },
+  supervisor: {
+    view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
+    manage_missions: false, view_salary: false, manage_hr: true, all_branches: false,
+    access_settings: false, manage_system_roles: false,
+  },
+  staff: {
+    view_team: false, manage_staff: false, manage_schedule: false, conduct_reviews: false,
+    manage_missions: false, view_salary: false, manage_hr: false, all_branches: false,
+    access_settings: false, manage_system_roles: false,
+  },
+}
+
+export type SystemRolePermissions = Record<SystemRole, CapMap>
+
+export interface SystemRolePermissionRow {
+  system_role: SystemRole
+  permissions: CapMap
+  updated_at: string
+}
+
 export interface Staff {
   id: string
   name: string
   email: string | null
   avatar: string | null
   rank: Rank
+  system_role: SystemRole
+  job_title_id: string | null
+  branch_id: string | null
   is_active: boolean
   status: StaffStatus
   level: number
@@ -200,10 +297,40 @@ export function getScoreConfig(score: number) {
 
 // ─── Shared UI constants ──────────────────────────────────────────────────────
 
+// Hardcoded fallbacks — used only when the dynamic tables are unavailable/empty
+// (e.g. before the departments/employment_types migration has been run).
 export const BRANCHES = ['Cheras (Taman Connaught)', 'Puchong (Bandar Puteri)', 'Other']
 export const GENDERS = ['Man', 'Woman']
 export const EMPLOYMENT_TYPES = ['Full Time / Contract', 'Part Time']
 export const DEPARTMENTS = ['Barista (Full Time)', 'Service Crew', 'Bakery', 'Kitchen', 'Other']
+
+// ─── Dynamic lookups (departments, employment types) ──────────────────────────
+
+export type LookupStatus = 'active' | 'inactive'
+
+export interface Department {
+  id: string
+  name: string          // display label, e.g. "Barista (Full Time)"
+  slug: string          // canonical value stored on staff.department, e.g. "barista"
+  status: LookupStatus
+  created_at: string
+}
+
+/** Fallback department options {slug,name} derived from the hardcoded lists. */
+export const FALLBACK_DEPARTMENTS: { slug: string; name: string }[] = [
+  { slug: 'barista',      name: 'Barista (Full Time)' },
+  { slug: 'service crew', name: 'Service Crew' },
+  { slug: 'bakery',       name: 'Bakery' },
+  { slug: 'kitchen',      name: 'Kitchen' },
+  { slug: 'other',        name: 'Other' },
+]
+
+export interface EmploymentType {
+  id: string
+  name: string          // the value stored on staff.employment_type
+  status: LookupStatus
+  created_at: string
+}
 
 export const DEPT_LABELS: Record<string, string> = {
   barista:        'Barista (Full Time)',

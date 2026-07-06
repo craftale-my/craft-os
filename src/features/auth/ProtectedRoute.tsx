@@ -1,10 +1,13 @@
 import { Navigate } from 'react-router-dom'
 import { useAuth } from './AuthContext'
-import type { Rank } from '../../shared/types'
+import { useCan } from '../../shared/lib/permissions'
+import type { Rank, Capability } from '../../shared/types'
 
 interface Props {
   children: React.ReactNode
   requireRank?: Rank[]
+  /** Capability required to view this route (redirects to /profile if missing). */
+  requireCap?: Capability
 }
 
 function Spinner() {
@@ -16,8 +19,9 @@ function Spinner() {
 }
 
 /** All protected routes — requires auth + completed onboarding (managers exempt). */
-export function ProtectedRoute({ children, requireRank }: Props) {
+export function ProtectedRoute({ children, requireRank, requireCap }: Props) {
   const { user, staff, loading } = useAuth()
+  const { can } = useCan()
 
   if (loading) return <Spinner />
   if (!user) return <Navigate to="/login" replace />
@@ -25,6 +29,10 @@ export function ProtectedRoute({ children, requireRank }: Props) {
   // Redirect to onboarding if not yet completed (managers bypass)
   if (staff && !staff.onboarding_completed && staff.rank !== 'manager') {
     return <Navigate to="/onboarding" replace />
+  }
+
+  if (requireCap && !can(requireCap)) {
+    return <Navigate to="/profile" replace />
   }
 
   if (requireRank && staff && !requireRank.includes(staff.rank)) {

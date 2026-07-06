@@ -7,6 +7,8 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
+import { useCan } from '../../shared/lib/permissions'
+import type { Capability } from '../../shared/types'
 import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
 
@@ -19,6 +21,8 @@ interface NavItem {
   scrollTo?: string
   /** Paths (prefix-matched) where this item should render as active */
   activePaths?: string[]
+  /** Capability required to see this item (omit ⇒ visible to everyone). */
+  cap?: Capability
 }
 
 const STAFF_NAV: NavItem[] = [
@@ -35,16 +39,16 @@ const HR_NAV: NavItem[] = [
 ]
 
 const MGMT_NAV: NavItem[] = [
-  { id: 'team-dash',  label: 'Team Dashboard',    to: '/dashboard', icon: LayoutDashboard, activePaths: ['/dashboard', '/staff/'] },
-  { id: 'schedule',   label: 'Schedule',          to: '/schedule',  icon: CalendarDays,    activePaths: ['/schedule'] },
-  { id: 'tasks',      label: 'Tasks',             to: '/tasks',     icon: CheckSquare,     activePaths: ['/tasks'] },
-  { id: 'reviews',    label: 'Reviews',           to: '/dashboard', icon: ClipboardList,   scrollTo: 'reviews-section' },
-  { id: 'probation',  label: 'Probation Reviews', to: '/dashboard', icon: UserCheck,       scrollTo: 'probation-section' },
-  { id: 'staff-mgmt', label: 'Staff Management',  to: '/dashboard', icon: Users,           scrollTo: 'staff-section' },
+  { id: 'team-dash',  label: 'Team Dashboard',    to: '/dashboard', icon: LayoutDashboard, activePaths: ['/dashboard', '/staff/'], cap: 'view_team' },
+  { id: 'schedule',   label: 'Schedule',          to: '/schedule',  icon: CalendarDays,    activePaths: ['/schedule'], cap: 'manage_schedule' },
+  { id: 'tasks',      label: 'Tasks',             to: '/tasks',     icon: CheckSquare,     activePaths: ['/tasks'], cap: 'view_team' },
+  { id: 'reviews',    label: 'Reviews',           to: '/dashboard', icon: ClipboardList,   scrollTo: 'reviews-section', cap: 'conduct_reviews' },
+  { id: 'probation',  label: 'Probation Reviews', to: '/dashboard', icon: UserCheck,       scrollTo: 'probation-section', cap: 'conduct_reviews' },
+  { id: 'staff-mgmt', label: 'Staff Management',  to: '/dashboard', icon: Users,           scrollTo: 'staff-section', cap: 'view_team' },
 ]
 
 const SETTINGS_NAV: NavItem[] = [
-  { id: 'settings', label: 'Settings', to: '/settings', icon: Settings, activePaths: ['/settings'] },
+  { id: 'settings', label: 'Settings', to: '/settings', icon: Settings, activePaths: ['/settings'], cap: 'access_settings' },
 ]
 
 function isActive(item: NavItem, pathname: string): boolean {
@@ -89,8 +93,10 @@ function SidebarContent({ onNavigate, onClose }: {
 }) {
   const { staff, signOut } = useAuth()
   const { pathname } = useLocation()
-  const isManager = staff?.rank === 'supervisor' || staff?.rank === 'manager'
-  const isCompanyManager = staff?.rank === 'manager'
+  const { can } = useCan()
+  const mgmtItems = MGMT_NAV.filter(i => !i.cap || can(i.cap))
+  const settingsItems = SETTINGS_NAV.filter(i => !i.cap || can(i.cap))
+  const showMgmtSection = mgmtItems.length > 0 || settingsItems.length > 0
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -147,17 +153,17 @@ function SidebarContent({ onNavigate, onClose }: {
           </div>
         </div>
 
-        {isManager && (
+        {showMgmtSection && (
           <div>
             <div className="border-t border-[#5A3A22] mb-3" />
             <p className="px-3 mb-1.5 text-[10px] font-bold text-[#8B7355] uppercase tracking-widest">
               Management
             </p>
             <div className="space-y-0.5">
-              {MGMT_NAV.map(item => (
+              {mgmtItems.map(item => (
                 <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
               ))}
-              {isCompanyManager && SETTINGS_NAV.map(item => (
+              {settingsItems.map(item => (
                 <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
               ))}
             </div>
