@@ -7,6 +7,7 @@
 create table if not exists staff (
   id uuid primary key references auth.users(id) on delete cascade,
   name text not null,
+  email text,                         -- mirror of auth.users.email, set at creation
   avatar text,
   rank text not null default 'trainee'
     check (rank in ('trainee','junior','senior','supervisor','manager')),
@@ -828,3 +829,19 @@ create policy "attendance_breaks_self_update" on attendance_breaks for update to
 drop policy if exists "attendance_breaks_manage" on attendance_breaks;
 create policy "attendance_breaks_manage" on attendance_breaks for all to authenticated
   using (current_rank() in ('supervisor','manager'));
+
+-- =============================================================================
+-- Migration (2026-07-05): staff.email
+-- The staff profile displayed the *viewer's* auth email instead of the profile
+-- owner's (staff had no email column). Persist each staff member's email on
+-- their row and backfill existing rows from auth.users. Idempotent.
+-- Run in the Supabase SQL editor for project yfsoesxzurzjdwstszru.
+-- =============================================================================
+alter table staff add column if not exists email text;
+
+-- Backfill existing staff rows with their real auth email (only where empty).
+update staff s
+   set email = u.email
+  from auth.users u
+ where u.id = s.id
+   and (s.email is null or s.email = '');

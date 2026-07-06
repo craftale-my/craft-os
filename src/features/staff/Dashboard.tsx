@@ -111,6 +111,7 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
     const { error: profileErr } = await supabaseAdmin.from('staff').insert({
       id: authData.user.id,
       name: form.name.trim(),
+      email: form.email.trim(),
       rank: form.rank,
       branch: form.branch || null,
       department: form.department ? (DEPT_STORE[form.department] ?? null) : null,
@@ -241,6 +242,7 @@ function ApproveRegModal({
     const { error: profileErr } = await supabaseAdmin.from('staff').insert({
       id: created.user.id,
       name: request.full_name,
+      email: request.email,
       rank: 'trainee',
       branch: request.branch,
       department: request.department ? (DEPT_STORE[request.department] ?? null) : null,

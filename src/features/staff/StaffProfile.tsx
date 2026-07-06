@@ -286,7 +286,14 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
           <SkillsTab skills={skills} canEdit={canRateSkills} onRate={saveSkillRating} />
         )}
         {tab === 'personal' && (
-          <PersonalInfoTab staff={staff} isSelf={isSelf} isManager={isManager} email={user?.email ?? ''} onSaved={refreshAll} />
+          <PersonalInfoTab
+            staff={staff}
+            isSelf={isSelf}
+            isManager={isManager}
+            email={staff.email ?? (isSelf ? (user?.email ?? '') : '')}
+            authEmail={user?.email ?? ''}
+            onSaved={refreshAll}
+          />
         )}
         {tab === 'reviews' && (
           <ReviewsTab
@@ -1103,9 +1110,9 @@ interface PersonalFormData {
 }
 
 function PersonalInfoTab({
-  staff, isSelf, isManager, email, onSaved,
+  staff, isSelf, isManager, email, authEmail, onSaved,
 }: {
-  staff: Staff; isSelf: boolean; isManager: boolean; email: string; onSaved: () => void
+  staff: Staff; isSelf: boolean; isManager: boolean; email: string; authEmail: string; onSaved: () => void
 }) {
   const canEdit = isSelf || (isManager && !isSelf)
   const deptDisplay = staff.department ? (DEPT_LABELS[staff.department] ?? staff.department) : ''
@@ -1285,7 +1292,7 @@ function PersonalInfoTab({
       {isSelf && (
         <>
           <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest pt-2">Security</p>
-          <ChangePasswordCard email={email} />
+          <ChangePasswordCard email={authEmail} />
         </>
       )}
     </div>

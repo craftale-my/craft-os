@@ -8,6 +8,7 @@ export type StaffStatus = 'active' | 'resigned'
 export interface Staff {
   id: string
   name: string
+  email: string | null
   avatar: string | null
   rank: Rank
   is_active: boolean
