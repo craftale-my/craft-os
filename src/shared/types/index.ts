@@ -761,3 +761,83 @@ export function computeBreakOvertime(
   const overtimeMinutes = Math.max(0, durationMinutes - allowedMinutes)
   return { durationMinutes, overtimeMinutes, isOvertime: overtimeMinutes > 0 }
 }
+
+// ─── Skill Matrix / Career system ─────────────────────────────────────────────
+
+export interface CareerPath {
+  id: string
+  department_id: string | null
+  from_job_title_id: string
+  to_job_title_id: string
+  status: LookupStatus
+  created_at: string
+  from?: Role
+  to?: Role
+  skills?: Skill[]
+}
+
+export interface Skill {
+  id: string
+  career_path_id: string
+  name: string
+  name_zh: string | null
+  description: string | null
+  xp_reward: number
+  sort_order: number
+  status: LookupStatus
+  created_at: string
+}
+
+export type SkillAssessmentStatus = 'not_started' | 'learning' | 'pending_review' | 'passed' | 'failed'
+
+export interface SkillAssessment {
+  id: string
+  staff_id: string
+  skill_id: string
+  status: SkillAssessmentStatus
+  assessed_by: string | null
+  assessed_at: string | null
+  remarks: string | null
+  created_at: string
+  updated_at: string
+  skill?: Skill
+  staff?: Staff
+  assessor?: Staff
+}
+
+export interface PromotionRequest {
+  id: string
+  staff_id: string
+  career_path_id: string
+  status: 'pending' | 'approved' | 'deferred'
+  decided_by: string | null
+  decided_at: string | null
+  defer_reason: string | null
+  created_at: string
+  staff?: Staff
+  career_path?: CareerPath
+}
+
+export const SKILL_STATUS_LABELS: Record<SkillAssessmentStatus, string> = {
+  not_started:    'Not Started',
+  learning:       'Learning',
+  pending_review: 'Pending Review',
+  passed:         'Passed',
+  failed:         'Failed',
+}
+
+export const SKILL_STATUS_COLORS: Record<SkillAssessmentStatus, string> = {
+  not_started:    '#8B7355',
+  learning:       '#2E6E9E',
+  pending_review: '#C4813A',
+  passed:         '#3D7A50',
+  failed:         '#9E4A30',
+}
+
+export const SKILL_STATUS_ICONS: Record<SkillAssessmentStatus, string> = {
+  not_started:    '⬜',
+  learning:       '📖',
+  pending_review: '🔶',
+  passed:         '✅',
+  failed:         '❌',
+}

@@ -2,7 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { supabaseAdmin } from '../../shared/lib/supabase-admin'
-import type { Staff, MissionCompletion, MonthlyReview, ProbationReview } from '../../shared/types'
+import type {
+  Staff, MissionCompletion, MonthlyReview, ProbationReview, SkillAssessment, PromotionRequest, Skill,
+} from '../../shared/types'
+import { SKILL_STATUS_ICONS } from '../../shared/types'
 import {
   RANK_LABELS, RANK_COLORS,
   DEPT_LABELS, DEPT_STORE, BRANCHES,
@@ -128,6 +131,16 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
       setError(profileErr.message)
       setSaving(false)
       return
+    }
+
+    // Auto-assign job title (rank + department, when unambiguous) + skill checklist.
+    if (form.department) {
+      const { data: roleRows } = await supabaseAdmin.from('roles')
+        .select('id').eq('rank', form.rank).eq('department', form.department).eq('is_active', true)
+      if (roleRows && roleRows.length === 1) {
+        await supabaseAdmin.from('staff').update({ job_title_id: roleRows[0].id }).eq('id', authData.user.id)
+        await supabaseAdmin.rpc('initialize_staff_skills', { p_staff_id: authData.user.id })
+      }
     }
 
     onCreated()
@@ -264,6 +277,10 @@ function ApproveRegModal({
       return
     }
 
+    // request.department is a department slug for new requests; DEPT_STORE
+    // converts any legacy display-string values from older requests.
+    const dept = request.department ? (DEPT_STORE[request.department] ?? request.department) : null
+
     // 2. Create the staff row (idempotent on id).
     const { error: profileErr } = await supabaseAdmin.from('staff').upsert({
       id: userId,
@@ -271,9 +288,7 @@ function ApproveRegModal({
       email: request.email,
       rank: 'trainee',
       branch: request.branch,
-      // request.department is a department slug for new requests; DEPT_STORE
-      // converts any legacy display-string values from older requests.
-      department: request.department ? (DEPT_STORE[request.department] ?? request.department) : null,
+      department: dept,
       employment_type: request.employment_type,
       contact_number: request.phone,
       onboarding_completed: false,
@@ -286,6 +301,18 @@ function ApproveRegModal({
       setError(profileErr.message)
       setSaving(false)
       return
+    }
+
+    // 3. Auto-assign the job title (rank + department, when unambiguous) and
+    //    create the career-path skill checklist. Best-effort: a new hire with
+    //    no matching title simply starts without one until a manager assigns it.
+    if (dept) {
+      const { data: roleRows } = await supabaseAdmin.from('roles')
+        .select('id').eq('rank', 'trainee').eq('department', dept).eq('is_active', true)
+      if (roleRows && roleRows.length === 1) {
+        await supabaseAdmin.from('staff').update({ job_title_id: roleRows[0].id }).eq('id', userId)
+        await supabaseAdmin.rpc('initialize_staff_skills', { p_staff_id: userId })
+      }
     }
 
     await supabase
@@ -424,6 +451,312 @@ function RejectRegModal({
               {saving ? 'Rejecting...' : 'Reject Request'}
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── FailAssessmentModal ──────────────────────────────────────────────────────
+
+function FailAssessmentModal({
+  assessment,
+  reviewerId,
+  onClose,
+  onDone,
+}: {
+  assessment: SkillAssessment
+  reviewerId: string | undefined
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [remarks, setRemarks] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleFail() {
+    if (remarks.trim().length < 5) {
+      setError('Remarks are required: explain the reason and give advice for improvement.')
+      return
+    }
+    setSaving(true); setError('')
+    const { error: err } = await supabase.from('skill_assessments').update({
+      status: 'failed',
+      assessed_by: reviewerId ?? null,
+      assessed_at: new Date().toISOString(),
+      remarks: remarks.trim(),
+      updated_at: new Date().toISOString(),
+    }).eq('id', assessment.id)
+    setSaving(false)
+    if (err) { setError(err.message); return }
+    onDone()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0]">
+          <h2 className="font-bold text-brown-dark text-lg">Fail Assessment</h2>
+          <button onClick={onClose} className="text-brown-faint hover:text-brown-dark text-xl leading-none">✕</button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+          <div className="bg-white rounded-lg border border-[#E8DDD0] p-3 space-y-1">
+            <p className="text-sm font-semibold text-brown-dark">{assessment.staff?.name}</p>
+            <p className="text-xs text-brown-faint">
+              {assessment.skill?.name}
+              {assessment.skill?.name_zh ? ` · ${assessment.skill.name_zh}` : ''}
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-brown-medium mb-1">
+              Reason & advice <span className="text-[#9E4A30]">*</span>
+            </label>
+            <textarea
+              value={remarks}
+              onChange={e => setRemarks(e.target.value)}
+              rows={3}
+              autoFocus
+              className="w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40] resize-none"
+              placeholder="What was missing, and what should they practise before the next attempt?"
+            />
+            <p className="text-xs text-brown-faint mt-1">Shown to the staff member on their Career Progress page.</p>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleFail}
+              disabled={saving}
+              className="flex-1 py-2.5 rounded-xl bg-[#C0624A] text-white text-sm font-semibold hover:bg-[#A8503A] transition-colors disabled:opacity-60"
+            >
+              {saving ? 'Saving...' : 'Fail with Feedback'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── PromotionReviewModal ─────────────────────────────────────────────────────
+
+function PromotionReviewModal({
+  request,
+  reviewerId,
+  onClose,
+  onDone,
+}: {
+  request: PromotionRequest
+  reviewerId: string | undefined
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [skills, setSkills] = useState<Skill[]>([])
+  const [assessments, setAssessments] = useState<SkillAssessment[]>([])
+  const [review, setReview] = useState<MonthlyReview | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [mode, setMode] = useState<'view' | 'defer'>('view')
+  const [deferReason, setDeferReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    (async () => {
+      const [sk, sa, mr] = await Promise.all([
+        supabase.from('skills').select('*')
+          .eq('career_path_id', request.career_path_id).eq('status', 'active').order('sort_order'),
+        supabase.from('skill_assessments')
+          .select('*, assessor:staff!skill_assessments_assessed_by_fkey(id,name)')
+          .eq('staff_id', request.staff_id),
+        supabase.from('monthly_reviews').select('*')
+          .eq('staff_id', request.staff_id).eq('status', 'completed')
+          .order('year', { ascending: false }).order('month', { ascending: false })
+          .limit(1).maybeSingle(),
+      ])
+      setSkills((sk.data as Skill[]) ?? [])
+      setAssessments((sa.data as SkillAssessment[]) ?? [])
+      setReview((mr.data as MonthlyReview | null) ?? null)
+      setLoading(false)
+    })()
+  }, [request.id, request.career_path_id, request.staff_id])
+
+  const bySkill = new Map(assessments.map(a => [a.skill_id, a]))
+  const reviewScore = review ? calcFinalScore(review) : null
+  const scoreCfg = reviewScore != null ? getScoreConfig(reviewScore) : null
+
+  function fmtDate(iso: string | null): string {
+    return iso ? new Date(iso).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' }) : ''
+  }
+
+  async function approve() {
+    const toId = request.career_path?.to_job_title_id
+    if (!toId) { setError('This path has no target job title.'); return }
+    setSaving(true); setError('')
+    // 1. Promote: update the job title (rank/XP untouched by design).
+    const r1 = await supabase.from('staff').update({ job_title_id: toId }).eq('id', request.staff_id)
+    if (r1.error) { setError(r1.error.message); setSaving(false); return }
+    // 2. Close the request.
+    const r2 = await supabase.from('promotion_requests').update({
+      status: 'approved', decided_by: reviewerId ?? null, decided_at: new Date().toISOString(),
+    }).eq('id', request.id)
+    if (r2.error) { setError(r2.error.message); setSaving(false); return }
+    // 3. Assign the next segment's skill checklist, if one exists (no-op otherwise).
+    await supabase.rpc('initialize_staff_skills', { p_staff_id: request.staff_id })
+    setSaving(false)
+    onDone()
+  }
+
+  async function defer() {
+    if (deferReason.trim().length < 3) { setError('Please give a reason for deferring (management-only).'); return }
+    setSaving(true); setError('')
+    const { error: err } = await supabase.from('promotion_requests').update({
+      status: 'deferred', decided_by: reviewerId ?? null,
+      decided_at: new Date().toISOString(), defer_reason: deferReason.trim(),
+    }).eq('id', request.id)
+    setSaving(false)
+    if (err) { setError(err.message); return }
+    onDone()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0] flex-shrink-0">
+          <h2 className="font-bold text-brown-dark text-lg">Promotion Evaluation</h2>
+          <button onClick={onClose} className="text-brown-faint hover:text-brown-dark text-xl leading-none">✕</button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4 overflow-y-auto">
+          {/* Who & what */}
+          <div className="bg-white rounded-lg border border-[#E8DDD0] p-4 flex items-center gap-3">
+            <Avatar name={request.staff?.name ?? '?'} avatar={request.staff?.avatar ?? null} size="md" />
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-brown-dark">{request.staff?.name}</p>
+              <p className="text-xs text-brown-muted mt-0.5">
+                {request.career_path?.from?.name} <span className="text-brown-faint">→</span>{' '}
+                <span className="font-semibold text-[#C4813A]">{request.career_path?.to?.name}</span>
+              </p>
+            </div>
+          </div>
+
+          {loading ? (
+            <p className="text-xs text-brown-faint text-center py-6">Loading records…</p>
+          ) : (
+            <>
+              {/* Skill record */}
+              <div>
+                <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest mb-2">Skill Record</p>
+                <div className="bg-white rounded-lg border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
+                  {skills.map(s => {
+                    const a = bySkill.get(s.id)
+                    const passed = a?.status === 'passed'
+                    return (
+                      <div key={s.id} className="px-3 py-2 flex items-center gap-2">
+                        <span className="text-sm">{SKILL_STATUS_ICONS[a?.status ?? 'not_started']}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-brown-dark truncate">{s.name}</p>
+                          {passed && (
+                            <p className="text-[10px] text-brown-faint">
+                              by {a?.assessor?.name ?? '—'} · {fmtDate(a?.assessed_at ?? null)}
+                            </p>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-[#C4813A] font-semibold flex-shrink-0">+{s.xp_reward} XP</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Latest monthly review (reference) */}
+              <div>
+                <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest mb-2">
+                  Latest Monthly Review <span className="normal-case font-normal">(reference)</span>
+                </p>
+                {review && reviewScore != null && scoreCfg ? (
+                  <div
+                    className="flex items-center gap-3 px-4 py-3 rounded-lg border"
+                    style={{ background: scoreCfg.bg, borderColor: scoreCfg.border }}
+                  >
+                    <span className="text-xl">{scoreCfg.emoji}</span>
+                    <div className="flex-1">
+                      <p className="text-sm font-bold" style={{ color: scoreCfg.color }}>
+                        {reviewScore}/100 · {scoreCfg.label}
+                      </p>
+                      <p className="text-[11px] text-brown-muted">
+                        {MONTHS_FULL[review.month - 1]} {review.year}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-brown-faint bg-white border border-[#E8DDD0] rounded-lg px-4 py-3">
+                    No completed monthly review yet.
+                  </p>
+                )}
+              </div>
+
+              {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+
+              {mode === 'view' ? (
+                <div className="flex gap-3 pt-1">
+                  <button
+                    onClick={() => { setMode('defer'); setError('') }}
+                    disabled={saving}
+                    className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors disabled:opacity-60"
+                  >
+                    Defer
+                  </button>
+                  <button
+                    onClick={approve}
+                    disabled={saving}
+                    className="flex-1 py-2.5 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors disabled:opacity-60"
+                  >
+                    {saving ? 'Promoting…' : '✓ Approve Promotion'}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3 pt-1">
+                  <div>
+                    <label className="block text-xs font-semibold text-brown-medium mb-1">
+                      Defer reason <span className="text-[#9E4A30]">*</span>
+                      <span className="font-normal text-brown-faint ml-1">(visible to management only)</span>
+                    </label>
+                    <textarea
+                      value={deferReason}
+                      onChange={e => setDeferReason(e.target.value)}
+                      rows={3}
+                      autoFocus
+                      className="w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40] resize-none"
+                      placeholder="e.g. Wait for one more month of consistent attendance…"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setMode('view')}
+                      disabled={saving}
+                      className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={defer}
+                      disabled={saving}
+                      className="flex-1 py-2.5 rounded-xl bg-[#C0624A] text-white text-sm font-semibold hover:bg-[#A8503A] transition-colors disabled:opacity-60"
+                    >
+                      {saving ? 'Saving…' : 'Confirm Deferral'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -747,8 +1080,17 @@ function SupervisorReviewCard({
 export default function Dashboard() {
   const navigate = useNavigate()
   const { deptName } = useLookups()
-  const { ownBranchOnly } = useCan()
+  const { can, ownBranchOnly, role } = useCan()
   const [currentStaff, setCurrentStaff] = useState<Staff | null>(null)
+  const [skillReviews, setSkillReviews] = useState<SkillAssessment[]>([])
+  const [failTarget, setFailTarget] = useState<SkillAssessment | null>(null)
+  const [savingSkillId, setSavingSkillId] = useState<string | null>(null)
+  const [skillError, setSkillError] = useState('')
+  const [promotions, setPromotions] = useState<PromotionRequest[]>([])
+  const [promotionTarget, setPromotionTarget] = useState<PromotionRequest | null>(null)
+
+  // Promotion decisions are for Manager/Owner (and Admin) — not supervisors.
+  const canDecidePromotions = role === 'owner' || role === 'admin' || role === 'manager'
   const [allStaff, setAllStaff] = useState<Staff[]>([])
   const [completions, setCompletions] = useState<MissionCompletion[]>([])
   const [reviews, setReviews] = useState<MonthlyReview[]>([])
@@ -797,6 +1139,20 @@ export default function Dashboard() {
         .order('start_date', { ascending: false }),
     ])
 
+    const { data: skillData } = await supabase
+      .from('skill_assessments')
+      .select('*, skill:skills(*), staff:staff!skill_assessments_staff_id_fkey(id,name,avatar,rank,branch,branch_id)')
+      .eq('status', 'pending_review')
+      .order('updated_at', { ascending: true })
+    setSkillReviews((skillData as SkillAssessment[]) ?? [])
+
+    const { data: promoData } = await supabase
+      .from('promotion_requests')
+      .select('*, staff:staff!promotion_requests_staff_id_fkey(id,name,avatar,rank,branch_id), career_path:career_paths(*, from:roles!career_paths_from_job_title_id_fkey(*), to:roles!career_paths_to_job_title_id_fkey(*))')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+    setPromotions((promoData as PromotionRequest[]) ?? [])
+
     if (staffRes.data) setAllStaff(staffRes.data)
     if (myRes.data) setCurrentStaff(myRes.data)
     if (completionsRes.data) setCompletions(completionsRes.data as MissionCompletion[])
@@ -831,6 +1187,11 @@ export default function Dashboard() {
 
   // Active staff (resigned are retained but excluded from active operations/counts)
   const activeStaff = allStaff.filter(s => s.status !== 'resigned' && inBranchScope(s))
+
+  // Pending skill assessments, branch-scoped for supervisors.
+  const visibleSkillReviews = skillReviews.filter(
+    r => !ownBranchOnly || !myBranchId || r.staff?.branch_id === myBranchId
+  )
 
   // Derived counts
   const pendingCompletions = completions.filter(c => c.status === 'pending')
@@ -912,6 +1273,21 @@ export default function Dashboard() {
     loadAll()
   }
 
+  async function handlePassSkill(a: SkillAssessment) {
+    setSavingSkillId(a.id); setSkillError('')
+    // XP award + promotion-request creation happen via DB triggers on 'passed'.
+    const { error } = await supabase.from('skill_assessments').update({
+      status: 'passed',
+      assessed_by: currentStaff?.id ?? null,
+      assessed_at: new Date().toISOString(),
+      remarks: null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', a.id)
+    setSavingSkillId(null)
+    if (error) { setSkillError(error.message); return }
+    loadAll()
+  }
+
   function handleRegApproved(creds: { email: string; password: string }) {
     setApproveTarget(null)
     setNewCredentials(creds)
@@ -986,6 +1362,22 @@ export default function Dashboard() {
           email={newCredentials.email}
           password={newCredentials.password}
           onClose={() => setNewCredentials(null)}
+        />
+      )}
+      {failTarget && (
+        <FailAssessmentModal
+          assessment={failTarget}
+          reviewerId={currentStaff?.id}
+          onClose={() => setFailTarget(null)}
+          onDone={() => { setFailTarget(null); loadAll() }}
+        />
+      )}
+      {promotionTarget && (
+        <PromotionReviewModal
+          request={promotionTarget}
+          reviewerId={currentStaff?.id}
+          onClose={() => setPromotionTarget(null)}
+          onDone={() => { setPromotionTarget(null); loadAll() }}
         />
       )}
 
@@ -1235,6 +1627,95 @@ export default function Dashboard() {
                 </section>
               )
             })()}
+
+            {/* ── Skill Assessments (pending review) ── */}
+            {can('conduct_reviews') && visibleSkillReviews.length > 0 && (
+              <section id="skill-assessments-section">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 className="text-base font-bold text-brown-dark">Skill Assessments</h2>
+                    <p className="text-xs text-brown-faint mt-0.5">Staff requesting a skill sign-off</p>
+                  </div>
+                  <span className="text-xs bg-[#FEF3E2] text-[#C4813A] px-2 py-0.5 rounded-full font-semibold">
+                    {visibleSkillReviews.length} pending
+                  </span>
+                </div>
+
+                {skillError && (
+                  <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3">{skillError}</p>
+                )}
+
+                <div className="space-y-2">
+                  {visibleSkillReviews.map(r => (
+                    <div key={r.id} className="bg-white rounded-xl border border-[#E8DDD0] p-4 flex items-center gap-3 flex-wrap">
+                      <Avatar name={r.staff?.name ?? '?'} avatar={r.staff?.avatar ?? null} size="sm" />
+                      <div className="flex-1 min-w-[160px]">
+                        <p className="text-sm font-semibold text-brown-dark truncate">{r.staff?.name ?? 'Unknown'}</p>
+                        <p className="text-xs text-brown-muted">
+                          {r.skill?.name ?? 'Skill'}
+                          {r.skill?.name_zh ? <span className="text-brown-faint"> · {r.skill.name_zh}</span> : null}
+                        </p>
+                        <p className="text-[11px] text-brown-faint mt-0.5">
+                          +{r.skill?.xp_reward ?? 0} XP · requested {formatTimeAgo(r.updated_at)}
+                        </p>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <button
+                          onClick={() => setFailTarget(r)}
+                          disabled={savingSkillId === r.id}
+                          className="px-3 py-1.5 text-xs rounded-lg border border-[#E8DDD0] text-brown-muted hover:bg-[#FCF0EC] hover:border-[#C06242] hover:text-[#C06242] transition-colors disabled:opacity-50"
+                        >
+                          ✗ Fail
+                        </button>
+                        <button
+                          onClick={() => handlePassSkill(r)}
+                          disabled={savingSkillId === r.id}
+                          className="px-3 py-1.5 text-xs rounded-lg bg-[#3D7A50] hover:bg-[#2E6040] text-white font-semibold transition-colors disabled:opacity-50"
+                        >
+                          {savingSkillId === r.id ? 'Saving…' : '✓ Pass'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* ── Promotion Reviews (all skills passed — awaiting decision) ── */}
+            {canDecidePromotions && promotions.length > 0 && (
+              <section id="promotion-reviews-section">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 className="text-base font-bold text-brown-dark">Promotion Reviews</h2>
+                    <p className="text-xs text-brown-faint mt-0.5">Staff who passed every skill in their career path</p>
+                  </div>
+                  <span className="text-xs bg-[#EBF5EE] text-[#3D7A50] px-2 py-0.5 rounded-full font-semibold">
+                    {promotions.length} awaiting
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {promotions.map(p => (
+                    <div key={p.id} className="bg-white rounded-xl border border-[#E8DDD0] p-4 flex items-center gap-3">
+                      <Avatar name={p.staff?.name ?? '?'} avatar={p.staff?.avatar ?? null} size="sm" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-brown-dark truncate">{p.staff?.name ?? 'Unknown'}</p>
+                        <p className="text-xs text-brown-muted">
+                          {p.career_path?.from?.name} <span className="text-brown-faint">→</span>{' '}
+                          <span className="font-semibold text-[#C4813A]">{p.career_path?.to?.name}</span>
+                          <span className="text-brown-faint"> · eligible {formatTimeAgo(p.created_at)}</span>
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setPromotionTarget(p)}
+                        className="text-xs font-semibold text-white bg-[#3D7A50] px-3 py-1.5 rounded-lg hover:bg-[#2E6040] transition-colors flex-shrink-0"
+                      >
+                        Evaluate →
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
 
             {/* ── Registration Requests ── */}
             {regRequests.length > 0 && (

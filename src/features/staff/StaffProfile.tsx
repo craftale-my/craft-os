@@ -6,7 +6,7 @@ import { useAuth } from '../auth/AuthContext'
 import { ErrorBoundary } from '../../shared/components/ErrorBoundary'
 import { StarRating } from '../../shared/components/StarRating'
 import { ScoreChart } from '../../shared/components/ScoreChart'
-import type { Staff, Mission, MissionCompletion, SkillRating, VerificationType, MonthlyReview, ProbationReview } from '../../shared/types'
+import type { Staff, Mission, MissionCompletion, SkillRating, VerificationType, MonthlyReview, ProbationReview, Role } from '../../shared/types'
 import {
   SKILL_CATEGORIES, MISSION_CATEGORY_LABELS, RANK_LABELS, getProbationDay,
   VERIFICATION_CONFIG,
@@ -885,7 +885,7 @@ function StatusDot({ color }: { color: string }) {
 
 // ─── Missions Tab ─────────────────────────────────────────────────────────────
 
-function MissionsTab({
+export function MissionsTab({
   missions, staffId, completions, isSelf, onRefresh,
 }: {
   missions: Mission[]; staffId: string; completions: MissionCompletion[]; isSelf: boolean; onRefresh: () => void
@@ -1109,6 +1109,7 @@ interface PersonalFormData {
   fullName: string; nickname: string; gender: string; contactNumber: string
   address: string; branch: string; department: string; employmentType: string
   workingExperience: string; education: string; rank: string; level: string
+  jobTitleId: string
 }
 
 function PersonalInfoTab({
@@ -1129,7 +1130,17 @@ function PersonalInfoTab({
     branch: staff.branch ?? '', department: staff.department ?? '',   // store the slug
     employmentType: staff.employment_type ?? '', workingExperience: staff.working_experience ?? '',
     education: staff.education ?? '', rank: staff.rank, level: String(staff.level),
+    jobTitleId: staff.job_title_id ?? '',
   })
+
+  // Job titles for the manager's assignment dropdown (drives the career path).
+  const [jobTitles, setJobTitles] = useState<Role[]>([])
+  useEffect(() => {
+    if (!isManager) return
+    supabase.from('roles').select('*').eq('is_active', true).order('rank').then(({ data }) => {
+      if (data) setJobTitles(data as Role[])
+    })
+  }, [isManager])
 
   function update(field: keyof PersonalFormData, value: string) {
     setForm(prev => ({ ...prev, [field]: value }))
@@ -1146,9 +1157,18 @@ function PersonalInfoTab({
         employment_type: form.employmentType || null,
         working_experience: form.workingExperience || null, education: form.education || null,
       }
-      if (isManager && !isSelf) { payload.rank = form.rank; payload.level = parseInt(form.level) || 1 }
+      if (isManager && !isSelf) {
+        payload.rank = form.rank
+        payload.level = parseInt(form.level) || 1
+        payload.job_title_id = form.jobTitleId || null
+      }
       const { error } = await supabase.from('staff').update(payload).eq('id', staff.id)
       if (error) throw error
+      // Job title changed → create the skill records for its career path
+      // (idempotent RPC; no-op if the title has no active path).
+      if (isManager && !isSelf && form.jobTitleId && form.jobTitleId !== (staff.job_title_id ?? '')) {
+        await supabase.rpc('initialize_staff_skills', { p_staff_id: staff.id })
+      }
       setEditing(false); await onSaved()
     } catch (err) { setSaveError(err instanceof Error ? err.message : 'Save failed.') }
     finally { setSaving(false) }
@@ -1159,7 +1179,7 @@ function PersonalInfoTab({
       contactNumber: staff.contact_number ?? '', address: staff.address ?? '', branch: staff.branch ?? '',
       department: staff.department ?? '', employmentType: staff.employment_type ?? '',
       workingExperience: staff.working_experience ?? '', education: staff.education ?? '',
-      rank: staff.rank, level: String(staff.level) })
+      rank: staff.rank, level: String(staff.level), jobTitleId: staff.job_title_id ?? '' })
     setSaveError(''); setEditing(false)
   }
 
@@ -1181,22 +1201,35 @@ function PersonalInfoTab({
         <div className="bg-white rounded-xl shadow-card p-5 space-y-4">
           <SectionTitle>Rank & Level</SectionTitle>
           {editing ? (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className={labelCls}>Rank</label>
-                <select value={form.rank} onChange={e => update('rank', e.target.value)} className={inputCls}>
-                  {Object.entries(RANK_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls}>Rank</label>
+                  <select value={form.rank} onChange={e => update('rank', e.target.value)} className={inputCls}>
+                    {Object.entries(RANK_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>Level</label>
+                  <input type="number" min={1} max={99} value={form.level} onChange={e => update('level', e.target.value)} className={inputCls} />
+                </div>
               </div>
               <div>
-                <label className={labelCls}>Level</label>
-                <input type="number" min={1} max={99} value={form.level} onChange={e => update('level', e.target.value)} className={inputCls} />
+                <label className={labelCls}>Job Title</label>
+                <select value={form.jobTitleId} onChange={e => update('jobTitleId', e.target.value)} className={inputCls}>
+                  <option value="">— Not assigned —</option>
+                  {jobTitles.map(t => <option key={t.id} value={t.id}>{t.name} ({RANK_LABELS[t.rank]})</option>)}
+                </select>
+                <p className="text-[11px] text-brown-faint mt-1">
+                  Drives the career path: assigning a title creates its skill checklist for this staff member.
+                </p>
               </div>
             </div>
           ) : (
             <div className="space-y-2">
-              <InfoRow label="Rank"  value={RANK_LABELS[staff.rank] ?? staff.rank} />
-              <InfoRow label="Level" value={`Level ${staff.level} · ${staff.xp} XP total`} />
+              <InfoRow label="Rank"      value={RANK_LABELS[staff.rank] ?? staff.rank} />
+              <InfoRow label="Level"     value={`Level ${staff.level} · ${staff.xp} XP total`} />
+              <InfoRow label="Job Title" value={jobTitles.find(t => t.id === staff.job_title_id)?.name ?? '—'} />
             </div>
           )}
         </div>

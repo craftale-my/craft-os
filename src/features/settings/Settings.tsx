@@ -3,7 +3,7 @@ import { supabase } from '../../shared/lib/supabase'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import type {
   CompanySettings, Branch, Role, SystemRule, NotificationSetting, Staff, Rank, ShiftType, Department, EmploymentType,
-  SystemRole, Capability,
+  SystemRole, Capability, CareerPath, Skill,
 } from '../../shared/types'
 import {
   RANK_LABELS, DEPT_LABELS, DEPT_SHIFT_COLORS,
@@ -18,6 +18,7 @@ const TABS = [
   { id: 'departments',    label: 'Departments',         icon: '🏷️' },
   { id: 'employment',     label: 'Employment Types',    icon: '📋' },
   { id: 'roles',          label: 'Roles & Permissions', icon: '👔' },
+  { id: 'career',         label: 'Career Paths',        icon: '🎯' },
   { id: 'rules',          label: 'XP & Scoring Rules',  icon: '⚡' },
   { id: 'shifts',         label: 'Shift Types',         icon: '🕐' },
   { id: 'notifications',  label: 'Notifications',       icon: '🔔' },
@@ -849,6 +850,401 @@ function SystemRolesTab({ allStaff, onRefresh }: { allStaff: Staff[]; onRefresh:
   )
 }
 
+// ─── Career Paths & Skills ──────────────────────────────────────────────────────
+
+interface InitReport {
+  initialized: number
+  titled: number
+  noTitle: string[]
+  noPath: string[]
+}
+
+function CareerPathsTab({ roles, allStaff, onRefresh }: {
+  roles: Role[]
+  allStaff: Staff[]
+  onRefresh: () => void
+}) {
+  const { departments } = useLookups()
+  const activeDeptRows = departments.filter(d => d.status === 'active')
+  const deptNameById = (id: string | null | undefined) => departments.find(d => d.id === id)?.name ?? null
+  const { toast, show } = useToast()
+  const [paths, setPaths] = useState<CareerPath[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedPathId, setSelectedPathId] = useState<string | null>(null)
+  const [pathModal, setPathModal] = useState(false)
+  const [pathForm, setPathForm] = useState({ department_id: '', from: '', to: '' })
+  const [skillModal, setSkillModal] = useState<Partial<Skill> | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [initing, setIniting] = useState(false)
+  const [initReport, setInitReport] = useState<InitReport | null>(null)
+
+  const activeRoles = roles.filter(r => r.is_active)
+
+  async function load() {
+    const { data, error: err } = await supabase
+      .from('career_paths')
+      .select('*, from:roles!career_paths_from_job_title_id_fkey(*), to:roles!career_paths_to_job_title_id_fkey(*), skills(*)')
+      .order('created_at')
+    if (!err && data) {
+      const withSorted = (data as CareerPath[]).map(p => ({
+        ...p,
+        skills: [...(p.skills ?? [])].sort((a, b) => a.sort_order - b.sort_order),
+      }))
+      setPaths(withSorted)
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [])
+
+  const selectedPath = paths.find(p => p.id === selectedPathId) ?? null
+
+  // ── Path CRUD ──
+  async function savePath() {
+    if (!pathForm.from || !pathForm.to) { setError('Select both job titles.'); return }
+    if (pathForm.from === pathForm.to) { setError('From and To must be different job titles.'); return }
+    setSaving(true); setError('')
+    const { error: err } = await supabase.from('career_paths').insert({
+      department_id: pathForm.department_id || null,
+      from_job_title_id: pathForm.from,
+      to_job_title_id: pathForm.to,
+    })
+    setSaving(false)
+    if (err) {
+      setError(/duplicate|unique/i.test(err.message)
+        ? 'That job title already has an active path. Deactivate it first.'
+        : err.message)
+      return
+    }
+    show('Career path added')
+    setPathModal(false)
+    setPathForm({ department_id: '', from: '', to: '' })
+    load()
+  }
+
+  async function togglePathStatus(p: CareerPath) {
+    const { error: err } = await supabase.from('career_paths')
+      .update({ status: p.status === 'active' ? 'inactive' : 'active' }).eq('id', p.id)
+    if (err) {
+      show(/duplicate|unique/i.test(err.message) ? 'Another active path already starts from that title.' : err.message)
+      return
+    }
+    load()
+  }
+
+  // ── Skill CRUD ──
+  async function saveSkill() {
+    if (!skillModal || !selectedPath || !skillModal.name?.trim()) return
+    setSaving(true); setError('')
+    const payload = {
+      name: skillModal.name.trim(),
+      name_zh: skillModal.name_zh?.trim() || null,
+      description: skillModal.description?.trim() || null,
+      xp_reward: Math.max(0, Number(skillModal.xp_reward ?? 0)),
+      sort_order: Number(skillModal.sort_order ?? (selectedPath.skills?.length ?? 0) + 1),
+    }
+    const { error: err } = skillModal.id
+      ? await supabase.from('skills').update(payload).eq('id', skillModal.id)
+      : await supabase.from('skills').insert({ ...payload, career_path_id: selectedPath.id })
+    setSaving(false)
+    if (err) { setError(err.message); return }
+    show(skillModal.id ? 'Skill updated' : 'Skill added')
+    setSkillModal(null)
+    load()
+  }
+
+  async function toggleSkillStatus(s: Skill) {
+    await supabase.from('skills').update({ status: s.status === 'active' ? 'inactive' : 'active' }).eq('id', s.id)
+    load()
+  }
+
+  // ── One-off initialization for existing staff ──
+  async function initializeAll() {
+    setIniting(true); setInitReport(null)
+    const report: InitReport = { initialized: 0, titled: 0, noTitle: [], noPath: [] }
+    for (const s of allStaff.filter(x => x.status !== 'resigned')) {
+      let titleId = s.job_title_id
+      // Infer the job title from rank + department when unambiguous.
+      if (!titleId) {
+        const matches = activeRoles.filter(r => r.rank === s.rank && (r.department ?? '') === (s.department ?? ''))
+        if (matches.length === 1) {
+          const { error: err } = await supabase.from('staff').update({ job_title_id: matches[0].id }).eq('id', s.id)
+          if (!err) { titleId = matches[0].id; report.titled++ }
+        }
+      }
+      if (!titleId) { report.noTitle.push(s.name); continue }
+      const { data, error: err } = await supabase.rpc('initialize_staff_skills', { p_staff_id: s.id })
+      if (err) { report.noPath.push(`${s.name} — ${err.message}`); continue }
+      if (data === -1) report.noTitle.push(s.name)
+      else if (data === -2) report.noPath.push(s.name)
+      else report.initialized += (data as number)
+    }
+    setInitReport(report)
+    setIniting(false)
+    onRefresh()
+  }
+
+  const roleName = (id: string | null | undefined) => roles.find(r => r.id === id)?.name ?? '—'
+
+  if (loading) {
+    return <p className="text-sm text-brown-faint py-8 text-center">Loading career paths…</p>
+  }
+
+  // ── Drill-in: skills of one path ──
+  if (selectedPath) {
+    return (
+      <div className="space-y-5">
+        {toast && <Toast message={toast} />}
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <button onClick={() => setSelectedPathId(null)} className="text-xs text-brown-faint hover:text-brown-dark mb-1">
+              ← All paths
+            </button>
+            <h2 className="text-base font-bold text-brown-dark truncate">
+              {roleName(selectedPath.from_job_title_id)} → {roleName(selectedPath.to_job_title_id)}
+            </h2>
+            <p className="text-xs text-brown-faint mt-0.5">
+              Skills required to qualify for promotion. Passing a skill awards its XP.
+            </p>
+          </div>
+          <button
+            onClick={() => { setSkillModal({}); setError('') }}
+            className="px-3 py-1.5 rounded-lg bg-[#C4813A] text-white text-xs font-semibold hover:bg-[#A86C2C] transition-colors flex-shrink-0"
+          >
+            + Add Skill
+          </button>
+        </div>
+
+        <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
+          {(selectedPath.skills ?? []).length === 0 && (
+            <p className="px-4 py-6 text-xs text-brown-faint text-center">No skills yet — add the first one.</p>
+          )}
+          {(selectedPath.skills ?? []).map(s => (
+            <div key={s.id} className="flex items-center gap-3 px-4 py-3">
+              <span className="text-xs text-brown-faint w-6 text-center flex-shrink-0">{s.sort_order}</span>
+              <div className="flex-1 min-w-0">
+                <p className={`text-sm font-semibold ${s.status === 'active' ? 'text-brown-dark' : 'text-brown-faint line-through'}`}>
+                  {s.name}
+                  {s.name_zh && <span className="font-normal text-brown-faint ml-2">{s.name_zh}</span>}
+                </p>
+                {s.description && <p className="text-xs text-brown-faint mt-0.5 line-clamp-1">{s.description}</p>}
+              </div>
+              <span className="text-xs text-[#C4813A] font-semibold flex-shrink-0">+{s.xp_reward} XP</span>
+              <button
+                onClick={() => toggleSkillStatus(s)}
+                className={`text-xs font-medium px-2 py-0.5 rounded-full transition-colors flex-shrink-0 ${
+                  s.status === 'active' ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F5EDE0] text-brown-faint'
+                }`}
+              >
+                {s.status === 'active' ? 'Active' : 'Inactive'}
+              </button>
+              <button
+                onClick={() => { setSkillModal({ ...s }); setError('') }}
+                className="text-xs text-brown-faint hover:text-brown-dark transition-colors px-2 py-1 flex-shrink-0"
+              >
+                Edit
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {skillModal && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40">
+            <div className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0E8DC]">
+                <h3 className="font-bold text-brown-dark">{skillModal.id ? 'Edit Skill' : 'Add Skill'}</h3>
+                <button onClick={() => setSkillModal(null)} className="p-1 text-brown-faint hover:text-brown-dark">✕</button>
+              </div>
+              <div className="px-5 py-5 space-y-4 max-h-[70vh] overflow-y-auto">
+                <div>
+                  <label className={labelCls}>Skill Name (EN)</label>
+                  <input className={inputCls} value={skillModal.name ?? ''} autoFocus
+                    onChange={e => setSkillModal(p => p && { ...p, name: e.target.value })}
+                    placeholder="e.g. Pour a rosetta latte art" />
+                </div>
+                <div>
+                  <label className={labelCls}>Skill Name (中文)</label>
+                  <input className={inputCls} value={skillModal.name_zh ?? ''}
+                    onChange={e => setSkillModal(p => p && { ...p, name_zh: e.target.value })}
+                    placeholder="例:拉花:叶形" />
+                </div>
+                <div>
+                  <label className={labelCls}>Description</label>
+                  <textarea rows={2} className={`${inputCls} resize-none`} value={skillModal.description ?? ''}
+                    onChange={e => setSkillModal(p => p && { ...p, description: e.target.value })}
+                    placeholder="Assessment criteria…" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={labelCls}>XP Reward</label>
+                    <input type="number" min={0} className={inputCls} value={skillModal.xp_reward ?? 0}
+                      onChange={e => setSkillModal(p => p && { ...p, xp_reward: Number(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Sort Order</label>
+                    <input type="number" min={1} className={inputCls}
+                      value={skillModal.sort_order ?? (selectedPath.skills?.length ?? 0) + 1}
+                      onChange={e => setSkillModal(p => p && { ...p, sort_order: Number(e.target.value) })} />
+                  </div>
+                </div>
+                {error && <p className="text-xs text-red-600">{error}</p>}
+                <button
+                  onClick={saveSkill}
+                  disabled={saving || !skillModal.name?.trim()}
+                  className="w-full py-2.5 rounded-xl bg-[#C4813A] text-white font-semibold text-sm hover:bg-[#A86C2C] disabled:opacity-50 transition-colors"
+                >
+                  {saving ? 'Saving…' : skillModal.id ? 'Save Changes' : 'Add Skill'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── Path list ──
+  return (
+    <div className="space-y-6">
+      {toast && <Toast message={toast} />}
+
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-bold text-brown-dark">Career Paths</h2>
+          <p className="text-xs text-brown-faint mt-0.5">
+            Promotion path segments. Staff must pass every skill in their segment to qualify for the next job title.
+          </p>
+        </div>
+        <button
+          onClick={() => { setPathModal(true); setError('') }}
+          className="px-3 py-1.5 rounded-lg bg-[#C4813A] text-white text-xs font-semibold hover:bg-[#A86C2C] transition-colors flex-shrink-0"
+        >
+          + Add Path
+        </button>
+      </div>
+
+      <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
+        {paths.length === 0 && (
+          <p className="px-4 py-6 text-xs text-brown-faint text-center">
+            No career paths yet. Add one, or run the skill-matrix migration if this looks wrong.
+          </p>
+        )}
+        {paths.map(p => (
+          <div key={p.id} className="flex items-center gap-3 px-4 py-3">
+            <div className="flex-1 min-w-0">
+              <p className={`text-sm font-semibold ${p.status === 'active' ? 'text-brown-dark' : 'text-brown-faint line-through'}`}>
+                {roleName(p.from_job_title_id)} <span className="text-brown-faint">→</span> {roleName(p.to_job_title_id)}
+              </p>
+              <p className="text-[11px] text-brown-faint mt-0.5">
+                {deptNameById(p.department_id) ? `${deptNameById(p.department_id)} · ` : ''}
+                {(p.skills ?? []).filter(s => s.status === 'active').length} active skills
+              </p>
+            </div>
+            <button
+              onClick={() => togglePathStatus(p)}
+              className={`text-xs font-medium px-2 py-0.5 rounded-full transition-colors flex-shrink-0 ${
+                p.status === 'active' ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F5EDE0] text-brown-faint'
+              }`}
+            >
+              {p.status === 'active' ? 'Active' : 'Inactive'}
+            </button>
+            <button
+              onClick={() => setSelectedPathId(p.id)}
+              className="text-xs font-semibold text-[#C4813A] hover:underline flex-shrink-0"
+            >
+              Manage Skills →
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* One-off initialization */}
+      <div className="bg-white rounded-xl border border-[#E8DDD0] p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-brown-dark">Initialize All Staff Skills</p>
+            <p className="text-xs text-brown-faint mt-0.5">
+              Creates skill records for every active staff member based on their job title's path.
+              Staff without a job title are matched by rank + department where unambiguous; the rest are listed for manual assignment.
+            </p>
+          </div>
+          <button
+            onClick={initializeAll}
+            disabled={initing}
+            className="px-3 py-1.5 rounded-lg border border-[#C4813A60] text-[#C4813A] bg-[#C4813A08] text-xs font-semibold hover:bg-[#C4813A18] transition-colors disabled:opacity-50 flex-shrink-0"
+          >
+            {initing ? 'Initializing…' : 'Initialize'}
+          </button>
+        </div>
+        {initReport && (
+          <div className="text-xs space-y-1 border-t border-[#F0E8DC] pt-3">
+            <p className="text-[#3D7A50] font-medium">
+              ✓ {initReport.initialized} skill records created · {initReport.titled} job titles auto-assigned
+            </p>
+            {initReport.noTitle.length > 0 && (
+              <p className="text-[#9E4A30]">
+                ⚠️ No job title (assign manually in their profile): {initReport.noTitle.join(', ')}
+              </p>
+            )}
+            {initReport.noPath.length > 0 && (
+              <p className="text-brown-muted">
+                ℹ️ No active career path from their title: {initReport.noPath.join(', ')}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Add path modal */}
+      {pathModal && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40">
+          <div className="w-full sm:max-w-sm bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0E8DC]">
+              <h3 className="font-bold text-brown-dark">Add Career Path</h3>
+              <button onClick={() => setPathModal(false)} className="p-1 text-brown-faint hover:text-brown-dark">✕</button>
+            </div>
+            <div className="px-5 py-5 space-y-4">
+              <div>
+                <label className={labelCls}>Department (optional)</label>
+                <select className={inputCls} value={pathForm.department_id}
+                  onChange={e => setPathForm(f => ({ ...f, department_id: e.target.value }))}>
+                  <option value="">— None —</option>
+                  {activeDeptRows.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>From Job Title</label>
+                <select className={inputCls} value={pathForm.from}
+                  onChange={e => setPathForm(f => ({ ...f, from: e.target.value }))}>
+                  <option value="">— Select —</option>
+                  {activeRoles.map(r => <option key={r.id} value={r.id}>{r.name} ({RANK_LABELS[r.rank]})</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>To Job Title</label>
+                <select className={inputCls} value={pathForm.to}
+                  onChange={e => setPathForm(f => ({ ...f, to: e.target.value }))}>
+                  <option value="">— Select —</option>
+                  {activeRoles.map(r => <option key={r.id} value={r.id}>{r.name} ({RANK_LABELS[r.rank]})</option>)}
+                </select>
+              </div>
+              {error && <p className="text-xs text-red-600">{error}</p>}
+              <button
+                onClick={savePath}
+                disabled={saving || !pathForm.from || !pathForm.to}
+                className="w-full py-2.5 rounded-xl bg-[#C4813A] text-white font-semibold text-sm hover:bg-[#A86C2C] disabled:opacity-50 transition-colors"
+              >
+                {saving ? 'Saving…' : 'Add Path'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── XP & Scoring Rules ─────────────────────────────────────────────────────────
 
 function RulesTab({ rules, onRefresh }: { rules: SystemRule[]; onRefresh: () => void }) {
@@ -1378,6 +1774,9 @@ export default function SettingsPage() {
             )}
             {tab === 'roles' && (
               <RolesTab roles={roles} allStaff={allStaff} onRefresh={loadAll} />
+            )}
+            {tab === 'career' && (
+              <CareerPathsTab roles={roles} allStaff={allStaff} onRefresh={loadAll} />
             )}
             {tab === 'rules' && (
               <RulesTab rules={rules} onRefresh={loadAll} />

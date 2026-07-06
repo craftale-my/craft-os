@@ -10,7 +10,7 @@ import { RegisterPage } from './features/auth/Register'
 import { OnboardingPage } from './features/onboarding/Onboarding'
 import DashboardPage from './features/staff/Dashboard'
 import { StaffProfilePage } from './features/staff/StaffProfile'
-import { MissionsPage } from './features/missions/Missions'
+import GrowthPage from './features/growth/GrowthPage'
 import ProbationReviewPage from './features/reviews/ProbationReview'
 import TasksPage from './features/tasks/Tasks'
 import SettingsPage from './features/settings/Settings'
@@ -128,8 +128,8 @@ function AppRoutes() {
       <Route
         path="/missions"
         element={
-          <ProtectedRoute requireCap="manage_missions">
-            <AppLayout><MissionsPage /></AppLayout>
+          <ProtectedRoute>
+            <AppLayout><GrowthPage /></AppLayout>
           </ProtectedRoute>
         }
       />

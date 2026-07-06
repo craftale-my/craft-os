@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, LayoutDashboard, CheckSquare, ClipboardList,
   UserCheck, Users, LogOut, Menu, X, Settings,
-  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays,
+  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, GraduationCap,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -43,6 +43,7 @@ const MGMT_NAV: NavItem[] = [
   { id: 'schedule',   label: 'Schedule',          to: '/schedule',  icon: CalendarDays,    activePaths: ['/schedule'], cap: 'manage_schedule' },
   { id: 'tasks',      label: 'Tasks',             to: '/tasks',     icon: CheckSquare,     activePaths: ['/tasks'], cap: 'view_team' },
   { id: 'reviews',    label: 'Reviews',           to: '/dashboard', icon: ClipboardList,   scrollTo: 'reviews-section', cap: 'conduct_reviews' },
+  { id: 'skills',     label: 'Skill Assessments', to: '/dashboard', icon: GraduationCap,   scrollTo: 'skill-assessments-section', cap: 'conduct_reviews' },
   { id: 'probation',  label: 'Probation Reviews', to: '/dashboard', icon: UserCheck,       scrollTo: 'probation-section', cap: 'conduct_reviews' },
   { id: 'staff-mgmt', label: 'Staff Management',  to: '/dashboard', icon: Users,           scrollTo: 'staff-section', cap: 'view_team' },
 ]
