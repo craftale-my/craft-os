@@ -845,3 +845,22 @@ update staff s
   from auth.users u
  where u.id = s.id
    and (s.email is null or s.email = '');
+
+-- =============================================
+-- Phase 5 migration: Schedule leave assignment
+-- Idempotent — safe to run on the existing database via the Supabase SQL editor.
+-- =============================================
+
+-- A scheduled_shifts row is now either a work shift (shift_type_id) or a
+-- manager-assigned leave day (leave_type) — exactly one of the two.
+alter table scheduled_shifts alter column shift_type_id drop not null;
+
+alter table scheduled_shifts add column if not exists leave_type text
+  check (leave_type in ('medical','emergency','unpaid','maternity','public_holiday'));
+
+alter table scheduled_shifts drop constraint if exists scheduled_shifts_shift_or_leave;
+alter table scheduled_shifts add constraint scheduled_shifts_shift_or_leave
+  check (
+    (shift_type_id is not null and leave_type is null)
+    or (shift_type_id is null and leave_type is not null)
+  );
