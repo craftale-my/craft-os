@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Staff, ShiftType, ScheduledShift } from '../../shared/types'
-import { BRANCHES, DEPT_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
+import type { Staff, ShiftType, ScheduledShift, LeaveType, Attendance } from '../../shared/types'
+import { BRANCHES, DEPT_LABELS, DEPT_SHIFT_COLORS, SCHEDULE_LEAVE_OPTIONS, SCHEDULE_LEAVE_LABELS, shouldClearLeaveAttendance } from '../../shared/types'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { Avatar } from '../../shared/components/Avatar'
 
@@ -79,7 +79,7 @@ function AssignModal({
   date: Date
   shiftTypes: ShiftType[]
   current: ScheduledShift | null
-  onAssign: (shiftTypeId: string | null) => void
+  onAssign: (a: { shiftTypeId: string | null; leaveType: LeaveType | null }) => void
   onClose: () => void
 }) {
   const active = shiftTypes.filter(st => st.is_active)
@@ -119,7 +119,7 @@ function AssignModal({
                   return (
                     <button
                       key={st.id}
-                      onClick={() => onAssign(st.id)}
+                      onClick={() => onAssign({ shiftTypeId: st.id, leaveType: null })}
                       className="w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center justify-between"
                       style={isSelected
                         ? { background: `${color}18`, border: `1px solid ${color}60` }
@@ -144,9 +144,36 @@ function AssignModal({
             </div>
           ))}
 
+          <div>
+            <p className="text-[10px] font-bold text-brown-faint uppercase tracking-widest px-1 mb-1.5">
+              Leave
+            </p>
+            <div className="space-y-1">
+              {SCHEDULE_LEAVE_OPTIONS.map(opt => {
+                const isSelected = current?.leave_type === opt.type
+                return (
+                  <button
+                    key={opt.type}
+                    onClick={() => onAssign({ shiftTypeId: null, leaveType: opt.type })}
+                    className="w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center justify-between"
+                    style={isSelected
+                      ? { background: '#8B735518', border: '1px solid #8B735560' }
+                      : { background: '#F9F4EE', border: '1px dashed #D4C5B0' }
+                    }
+                  >
+                    <p className="text-sm font-semibold" style={{ color: isSelected ? '#8B7355' : '#3D2410' }}>
+                      {opt.label}
+                    </p>
+                    {isSelected && <span className="text-xs font-bold" style={{ color: '#8B7355' }}>✓</span>}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
           {current && (
             <button
-              onClick={() => onAssign(null)}
+              onClick={() => onAssign({ shiftTypeId: null, leaveType: null })}
               className="w-full py-2.5 text-sm text-[#9E4A30] font-medium border border-[#F0C5B8] bg-[#FDF3F0] rounded-xl hover:bg-[#FCE8E3] transition-colors"
             >
               Remove shift (mark as Off)
@@ -187,6 +214,7 @@ function WeekView({
   const gapMap: Record<string, Record<string, number>> = {}
   Object.values(shiftMap).forEach(byDate => {
     Object.entries(byDate).forEach(([date, shift]) => {
+      if (!shift.shift_type_id) return
       if (!gapMap[date]) gapMap[date] = {}
       gapMap[date][shift.shift_type_id] = (gapMap[date][shift.shift_type_id] ?? 0) + 1
     })
@@ -257,17 +285,25 @@ function WeekView({
                 {weekDays.map((d, di) => {
                   const ds = toDateStr(d)
                   const shift = shiftMap[s.id]?.[ds]
-                  const st = shift ? shiftTypes.find(x => x.id === shift.shift_type_id) : null
+                  const st = shift?.shift_type_id ? shiftTypes.find(x => x.id === shift.shift_type_id) : null
+                  const leave = shift?.leave_type ?? null
                   return (
                     <td key={di} className="px-1.5 py-1.5 align-top">
                       <button
                         onClick={() => onCellClick(s, d)}
                         className={`w-full min-h-[52px] rounded-lg transition-colors text-left ${
-                          st ? 'hover:opacity-80' : 'hover:bg-[#F5EDE0] border border-dashed border-[#E0D4C0]'
+                          st || leave ? 'hover:opacity-80' : 'hover:bg-[#F5EDE0] border border-dashed border-[#E0D4C0]'
                         }`}
                       >
                         {st ? (
                           <ShiftBadge shiftType={st} />
+                        ) : leave ? (
+                          <div
+                            className="rounded-lg leading-tight px-2 py-1"
+                            style={{ background: '#8B735515', border: '1px dashed #8B735560', color: '#8B7355' }}
+                          >
+                            <p className="font-semibold text-[10px]">🌴 {SCHEDULE_LEAVE_LABELS[leave]}</p>
+                          </div>
                         ) : (
                           <span className="text-[10px] text-brown-faint p-2 block">Off</span>
                         )}
@@ -328,10 +364,13 @@ function DayView({
   // Group staff by shift type for this day
   const grouped: Record<string, Staff[]> = {}
   const unassigned: Staff[] = []
+  const onLeave: { staff: Staff; leave: LeaveType }[] = []
 
   allStaff.forEach(s => {
     const shift = dayShifts[s.id]?.[ds]
-    if (shift) {
+    if (shift?.leave_type) {
+      onLeave.push({ staff: s, leave: shift.leave_type })
+    } else if (shift?.shift_type_id) {
       const key = shift.shift_type_id
       if (!grouped[key]) grouped[key] = []
       grouped[key].push(s)
@@ -412,6 +451,32 @@ function DayView({
           </div>
         )
       })}
+
+      {/* On leave */}
+      {onLeave.length > 0 && (
+        <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-hidden">
+          <div className="px-4 py-3" style={{ background: '#8B735512' }}>
+            <p className="text-sm font-bold" style={{ color: '#8B7355' }}>On Leave ({onLeave.length})</p>
+          </div>
+          <div className="divide-y divide-[#F0E8DC]">
+            {onLeave.map(({ staff: s, leave }) => (
+              <div key={s.id} className="flex items-center gap-3 px-4 py-2.5">
+                <Avatar name={s.name} avatar={s.avatar} size="sm" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-brown-dark">{s.name}</p>
+                  <p className="text-xs" style={{ color: '#8B7355' }}>🌴 {SCHEDULE_LEAVE_LABELS[leave]}</p>
+                </div>
+                <button
+                  onClick={() => onCellClick(s, selectedDay)}
+                  className="text-xs text-brown-faint hover:text-brown-dark transition-colors px-2 py-1 rounded"
+                >
+                  Change
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Unassigned */}
       {unassigned.length > 0 && (
@@ -494,7 +559,7 @@ function MyScheduleView({
       {/* Summary */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-white rounded-xl border border-[#E8DDD0] p-4 text-center">
-          <p className="text-2xl font-bold text-[#C4813A]">{myShifts.length}</p>
+          <p className="text-2xl font-bold text-[#C4813A]">{myShifts.filter(s => s.shift_type_id).length}</p>
           <p className="text-xs text-brown-faint mt-0.5">Upcoming shifts</p>
         </div>
         <div className="bg-white rounded-xl border border-[#E8DDD0] p-4 text-center">
@@ -516,7 +581,7 @@ function MyScheduleView({
             </p>
             <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
               {shifts.map(s => {
-                const st = shiftTypes.find(x => x.id === s.shift_type_id)
+                const st = s.shift_type_id ? shiftTypes.find(x => x.id === s.shift_type_id) : null
                 const d = new Date(s.date + 'T00:00:00')
                 const color = st ? (DEPT_SHIFT_COLORS[st.department] ?? st.color) : '#8B7355'
                 const today = toDateStr(new Date()) === s.date
@@ -536,6 +601,10 @@ function MyScheduleView({
                         <p className="text-xs mt-0.5" style={{ color }}>
                           {st.name} · {fmtTime(st.start_time)} – {fmtTime(st.end_time)}
                           {' · '}{shiftHours(st).toFixed(1)}h
+                        </p>
+                      ) : s.leave_type ? (
+                        <p className="text-xs mt-0.5" style={{ color: '#8B7355' }}>
+                          🌴 {SCHEDULE_LEAVE_LABELS[s.leave_type]}
                         </p>
                       ) : (
                         <p className="text-xs text-brown-faint mt-0.5">Unknown shift</p>
@@ -573,6 +642,7 @@ export default function SchedulePage() {
   const [filterDept, setFilterDept] = useState('')
   const [assignTarget, setAssignTarget] = useState<{ staff: Staff; date: Date } | null>(null)
   const [saving, setSaving] = useState(false)
+  const [scheduleError, setScheduleError] = useState('')
 
   const weekDays = getWeekDays(weekStart)
   const weekEnd = new Date(weekStart)
@@ -617,22 +687,55 @@ export default function SchedulePage() {
     shiftMap[s.staff_id][s.date] = s
   })
 
-  async function assignShift(shiftTypeId: string | null) {
+  async function assignShift({ shiftTypeId, leaveType }: { shiftTypeId: string | null; leaveType: LeaveType | null }) {
     if (!assignTarget || !staff) return
     setSaving(true)
+    setScheduleError('')
+    const staffId = assignTarget.staff.id
     const ds = toDateStr(assignTarget.date)
-    const existing = shiftMap[assignTarget.staff.id]?.[ds]
+    const existing = shiftMap[staffId]?.[ds]
+    const wasLeave = !!existing?.leave_type
 
-    if (shiftTypeId === null) {
-      if (existing) await supabase.from('scheduled_shifts').delete().eq('id', existing.id)
+    let error: { message: string } | null = null
+    if (shiftTypeId === null && leaveType === null) {
+      if (existing) ({ error } = await supabase.from('scheduled_shifts').delete().eq('id', existing.id))
     } else {
-      await supabase.from('scheduled_shifts').upsert({
-        staff_id: assignTarget.staff.id,
+      ;({ error } = await supabase.from('scheduled_shifts').upsert({
+        staff_id: staffId,
         shift_type_id: shiftTypeId,
+        leave_type: leaveType,
         date: ds,
         status: 'scheduled',
         created_by: staff.id,
-      }, { onConflict: 'staff_id,date' })
+      }, { onConflict: 'staff_id,date' }))
+    }
+
+    if (error) {
+      setScheduleError(`Couldn't update the schedule: ${error.message}`)
+      setSaving(false)
+      return
+    }
+
+    if (leaveType !== null) {
+      // Mirror HrLeave approve(): the day's attendance becomes on_leave.
+      const { error: attErr } = await supabase.from('attendance').upsert(
+        { staff_id: staffId, date: ds, status: 'on_leave' as const, recorded_by: staff.id },
+        { onConflict: 'staff_id,date' },
+      )
+      if (attErr) setScheduleError(`Schedule saved, but attendance sync failed: ${attErr.message}`)
+    } else if (wasLeave) {
+      // The leave marker was replaced — remove its auto-created attendance
+      // row, but only while it is still pristine (on_leave, never clocked in).
+      const { data: att } = await supabase
+        .from('attendance')
+        .select('id, status, clock_in')
+        .eq('staff_id', staffId)
+        .eq('date', ds)
+        .maybeSingle()
+      if (shouldClearLeaveAttendance(att as Pick<Attendance, 'status' | 'clock_in'> | null)) {
+        const { error: delErr } = await supabase.from('attendance').delete().eq('id', (att as { id: string }).id)
+        if (delErr) setScheduleError(`Schedule saved, but couldn't clear the leave attendance: ${delErr.message}`)
+      }
     }
 
     setSaving(false)
@@ -702,6 +805,10 @@ export default function SchedulePage() {
               <p className="text-xs font-bold text-brown-faint uppercase tracking-widest mb-2">My Upcoming Shifts</p>
               <MyScheduleView staffId={staff.id} shiftTypes={shiftTypes} />
             </div>
+
+            {scheduleError && (
+              <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{scheduleError}</p>
+            )}
 
             {/* Week navigation */}
             <div className="flex items-center gap-3">

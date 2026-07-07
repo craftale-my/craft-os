@@ -717,13 +717,36 @@ export const DEFAULT_BREAK_MINUTES = 60
 export interface ScheduledShift {
   id: string
   staff_id: string
-  shift_type_id: string
+  shift_type_id: string | null
+  leave_type: LeaveType | null
   branch_id: string | null
   date: string
   status: 'scheduled' | 'confirmed' | 'swapped' | 'cancelled'
   notes: string | null
   created_by: string | null
   created_at: string
+}
+
+/** Leave types a manager may assign straight from the schedule (annual and
+ *  paternity intentionally excluded — those go through the request flow). */
+export const SCHEDULE_LEAVE_OPTIONS: { type: LeaveType; label: string }[] = [
+  { type: 'medical',        label: 'Medical Leave (MC)' },
+  { type: 'emergency',      label: 'Emergency Leave' },
+  { type: 'unpaid',         label: 'Unpaid Leave' },
+  { type: 'maternity',      label: 'Maternity Leave' },
+  { type: 'public_holiday', label: 'Public Holiday Replacement' },
+]
+
+export const SCHEDULE_LEAVE_LABELS: Partial<Record<LeaveType, string>> =
+  Object.fromEntries(SCHEDULE_LEAVE_OPTIONS.map(o => [o.type, o.label]))
+
+/** A schedule-assigned leave writes an attendance row (status on_leave).
+ *  When the leave marker is replaced, that row may be deleted — but only
+ *  while it is still pristine (no clock data). */
+export function shouldClearLeaveAttendance(
+  att: Pick<Attendance, 'status' | 'clock_in'> | null | undefined,
+): boolean {
+  return !!att && att.status === 'on_leave' && att.clock_in == null
 }
 
 export const DEPT_SHIFT_COLORS: Record<string, string> = {
