@@ -223,7 +223,7 @@ function GrantPhModal({ allStaff, granterId, onClose, onDone }: {
   onClose: () => void
   onDone: () => void
 }) {
-  const activeStaff = allStaff.filter(s => s.is_active)
+  const activeStaff = allStaff.filter(s => s.is_active && s.status !== 'resigned')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
