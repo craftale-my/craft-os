@@ -14,6 +14,7 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import { useCan } from '../../shared/lib/permissions'
+import { bucketProbations } from '../../shared/lib/probation'
 import { StarRating } from '../../shared/components/StarRating'
 
 const CURRENT_MONTH = new Date().getMonth() + 1
@@ -1105,6 +1106,7 @@ export default function Dashboard() {
   const [reviewRefresh, setReviewRefresh] = useState(0)
   const [probations, setProbations] = useState<ProbationReview[]>([])
   const [startingProbation, setStartingProbation] = useState<string | null>(null)
+  const [probationError, setProbationError] = useState('')
   const pendingRef = useRef<HTMLDivElement>(null)
   const regRef = useRef<HTMLDivElement>(null)
   const [regRequests, setRegRequests] = useState<RegRequest[]>([])
@@ -1135,7 +1137,6 @@ export default function Dashboard() {
       supabase
         .from('probation_reviews')
         .select('*, staff:staff!probation_reviews_staff_id_fkey(id,name,avatar,rank,branch)')
-        .is('overall_result', null)
         .order('start_date', { ascending: false }),
     ])
 
@@ -1251,13 +1252,31 @@ export default function Dashboard() {
 
   async function handleStartProbation(staffMember: Staff) {
     setStartingProbation(staffMember.id)
+    setProbationError('')
+    // A review may already exist (started by another manager, or finished
+    // earlier) — never create a duplicate row; just open the existing one.
+    const { data: existing } = await supabase
+      .from('probation_reviews')
+      .select('id')
+      .eq('staff_id', staffMember.id)
+      .limit(1)
+      .maybeSingle()
+    if (existing) {
+      setStartingProbation(null)
+      navigate(`/probation/${staffMember.id}`)
+      return
+    }
     const { error } = await supabase.from('probation_reviews').insert({
       staff_id: staffMember.id,
       reviewer_id: currentStaff?.id,
       start_date: new Date().toISOString().split('T')[0],
     })
     setStartingProbation(null)
-    if (!error) navigate(`/probation/${staffMember.id}`)
+    if (error) {
+      setProbationError(`Couldn't start probation for ${staffMember.name}: ${error.message}`)
+      return
+    }
+    navigate(`/probation/${staffMember.id}`)
   }
 
   async function handleApprove(id: string) {
@@ -1549,11 +1568,8 @@ export default function Dashboard() {
 
             {/* ── Probation Reviews ── */}
             {isSupervisor && (() => {
-              const activeStaffIds = new Set(probations.map(p => p.staff_id))
-              const traineesWithoutProbation = allStaff.filter(
-                s => s.rank === 'trainee' && s.status !== 'resigned' && !activeStaffIds.has(s.id)
-              )
-              const hasAnything = probations.length > 0 || traineesWithoutProbation.length > 0
+              const { active, completed, unstarted } = bucketProbations(allStaff, probations)
+              const hasAnything = active.length > 0 || completed.length > 0 || unstarted.length > 0
               if (!hasAnything) return null
               return (
                 <section id="probation-section">
@@ -1562,16 +1578,20 @@ export default function Dashboard() {
                       <h2 className="text-base font-bold text-brown-dark">Probation Reviews</h2>
                       <p className="text-xs text-brown-faint mt-0.5">3-day evaluation for new trainees</p>
                     </div>
-                    {probations.length > 0 && (
+                    {active.length > 0 && (
                       <span className="text-xs bg-[#FEF3E2] text-[#C4813A] px-2 py-0.5 rounded-full font-semibold">
-                        {probations.length} active
+                        {active.length} active
                       </span>
                     )}
                   </div>
 
+                  {probationError && (
+                    <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3">{probationError}</p>
+                  )}
+
                   <div className="space-y-2">
                     {/* Active probations */}
-                    {probations.map(p => {
+                    {active.map(p => {
                       const s = p.staff as Staff | undefined
                       const day = getProbationDay(p.start_date)
                       const d1 = p.day1_result
@@ -1606,8 +1626,32 @@ export default function Dashboard() {
                       )
                     })}
 
+                    {/* Completed probations — outcome shown, no restart */}
+                    {completed.map(({ staff: s, review: r }) => {
+                      const hired = r.overall_result === 'hired'
+                      return (
+                        <div key={r.id} className="bg-white rounded-xl border border-[#E8DDD0] p-4 flex items-center gap-3">
+                          <Avatar name={s.name} avatar={s.avatar} size="sm" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-brown-dark truncate">{s.name}</p>
+                            <span className={`inline-block mt-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                              hired ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#FCF0EC] text-[#9E4A30]'
+                            }`}>
+                              {hired ? '🎉 Hired' : '❌ Eliminated'}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => navigate(`/probation/${s.id}`)}
+                            className="text-xs font-semibold text-brown-faint px-3 py-1.5 rounded-lg border border-[#E8DDD0] hover:bg-[#FAF6F1] transition-colors flex-shrink-0"
+                          >
+                            View →
+                          </button>
+                        </div>
+                      )
+                    })}
+
                     {/* Trainees without probation */}
-                    {traineesWithoutProbation.map(s => (
+                    {unstarted.map(s => (
                       <div key={s.id} className="bg-white rounded-xl border border-[#E8DDD0] border-dashed p-4 flex items-center gap-3">
                         <Avatar name={s.name} avatar={s.avatar} size="sm" />
                         <div className="flex-1 min-w-0">

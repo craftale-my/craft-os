@@ -354,6 +354,7 @@ export default function ProbationReviewPage() {
   const [loading, setLoading] = useState(true)
   const [activeDay, setActiveDay] = useState<1 | 2 | 3>(1)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [confirmEliminate, setConfirmEliminate] = useState(false)
   const [notes, setNotes] = useState('')
 
@@ -411,6 +412,7 @@ export default function ProbationReviewPage() {
 
   async function handleStartReview() {
     setSaving(true)
+    setSaveError('')
     const { data, error } = await supabase
       .from('probation_reviews')
       .insert({
@@ -421,7 +423,11 @@ export default function ProbationReviewPage() {
       .select()
       .single()
     setSaving(false)
-    if (!error && data) applyReview(data as ProbationReview)
+    if (error) {
+      setSaveError(`Couldn't start the review: ${error.message}`)
+      return
+    }
+    if (data) applyReview(data as ProbationReview)
   }
 
   function cleanChecks(c: Checks): Record<string, boolean> {
@@ -467,9 +473,23 @@ export default function ProbationReviewPage() {
       })
     }
 
-    await supabase.from('probation_reviews').update(update).eq('id', review.id)
-    if (eliminated) await supabase.from('staff').update({ is_active: false }).eq('id', staffId!)
-    if (hired) await supabase.from('staff').update({ onboarding_completed: true }).eq('id', staffId!)
+    setSaveError('')
+    const { error } = await supabase.from('probation_reviews').update(update).eq('id', review.id)
+    if (error) {
+      // Surface the failure instead of silently reloading the unchanged row —
+      // a swallowed error here looks exactly like "the review didn't save".
+      setSaveError(`Couldn't save Day ${activeDay}: ${error.message}`)
+      setSaving(false)
+      return
+    }
+    if (eliminated) {
+      const { error: staffErr } = await supabase.from('staff').update({ is_active: false }).eq('id', staffId!)
+      if (staffErr) setSaveError(`Review saved, but couldn't deactivate the staff record: ${staffErr.message}`)
+    }
+    if (hired) {
+      const { error: staffErr } = await supabase.from('staff').update({ onboarding_completed: true }).eq('id', staffId!)
+      if (staffErr) setSaveError(`Review saved, but couldn't update the staff record: ${staffErr.message}`)
+    }
 
     setSaving(false)
     loadData()
@@ -565,6 +585,13 @@ export default function ProbationReviewPage() {
             </div>
           )}
         </div>
+
+        {/* Save/start errors */}
+        {saveError && (
+          <div className="mb-4 px-4 py-3 bg-[#FCE8E2] border border-[#C0624240] rounded-xl">
+            <p className="text-sm font-semibold text-[#9E4A30]">⚠️ {saveError}</p>
+          </div>
+        )}
 
         {/* No review yet */}
         {!review && (
