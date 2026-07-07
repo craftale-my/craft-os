@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
-import type { Staff, LeaveRequest, LeaveEntitlement, LeaveType } from '../../shared/types'
+import type { Staff, LeaveRequest, LeaveEntitlement, LeaveType, PhReplacement } from '../../shared/types'
 import { LEAVE_TYPE_LABELS, MONTHS_FULL } from '../../shared/types'
-import { calcAlBalance } from '../../shared/lib/leave'
+import { calcAlBalance, pickPhGrantsFifo } from '../../shared/lib/leave'
 import { Avatar } from '../../shared/components/Avatar'
 
 const inputCls = 'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
 const labelCls = 'block text-xs font-semibold text-brown-medium mb-1'
-const LEAVE_TYPES: LeaveType[] = ['annual', 'medical', 'unpaid', 'maternity', 'paternity']
+const LEAVE_TYPES: LeaveType[] = ['annual', 'medical', 'unpaid', 'maternity', 'paternity', 'public_holiday']
 
 function daysBetween(start: string, end: string): number {
   const s = new Date(start)
@@ -54,9 +54,11 @@ async function ensureEntitlement(staffMember: Staff, year: number): Promise<Leav
 
 // ─── Apply leave modal ──────────────────────────────────────────────────────────
 
-function ApplyLeaveModal({ staffId, availableAnnualDays, onClose, onSubmitted }: {
+function ApplyLeaveModal({ staffId, availableAnnualDays, phAvailable, phEarliestExpiry, onClose, onSubmitted }: {
   staffId: string
   availableAnnualDays: number
+  phAvailable: number
+  phEarliestExpiry: string | null
   onClose: () => void
   onSubmitted: () => void
 }) {
@@ -69,7 +71,8 @@ function ApplyLeaveModal({ staffId, availableAnnualDays, onClose, onSubmitted }:
     setForm(f => ({ ...f, [k]: e.target.value }))
 
   const totalDays = form.start_date && form.end_date ? Math.max(1, daysBetween(form.start_date, form.end_date)) : 0
-  const overLimit = form.leave_type === 'annual' && totalDays > availableAnnualDays
+  const overLimit = (form.leave_type === 'annual' && totalDays > availableAnnualDays) ||
+    (form.leave_type === 'public_holiday' && totalDays > phAvailable)
 
   async function handleSubmit() {
     if (!form.start_date || !form.end_date || !form.reason.trim()) {
@@ -81,7 +84,9 @@ function ApplyLeaveModal({ staffId, availableAnnualDays, onClose, onSubmitted }:
       return
     }
     if (overLimit) {
-      setError('Requested days exceed your available annual leave balance.')
+      setError(form.leave_type === 'public_holiday'
+        ? 'Requested days exceed your available PH replacement credits.'
+        : 'Requested days exceed your available annual leave balance.')
       return
     }
     setSaving(true)
@@ -120,7 +125,7 @@ function ApplyLeaveModal({ staffId, availableAnnualDays, onClose, onSubmitted }:
           <div>
             <label className={labelCls}>Leave Type</label>
             <select className={inputCls} value={form.leave_type} onChange={set('leave_type')}>
-              {LEAVE_TYPES.map(t => <option key={t} value={t}>{LEAVE_TYPE_LABELS[t]}</option>)}
+              {LEAVE_TYPES.map(t => <option key={t} value={t}>{t === 'public_holiday' ? 'PH Replacement' : LEAVE_TYPE_LABELS[t]}</option>)}
             </select>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -137,6 +142,11 @@ function ApplyLeaveModal({ staffId, availableAnnualDays, onClose, onSubmitted }:
           {form.leave_type === 'annual' && (
             <p className={`text-xs ${overLimit ? 'text-red-600 font-bold' : 'text-brown-faint'}`}>
               Available: {availableAnnualDays.toFixed(1)} days
+            </p>
+          )}
+          {form.leave_type === 'public_holiday' && (
+            <p className={`text-xs ${overLimit ? 'text-red-600 font-bold' : 'text-brown-faint'}`}>
+              Available: {phAvailable} day(s){phEarliestExpiry ? `, earliest expiry ${new Date(phEarliestExpiry).toLocaleDateString('en-MY', { day: 'numeric', month: 'short' })}` : ''}
             </p>
           )}
           <div>
@@ -207,6 +217,86 @@ function RejectLeaveModal({ request, reviewerId, onClose, onDone }: {
   )
 }
 
+function GrantPhModal({ allStaff, granterId, onClose, onDone }: {
+  allStaff: Staff[]
+  granterId: string | undefined
+  onClose: () => void
+  onDone: () => void
+}) {
+  const activeStaff = allStaff.filter(s => s.is_active && s.status !== 'resigned')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  function toggle(id: string) {
+    setSelected(s => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  async function handleSave() {
+    if (selected.size === 0) {
+      setError('Select at least one staff member.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    const { data: rule } = await supabase.from('system_rules').select('value').eq('key', 'leave_ph_expiry_months').maybeSingle()
+    const months = rule ? parseInt((rule as { value: string }).value) || 3 : 3
+    const d = new Date()
+    d.setMonth(d.getMonth() + months)
+    const expires_at = d.toISOString().split('T')[0]
+    const rows = Array.from(selected).map(staff_id => ({
+      staff_id, granted_by: granterId ?? null, expires_at, reason: reason.trim() || null,
+    }))
+    const { error: err } = await supabase.from('ph_replacements').insert(rows)
+    setSaving(false)
+    if (err) { setError(err.message); return }
+    onDone()
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0]">
+          <h2 className="font-bold text-brown-dark text-lg">Grant PH Replacement</h2>
+          <button onClick={onClose} className="text-brown-faint hover:text-brown-dark text-xl leading-none">✕</button>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
+          <div>
+            <label className={labelCls}>Staff</label>
+            <div className="max-h-48 overflow-y-auto border border-[#D4C5B0] rounded-lg divide-y divide-[#F0E8DC]">
+              {activeStaff.map(s => (
+                <label key={s.id} className="flex items-center gap-2 px-3 py-2 text-sm text-brown-dark cursor-pointer hover:bg-[#F5EDE0]">
+                  <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggle(s.id)} />
+                  {s.name}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>Reason</label>
+            <input type="text" className={inputCls} placeholder="e.g. Hari Raya 2026-03-31" value={reason} onChange={e => setReason(e.target.value)} />
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors">
+              Cancel
+            </button>
+            <button onClick={handleSave} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors disabled:opacity-60">
+              {saving ? 'Saving...' : 'Grant'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Staff view ─────────────────────────────────────────────────────────────────
 
 function MyLeaveView({ staffMember }: { staffMember: Staff }) {
@@ -215,6 +305,7 @@ function MyLeaveView({ staffMember }: { staffMember: Staff }) {
   const [showApply, setShowApply] = useState(false)
   const [alInfo, setAlInfo] = useState<{ balance: number; available: number } | null>(null)
   const [alRate, setAlRate] = useState('0.667')
+  const [phGrants, setPhGrants] = useState<PhReplacement[]>([])
 
   async function load() {
     const ent = await ensureEntitlement(staffMember, new Date().getFullYear())
@@ -229,6 +320,9 @@ function MyLeaveView({ staffMember }: { staffMember: Staff }) {
     setAlInfo(calcAlBalance((logs as { amount: number }[]) ?? [], approved, pending))
     const { data: rateRow } = await supabase.from('system_rules').select('value').eq('key', 'leave_al_monthly_rate').maybeSingle()
     if (rateRow) setAlRate((rateRow as { value: string }).value)
+
+    const { data: ph } = await supabase.from('ph_replacements').select('*').eq('staff_id', staffMember.id).eq('status', 'available').order('expires_at')
+    setPhGrants((ph as PhReplacement[]) ?? [])
   }
 
   useEffect(() => { load() }, [])
@@ -262,6 +356,19 @@ function MyLeaveView({ staffMember }: { staffMember: Staff }) {
           </p>
           <p className="text-xs text-brown-faint">days remaining</p>
         </div>
+        <div className="bg-white rounded-xl p-4 border border-[#E8DDD0]">
+          <p className="text-xs text-brown-faint mb-1">PH Replacement</p>
+          <p className="text-xl font-bold text-brown-dark">{phGrants.length}</p>
+          <p className="text-xs text-brown-faint">days available</p>
+          {phGrants.slice(0, 3).map(g => {
+            const soon = (new Date(g.expires_at).getTime() - Date.now()) < 30 * 86400000
+            return (
+              <p key={g.id} className={`text-[10px] mt-0.5 ${soon ? 'text-[#C4813A] font-semibold' : 'text-brown-faint'}`}>
+                1 day · expires {new Date(g.expires_at).toLocaleDateString('en-MY', { day: 'numeric', month: 'short' })}{soon ? ' ⚠️' : ''}
+              </p>
+            )
+          })}
+        </div>
       </div>
 
       <div className="flex justify-end">
@@ -294,7 +401,14 @@ function MyLeaveView({ staffMember }: { staffMember: Staff }) {
       </div>
 
       {showApply && (
-        <ApplyLeaveModal staffId={staffMember.id} availableAnnualDays={alInfo?.available ?? 0} onClose={() => setShowApply(false)} onSubmitted={load} />
+        <ApplyLeaveModal
+          staffId={staffMember.id}
+          availableAnnualDays={alInfo?.available ?? 0}
+          phAvailable={phGrants.length}
+          phEarliestExpiry={phGrants[0]?.expires_at ?? null}
+          onClose={() => setShowApply(false)}
+          onSubmitted={load}
+        />
       )}
     </div>
   )
@@ -346,8 +460,11 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
   const [requests, setRequests] = useState<LeaveRequest[]>([])
   const [entitlements, setEntitlements] = useState<LeaveEntitlement[]>([])
   const [accrualLogs, setAccrualLogs] = useState<{ staff_id: string; amount: number }[]>([])
+  const [phCounts, setPhCounts] = useState<{ staff_id: string }[]>([])
   const [rejectTarget, setRejectTarget] = useState<LeaveRequest | null>(null)
   const [approving, setApproving] = useState<string | null>(null)
+  const [approveError, setApproveError] = useState('')
+  const [showGrantPh, setShowGrantPh] = useState(false)
 
   async function load() {
     const { data } = await supabase.from('leave_requests').select('*, staff:staff!leave_requests_staff_id_fkey(id,name,avatar)').order('created_at', { ascending: false })
@@ -356,6 +473,8 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
     setEntitlements((ents as LeaveEntitlement[]) ?? [])
     const { data: logs } = await supabase.from('leave_accrual_log').select('staff_id, amount')
     setAccrualLogs((logs as { staff_id: string; amount: number }[]) ?? [])
+    const { data: phAll } = await supabase.from('ph_replacements').select('staff_id').eq('status', 'available')
+    setPhCounts((phAll as { staff_id: string }[]) ?? [])
   }
 
   useEffect(() => { load() }, [])
@@ -369,8 +488,31 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
     return calcAlBalance(entries, approved, 0).balance
   }
 
+  function phCountFor(staffId: string): number {
+    return phCounts.filter(p => p.staff_id === staffId).length
+  }
+
   async function approve(req: LeaveRequest) {
     setApproving(req.id)
+    setApproveError('')
+
+    if (req.leave_type === 'public_holiday') {
+      const { data: grants } = await supabase
+        .from('ph_replacements').select('*')
+        .eq('staff_id', req.staff_id).eq('status', 'available')
+      const picked = pickPhGrantsFifo((grants as PhReplacement[]) ?? [], req.total_days)
+      if (!picked) {
+        setApproveError(`${req.staff?.name ?? 'Staff'} has insufficient PH replacement credits (${(grants ?? []).length} available, ${req.total_days} needed).`)
+        setApproving(null)
+        return
+      }
+      for (const g of picked) {
+        const { error: useErr } = await supabase.from('ph_replacements')
+          .update({ status: 'used', used_in_leave_request_id: req.id }).eq('id', g.id)
+        if (useErr) { setApproveError(`Couldn't consume PH credit: ${useErr.message}`); setApproving(null); return }
+      }
+    }
+
     await supabase.from('leave_requests').update({
       status: 'approved', reviewed_by: managerId ?? null, reviewed_at: new Date().toISOString(),
     }).eq('id', req.id)
@@ -393,8 +535,15 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
 
   return (
     <div className="space-y-8">
+      <div className="flex justify-end">
+        <button onClick={() => setShowGrantPh(true)} className="px-4 py-2 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors">
+          + Grant PH Replacement
+        </button>
+      </div>
+
       <section>
         <h3 className="text-sm font-bold text-brown-dark mb-3">Pending Approvals ({pending.length})</h3>
+        {approveError && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3">{approveError}</p>}
         {pending.length === 0 ? (
           <div className="bg-white rounded-xl border border-[#E8DDD0] px-6 py-6 text-center text-xs text-brown-faint">No pending requests.</div>
         ) : (
@@ -435,6 +584,7 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
                 <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">Annual</th>
                 <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">Medical</th>
                 <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">Unpaid</th>
+                <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">PH</th>
               </tr>
             </thead>
             <tbody>
@@ -446,6 +596,7 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
                     <td className="px-3 py-2">{alBalanceFor(s.id).toFixed(1)}</td>
                     <td className="px-3 py-2">{ent ? `${ent.medical_entitled - ent.medical_used}/${ent.medical_entitled}` : '—'}</td>
                     <td className="px-3 py-2">{ent?.unpaid_used ?? 0}</td>
+                    <td className="px-3 py-2">{phCountFor(s.id)}</td>
                   </tr>
                 )
               })}
@@ -456,6 +607,10 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
 
       {rejectTarget && (
         <RejectLeaveModal request={rejectTarget} reviewerId={managerId} onClose={() => setRejectTarget(null)} onDone={load} />
+      )}
+
+      {showGrantPh && (
+        <GrantPhModal allStaff={allStaff} granterId={managerId} onClose={() => setShowGrantPh(false)} onDone={load} />
       )}
     </div>
   )
