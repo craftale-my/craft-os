@@ -20,6 +20,7 @@ const TABS = [
   { id: 'roles',          label: 'Roles & Permissions', icon: '👔' },
   { id: 'career',         label: 'Career Paths',        icon: '🎯' },
   { id: 'rules',          label: 'XP & Scoring Rules',  icon: '⚡' },
+  { id: 'leave',          label: 'Leave Settings',      icon: '🌴' },
   { id: 'shifts',         label: 'Shift Types',         icon: '🕐' },
   { id: 'notifications',  label: 'Notifications',       icon: '🔔' },
   { id: 'data',           label: 'Data & Export',       icon: '📊' },
@@ -1347,6 +1348,181 @@ function RulesTab({ rules, onRefresh }: { rules: SystemRule[]; onRefresh: () => 
   )
 }
 
+// ─── Leave Settings ─────────────────────────────────────────────────────────────
+
+const LEAVE_RULE_KEYS = [
+  'leave_al_monthly_rate',
+  'leave_al_annual_cap',
+  'leave_al_carryover_cap',
+  'leave_ph_expiry_months',
+  'leave_medical_annual',
+] as const
+
+const LEAVE_RULE_LABELS: Record<string, string> = {
+  leave_al_monthly_rate: 'AL accrual rate (days/month)',
+  leave_al_annual_cap: 'AL annual cap (days)',
+  leave_al_carryover_cap: 'AL carryover cap (days)',
+  leave_ph_expiry_months: 'PH replacement expiry (months)',
+  leave_medical_annual: 'Medical leave entitlement (days/year)',
+}
+
+function LeaveSettingsTab({ rules, onRefresh }: { rules: SystemRule[]; onRefresh: () => void }) {
+  const leaveRules = rules.filter(r => LEAVE_RULE_KEYS.includes(r.key as typeof LEAVE_RULE_KEYS[number]))
+  const ruleMap: Record<string, SystemRule> = {}
+  leaveRules.forEach(r => { ruleMap[r.key] = r })
+
+  const [values, setValues] = useState<Record<string, string>>(
+    Object.fromEntries(leaveRules.map(r => [r.key, r.value]))
+  )
+  const [saving, setSaving] = useState(false)
+  const { toast, show } = useToast()
+
+  const [recalculating, setRecalculating] = useState(false)
+  const [recalcResult, setRecalcResult] = useState<'ok' | 'error' | null>(null)
+  const [recalcError, setRecalcError] = useState('')
+
+  const [missingStaff, setMissingStaff] = useState<Staff[]>([])
+  const [missingLoading, setMissingLoading] = useState(true)
+  const [missingErrors, setMissingErrors] = useState<Record<string, string>>({})
+
+  async function loadMissing() {
+    setMissingLoading(true)
+    const { data } = await supabase
+      .from('staff')
+      .select('*')
+      .eq('status', 'active')
+      .eq('is_active', true)
+      .is('confirmation_date', null)
+      .order('name')
+    setMissingStaff((data ?? []) as Staff[])
+    setMissingLoading(false)
+  }
+
+  useEffect(() => { loadMissing() }, [])
+
+  const set = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setValues(v => ({ ...v, [key]: e.target.value }))
+
+  async function handleSave() {
+    setSaving(true)
+    await Promise.all(
+      Object.entries(values).map(([key, value]) =>
+        supabase.from('system_rules').update({ value, updated_at: new Date().toISOString() }).eq('key', key)
+      )
+    )
+    setSaving(false)
+    onRefresh()
+    show('Leave settings saved')
+  }
+
+  async function handleRecalculate() {
+    setRecalculating(true)
+    setRecalcResult(null)
+    setRecalcError('')
+    const { error } = await supabase.rpc('process_leave_accruals')
+    setRecalculating(false)
+    if (error) {
+      setRecalcResult('error')
+      setRecalcError(error.message)
+    } else {
+      setRecalcResult('ok')
+    }
+  }
+
+  async function setConfirmationDate(staffId: string, date: string) {
+    setMissingErrors(e => ({ ...e, [staffId]: '' }))
+    const { error } = await supabase.from('staff').update({ confirmation_date: date || null }).eq('id', staffId)
+    if (error) {
+      setMissingErrors(e => ({ ...e, [staffId]: error.message }))
+      return
+    }
+    setMissingStaff(prev => prev.filter(s => s.id !== staffId))
+  }
+
+  function numInput(key: string) {
+    if (!ruleMap[key]) return null
+    return (
+      <div key={key}>
+        <label className={labelCls}>{LEAVE_RULE_LABELS[key] ?? key}</label>
+        <input
+          type="number"
+          step="any"
+          className={inputCls}
+          value={values[key] ?? ''}
+          onChange={set(key)}
+        />
+        {ruleMap[key].description && <p className="text-xs text-brown-faint mt-1">{ruleMap[key].description}</p>}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-8 max-w-xl">
+      {toast && <Toast message={toast} />}
+
+      <div>
+        <h3 className="text-sm font-bold text-brown-dark mb-3">Leave Accrual Rules</h3>
+        <div className="space-y-4">
+          {LEAVE_RULE_KEYS.map(k => numInput(k))}
+        </div>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="mt-5 px-5 py-2.5 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors disabled:opacity-60"
+        >
+          {saving ? 'Saving...' : 'Save Changes'}
+        </button>
+      </div>
+
+      <div className="bg-white rounded-xl border border-[#E8DDD0] p-4 space-y-3">
+        <div>
+          <p className="text-sm font-semibold text-brown-dark">Recalculate All AL Balances</p>
+          <p className="text-xs text-brown-faint mt-0.5">Runs the same job as the nightly cron — safe to run anytime.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleRecalculate}
+            disabled={recalculating}
+            className="px-4 py-2 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors disabled:opacity-60"
+          >
+            {recalculating ? 'Recalculating…' : 'Recalculate All AL Balances'}
+          </button>
+          {recalcResult === 'ok' && <span className="text-sm font-semibold text-[#3D7A50]">Recalculated ✓</span>}
+        </div>
+        {recalcResult === 'error' && <p className="text-xs text-red-600">{recalcError}</p>}
+      </div>
+
+      <div>
+        <h3 className="text-sm font-bold text-brown-dark mb-1">Missing Confirmation Dates</h3>
+        <p className="text-xs text-brown-faint mb-3">
+          Active staff without a confirmation date do not accrue annual leave. Set their confirmation date to start accrual.
+        </p>
+        {missingLoading ? (
+          <p className="text-xs text-brown-faint">Loading…</p>
+        ) : missingStaff.length === 0 ? (
+          <div className="bg-white rounded-xl border border-[#E8DDD0] px-4 py-6 text-center text-xs text-brown-faint">
+            All active staff have a confirmation date.
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
+            {missingStaff.map(s => (
+              <div key={s.id} className="flex items-center gap-3 px-4 py-3">
+                <p className="flex-1 min-w-0 text-sm font-semibold text-brown-dark truncate">{s.name}</p>
+                <input
+                  type="date"
+                  className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] bg-white text-xs text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]"
+                  onChange={e => setConfirmationDate(s.id, e.target.value)}
+                />
+                {missingErrors[s.id] && <p className="text-xs text-red-600 basis-full">{missingErrors[s.id]}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Notifications ──────────────────────────────────────────────────────────────
 
 function NotificationsTab({ settings, onRefresh }: { settings: NotificationSetting[]; onRefresh: () => void }) {
@@ -1780,6 +1956,9 @@ export default function SettingsPage() {
             )}
             {tab === 'rules' && (
               <RulesTab rules={rules} onRefresh={loadAll} />
+            )}
+            {tab === 'leave' && (
+              <LeaveSettingsTab rules={rules} onRefresh={loadAll} />
             )}
             {tab === 'shifts' && (
               <ShiftTypesTab />
