@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import type { Staff, LeaveRequest, LeaveEntitlement, LeaveType } from '../../shared/types'
-import { LEAVE_TYPE_LABELS, calcAnnualEntitlement, MONTHS_FULL } from '../../shared/types'
+import { LEAVE_TYPE_LABELS, MONTHS_FULL } from '../../shared/types'
+import { calcAlBalance } from '../../shared/lib/leave'
 import { Avatar } from '../../shared/components/Avatar'
 
 const inputCls = 'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
 const labelCls = 'block text-xs font-semibold text-brown-medium mb-1'
-const LEAVE_TYPES: LeaveType[] = ['annual', 'medical', 'emergency', 'unpaid', 'maternity', 'paternity']
+const LEAVE_TYPES: LeaveType[] = ['annual', 'medical', 'unpaid', 'maternity', 'paternity']
 
 function daysBetween(start: string, end: string): number {
   const s = new Date(start)
@@ -41,10 +42,11 @@ function StatusBadge({ status }: { status: string }) {
 async function ensureEntitlement(staffMember: Staff, year: number): Promise<LeaveEntitlement> {
   const { data } = await supabase.from('leave_entitlements').select('*').eq('staff_id', staffMember.id).eq('year', year).maybeSingle()
   if (data) return data as LeaveEntitlement
-  const annual_entitled = calcAnnualEntitlement(staffMember.joined_at)
+  const { data: rule } = await supabase.from('system_rules').select('value').eq('key', 'leave_medical_annual').maybeSingle()
+  const medical_entitled = rule ? parseInt((rule as { value: string }).value) || 14 : 14
   const { data: created } = await supabase
     .from('leave_entitlements')
-    .insert({ staff_id: staffMember.id, year, annual_entitled })
+    .insert({ staff_id: staffMember.id, year, annual_entitled: 0, medical_entitled })
     .select('*')
     .single()
   return created as LeaveEntitlement
@@ -52,8 +54,9 @@ async function ensureEntitlement(staffMember: Staff, year: number): Promise<Leav
 
 // ─── Apply leave modal ──────────────────────────────────────────────────────────
 
-function ApplyLeaveModal({ staffId, onClose, onSubmitted }: {
+function ApplyLeaveModal({ staffId, availableAnnualDays, onClose, onSubmitted }: {
   staffId: string
+  availableAnnualDays: number
   onClose: () => void
   onSubmitted: () => void
 }) {
@@ -66,6 +69,7 @@ function ApplyLeaveModal({ staffId, onClose, onSubmitted }: {
     setForm(f => ({ ...f, [k]: e.target.value }))
 
   const totalDays = form.start_date && form.end_date ? Math.max(1, daysBetween(form.start_date, form.end_date)) : 0
+  const overLimit = form.leave_type === 'annual' && totalDays > availableAnnualDays
 
   async function handleSubmit() {
     if (!form.start_date || !form.end_date || !form.reason.trim()) {
@@ -74,6 +78,10 @@ function ApplyLeaveModal({ staffId, onClose, onSubmitted }: {
     }
     if (form.leave_type === 'medical' && !file) {
       setError('Please upload an MC for medical leave.')
+      return
+    }
+    if (overLimit) {
+      setError('Requested days exceed your available annual leave balance.')
       return
     }
     setSaving(true)
@@ -126,6 +134,11 @@ function ApplyLeaveModal({ staffId, onClose, onSubmitted }: {
             </div>
           </div>
           {totalDays > 0 && <p className="text-xs text-brown-faint">Total: {totalDays} day{totalDays > 1 ? 's' : ''}</p>}
+          {form.leave_type === 'annual' && (
+            <p className={`text-xs ${overLimit ? 'text-red-600 font-bold' : 'text-brown-faint'}`}>
+              Available: {availableAnnualDays.toFixed(1)} days
+            </p>
+          )}
           <div>
             <label className={labelCls}>Reason</label>
             <textarea rows={2} className={`${inputCls} resize-none`} value={form.reason} onChange={set('reason')} />
@@ -140,7 +153,7 @@ function ApplyLeaveModal({ staffId, onClose, onSubmitted }: {
             <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors">
               Cancel
             </button>
-            <button onClick={handleSubmit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors disabled:opacity-60">
+            <button onClick={handleSubmit} disabled={saving || overLimit} className="flex-1 py-2.5 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors disabled:opacity-60">
               {saving ? 'Submitting...' : 'Submit Request'}
             </button>
           </div>
@@ -200,12 +213,22 @@ function MyLeaveView({ staffMember }: { staffMember: Staff }) {
   const [entitlement, setEntitlement] = useState<LeaveEntitlement | null>(null)
   const [requests, setRequests] = useState<LeaveRequest[]>([])
   const [showApply, setShowApply] = useState(false)
+  const [alInfo, setAlInfo] = useState<{ balance: number; available: number } | null>(null)
+  const [alRate, setAlRate] = useState('0.667')
 
   async function load() {
     const ent = await ensureEntitlement(staffMember, new Date().getFullYear())
     setEntitlement(ent)
     const { data } = await supabase.from('leave_requests').select('*').eq('staff_id', staffMember.id).order('created_at', { ascending: false })
-    setRequests((data as LeaveRequest[]) ?? [])
+    const reqs = (data as LeaveRequest[]) ?? []
+    setRequests(reqs)
+
+    const { data: logs } = await supabase.from('leave_accrual_log').select('amount').eq('staff_id', staffMember.id)
+    const approved = reqs.filter(r => r.leave_type === 'annual' && r.status === 'approved').reduce((s, r) => s + r.total_days, 0)
+    const pending  = reqs.filter(r => r.leave_type === 'annual' && r.status === 'pending').reduce((s, r) => s + r.total_days, 0)
+    setAlInfo(calcAlBalance((logs as { amount: number }[]) ?? [], approved, pending))
+    const { data: rateRow } = await supabase.from('system_rules').select('value').eq('key', 'leave_al_monthly_rate').maybeSingle()
+    if (rateRow) setAlRate((rateRow as { value: string }).value)
   }
 
   useEffect(() => { load() }, [])
@@ -220,22 +243,22 @@ function MyLeaveView({ staffMember }: { staffMember: Staff }) {
       <div className="grid grid-cols-3 gap-3">
         <div className="bg-white rounded-xl p-4 border border-[#E8DDD0]">
           <p className="text-xs text-brown-faint mb-1">Annual Leave</p>
-          <p className="text-xl font-bold text-brown-dark">
-            {entitlement ? entitlement.annual_entitled - entitlement.annual_used : '—'} / {entitlement?.annual_entitled ?? '—'}
-          </p>
-          <p className="text-xs text-brown-faint">days remaining</p>
+          {staffMember.confirmation_date ? (
+            <>
+              <p className="text-xl font-bold text-brown-dark">{alInfo ? alInfo.available.toFixed(1) : '—'}</p>
+              <p className="text-xs text-brown-faint">days available</p>
+              <p className="text-[10px] text-brown-faint mt-1">
+                accruing {Number(alRate).toFixed(2)}/month since {new Date(staffMember.confirmation_date).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' })}
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-brown-faint">Awaiting confirmation date — not accruing yet</p>
+          )}
         </div>
         <div className="bg-white rounded-xl p-4 border border-[#E8DDD0]">
           <p className="text-xs text-brown-faint mb-1">Medical Leave</p>
           <p className="text-xl font-bold text-brown-dark">
             {entitlement ? entitlement.medical_entitled - entitlement.medical_used : '—'} / {entitlement?.medical_entitled ?? '—'}
-          </p>
-          <p className="text-xs text-brown-faint">days remaining</p>
-        </div>
-        <div className="bg-white rounded-xl p-4 border border-[#E8DDD0]">
-          <p className="text-xs text-brown-faint mb-1">Emergency Leave</p>
-          <p className="text-xl font-bold text-brown-dark">
-            {entitlement ? entitlement.emergency_entitled - entitlement.emergency_used : '—'} / {entitlement?.emergency_entitled ?? '—'}
           </p>
           <p className="text-xs text-brown-faint">days remaining</p>
         </div>
@@ -271,7 +294,7 @@ function MyLeaveView({ staffMember }: { staffMember: Staff }) {
       </div>
 
       {showApply && (
-        <ApplyLeaveModal staffId={staffMember.id} onClose={() => setShowApply(false)} onSubmitted={load} />
+        <ApplyLeaveModal staffId={staffMember.id} availableAnnualDays={alInfo?.available ?? 0} onClose={() => setShowApply(false)} onSubmitted={load} />
       )}
     </div>
   )
@@ -322,6 +345,7 @@ function TeamCalendar({ approvedLeave, allStaff }: { approvedLeave: LeaveRequest
 function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerId: string | undefined }) {
   const [requests, setRequests] = useState<LeaveRequest[]>([])
   const [entitlements, setEntitlements] = useState<LeaveEntitlement[]>([])
+  const [accrualLogs, setAccrualLogs] = useState<{ staff_id: string; amount: number }[]>([])
   const [rejectTarget, setRejectTarget] = useState<LeaveRequest | null>(null)
   const [approving, setApproving] = useState<string | null>(null)
 
@@ -330,6 +354,8 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
     setRequests((data as LeaveRequest[]) ?? [])
     const { data: ents } = await supabase.from('leave_entitlements').select('*').eq('year', new Date().getFullYear())
     setEntitlements((ents as LeaveEntitlement[]) ?? [])
+    const { data: logs } = await supabase.from('leave_accrual_log').select('staff_id, amount')
+    setAccrualLogs((logs as { staff_id: string; amount: number }[]) ?? [])
   }
 
   useEffect(() => { load() }, [])
@@ -337,16 +363,22 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
   const pending = requests.filter(r => r.status === 'pending')
   const approved = requests.filter(r => r.status === 'approved')
 
+  function alBalanceFor(staffId: string): number {
+    const entries = accrualLogs.filter(l => l.staff_id === staffId)
+    const approved = requests.filter(r => r.staff_id === staffId && r.leave_type === 'annual' && r.status === 'approved').reduce((s, r) => s + r.total_days, 0)
+    return calcAlBalance(entries, approved, 0).balance
+  }
+
   async function approve(req: LeaveRequest) {
     setApproving(req.id)
     await supabase.from('leave_requests').update({
       status: 'approved', reviewed_by: managerId ?? null, reviewed_at: new Date().toISOString(),
     }).eq('id', req.id)
 
-    if (req.leave_type === 'annual' || req.leave_type === 'medical' || req.leave_type === 'emergency' || req.leave_type === 'unpaid') {
+    if (req.leave_type === 'medical' || req.leave_type === 'unpaid') {
       const ent = await ensureEntitlement(allStaff.find(s => s.id === req.staff_id) ?? { id: req.staff_id, joined_at: null } as Staff, new Date().getFullYear())
-      const field = req.leave_type === 'unpaid' ? 'unpaid_used' : `${req.leave_type}_used` as keyof LeaveEntitlement
-      await supabase.from('leave_entitlements').update({ [field]: (ent[field] as number) + req.total_days }).eq('id', ent.id)
+      const field = req.leave_type === 'unpaid' ? 'unpaid_used' : 'medical_used'
+      await supabase.from('leave_entitlements').update({ [field]: (ent[field as keyof LeaveEntitlement] as number) + req.total_days }).eq('id', ent.id)
     }
 
     const dates = datesInRange(req.start_date, req.end_date)
@@ -402,7 +434,6 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
                 <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">Staff</th>
                 <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">Annual</th>
                 <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">Medical</th>
-                <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">Emergency</th>
                 <th className="text-left px-3 py-2.5 font-semibold text-brown-faint">Unpaid</th>
               </tr>
             </thead>
@@ -412,9 +443,8 @@ function ManagerLeaveView({ allStaff, managerId }: { allStaff: Staff[]; managerI
                 return (
                   <tr key={s.id} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
                     <td className="px-3 py-2 font-medium text-brown-dark">{s.name}</td>
-                    <td className="px-3 py-2">{ent ? `${ent.annual_entitled - ent.annual_used}/${ent.annual_entitled}` : '—'}</td>
+                    <td className="px-3 py-2">{alBalanceFor(s.id).toFixed(1)}</td>
                     <td className="px-3 py-2">{ent ? `${ent.medical_entitled - ent.medical_used}/${ent.medical_entitled}` : '—'}</td>
-                    <td className="px-3 py-2">{ent ? `${ent.emergency_entitled - ent.emergency_used}/${ent.emergency_entitled}` : '—'}</td>
                     <td className="px-3 py-2">{ent?.unpaid_used ?? 0}</td>
                   </tr>
                 )

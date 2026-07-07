@@ -114,6 +114,7 @@ export interface Staff {
   xp: number
   department: string | null
   joined_at: string | null
+  confirmation_date: string | null
   created_at: string
   // onboarding fields
   onboarding_completed: boolean | null
@@ -652,6 +653,28 @@ export interface LeaveRequest {
   staff?: Staff
 }
 
+export interface AccrualEntry {
+  id: string
+  staff_id: string
+  entry_type: 'accrual' | 'forfeit' | 'adjustment'
+  amount: number
+  period_month: string | null
+  accrued_at: string
+  note: string | null
+}
+
+export interface PhReplacement {
+  id: string
+  staff_id: string
+  granted_by: string | null
+  granted_at: string
+  expires_at: string
+  reason: string | null
+  status: 'available' | 'used' | 'expired'
+  used_in_leave_request_id: string | null
+  created_at: string
+}
+
 export type ClaimType = 'transport' | 'parking' | 'meal' | 'medical' | 'phone' | 'uniform' | 'other'
 
 export const CLAIM_TYPE_LABELS: Record<ClaimType, string> = {
@@ -756,14 +779,6 @@ export const DEPT_SHIFT_COLORS: Record<string, string> = {
   office:         '#4A8FBF',
   'service crew': '#6B8F5E',
   other:          '#8B7355',
-}
-
-export function calcAnnualEntitlement(joinedAt: string | null): number {
-  if (!joinedAt) return 8
-  const years = (Date.now() - new Date(joinedAt).getTime()) / (1000 * 60 * 60 * 24 * 365.25)
-  if (years >= 5) return 16
-  if (years >= 2) return 12
-  return 8
 }
 
 export interface BreakOvertimeResult {
