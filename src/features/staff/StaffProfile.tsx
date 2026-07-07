@@ -1109,7 +1109,7 @@ interface PersonalFormData {
   fullName: string; nickname: string; gender: string; contactNumber: string
   address: string; branch: string; department: string; employmentType: string
   workingExperience: string; education: string; rank: string; level: string
-  jobTitleId: string
+  jobTitleId: string; confirmationDate: string
 }
 
 function PersonalInfoTab({
@@ -1130,7 +1130,7 @@ function PersonalInfoTab({
     branch: staff.branch ?? '', department: staff.department ?? '',   // store the slug
     employmentType: staff.employment_type ?? '', workingExperience: staff.working_experience ?? '',
     education: staff.education ?? '', rank: staff.rank, level: String(staff.level),
-    jobTitleId: staff.job_title_id ?? '',
+    jobTitleId: staff.job_title_id ?? '', confirmationDate: staff.confirmation_date ?? '',
   })
 
   // Job titles for the manager's assignment dropdown (drives the career path).
@@ -1161,6 +1161,7 @@ function PersonalInfoTab({
         payload.rank = form.rank
         payload.level = parseInt(form.level) || 1
         payload.job_title_id = form.jobTitleId || null
+        payload.confirmation_date = form.confirmationDate || null
       }
       const { error } = await supabase.from('staff').update(payload).eq('id', staff.id)
       if (error) throw error
@@ -1179,7 +1180,8 @@ function PersonalInfoTab({
       contactNumber: staff.contact_number ?? '', address: staff.address ?? '', branch: staff.branch ?? '',
       department: staff.department ?? '', employmentType: staff.employment_type ?? '',
       workingExperience: staff.working_experience ?? '', education: staff.education ?? '',
-      rank: staff.rank, level: String(staff.level), jobTitleId: staff.job_title_id ?? '' })
+      rank: staff.rank, level: String(staff.level), jobTitleId: staff.job_title_id ?? '',
+      confirmationDate: staff.confirmation_date ?? '' })
     setSaveError(''); setEditing(false)
   }
 
@@ -1224,12 +1226,20 @@ function PersonalInfoTab({
                   Drives the career path: assigning a title creates its skill checklist for this staff member.
                 </p>
               </div>
+              <div>
+                <label className={labelCls}>Confirmation Date</label>
+                <input type="date" value={form.confirmationDate} onChange={e => update('confirmationDate', e.target.value)} className={inputCls} />
+                <p className="text-[11px] text-brown-faint mt-1">
+                  Annual leave starts accruing from this date. Leave blank if not yet confirmed.
+                </p>
+              </div>
             </div>
           ) : (
             <div className="space-y-2">
               <InfoRow label="Rank"      value={RANK_LABELS[staff.rank] ?? staff.rank} />
               <InfoRow label="Level"     value={`Level ${staff.level} · ${staff.xp} XP total`} />
               <InfoRow label="Job Title" value={jobTitles.find(t => t.id === staff.job_title_id)?.name ?? '—'} />
+              <InfoRow label="Confirmed" value={staff.confirmation_date ? new Date(staff.confirmation_date).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'} />
             </div>
           )}
         </div>
