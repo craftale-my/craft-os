@@ -875,7 +875,7 @@ function MyAttendance({ staff }: { staff: Staff }) {
             </div>
           ) : todayLeave ? (
             <p className="mt-2 text-xs font-semibold" style={{ color: '#8B7355' }}>
-              🌴 {SCHEDULE_LEAVE_LABELS[todayLeave]}
+              🌴 {SCHEDULE_LEAVE_LABELS[todayLeave] ?? todayLeave}
             </p>
           ) : (
             <p className="mt-2 text-xs text-brown-faint">No shift scheduled today</p>
