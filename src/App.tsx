@@ -182,7 +182,7 @@ function AppRoutes() {
       <Route
         path="/schedule"
         element={
-          <ProtectedRoute requireCap="manage_schedule">
+          <ProtectedRoute>
             <AppLayout><SchedulePage /></AppLayout>
           </ProtectedRoute>
         }
