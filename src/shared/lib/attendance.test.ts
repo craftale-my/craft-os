@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calcLateness } from './attendance'
+import { calcLateness, localDateStr } from './attendance'
 
 // Build ISO strings in LOCAL time so tests are timezone-independent.
 const localIso = (dateStr: string, time: string) => new Date(`${dateStr}T${time}`).toISOString()
@@ -28,5 +28,19 @@ describe('calcLateness', () => {
   it('handles HH:MM start times (no seconds part)', () => {
     const r = calcLateness(localIso('2026-07-08', '09:31:00'), '2026-07-08', '09:30')
     expect(r).toEqual({ isLate: true, lateMinutes: 1 })
+  })
+})
+
+describe('localDateStr', () => {
+  it('returns the local calendar date', () => {
+    expect(localDateStr(new Date(2026, 6, 8, 12, 0, 0))).toBe('2026-07-08')
+  })
+
+  it('stays on the local date just after local midnight (UTC would say yesterday)', () => {
+    expect(localDateStr(new Date(2026, 6, 8, 0, 30, 0))).toBe('2026-07-08')
+  })
+
+  it('pads single-digit months and days', () => {
+    expect(localDateStr(new Date(2026, 0, 5, 9, 0, 0))).toBe('2026-01-05')
   })
 })

@@ -5,14 +5,14 @@ import { useCan } from '../../shared/lib/permissions'
 import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, LeaveType } from '../../shared/types'
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
-import { calcLateness } from '../../shared/lib/attendance'
+import { calcLateness, localDateStr } from '../../shared/lib/attendance'
 import { Avatar } from '../../shared/components/Avatar'
 import { Camera, MapPin, CheckCircle, X, AlertTriangle, RefreshCw, ZoomIn, Coffee } from 'lucide-react'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function todayStr(): string {
-  return new Date().toISOString().split('T')[0]
+  return localDateStr()
 }
 
 function daysInMonth(year: number, month: number): number {
