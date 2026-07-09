@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType } from '../../shared/types'
-import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime } from '../../shared/types'
+import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, LeaveType } from '../../shared/types'
+import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
+import { calcLateness } from '../../shared/lib/attendance'
 import { Avatar } from '../../shared/components/Avatar'
 import { Camera, MapPin, CheckCircle, X, AlertTriangle, RefreshCw, ZoomIn, Coffee } from 'lucide-react'
 
@@ -29,6 +30,13 @@ function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
 
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', hour12: true })
+}
+
+// Formats a `time` column value (HH:MM[:SS]) to `9:30am` style. `fmtTime` above
+// takes an ISO timestamp, not a bare time-of-day, so it isn't reusable here.
+function fmtTime2(t: string): string {
+  const [h, m] = t.split(':').map(Number)
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')}${h >= 12 ? 'pm' : 'am'}`
 }
 
 function fmtTimestamp(date: Date): string {
@@ -651,6 +659,8 @@ function MyAttendance({ staff }: { staff: Staff }) {
   const [viewPhoto, setViewPhoto] = useState<string | null>(null)
   const [break1Allowed, setBreak1Allowed] = useState(0)
   const [break2Allowed, setBreak2Allowed] = useState(0)
+  const [todayShift, setTodayShift] = useState<ShiftType | null>(null)
+  const [todayLeave, setTodayLeave] = useState<LeaveType | null>(null)
   const [breaks, setBreaks] = useState<AttendanceBreak[]>([])
   const [breakBusy, setBreakBusy] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -674,11 +684,14 @@ function MyAttendance({ staff }: { staff: Staff }) {
   async function loadBreakAllowance() {
     const { data: shiftRow } = await supabase
       .from('scheduled_shifts')
-      .select('shift_type:shift_types(break1_duration_minutes,break2_duration_minutes)')
+      .select('leave_type, shift_type:shift_types(*)')
       .eq('staff_id', staff.id)
       .eq('date', todayStr())
       .maybeSingle()
-    const st = (shiftRow as { shift_type?: Pick<ShiftType, 'break1_duration_minutes' | 'break2_duration_minutes'> } | null)?.shift_type
+    const row = shiftRow as { leave_type: LeaveType | null; shift_type: ShiftType | null } | null
+    const st = row?.shift_type ?? null
+    setTodayShift(st)
+    setTodayLeave(row?.leave_type ?? null)
     if (st) {
       setBreak1Allowed(st.break1_duration_minutes ?? 0)
       setBreak2Allowed(st.break2_duration_minutes ?? 0)
@@ -762,17 +775,25 @@ function MyAttendance({ staff }: { staff: Staff }) {
   async function handleClockDone(type: 'in' | 'out', result: ClockResult) {
     const now = new Date()
     if (type === 'in') {
+      const lateness = todayShift
+        ? calcLateness(now.toISOString(), todayStr(), todayShift.start_time)
+        : { isLate: false, lateMinutes: 0 }
       await supabase.from('attendance').upsert({
         staff_id: staff.id,
         date: todayStr(),
         clock_in: now.toISOString(),
-        status: 'present',
+        status: lateness.isLate ? 'late' : 'present',
+        late_minutes: lateness.lateMinutes,
         clock_in_photo_url: result.photoUrl,
         clock_in_lat: result.lat,
         clock_in_lng: result.lng,
         clock_in_distance_m: result.distanceM,
       }, { onConflict: 'staff_id,date' })
-      setSuccessMsg(`Clocked in at ${fmtTime(now.toISOString())} ✓`)
+      setSuccessMsg(
+        lateness.isLate
+          ? `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️`
+          : `Clocked in at ${fmtTime(now.toISOString())} ✓`
+      )
     } else {
       if (!today) return
       await supabase.from('attendance').update({
@@ -838,6 +859,27 @@ function MyAttendance({ staff }: { staff: Staff }) {
           <p className="text-lg font-bold text-brown-dark">
             {new Date().toLocaleDateString('en-MY', { weekday: 'long', day: 'numeric', month: 'long' })}
           </p>
+          {todayShift ? (
+            <div
+              className="inline-flex items-center gap-2 mt-2 px-3 py-1.5 rounded-lg text-xs font-semibold"
+              style={{
+                background: `${DEPT_SHIFT_COLORS[todayShift.department] ?? todayShift.color}18`,
+                border: `1px solid ${DEPT_SHIFT_COLORS[todayShift.department] ?? todayShift.color}50`,
+                color: DEPT_SHIFT_COLORS[todayShift.department] ?? todayShift.color,
+              }}
+            >
+              <span>{todayShift.name}</span>
+              <span className="opacity-80 font-normal">
+                {fmtTime2(todayShift.start_time)} – {fmtTime2(todayShift.end_time)}
+              </span>
+            </div>
+          ) : todayLeave ? (
+            <p className="mt-2 text-xs font-semibold" style={{ color: '#8B7355' }}>
+              🌴 {SCHEDULE_LEAVE_LABELS[todayLeave]}
+            </p>
+          ) : (
+            <p className="mt-2 text-xs text-brown-faint">No shift scheduled today</p>
+          )}
 
           {today?.clock_in ? (
             <div className="mt-3 space-y-2">
@@ -857,6 +899,11 @@ function MyAttendance({ staff }: { staff: Staff }) {
                 {today.clock_in_distance_m != null && (
                   <span className="text-xs text-[#3D7A50] bg-[#EBF5EE] px-2 py-0.5 rounded-full flex items-center gap-1">
                     <MapPin size={9} />{today.clock_in_distance_m}m from branch
+                  </span>
+                )}
+                {today.status === 'late' && (today.late_minutes ?? 0) > 0 && (
+                  <span className="text-xs text-[#9E4A30] bg-[#FCF0EC] px-2 py-0.5 rounded-full font-semibold">
+                    Late by {today.late_minutes} min
                   </span>
                 )}
               </div>
