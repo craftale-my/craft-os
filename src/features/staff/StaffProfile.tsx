@@ -135,22 +135,30 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
   async function handleReset() {
     if (!staffId) return
+    // .select() so an RLS denial is detectable: Supabase reports a policy
+    // block as success-with-0-rows, not as an error.
     const [staffRes, compRes] = await Promise.all([
-      supabase.from('staff').update({ xp: 0, level: 1, last_level_up_at: null }).eq('id', staffId),
-      supabase.from('mission_completions').delete().eq('staff_id', staffId),
+      supabase.from('staff').update({ xp: 0, level: 1, last_level_up_at: null }).eq('id', staffId).select('id'),
+      supabase.from('mission_completions').delete().eq('staff_id', staffId).select('id'),
     ])
     if (staffRes.error) throw staffRes.error
     if (compRes.error) throw compRes.error
+    if ((staffRes.data ?? []).length === 0) {
+      throw new Error('Nothing was updated — your account may not have permission for this action.')
+    }
     await refreshAll()
   }
 
   async function handleSetStatus(status: 'active' | 'resigned') {
     if (!staffId) return
-    // Supabase update() resolves with { error } rather than throwing, so we
-    // must check it explicitly and surface it — otherwise a failed update
-    // (e.g. missing column, RLS denial) looks like "nothing happened".
-    const { error } = await supabase.from('staff').update({ status }).eq('id', staffId)
+    // Supabase update() resolves with { error } rather than throwing, and an
+    // RLS denial is success-with-0-rows — check both, or a failed update
+    // looks like "nothing happened".
+    const { data, error } = await supabase.from('staff').update({ status }).eq('id', staffId).select('id')
     if (error) throw error
+    if ((data ?? []).length === 0) {
+      throw new Error('Nothing was updated — your account may not have permission for this action.')
+    }
     await refreshAll()
   }
 
