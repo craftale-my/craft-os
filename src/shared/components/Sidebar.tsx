@@ -23,12 +23,15 @@ interface NavItem {
   activePaths?: string[]
   /** Capability required to see this item (omit ⇒ visible to everyone). */
   cap?: Capability
+  /** Hide this item when the user HAS this capability (avoids duplicates with MGMT items). */
+  hideWithCap?: Capability
 }
 
 const STAFF_NAV: NavItem[] = [
   { id: 'dashboard',   label: 'Dashboard',  to: '/profile',  icon: LayoutDashboard },
   { id: 'my-profile',  label: 'My Profile', to: '/profile',  icon: User, activePaths: ['/profile'] },
   { id: 'missions',    label: 'Missions',   to: '/missions', icon: Target, activePaths: ['/missions'] },
+  { id: 'my-schedule', label: 'My Schedule', to: '/schedule', icon: CalendarDays, activePaths: ['/schedule'], hideWithCap: 'manage_schedule' },
 ]
 
 const HR_NAV: NavItem[] = [
@@ -95,6 +98,7 @@ function SidebarContent({ onNavigate, onClose }: {
   const { staff, signOut } = useAuth()
   const { pathname } = useLocation()
   const { can } = useCan()
+  const staffItems = STAFF_NAV.filter(i => (!i.cap || can(i.cap)) && (!i.hideWithCap || !can(i.hideWithCap)))
   const mgmtItems = MGMT_NAV.filter(i => !i.cap || can(i.cap))
   const settingsItems = SETTINGS_NAV.filter(i => !i.cap || can(i.cap))
   const showMgmtSection = mgmtItems.length > 0 || settingsItems.length > 0
@@ -136,7 +140,7 @@ function SidebarContent({ onNavigate, onClose }: {
             Staff
           </p>
           <div className="space-y-0.5">
-            {STAFF_NAV.map(item => (
+            {staffItems.map(item => (
               <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
             ))}
           </div>

@@ -6,6 +6,7 @@ import type { Staff, ShiftType, ScheduledShift, LeaveType, Attendance } from '..
 import { BRANCHES, DEPT_LABELS, DEPT_SHIFT_COLORS, SCHEDULE_LEAVE_OPTIONS, SCHEDULE_LEAVE_LABELS, shouldClearLeaveAttendance } from '../../shared/types'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { Avatar } from '../../shared/components/Avatar'
+import { localDateStr } from '../../shared/lib/attendance'
 
 // ─── Date utilities ───────────────────────────────────────────────────────────
 
@@ -26,7 +27,7 @@ function getWeekDays(start: Date): Date[] {
 }
 
 function toDateStr(d: Date): string {
-  return d.toISOString().split('T')[0]
+  return localDateStr(d)
 }
 
 function isToday(d: Date): boolean {
@@ -631,7 +632,7 @@ function MyScheduleView({
 
 export default function SchedulePage() {
   const { staff } = useAuth()
-  const { ownBranchOnly } = useCan()
+  const { can, ownBranchOnly } = useCan()
   const [allStaff, setAllStaff] = useState<Staff[]>([])
   const [shiftTypes, setShiftTypes] = useState<ShiftType[]>([])
   const [weekShifts, setWeekShifts] = useState<ScheduledShift[]>([])
@@ -648,7 +649,7 @@ export default function SchedulePage() {
   const weekEnd = new Date(weekStart)
   weekEnd.setDate(weekEnd.getDate() + 6)
 
-  const isManager = staff?.rank === 'supervisor' || staff?.rank === 'manager'
+  const isManager = can('manage_schedule')
 
   // Supervisors (no all_branches capability) only schedule their own branch.
   const scopedStaff = ownBranchOnly && staff?.branch_id
