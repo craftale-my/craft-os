@@ -371,6 +371,11 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
   const [viewPhoto, setViewPhoto] = useState<string | null>(null)
 
   async function load() {
+    // Fallback trigger for the hourly cron: opening/refreshing the roster
+    // auto-marks any ended-but-unclocked shifts before we read the day.
+    // Best-effort — errors are ignored so the roster always loads.
+    await supabase.rpc('mark_absent_for_missed_shifts').then(() => {}, () => {})
+
     const { data } = await supabase.from('attendance').select('*').eq('date', date)
     const rows = (data as Attendance[] | null) ?? []
     const map: Record<string, Attendance> = {}
@@ -397,6 +402,7 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
       status,
       late_minutes: lateMinutes,
       recorded_by: managerId ?? null,
+      marked_by: managerId ?? null,   // manual mark — overrides a 'system' auto-mark
     }, { onConflict: 'staff_id,date' })
     setSaving(null)
     load()
@@ -408,6 +414,7 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
       date,
       status: 'present' as const,
       recorded_by: managerId ?? null,
+      marked_by: managerId ?? null,
     }))
     await supabase.from('attendance').upsert(rows, { onConflict: 'staff_id,date' })
     load()
@@ -452,7 +459,17 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
             <div key={s.id} className="px-4 py-3 space-y-2">
               <div className="flex items-center gap-3 flex-wrap">
                 <Avatar name={s.name} avatar={s.avatar} size="sm" />
-                <p className="text-sm font-medium text-brown-dark flex-1 min-w-[100px]">{s.name}</p>
+                <p className="text-sm font-medium text-brown-dark flex-1 min-w-[100px]">
+                  {s.name}
+                  {rec?.marked_by === 'system' && (
+                    <span
+                      className="ml-2 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#F0E8DC] text-brown-muted align-middle"
+                      title="Marked automatically — no clock-in for the scheduled shift"
+                    >
+                      ⚙ Auto
+                    </span>
+                  )}
+                </p>
                 <div className="flex items-center gap-2 flex-wrap">
                   {STATUS_OPTIONS.map(opt => (
                     <button

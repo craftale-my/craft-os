@@ -584,6 +584,9 @@ export interface Attendance {
   break_minutes: number | null        // actual break duration taken
   break_late: boolean                 // true if break exceeded the allowed duration
   break_overrun_minutes: number       // minutes over the allowed break duration
+  // auto-absent tracing
+  scheduled_shift_id: string | null   // the missed shift, when auto-marked absent
+  marked_by: string | null            // 'system' for auto-marks, acting staff id for manual marks
   staff?: Staff
 }
 
