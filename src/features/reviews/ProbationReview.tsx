@@ -4,6 +4,7 @@ import { supabase } from '../../shared/lib/supabase'
 import type { Staff, ProbationReview } from '../../shared/types'
 import { PROBATION_CHECKLIST, getProbationDay, RANK_LABELS } from '../../shared/types'
 import { Avatar } from '../../shared/components/Avatar'
+import { canReviewStaff } from '../../shared/lib/permissions'
 
 type Checks = Record<string, boolean | null>
 type CL = typeof PROBATION_CHECKLIST
@@ -176,7 +177,7 @@ function EliminationSection({
 
 function ResultArea({
   day, done, result, hasElimination, confirmEliminate, setConfirmEliminate,
-  onSubmit, saving, notes, setNotes,
+  onSubmit, saving, notes, setNotes, isManagerTier,
 }: {
   day: 1 | 2 | 3
   done: boolean
@@ -188,6 +189,7 @@ function ResultArea({
   saving: boolean
   notes: string
   setNotes: (v: string) => void
+  isManagerTier: boolean
 }) {
   if (done) {
     const isElim = result === 'eliminate'
@@ -234,24 +236,41 @@ function ResultArea({
       )}
 
       {!confirmEliminate ? (
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => onSubmit(day === 3 ? 'hire' : 'continue')}
-            disabled={saving}
-            className="py-3.5 rounded-xl bg-[#3D7A50] text-white text-sm font-bold hover:bg-[#2E6040] transition-colors disabled:opacity-60 leading-tight"
-          >
-            {saving ? '…'
-              : day === 3 ? '✓ Hire'
-              : `Continue →\nDay ${day + 1}`}
-          </button>
-          <button
-            onClick={() => setConfirmEliminate(true)}
-            disabled={saving}
-            className="py-3.5 rounded-xl border-2 border-[#9E4A30] text-[#9E4A30] text-sm font-bold hover:bg-[#FCF0EC] transition-colors disabled:opacity-60"
-          >
-            {day === 3 ? '✗ Not Suitable' : 'Eliminate'}
-          </button>
-        </div>
+        day === 3 && !isManagerTier ? (
+          <div className="space-y-3">
+            <div className="px-4 py-3 bg-[#F5F0E8] border border-[#E8DDD0] rounded-xl">
+              <p className="text-xs text-brown-faint font-medium">
+                Day 3 assessment saved — hiring approval is done by a Manager
+              </p>
+            </div>
+            <button
+              onClick={() => setConfirmEliminate(true)}
+              disabled={saving}
+              className="w-full py-3.5 rounded-xl border-2 border-[#9E4A30] text-[#9E4A30] text-sm font-bold hover:bg-[#FCF0EC] transition-colors disabled:opacity-60"
+            >
+              ✗ Not Suitable
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => onSubmit(day === 3 ? 'hire' : 'continue')}
+              disabled={saving}
+              className="py-3.5 rounded-xl bg-[#3D7A50] text-white text-sm font-bold hover:bg-[#2E6040] transition-colors disabled:opacity-60 leading-tight"
+            >
+              {saving ? '…'
+                : day === 3 ? '✓ Hire'
+                : `Continue →\nDay ${day + 1}`}
+            </button>
+            <button
+              onClick={() => setConfirmEliminate(true)}
+              disabled={saving}
+              className="py-3.5 rounded-xl border-2 border-[#9E4A30] text-[#9E4A30] text-sm font-bold hover:bg-[#FCF0EC] transition-colors disabled:opacity-60"
+            >
+              {day === 3 ? '✗ Not Suitable' : 'Eliminate'}
+            </button>
+          </div>
+        )
       ) : (
         <div className="space-y-2">
           <div className="px-4 py-3 bg-[#FCE8E2] border border-[#C06242] rounded-xl">
@@ -528,6 +547,19 @@ export default function ProbationReviewPage() {
 
   const probationDay = review ? getProbationDay(review.start_date) : 1
 
+  // Same manager-tier check used by canReviewStaff: rank=manager or
+  // system_role in manager/admin/owner is unconditionally allowed to hire.
+  const isManagerTier = !!currentUser && (
+    currentUser.rank === 'manager'
+    || currentUser.system_role === 'manager'
+    || currentUser.system_role === 'admin'
+    || currentUser.system_role === 'owner'
+  )
+  // Friendly front-end layer — RLS blocks the actual data/writes for
+  // out-of-scope targets; this just avoids showing dead UI (Start button)
+  // and explains why via a banner instead of a silent failure.
+  const noPermission = !!currentUser && !canReviewStaff(currentUser, staff)
+
   return (
     <div className="min-h-screen bg-cream-light pb-16">
       <div className="max-w-xl mx-auto px-4 py-6">
@@ -586,6 +618,18 @@ export default function ProbationReviewPage() {
           )}
         </div>
 
+        {/* No-permission banner — supervisor viewing someone outside their scope */}
+        {noPermission && (
+          <div className="mb-4 px-4 py-3 bg-[#F5F0E8] border border-[#E8DDD0] rounded-xl">
+            <p className="text-sm font-semibold text-brown-medium">
+              You don't have permission to review this staff member.
+            </p>
+            <p className="text-xs text-brown-faint mt-0.5">
+              Probation reviews are limited to your own branch and department.
+            </p>
+          </div>
+        )}
+
         {/* Save/start errors */}
         {saveError && (
           <div className="mb-4 px-4 py-3 bg-[#FCE8E2] border border-[#C0624240] rounded-xl">
@@ -594,7 +638,7 @@ export default function ProbationReviewPage() {
         )}
 
         {/* No review yet */}
-        {!review && (
+        {!review && !noPermission && (
           <div className="bg-white rounded-2xl border border-[#E8DDD0] p-8 text-center">
             <p className="text-4xl mb-3">🌱</p>
             <h2 className="font-bold text-brown-dark text-base mb-2">
@@ -652,6 +696,7 @@ export default function ProbationReviewPage() {
                   confirmEliminate={confirmEliminate} setConfirmEliminate={setConfirmEliminate}
                   onSubmit={submitDay} saving={saving}
                   notes={notes} setNotes={setNotes}
+                  isManagerTier={isManagerTier}
                 />
               </div>
             )}
@@ -690,6 +735,7 @@ export default function ProbationReviewPage() {
                   confirmEliminate={confirmEliminate} setConfirmEliminate={setConfirmEliminate}
                   onSubmit={submitDay} saving={saving}
                   notes={notes} setNotes={setNotes}
+                  isManagerTier={isManagerTier}
                 />
               </div>
             )}
@@ -722,6 +768,7 @@ export default function ProbationReviewPage() {
                   confirmEliminate={confirmEliminate} setConfirmEliminate={setConfirmEliminate}
                   onSubmit={submitDay} saving={saving}
                   notes={notes} setNotes={setNotes}
+                  isManagerTier={isManagerTier}
                 />
               </div>
             )}
