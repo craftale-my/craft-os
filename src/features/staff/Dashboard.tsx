@@ -13,7 +13,7 @@ import {
   getProbationDay,
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
-import { useCan } from '../../shared/lib/permissions'
+import { useCan, canReviewStaff } from '../../shared/lib/permissions'
 import { bucketProbations } from '../../shared/lib/probation'
 import { StarRating } from '../../shared/components/StarRating'
 
@@ -1116,7 +1116,6 @@ export default function Dashboard() {
   const [newCredentials, setNewCredentials] = useState<{ email: string; password: string } | null>(null)
 
   const isManager = currentStaff?.rank === 'manager'
-  const isSupervisor = currentStaff?.rank === 'supervisor' || isManager
 
   async function loadAll() {
     const { data: { user } } = await supabase.auth.getUser()
@@ -1131,18 +1130,18 @@ export default function Dashboard() {
         .order('completed_at', { ascending: false }),
       supabase
         .from('monthly_reviews')
-        .select('*, staff:staff!monthly_reviews_staff_id_fkey(id,name,rank,department)')
+        .select('*, staff:staff!monthly_reviews_staff_id_fkey(id,name,rank,department,branch,branch_id)')
         .eq('month', CURRENT_MONTH)
         .eq('year', CURRENT_YEAR),
       supabase
         .from('probation_reviews')
-        .select('*, staff:staff!probation_reviews_staff_id_fkey(id,name,avatar,rank,branch)')
+        .select('*, staff:staff!probation_reviews_staff_id_fkey(id,name,avatar,rank,branch,department,branch_id)')
         .order('start_date', { ascending: false }),
     ])
 
     const { data: skillData } = await supabase
       .from('skill_assessments')
-      .select('*, skill:skills(*), staff:staff!skill_assessments_staff_id_fkey(id,name,avatar,rank,branch,branch_id)')
+      .select('*, skill:skills(*), staff:staff!skill_assessments_staff_id_fkey(id,name,avatar,rank,branch,branch_id,department)')
       .eq('status', 'pending_review')
       .order('updated_at', { ascending: true })
     setSkillReviews((skillData as SkillAssessment[]) ?? [])
@@ -1176,7 +1175,7 @@ export default function Dashboard() {
     if (reviewRefresh === 0) return
     supabase
       .from('monthly_reviews')
-      .select('*, staff:staff!monthly_reviews_staff_id_fkey(id,name,rank,department)')
+      .select('*, staff:staff!monthly_reviews_staff_id_fkey(id,name,rank,department,branch,branch_id)')
       .eq('month', CURRENT_MONTH)
       .eq('year', CURRENT_YEAR)
       .then(({ data }) => { if (data) setReviews(data as MonthlyReview[]) })
@@ -1189,10 +1188,9 @@ export default function Dashboard() {
   // Active staff (resigned are retained but excluded from active operations/counts)
   const activeStaff = allStaff.filter(s => s.status !== 'resigned' && inBranchScope(s))
 
-  // Pending skill assessments, branch-scoped for supervisors.
-  const visibleSkillReviews = skillReviews.filter(
-    r => !ownBranchOnly || !myBranchId || r.staff?.branch_id === myBranchId
-  )
+  // Pending skill assessments, scoped to the current user's review scope
+  // (canReviewStaff is unconditionally true for manager tier).
+  const visibleSkillReviews = skillReviews.filter(r => canReviewStaff(currentStaff, r.staff))
 
   // Derived counts
   const pendingCompletions = completions.filter(c => c.status === 'pending')
@@ -1214,7 +1212,10 @@ export default function Dashboard() {
 
   // Review buckets
   const reviewStarted = reviews.length > 0
-  const selfDoneReviews = reviews.filter(r => r.status === 'self_done')
+  // The "awaiting supervisor review" list is scoped to the reviewer's own
+  // team (canReviewStaff is unconditionally true for manager tier), while
+  // the stats row above still reflects the full cycle.
+  const selfDoneReviews = reviews.filter(r => r.status === 'self_done' && canReviewStaff(currentStaff, r.staff))
   const completedReviews = reviews.filter(r => r.status === 'completed')
   const pendingSelfReviews = reviews.filter(r => r.status === 'pending')
   const poorReviews = completedReviews.filter(r => {
@@ -1472,7 +1473,7 @@ export default function Dashboard() {
           <div className="lg:col-span-2 space-y-8">
 
             {/* ── Monthly Reviews ── */}
-            {isSupervisor && (
+            {can('conduct_reviews') && (
               <section id="reviews-section">
                 <div className="flex items-center justify-between mb-4">
                   <div>
@@ -1567,8 +1568,13 @@ export default function Dashboard() {
             )}
 
             {/* ── Probation Reviews ── */}
-            {isSupervisor && (() => {
-              const { active, completed, unstarted } = bucketProbations(allStaff, probations)
+            {can('conduct_reviews') && (() => {
+              // Scope the trainee pool and their probation reviews to what
+              // the current reviewer may act on (unconditionally true for
+              // manager tier via canReviewStaff).
+              const reviewableStaff = allStaff.filter(s => canReviewStaff(currentStaff, s))
+              const reviewableProbations = probations.filter(p => canReviewStaff(currentStaff, p.staff))
+              const { active, completed, unstarted } = bucketProbations(reviewableStaff, reviewableProbations)
               const hasAnything = active.length > 0 || completed.length > 0 || unstarted.length > 0
               if (!hasAnything) return null
               return (

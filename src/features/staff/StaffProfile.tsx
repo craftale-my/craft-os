@@ -14,6 +14,7 @@ import {
   REVIEW_CATEGORIES, MONTHS_FULL, calcFinalScore, getScoreConfig,
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
+import { canReviewStaff } from '../../shared/lib/permissions'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
@@ -53,8 +54,12 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
   const isSelf       = selfView || staffId === currentStaff?.id
   const isManager    = currentStaff?.rank === 'manager'
-  const isSupervisor = currentStaff?.rank === 'supervisor' || currentStaff?.rank === 'manager'
-  const canRateSkills = isSupervisor && !isSelf
+  // Scope-aware review permission: mirrors canReviewStaff (manager tier is
+  // unconditionally true; supervisor tier requires same branch+department
+  // and a target rank below supervisor). Gates review scoring + skill
+  // rating UI only — management-card gating below still uses isManager.
+  const canReview    = canReviewStaff(currentStaff, staff)
+  const canRateSkills = canReview && !isSelf
 
   useEffect(() => {
     if (!authLoading && selfView && !currentStaff?.id) {
@@ -213,7 +218,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
                 ))}
               </div>
             </div>
-            {isSupervisor && (
+            {canReview && (
               <Link
                 to={`/probation/${staff.id}`}
                 className="text-xs font-semibold text-[#C4813A] px-3 py-1.5 rounded-lg border border-[#C4813A40] hover:bg-[#C4813A10] transition-colors flex-shrink-0"
@@ -309,7 +314,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
           <ReviewsTab
             staffId={staffId!}
             isSelf={isSelf}
-            isSupervisor={isSupervisor}
+            isSupervisor={canReview}
             currentStaffId={currentStaff?.id ?? ''}
             onStatusChange={setPendingReviewStatus}
           />
