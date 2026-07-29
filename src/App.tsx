@@ -22,6 +22,8 @@ import HrLeavePage from './features/hr/HrLeave'
 import HrClaimsPage from './features/hr/HrClaims'
 import SchedulePage from './features/schedule/Schedule'
 import SuppliersPage from './features/procurement/Suppliers'
+import ItemsPage from './features/procurement/Items'
+import ItemDetailPage from './features/procurement/ItemDetail'
 
 function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -203,6 +205,26 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="manage_procurement">
             <AppLayout><SuppliersPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/items"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><ItemsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Detail is readable by anyone who can raise a PO — they need to see
+          prices and stock — while the Items list stays manager-only. */}
+      <Route
+        path="/procurement/items/:id"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><ItemDetailPage /></AppLayout>
           </ProtectedRoute>
         }
       />

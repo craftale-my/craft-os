@@ -284,6 +284,12 @@ declare
   v_shortage        numeric;
   v_conv            numeric;
 begin
+  -- 授权检查排在 PO 查找之前 —— 否则未授权的调用方能通过「PO 不存在」和
+  -- 「无权限」两种不同报错,探测出某个 PO id 是否存在。
+  if not has_procurement_cap('use_procurement') then
+    raise exception 'Not authorised to receive goods';
+  end if;
+
   -- 锁住 PO 行,防止并发重复收货(配合 receivings(po_id) 唯一索引)
   select branch_id, status into v_branch_id, v_status
     from purchase_orders where id = p_po_id
@@ -293,7 +299,7 @@ begin
     raise exception 'Purchase order not found';
   end if;
 
-  if not has_procurement_cap('use_procurement') or not can_access_branch(v_branch_id) then
+  if not can_access_branch(v_branch_id) then
     raise exception 'Not authorised to receive against this purchase order';
   end if;
 
@@ -375,8 +381,16 @@ begin
 end;
 $$;
 
+-- Supabase 对 public schema 的函数有默认授权(GRANT EXECUTE TO anon, authenticated),
+-- 那是**显式**授给 anon 的 —— `revoke from public` 撤不掉,必须点名撤 anon。
 revoke all on function submit_receiving(uuid, text, text, text, jsonb) from public;
+revoke all on function submit_receiving(uuid, text, text, text, jsonb) from anon;
 grant execute on function submit_receiving(uuid, text, text, text, jsonb) to authenticated;
+
+-- 同理:采购的权限辅助函数不该对匿名开放。
+revoke all on function has_procurement_cap(text) from anon;
+revoke all on function can_access_branch(uuid)  from anon;
+revoke all on function current_branch_id()      from anon;
 
 
 -- ── Part 8: RLS ──────────────────────────────────────────────────────────────

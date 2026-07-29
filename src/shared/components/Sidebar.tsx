@@ -4,7 +4,7 @@ import {
   User, Target, LayoutDashboard, CheckSquare, ClipboardList,
   UserCheck, Users, LogOut, Menu, X, Settings,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, GraduationCap,
-  Truck,
+  Truck, Package,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -54,6 +54,7 @@ const MGMT_NAV: NavItem[] = [
 
 const PROCUREMENT_NAV: NavItem[] = [
   { id: 'suppliers', label: 'Suppliers', to: '/procurement/suppliers', icon: Truck, activePaths: ['/procurement/suppliers'], cap: 'manage_procurement' },
+  { id: 'items',     label: 'Items',     to: '/procurement/items',     icon: Package, activePaths: ['/procurement/items'], cap: 'manage_procurement' },
 ]
 
 const SETTINGS_NAV: NavItem[] = [
