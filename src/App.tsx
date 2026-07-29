@@ -29,6 +29,9 @@ import OrgChartPage from './features/orgchart/OrgChart'
 import SuppliersPage from './features/procurement/Suppliers'
 import ItemsPage from './features/procurement/Items'
 import ItemDetailPage from './features/procurement/ItemDetail'
+import PurchaseOrdersPage from './features/procurement/PurchaseOrders'
+import PurchaseOrderNewPage from './features/procurement/PurchaseOrderNew'
+import PurchaseOrderDetailPage from './features/procurement/PurchaseOrderDetail'
 
 function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -285,6 +288,34 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><ItemDetailPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/orders"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><PurchaseOrdersPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Before /orders/:id so "new" isn't swallowed as an id. */}
+      <Route
+        path="/procurement/orders/new"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><PurchaseOrderNewPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/orders/:id"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><PurchaseOrderDetailPage /></AppLayout>
           </ProtectedRoute>
         }
       />
