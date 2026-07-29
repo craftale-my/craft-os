@@ -864,3 +864,16 @@ alter table scheduled_shifts add constraint scheduled_shifts_shift_or_leave
     (shift_type_id is not null and leave_type is null)
     or (shift_type_id is null and leave_type is not null)
   );
+
+-- =============================================
+-- Procurement & Inventory — Phase 1 (2026-07-29)
+--
+-- The full, commented definition lives in:
+--   supabase/migration-2026-07-29-procurement.sql
+--   supabase/migration-2026-07-30-procurement-grants-fix.sql  (grants patch)
+--
+-- Both are idempotent. Run them in order on a fresh database rather than
+-- duplicating ~400 lines of DDL here — they are the source of truth for
+-- suppliers, items, purchase_orders, receivings, inventory_transactions,
+-- the inventory_balances view and the submit_receiving RPC.
+-- =============================================

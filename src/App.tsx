@@ -27,6 +27,10 @@ import ItemDetailPage from './features/procurement/ItemDetail'
 import PurchaseOrdersPage from './features/procurement/PurchaseOrders'
 import PurchaseOrderNewPage from './features/procurement/PurchaseOrderNew'
 import PurchaseOrderDetailPage from './features/procurement/PurchaseOrderDetail'
+import ReceivingListPage from './features/procurement/ReceivingList'
+import ReceivingPage from './features/procurement/Receiving'
+import InventoryPage from './features/procurement/Inventory'
+import InventoryDetailPage from './features/procurement/InventoryDetail'
 
 function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -256,6 +260,42 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><PurchaseOrderDetailPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/receiving"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><ReceivingListPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/receiving/:poId"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><ReceivingPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/inventory"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><InventoryPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/inventory/:itemId"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><InventoryDetailPage /></AppLayout>
           </ProtectedRoute>
         }
       />

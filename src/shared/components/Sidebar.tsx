@@ -4,7 +4,7 @@ import {
   User, Target, LayoutDashboard, CheckSquare, ClipboardList,
   UserCheck, Users, LogOut, Menu, X, Settings,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, GraduationCap,
-  Truck, Package, ShoppingCart,
+  Truck, Package, ShoppingCart, PackageCheck, Boxes,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -56,6 +56,8 @@ const PROCUREMENT_NAV: NavItem[] = [
   { id: 'suppliers', label: 'Suppliers', to: '/procurement/suppliers', icon: Truck, activePaths: ['/procurement/suppliers'], cap: 'manage_procurement' },
   { id: 'items',     label: 'Items',     to: '/procurement/items',     icon: Package, activePaths: ['/procurement/items'], cap: 'manage_procurement' },
   { id: 'orders',    label: 'Purchase Orders', to: '/procurement/orders', icon: ShoppingCart, activePaths: ['/procurement/orders'], cap: 'use_procurement' },
+  { id: 'receiving', label: 'Receiving', to: '/procurement/receiving', icon: PackageCheck, activePaths: ['/procurement/receiving'], cap: 'use_procurement' },
+  { id: 'inventory', label: 'Inventory', to: '/procurement/inventory', icon: Boxes, activePaths: ['/procurement/inventory'], cap: 'use_procurement' },
 ]
 
 const SETTINGS_NAV: NavItem[] = [
