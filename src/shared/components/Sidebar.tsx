@@ -4,6 +4,7 @@ import {
   User, Target, LayoutDashboard, CheckSquare, ClipboardList,
   UserCheck, Users, LogOut, Menu, X, Settings,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, GraduationCap,
+  Truck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -49,6 +50,10 @@ const MGMT_NAV: NavItem[] = [
   { id: 'skills',     label: 'Skill Assessments', to: '/dashboard', icon: GraduationCap,   scrollTo: 'skill-assessments-section', cap: 'conduct_reviews' },
   { id: 'probation',  label: 'Probation Reviews', to: '/dashboard', icon: UserCheck,       scrollTo: 'probation-section', cap: 'conduct_reviews' },
   { id: 'staff-mgmt', label: 'Staff Management',  to: '/dashboard', icon: Users,           scrollTo: 'staff-section', cap: 'view_team' },
+]
+
+const PROCUREMENT_NAV: NavItem[] = [
+  { id: 'suppliers', label: 'Suppliers', to: '/procurement/suppliers', icon: Truck, activePaths: ['/procurement/suppliers'], cap: 'manage_procurement' },
 ]
 
 const SETTINGS_NAV: NavItem[] = [
@@ -101,6 +106,7 @@ function SidebarContent({ onNavigate, onClose }: {
   const staffItems = STAFF_NAV.filter(i => (!i.cap || can(i.cap)) && (!i.hideWithCap || !can(i.hideWithCap)))
   const mgmtItems = MGMT_NAV.filter(i => !i.cap || can(i.cap))
   const settingsItems = SETTINGS_NAV.filter(i => !i.cap || can(i.cap))
+  const procurementItems = PROCUREMENT_NAV.filter(i => !i.cap || can(i.cap))
   const showMgmtSection = mgmtItems.length > 0 || settingsItems.length > 0
 
   return (
@@ -169,6 +175,20 @@ function SidebarContent({ onNavigate, onClose }: {
                 <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
               ))}
               {settingsItems.map(item => (
+                <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {procurementItems.length > 0 && (
+          <div>
+            <div className="border-t border-[#5A3A22] mb-3" />
+            <p className="px-3 mb-1.5 text-[10px] font-bold text-[#8B7355] uppercase tracking-widest">
+              Procurement
+            </p>
+            <div className="space-y-0.5">
+              {procurementItems.map(item => (
                 <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
               ))}
             </div>

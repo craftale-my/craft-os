@@ -1,3 +1,5 @@
+export * from './procurement'
+
 export type Rank = 'trainee' | 'junior' | 'senior' | 'supervisor' | 'manager'
 export type MissionCategory = 'espresso' | 'milk' | 'service' | 'ops' | 'knowledge' | 'leadership'
 export type CompletionStatus = 'pending' | 'approved' | 'rejected'
@@ -41,6 +43,8 @@ export type Capability =
   | 'all_branches'     // see data across every branch (false ⇒ own branch only)
   | 'access_settings'  // company settings
   | 'manage_system_roles' // owner-only; assign system roles + edit matrix
+  | 'manage_procurement'  // supplier & item master data
+  | 'use_procurement'     // raise POs, receive goods, view inventory
 
 export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'view_team',           label: 'View Team' },
@@ -53,6 +57,8 @@ export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'all_branches',        label: 'All Branches' },
   { key: 'access_settings',     label: 'Access Settings' },
   { key: 'manage_system_roles', label: 'Manage System Roles' },
+  { key: 'manage_procurement',  label: 'Manage Procurement' },
+  { key: 'use_procurement',     label: 'Use Procurement' },
 ]
 
 type CapMap = Partial<Record<Capability, boolean>>
@@ -63,31 +69,38 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: true,
+    manage_procurement: true, use_procurement: true,
   },
   admin: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: false,
+    manage_procurement: true, use_procurement: true,
   },
   hr: {
     view_team: true, manage_staff: true, manage_schedule: false, conduct_reviews: false,
     manage_missions: false, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: false, manage_system_roles: false,
+    manage_procurement: false, use_procurement: false,
   },
   manager: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: false,
+    manage_procurement: true, use_procurement: true,
   },
   supervisor: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: false, view_salary: false, manage_hr: true, all_branches: false,
     access_settings: false, manage_system_roles: false,
+    // Supervisors raise POs and receive goods, but don't own the master data.
+    manage_procurement: false, use_procurement: true,
   },
   staff: {
     view_team: false, manage_staff: false, manage_schedule: false, conduct_reviews: false,
     manage_missions: false, view_salary: false, manage_hr: false, all_branches: false,
     access_settings: false, manage_system_roles: false,
+    manage_procurement: false, use_procurement: false,
   },
 }
 

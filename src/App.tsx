@@ -21,6 +21,7 @@ import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
 import HrClaimsPage from './features/hr/HrClaims'
 import SchedulePage from './features/schedule/Schedule'
+import SuppliersPage from './features/procurement/Suppliers'
 
 function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -193,6 +194,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout><SchedulePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/suppliers"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><SuppliersPage /></AppLayout>
           </ProtectedRoute>
         }
       />
