@@ -59,6 +59,7 @@ export const NAV: NavEntry[] = [
     label: 'Procurement',
     children: [
       { id: 'proc-suppliers', label: 'Suppliers', to: '/procurement/suppliers', cap: 'manage_procurement' },
+      { id: 'proc-items',     label: 'Items',     to: '/procurement/items',     cap: 'manage_procurement' },
     ],
   },
   { id: 'settings', label: 'Settings', to: '/settings', cap: 'access_settings' },
