@@ -65,9 +65,17 @@ export function LoginPage() {
           </div>
 
           <div>
-            <label className="block text-xs text-brown-muted mb-1.5 font-medium tracking-widest uppercase">
-              Password
-            </label>
+            <div className="flex items-baseline justify-between mb-1.5">
+              <label className="block text-xs text-brown-muted font-medium tracking-widest uppercase">
+                Password
+              </label>
+              <Link
+                to="/forgot-password"
+                className="text-xs text-[#8B6344] hover:underline"
+              >
+                Forgot password?
+              </Link>
+            </div>
             <input
               type="password"
               required

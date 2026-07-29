@@ -7,6 +7,8 @@ import { ProtectedRoute, OnboardingRoute } from './features/auth/ProtectedRoute'
 import { Sidebar } from './shared/components/Sidebar'
 import { LoginPage } from './features/auth/Login'
 import { RegisterPage } from './features/auth/Register'
+import { ForgotPasswordPage } from './features/auth/ForgotPassword'
+import { ResetPasswordPage } from './features/auth/ResetPassword'
 import { OnboardingPage } from './features/onboarding/Onboarding'
 import DashboardPage from './features/staff/Dashboard'
 import { StaffProfilePage } from './features/staff/StaffProfile'
@@ -79,6 +81,13 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route path="/register" element={user ? <Navigate to="/" replace /> : <RegisterPage />} />
+      <Route
+        path="/forgot-password"
+        element={user ? <Navigate to="/" replace /> : <ForgotPasswordPage />}
+      />
+      {/* Not gated on `user`: the recovery link establishes a session before this
+          renders, so redirecting authenticated users away would break the flow. */}
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
 
       <Route
         path="/onboarding"
