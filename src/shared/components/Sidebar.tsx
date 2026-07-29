@@ -4,6 +4,7 @@ import {
   User, Target, CheckSquare, ClipboardList, FolderKanban,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network,
+  ShoppingBasket, Truck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -33,6 +34,8 @@ const ICONS: Record<string, LucideIcon> = {
   leave: Palmtree,
   claims: Receipt,
   salary: Wallet,
+  procurement: ShoppingBasket,
+  'proc-suppliers': Truck,
   settings: Settings,
 }
 
