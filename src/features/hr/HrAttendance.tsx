@@ -5,7 +5,7 @@ import { useCan } from '../../shared/lib/permissions'
 import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, LeaveType } from '../../shared/types'
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
-import { calcLateness, localDateStr } from '../../shared/lib/attendance'
+import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
 import { Avatar } from '../../shared/components/Avatar'
 import { Camera, MapPin, CheckCircle, X, AlertTriangle, RefreshCw, ZoomIn, Coffee } from 'lucide-react'
 
@@ -681,34 +681,58 @@ function MyAttendance({ staff }: { staff: Staff }) {
   const [breaks, setBreaks] = useState<AttendanceBreak[]>([])
   const [breakBusy, setBreakBusy] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  // The attendance day this card is acting on. Usually the wall-clock date, but
+  // a night shift that ran past midnight holds it on the day the shift STARTED.
+  const [attDate, setAttDate] = useState(todayStr())
 
+  // Loads the month's records, resolves which attendance day is active, and
+  // pulls that day's shift + break allowances. One pass, because the shift
+  // lookup depends on the resolved day and the resolved day depends on whether
+  // yesterday's session is still open.
   async function load() {
     const now = new Date()
-    const start = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    const wallDate = localDateStr(now)
+    const yesterday = prevDateStr(wallDate)
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    // On the 1st of a month yesterday falls in the previous month, so widen the
+    // fetch to reach it — the month stats below stay scoped to the month.
+    const from = yesterday < monthStart ? yesterday : monthStart
+
     const { data } = await supabase
       .from('attendance')
       .select('*')
       .eq('staff_id', staff.id)
-      .gte('date', start)
+      .gte('date', from)
       .order('date')
-    setMonthRecords((data as Attendance[]) ?? [])
-    const t = (data as Attendance[] | null)?.find(r => r.date === todayStr())
-    setToday(t ?? null)
-  }
+    const rows = (data as Attendance[] | null) ?? []
+    setMonthRecords(rows.filter(r => r.date >= monthStart))
 
-  // Determine today's break allowances from the scheduled shift (break 1 & 2).
-  // With no shift, fall back to the company default rule for break 1 only.
-  async function loadBreakAllowance() {
-    const { data: shiftRow } = await supabase
+    // Yesterday's shift decides whether a night shift is still running;
+    // the active day's shift drives the badge and break allowances.
+    type ShiftRow = { date: string; leave_type: LeaveType | null; shift_type: ShiftType | null }
+    const { data: shiftRows } = await supabase
       .from('scheduled_shifts')
-      .select('leave_type, shift_type:shift_types(*)')
+      .select('date, leave_type, shift_type:shift_types(*)')
       .eq('staff_id', staff.id)
-      .eq('date', todayStr())
-      .maybeSingle()
-    const row = shiftRow as { leave_type: LeaveType | null; shift_type: ShiftType | null } | null
-    const st = row?.shift_type ?? null
+      .in('date', [yesterday, wallDate])
+    const shifts = (shiftRows as ShiftRow[] | null) ?? []
+    const shiftFor = (d: string) => shifts.find(s => s.date === d) ?? null
+
+    const prevRow = rows.find(r => r.date === yesterday) ?? null
+    const date = resolveAttendanceDate({
+      now,
+      prevShift: shiftFor(yesterday)?.shift_type ?? null,
+      prevOpen: !!prevRow?.clock_in && !prevRow.clock_out,
+    })
+    setAttDate(date)
+    setToday(rows.find(r => r.date === date) ?? null)
+
+    // Break allowances come from the active day's shift (break 1 & 2). With no
+    // shift, fall back to the company default rule for break 1 only.
+    const active = shiftFor(date)
+    const st = active?.shift_type ?? null
     setTodayShift(st)
-    setTodayLeave(row?.leave_type ?? null)
+    setTodayLeave(active?.leave_type ?? null)
     if (st) {
       setBreak1Allowed(st.break1_duration_minutes ?? 0)
       setBreak2Allowed(st.break2_duration_minutes ?? 0)
@@ -735,7 +759,7 @@ function MyAttendance({ staff }: { staff: Staff }) {
     setBreaks((data as AttendanceBreak[]) ?? [])
   }
 
-  useEffect(() => { load(); loadBreakAllowance() }, [])
+  useEffect(() => { load() }, [])
   useEffect(() => { loadBreaks(today?.id) }, [today?.id])
 
   // Break rows by number, and which one is currently in progress.
@@ -793,11 +817,11 @@ function MyAttendance({ staff }: { staff: Staff }) {
     const now = new Date()
     if (type === 'in') {
       const lateness = todayShift
-        ? calcLateness(now.toISOString(), todayStr(), todayShift.start_time)
+        ? calcLateness(now.toISOString(), attDate, todayShift.start_time)
         : { isLate: false, lateMinutes: 0 }
       await supabase.from('attendance').upsert({
         staff_id: staff.id,
-        date: todayStr(),
+        date: attDate,
         clock_in: now.toISOString(),
         status: lateness.isLate ? 'late' : 'present',
         late_minutes: lateness.lateMinutes,
@@ -833,6 +857,8 @@ function MyAttendance({ staff }: { staff: Staff }) {
 
   const canClockIn = !today?.clock_in
   const canClockOut = !!today?.clock_in && !today?.clock_out
+  // Past midnight on a night shift: the card is showing yesterday's day, not today's.
+  const isCarryover = attDate !== todayStr()
 
   // Which breaks are available given clock state + shift allowances.
   const clockedInNotOut = !!today?.clock_in && !today?.clock_out
@@ -872,9 +898,11 @@ function MyAttendance({ staff }: { staff: Staff }) {
       {/* Today's clock card */}
       <div className="bg-white rounded-2xl border border-[#E8DDD0] overflow-hidden">
         <div className="px-5 pt-5 pb-4">
-          <p className="text-xs text-brown-faint uppercase tracking-widest font-semibold mb-1">Today</p>
+          <p className="text-xs text-brown-faint uppercase tracking-widest font-semibold mb-1">
+            {isCarryover ? 'Current shift' : 'Today'}
+          </p>
           <p className="text-lg font-bold text-brown-dark">
-            {new Date().toLocaleDateString('en-MY', { weekday: 'long', day: 'numeric', month: 'long' })}
+            {new Date(`${attDate}T00:00:00`).toLocaleDateString('en-MY', { weekday: 'long', day: 'numeric', month: 'long' })}
           </p>
           {todayShift ? (
             <div
@@ -896,6 +924,12 @@ function MyAttendance({ staff }: { staff: Staff }) {
             </p>
           ) : (
             <p className="mt-2 text-xs text-brown-faint">No shift scheduled today</p>
+          )}
+
+          {isCarryover && (
+            <p className="mt-2 text-xs font-medium text-[#C4813A]">
+              🌙 Night shift running past midnight — clock out here to close it.
+            </p>
           )}
 
           {today?.clock_in ? (

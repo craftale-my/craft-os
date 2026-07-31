@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { calcLateness, localDateStr } from './attendance'
+import {
+  calcLateness,
+  isOvernightShift,
+  localDateStr,
+  prevDateStr,
+  resolveAttendanceDate,
+} from './attendance'
+
+const NIGHT = { start_time: '17:00:00', end_time: '01:00:00' }
+const DAY = { start_time: '09:30:00', end_time: '18:00:00' }
 
 // Build ISO strings in LOCAL time so tests are timezone-independent.
 const localIso = (dateStr: string, time: string) => new Date(`${dateStr}T${time}`).toISOString()
@@ -42,5 +51,81 @@ describe('localDateStr', () => {
 
   it('pads single-digit months and days', () => {
     expect(localDateStr(new Date(2026, 0, 5, 9, 0, 0))).toBe('2026-01-05')
+  })
+})
+
+describe('prevDateStr', () => {
+  it('steps back one day', () => {
+    expect(prevDateStr('2026-07-31')).toBe('2026-07-30')
+  })
+
+  it('crosses a month boundary', () => {
+    expect(prevDateStr('2026-08-01')).toBe('2026-07-31')
+  })
+
+  it('crosses a year boundary', () => {
+    expect(prevDateStr('2026-01-01')).toBe('2025-12-31')
+  })
+})
+
+describe('isOvernightShift', () => {
+  it('flags a shift that ends past midnight', () => {
+    expect(isOvernightShift(NIGHT)).toBe(true)
+  })
+
+  it('does not flag a same-day shift', () => {
+    expect(isOvernightShift(DAY)).toBe(false)
+  })
+
+  it('tolerates HH:MM times without seconds', () => {
+    expect(isOvernightShift({ start_time: '22:00', end_time: '06:00' })).toBe(true)
+    expect(isOvernightShift({ start_time: '09:00', end_time: '17:00' })).toBe(false)
+  })
+})
+
+describe('resolveAttendanceDate', () => {
+  // The bug: a 5pm–1am night shift clocked in on 31 Jul. At 1:05am the wall
+  // clock says 1 Aug, but the open session — and so the clock-out — still
+  // belongs to 31 Jul.
+  it('stays on the previous day while an overnight shift is still open', () => {
+    const now = new Date(2026, 7, 1, 1, 5, 0)
+    expect(resolveAttendanceDate({ now, prevShift: NIGHT, prevOpen: true })).toBe('2026-07-31')
+  })
+
+  it('stays on the previous day between midnight and the shift end', () => {
+    const now = new Date(2026, 7, 1, 0, 30, 0)
+    expect(resolveAttendanceDate({ now, prevShift: NIGHT, prevOpen: true })).toBe('2026-07-31')
+  })
+
+  it('rolls over once the grace window after the shift end has passed', () => {
+    const now = new Date(2026, 7, 1, 6, 0, 0)
+    expect(resolveAttendanceDate({ now, prevShift: NIGHT, prevOpen: true })).toBe('2026-08-01')
+  })
+
+  it('rolls over as normal when yesterday was already clocked out', () => {
+    const now = new Date(2026, 7, 1, 1, 5, 0)
+    expect(resolveAttendanceDate({ now, prevShift: NIGHT, prevOpen: false })).toBe('2026-08-01')
+  })
+
+  it('rolls over as normal when yesterday was a day shift left open', () => {
+    const now = new Date(2026, 7, 1, 1, 5, 0)
+    expect(resolveAttendanceDate({ now, prevShift: DAY, prevOpen: true })).toBe('2026-08-01')
+  })
+
+  it('rolls over as normal when yesterday had no shift', () => {
+    const now = new Date(2026, 7, 1, 1, 5, 0)
+    expect(resolveAttendanceDate({ now, prevShift: null, prevOpen: true })).toBe('2026-08-01')
+  })
+
+  it('is unaffected during the evening half of a night shift', () => {
+    const now = new Date(2026, 6, 31, 23, 50, 0)
+    expect(resolveAttendanceDate({ now, prevShift: NIGHT, prevOpen: false })).toBe('2026-07-31')
+  })
+
+  it('does not hijack the day when the previous night shift is long over', () => {
+    // Same night shift pattern every day: at 5pm on 1 Aug the staff member is
+    // starting a NEW shift, even if 31 Jul was never clocked out.
+    const now = new Date(2026, 7, 1, 17, 0, 0)
+    expect(resolveAttendanceDate({ now, prevShift: NIGHT, prevOpen: true })).toBe('2026-08-01')
   })
 })
