@@ -668,7 +668,8 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
 
 // ─── Staff: my attendance ─────────────────────────────────────────────────────
 
-function MyAttendance({ staff }: { staff: Staff }) {
+// Exported for tests — the night-shift/midnight behaviour lives entirely in here.
+export function MyAttendance({ staff }: { staff: Staff }) {
   const [today, setToday] = useState<Attendance | null>(null)
   const [monthRecords, setMonthRecords] = useState<Attendance[]>([])
   const [clockModal, setClockModal] = useState<'in' | 'out' | null>(null)
