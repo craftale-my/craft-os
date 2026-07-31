@@ -192,23 +192,30 @@ Then open the local URL Vite prints (default http://localhost:5173).
 - **Vercel project:** `craft-os` (org `craftale-my`).
 - **SPA routing:** `vercel.json` rewrites all paths to `/` so client-side routing works.
 
-### ⚠️ Pushing does NOT deploy
-
-Git-triggered deploys are **not working** on this project. Verified 2026-08-01: pushing
-`main` produced no deployment, and every entry in `vercel ls craft-os` going back weeks
-was made by the CLI, never by a git push.
-
-Deploying and backing up the code are **two separate steps** — doing one does not do the
-other:
+### How updates flow
 
 ```
-vercel deploy --prod --yes   →  production is updated  (does NOT touch GitHub)
-git push origin main         →  code is backed up      (does NOT deploy)
+push to GitHub (main)  →  Vercel auto-builds & deploys to production
 ```
 
-Do both on every wrap-up.
+`main` is therefore a **live release branch** — anything merged into it ships. Land work
+on a feature branch and merge deliberately.
 
-**Deploy from a clean checkout of `main`, not from your working tree.** The CLI uploads
+> **History, so nobody re-breaks this.** The project was created from the CLI on
+> 2026-06-30 and was never linked to the repo, so for its first month every deploy came
+> from `vercel deploy` and pushes did nothing — while these notes claimed otherwise.
+> The repository was connected on 2026-08-01. If deploys ever stop following pushes,
+> check Project → Settings → Git before assuming anything else.
+
+### Deploying by hand
+
+Still possible, and still the fallback if the Git connection breaks:
+
+```bash
+vercel deploy --prod --yes
+```
+
+**Run it from a clean checkout of `main`, not from your working tree.** The CLI uploads
 whatever is in the current directory, so any half-finished work sitting uncommitted will
 ship to production. When the working tree is dirty:
 
@@ -219,7 +226,9 @@ cd /tmp/deploy-main && vercel deploy --prod --yes
 git worktree remove /tmp/deploy-main       # when done
 ```
 
-Then confirm production is actually serving the new build. **Do not compare asset
+### Confirming a deploy actually landed
+
+**Do not compare asset
 hashes against a local build** — Vercel builds on a different Node version, so the
 hashes differ even when the source is identical (verified 2026-08-01: the same commit
 built to 842.63 kB on Vercel and 839.53 kB locally). Grep the live bundle for a string
@@ -284,8 +293,7 @@ npm install
 npm run dev
 ```
 
-- **Always test locally before deploying.** Note that pushing to `main` does *not* deploy —
-  production only changes when someone runs `vercel deploy --prod`. See §6.
+- **Always test locally before pushing** — merging to `main` deploys to production. See §6.
 - **Database changes:** coordinate with the team before running any migrations. Schema
   changes are manual (run SQL in Supabase) and shared across everyone, so do not run
   migrations unilaterally. Update `supabase/schema.sql` to reflect any change you make.
