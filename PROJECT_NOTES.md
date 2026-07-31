@@ -189,17 +189,41 @@ Then open the local URL Vite prints (default http://localhost:5173).
 ## 6. Deployment
 
 - **GitHub repo:** https://github.com/craftale-my/craft-os
-- **Vercel project:** `craft-os` (org `craftale-my`), connected to the GitHub repo.
+- **Vercel project:** `craft-os` (org `craftale-my`).
 - **SPA routing:** `vercel.json` rewrites all paths to `/` so client-side routing works.
 
-### How updates flow
+### ⚠️ Pushing does NOT deploy
+
+Git-triggered deploys are **not working** on this project. Verified 2026-08-01: pushing
+`main` produced no deployment, and every entry in `vercel ls craft-os` going back weeks
+was made by the CLI, never by a git push.
+
+Deploying and backing up the code are **two separate steps** — doing one does not do the
+other:
 
 ```
-push to GitHub (main)  →  Vercel auto-builds & deploys
+vercel deploy --prod --yes   →  production is updated  (does NOT touch GitHub)
+git push origin main         →  code is backed up      (does NOT deploy)
 ```
 
-Pushing to `main` triggers a production deploy on Vercel automatically. No manual deploy
-step is required for application code.
+Do both on every wrap-up.
+
+**Deploy from a clean checkout of `main`, not from your working tree.** The CLI uploads
+whatever is in the current directory, so any half-finished work sitting uncommitted will
+ship to production. When the working tree is dirty:
+
+```bash
+git worktree add /tmp/deploy-main main
+cp -R .vercel /tmp/deploy-main/.vercel     # carries the project link
+cd /tmp/deploy-main && vercel deploy --prod --yes
+git worktree remove /tmp/deploy-main       # when done
+```
+
+Then confirm production is actually serving the new build — the asset hash in
+`https://craft-os-tale.vercel.app` should match the one `npm run build` printed locally.
+
+If the git integration is ever repaired in the Vercel dashboard, replace this section —
+a push would then be enough on its own.
 
 ### ⚠️ Database changes are NOT automated
 
@@ -250,7 +274,8 @@ npm install
 npm run dev
 ```
 
-- **Always test locally before pushing** — pushing to `main` deploys to production.
+- **Always test locally before deploying.** Note that pushing to `main` does *not* deploy —
+  production only changes when someone runs `vercel deploy --prod`. See §6.
 - **Database changes:** coordinate with the team before running any migrations. Schema
   changes are manual (run SQL in Supabase) and shared across everyone, so do not run
   migrations unilaterally. Update `supabase/schema.sql` to reflect any change you make.
