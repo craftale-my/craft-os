@@ -219,8 +219,18 @@ cd /tmp/deploy-main && vercel deploy --prod --yes
 git worktree remove /tmp/deploy-main       # when done
 ```
 
-Then confirm production is actually serving the new build — the asset hash in
-`https://craft-os-tale.vercel.app` should match the one `npm run build` printed locally.
+Then confirm production is actually serving the new build. **Do not compare asset
+hashes against a local build** — Vercel builds on a different Node version, so the
+hashes differ even when the source is identical (verified 2026-08-01: the same commit
+built to 842.63 kB on Vercel and 839.53 kB locally). Grep the live bundle for a string
+that only your change introduces:
+
+```bash
+BUNDLE=$(curl -s https://craft-os-tale.vercel.app/ | grep -o '/assets/index-[A-Za-z0-9_-]*\.js' | head -1)
+curl -s "https://craft-os-tale.vercel.app$BUNDLE" | grep -c "some new UI string"
+```
+
+A UI label from the feature works well; it survives minification as a string literal.
 
 If the git integration is ever repaired in the Vercel dashboard, replace this section —
 a push would then be enough on its own.
