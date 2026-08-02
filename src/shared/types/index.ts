@@ -187,10 +187,12 @@ export const RANK_COLORS: Record<Rank, string> = {
   manager:    '#C27BA0',
 }
 
+// Seniority levels, shared across every department — a Baker's rank is "Junior",
+// not "Junior Barista". The department-specific wording lives in the job title.
 export const RANK_LABELS: Record<Rank, string> = {
   trainee: 'Trainee',
-  junior: 'Junior Barista',
-  senior: 'Senior Barista',
+  junior: 'Junior',
+  senior: 'Senior',
   supervisor: 'Supervisor',
   manager: 'Manager',
 }

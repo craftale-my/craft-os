@@ -1150,7 +1150,7 @@ function PersonalInfoTab({
   const [jobTitles, setJobTitles] = useState<Role[]>([])
   useEffect(() => {
     if (!isManager) return
-    supabase.from('roles').select('*').eq('is_active', true).order('rank').then(({ data }) => {
+    supabase.from('roles').select('*').eq('is_active', true).order('name').then(({ data }) => {
       if (data) setJobTitles(data as Role[])
     })
   }, [isManager])

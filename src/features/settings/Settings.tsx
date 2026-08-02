@@ -6,7 +6,7 @@ import type {
   SystemRole, Capability, CareerPath, Skill,
 } from '../../shared/types'
 import {
-  RANK_LABELS, DEPT_LABELS, DEPT_SHIFT_COLORS,
+  RANK_LABELS, RANK_ORDER, DEPT_LABELS, DEPT_SHIFT_COLORS,
   SYSTEM_ROLES, SYSTEM_ROLE_LABELS, SYSTEM_ROLE_DESC, CAPABILITIES,
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
@@ -557,10 +557,13 @@ function RoleModal({ role, onClose, onSaved }: {
   onClose: () => void
   onSaved: () => void
 }) {
+  const { departmentOptions } = useLookups()
   const [form, setForm] = useState({
     name: role?.name ?? '',
     rank: role?.rank ?? 'trainee',
-    department: role?.department ?? '',
+    // Fold legacy free-text values ("Barista") onto their slug so the select
+    // matches a real option instead of listing the old spelling alongside it.
+    department: (role?.department ?? '').trim().toLowerCase(),
     description: role?.description ?? '',
   })
   const [saving, setSaving] = useState(false)
@@ -609,7 +612,12 @@ function RoleModal({ role, onClose, onSaved }: {
           </div>
           <div>
             <label className={labelCls}>Department</label>
-            <input className={inputCls} value={form.department} onChange={set('department')} placeholder="e.g. barista" />
+            <select className={inputCls} value={form.department} onChange={set('department')}>
+              <option value="">— None —</option>
+              {departmentOptions(form.department).map(o => (
+                <option key={o.slug} value={o.slug}>{o.name}</option>
+              ))}
+            </select>
           </div>
           <div>
             <label className={labelCls}>Description</label>
@@ -674,12 +682,42 @@ function RolesTab({ roles, allStaff, onRefresh }: { roles: Role[]; allStaff: Sta
 // ── Job Titles (display-only headlines; no access control) ──
 
 function JobTitlesTab({ roles, onRefresh }: { roles: Role[]; onRefresh: () => void }) {
+  const { activeDepartments, deptName } = useLookups()
   const [modalTarget, setModalTarget] = useState<Partial<Role> | null | 'new'>(null)
 
   async function toggleActive(r: Role) {
     await supabase.from('roles').update({ is_active: !r.is_active }).eq('id', r.id)
     onRefresh()
   }
+
+  // Group by department, then order each group by seniority. `department` is free text
+  // in older rows, so fold case here too — otherwise "Barista" and "barista" split in two.
+  const deptOrder = new Map(activeDepartments.map((d, i) => [d.slug, i]))
+  const byDept = new Map<string, Role[]>()
+  for (const r of roles) {
+    const slug = (r.department ?? '').trim().toLowerCase()
+    const rows = byDept.get(slug)
+    if (rows) rows.push(r)
+    else byDept.set(slug, [r])
+  }
+
+  // Known departments first in lookup order, then unrecognised slugs, then the unassigned —
+  // nothing is ever dropped, however messy its department value.
+  const tierOf = (slug: string) => (slug === '' ? 2 : deptOrder.has(slug) ? 0 : 1)
+  const groups = [...byDept.entries()]
+    .map(([slug, rows]) => ({
+      slug,
+      label: slug ? deptName(slug) : 'No department',
+      rows: rows.sort(
+        (a, b) => RANK_ORDER.indexOf(a.rank) - RANK_ORDER.indexOf(b.rank) || a.name.localeCompare(b.name),
+      ),
+    }))
+    .sort((a, b) => {
+      const ta = tierOf(a.slug), tb = tierOf(b.slug)
+      if (ta !== tb) return ta - tb
+      if (ta === 0) return deptOrder.get(a.slug)! - deptOrder.get(b.slug)!
+      return a.label.localeCompare(b.label)
+    })
 
   return (
     <div>
@@ -693,36 +731,48 @@ function JobTitlesTab({ roles, onRefresh }: { roles: Role[]; onRefresh: () => vo
         </button>
       </div>
       <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-hidden overflow-x-auto">
-        <table className="w-full text-sm min-w-[480px]">
+        <table className="w-full text-sm min-w-[420px]">
           <thead>
             <tr className="border-b border-[#EDE5D8]">
               <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Name</th>
               <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Rank</th>
-              <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Department</th>
               <th className="text-left px-4 py-2.5 text-xs font-semibold text-brown-faint">Status</th>
               <th className="text-right px-4 py-2.5 text-xs font-semibold text-brown-faint">Actions</th>
             </tr>
           </thead>
-          <tbody>
-            {roles.map((r, i) => (
-              <tr key={r.id} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
-                <td className="px-4 py-2.5 font-medium text-brown-dark">{r.name}</td>
-                <td className="px-4 py-2.5 text-brown-faint">{RANK_LABELS[r.rank]}</td>
-                <td className="px-4 py-2.5 text-brown-faint">{r.department ?? '—'}</td>
-                <td className="px-4 py-2.5">
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${r.is_active ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F0E8DC] text-brown-faint'}`}>
-                    {r.is_active ? 'Active' : 'Inactive'}
-                  </span>
-                </td>
-                <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                  <button onClick={() => setModalTarget(r)} className="text-xs font-semibold text-[#C4813A] mr-3 hover:underline">Edit</button>
-                  <button onClick={() => toggleActive(r)} className="text-xs font-semibold text-brown-muted hover:underline">
-                    {r.is_active ? 'Deactivate' : 'Activate'}
-                  </button>
+          {groups.map(g => (
+            <tbody key={g.slug || '__none'}>
+              <tr className="border-t border-[#EDE5D8] bg-[#FAF5EC]">
+                <td colSpan={4} className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wide text-brown-muted">
+                  {g.label}
                 </td>
               </tr>
-            ))}
-          </tbody>
+              {g.rows.map(r => (
+                <tr key={r.id} className="border-t border-[#F0E8DC]">
+                  <td className="px-4 py-2.5 font-medium text-brown-dark">{r.name}</td>
+                  <td className="px-4 py-2.5 text-brown-faint">{RANK_LABELS[r.rank]}</td>
+                  <td className="px-4 py-2.5">
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${r.is_active ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F0E8DC] text-brown-faint'}`}>
+                      {r.is_active ? 'Active' : 'Inactive'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                    <button onClick={() => setModalTarget(r)} className="text-xs font-semibold text-[#C4813A] mr-3 hover:underline">Edit</button>
+                    <button onClick={() => toggleActive(r)} className="text-xs font-semibold text-brown-muted hover:underline">
+                      {r.is_active ? 'Deactivate' : 'Activate'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          ))}
+          {groups.length === 0 && (
+            <tbody>
+              <tr className="border-t border-[#F0E8DC]">
+                <td colSpan={4} className="px-4 py-6 text-center text-xs text-brown-faint">No job titles yet.</td>
+              </tr>
+            </tbody>
+          )}
         </table>
       </div>
 
@@ -1884,7 +1934,9 @@ export default function SettingsPage() {
     const [companyRes, branchesRes, rolesRes, rulesRes, notifRes, staffRes, missionsRes] = await Promise.all([
       supabase.from('company_settings').select('*').limit(1).maybeSingle(),
       supabase.from('branches').select('*, pic:staff!branches_pic_staff_id_fkey(id,name,rank,avatar)').order('name'),
-      supabase.from('roles').select('*').order('rank'),
+      // `rank` is a text column, so ordering by it sorts alphabetically, not by seniority.
+      // Job Titles re-sorts by RANK_ORDER itself; name order is the useful default elsewhere.
+      supabase.from('roles').select('*').order('name'),
       supabase.from('system_rules').select('*'),
       supabase.from('notification_settings').select('*'),
       supabase.from('staff').select('*').order('name'),
