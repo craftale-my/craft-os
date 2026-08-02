@@ -166,14 +166,7 @@ function AppRoutes() {
         }
       />
 
-      <Route
-        path="/missions"
-        element={
-          <ProtectedRoute>
-            <AppLayout><GrowthPage /></AppLayout>
-          </ProtectedRoute>
-        }
-      />
+      <Route path="/missions" element={<Navigate to="/profile" replace />} />
 
       <Route
         path="/hr/attendance"

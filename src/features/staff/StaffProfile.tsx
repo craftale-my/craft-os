@@ -20,12 +20,14 @@ import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
 import { Avatar } from '../../shared/components/Avatar'
 import { canPromote } from '../../shared/lib/xp'
+import { CareerProgress } from './CareerProgress'
 
-type Tab = 'missions' | 'skills' | 'personal' | 'reviews' | 'history'
+type Tab = 'missions' | 'skills' | 'career' | 'personal' | 'reviews' | 'history'
 
 const TAB_LABELS: Record<Tab, string> = {
   missions: 'Missions',
   skills:   'Skills',
+  career:   'Career',
   personal: 'Personal',
   reviews:  'Reviews',
   history:  'History',
@@ -300,6 +302,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         {tab === 'skills' && (
           <SkillsTab skills={skills} canEdit={canRateSkills} onRate={saveSkillRating} />
         )}
+        {tab === 'career' && <CareerProgress staff={staff} />}
         {tab === 'personal' && (
           <PersonalInfoTab
             staff={staff}
