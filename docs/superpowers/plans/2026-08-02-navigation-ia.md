@@ -210,18 +210,20 @@ export function activeEntry(
   nav: NavEntry[],
   pathname: string,
 ): { leafId: string; groupId: string | null } | null {
-  let best: { leafId: string; groupId: string | null; len: number } | null = null
+  // 先摊平成 (leaf, groupId) 对再选,不能把赋值放进闭包:
+  // TS 不追踪闭包内的赋值,best 在 return 处仍被窄化为 null,真值分支塌成 never。
+  const pairs: Array<{ leaf: NavLeaf; groupId: string | null }> = []
+  for (const entry of nav) {
+    if (isGroup(entry)) entry.children.forEach(c => pairs.push({ leaf: c, groupId: entry.id }))
+    else pairs.push({ leaf: entry, groupId: null })
+  }
 
-  const consider = (leaf: NavLeaf, groupId: string | null) => {
+  let best: { leafId: string; groupId: string | null; len: number } | null = null
+  for (const { leaf, groupId } of pairs) {
     for (const p of leaf.activePaths ?? [leaf.to]) {
       if (pathname !== p && !pathname.startsWith(p)) continue
       if (!best || p.length > best.len) best = { leafId: leaf.id, groupId, len: p.length }
     }
-  }
-
-  for (const entry of nav) {
-    if (isGroup(entry)) entry.children.forEach(c => consider(c, entry.id))
-    else consider(entry, null)
   }
 
   return best ? { leafId: best.leafId, groupId: best.groupId } : null
@@ -817,6 +819,7 @@ Expected: 无输出(验收标准 2)
 5. 全 capability manager 为 11 项,且任一时刻可见行数不超过 `Profile` + 2 个大类标题 + 当前展开组的子项 + `Settings`
 6. `Directory.tsx` 与 `Reviews.tsx` 各自不超过约 1200 行 — Run: `wc -l src/features/team/*.tsx`
 7. `promotion-reviews-section` 的内容可经 `/team/reviews` 的 `Promotion` tab 到达
+8. 访问 `/team/tasks` 时只有 `Tasks` 一项高亮 —— 旧 `isActive` 的逐项前缀匹配会让 `/team` 与 `/team/tasks` 同时点亮,`activeEntry` 的最长前缀优先必须消除它
 
 - [ ] **Step 7: 提交**
 
