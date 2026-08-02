@@ -1,108 +1,77 @@
 import { useState, useEffect } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
-  User, Target, LayoutDashboard, CheckSquare, ClipboardList,
-  UserCheck, Users, LogOut, Menu, X, Settings,
-  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, GraduationCap,
+  User, Target, CheckSquare, ClipboardList,
+  Users, LogOut, Menu, X, Settings, ChevronDown,
+  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Capability } from '../../shared/types'
+import { visibleNav, activeEntry, isGroup } from '../lib/nav'
+import type { NavLeaf, NavGroup } from '../lib/nav'
 import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
 
-interface NavItem {
-  id: string
-  label: string
-  to: string
-  icon: LucideIcon
-  /** Anchor id to scroll to after navigating (for items sharing a page) */
-  scrollTo?: string
-  /** Paths (prefix-matched) where this item should render as active */
-  activePaths?: string[]
-  /** Capability required to see this item (omit ⇒ visible to everyone). */
-  cap?: Capability
-  /** Hide this item when the user HAS this capability (avoids duplicates with MGMT items). */
-  hideWithCap?: Capability
+const ICONS: Record<string, LucideIcon> = {
+  profile: User,
+  directory: Users,
+  'team-reviews': ClipboardList,
+  'team-missions': Target,
+  'team-tasks': CheckSquare,
+  schedule: CalendarDays,
+  attendance: CalendarCheck,
+  leave: Palmtree,
+  claims: Receipt,
+  salary: Wallet,
+  settings: Settings,
 }
 
-const STAFF_NAV: NavItem[] = [
-  { id: 'dashboard',   label: 'Dashboard',  to: '/profile',  icon: LayoutDashboard },
-  { id: 'my-profile',  label: 'My Profile', to: '/profile',  icon: User, activePaths: ['/profile'] },
-  { id: 'missions',    label: 'Missions',   to: '/missions', icon: Target, activePaths: ['/missions'] },
-  { id: 'my-schedule', label: 'My Schedule', to: '/schedule', icon: CalendarDays, activePaths: ['/schedule'], hideWithCap: 'manage_schedule' },
-]
-
-const HR_NAV: NavItem[] = [
-  { id: 'hr-attendance', label: 'Attendance',     to: '/hr/attendance', icon: CalendarCheck, activePaths: ['/hr/attendance'] },
-  { id: 'hr-salary',     label: 'Salary Records', to: '/hr/salary',     icon: Wallet,         activePaths: ['/hr/salary'] },
-  { id: 'hr-leave',      label: 'Leave',          to: '/hr/leave',      icon: Palmtree,       activePaths: ['/hr/leave'] },
-  { id: 'hr-claims',     label: 'Claims',         to: '/hr/claims',     icon: Receipt,        activePaths: ['/hr/claims'] },
-]
-
-const MGMT_NAV: NavItem[] = [
-  { id: 'team-dash',  label: 'Team Dashboard',    to: '/team', icon: LayoutDashboard, activePaths: ['/team', '/staff/'], cap: 'view_team' },
-  { id: 'schedule',   label: 'Schedule',          to: '/schedule',  icon: CalendarDays,    activePaths: ['/schedule'], cap: 'manage_schedule' },
-  { id: 'tasks',      label: 'Tasks',             to: '/team/tasks',     icon: CheckSquare,     activePaths: ['/team/tasks'], cap: 'view_team' },
-  // 三项都指向 /team/reviews:原来的 scrollTo 锚点随四个 section 一起搬走了。
-  { id: 'reviews',    label: 'Reviews',           to: '/team/reviews', icon: ClipboardList, cap: 'conduct_reviews' },
-  { id: 'skills',     label: 'Skill Assessments', to: '/team/reviews', icon: GraduationCap, cap: 'conduct_reviews' },
-  { id: 'probation',  label: 'Probation Reviews', to: '/team/reviews', icon: UserCheck,     cap: 'conduct_reviews' },
-  { id: 'staff-mgmt', label: 'Staff Management',  to: '/team', icon: Users,           scrollTo: 'staff-section', cap: 'view_team' },
-]
-
-const SETTINGS_NAV: NavItem[] = [
-  { id: 'settings', label: 'Settings', to: '/settings', icon: Settings, activePaths: ['/settings'], cap: 'access_settings' },
-]
-
-function isActive(item: NavItem, pathname: string): boolean {
-  if (!item.activePaths) return false
-  return item.activePaths.some(p => pathname === p || pathname.startsWith(p))
-}
-
-function NavLink({ item, pathname, onNavigate }: {
-  item: NavItem
-  pathname: string
+function NavLink({ leaf, active, onNavigate }: {
+  leaf: NavLeaf
+  active: boolean
   onNavigate: () => void
 }) {
-  const active = isActive(item, pathname)
-  const Icon = item.icon
-
+  const Icon = ICONS[leaf.id]
   return (
     <Link
-      to={item.to}
-      onClick={() => {
-        if (item.scrollTo) {
-          setTimeout(() => {
-            document.getElementById(item.scrollTo!)?.scrollIntoView({ behavior: 'smooth' })
-          }, 150)
-        }
-        onNavigate()
-      }}
+      to={leaf.to}
+      onClick={onNavigate}
       className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
         active
           ? 'bg-[#8B6344] text-[#F5F0E8] font-semibold'
           : 'text-[#D4C4B0] hover:bg-[#5A3A22] hover:text-[#F5F0E8]'
       }`}
     >
-      <Icon size={16} className="flex-shrink-0" />
-      <span className="truncate">{item.label}</span>
+      {Icon && <Icon size={16} className="flex-shrink-0" />}
+      <span className="truncate">{leaf.label}</span>
     </Link>
   )
 }
 
-function SidebarContent({ onNavigate, onClose }: {
+export function SidebarContent({ onNavigate, onClose }: {
   onNavigate: () => void
   onClose?: () => void
 }) {
   const { staff, signOut } = useAuth()
   const { pathname } = useLocation()
   const { can } = useCan()
-  const staffItems = STAFF_NAV.filter(i => (!i.cap || can(i.cap)) && (!i.hideWithCap || !can(i.hideWithCap)))
-  const mgmtItems = MGMT_NAV.filter(i => !i.cap || can(i.cap))
-  const settingsItems = SETTINGS_NAV.filter(i => !i.cap || can(i.cap))
-  const showMgmtSection = mgmtItems.length > 0 || settingsItems.length > 0
+  const navigate = useNavigate()
+
+  const nav = visibleNav(can)
+  const active = activeEntry(nav, pathname)
+  const [openGroup, setOpenGroup] = useState<string | null>(active?.groupId ?? null)
+
+  // 路由变化时,让当前所在的大类保持展开
+  useEffect(() => {
+    if (active?.groupId) setOpenGroup(active.groupId)
+  }, [active?.groupId])
+
+  function toggleGroup(group: NavGroup) {
+    if (openGroup === group.id) { setOpenGroup(null); return }
+    setOpenGroup(group.id)
+    if (group.children[0]) { navigate(group.children[0].to); onNavigate() }
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -134,47 +103,45 @@ function SidebarContent({ onNavigate, onClose }: {
         </div>
       )}
 
-      {/* Nav sections */}
-      <nav className="flex-1 px-3 space-y-5 overflow-y-auto pb-2 min-h-0">
-        <div>
-          <p className="px-3 mb-1.5 text-[10px] font-bold text-[#8B7355] uppercase tracking-widest">
-            Staff
-          </p>
-          <div className="space-y-0.5">
-            {staffItems.map(item => (
-              <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <div className="border-t border-[#5A3A22] mb-3" />
-          <p className="px-3 mb-1.5 text-[10px] font-bold text-[#8B7355] uppercase tracking-widest">
-            HR
-          </p>
-          <div className="space-y-0.5">
-            {HR_NAV.map(item => (
-              <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
-            ))}
-          </div>
-        </div>
-
-        {showMgmtSection && (
-          <div>
-            <div className="border-t border-[#5A3A22] mb-3" />
-            <p className="px-3 mb-1.5 text-[10px] font-bold text-[#8B7355] uppercase tracking-widest">
-              Management
-            </p>
-            <div className="space-y-0.5">
-              {mgmtItems.map(item => (
-                <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
-              ))}
-              {settingsItems.map(item => (
-                <NavLink key={item.id} item={item} pathname={pathname} onNavigate={onNavigate} />
-              ))}
+      {/* Nav */}
+      <nav className="flex-1 px-3 space-y-1 overflow-y-auto pb-2 min-h-0">
+        {nav.map(entry => {
+          if (!isGroup(entry)) {
+            return (
+              <NavLink
+                key={entry.id}
+                leaf={entry}
+                active={active?.leafId === entry.id}
+                onNavigate={onNavigate}
+              />
+            )
+          }
+          const open = openGroup === entry.id
+          return (
+            <div key={entry.id}>
+              <button
+                onClick={() => toggleGroup(entry)}
+                className="flex items-center justify-between w-full px-3 py-2.5 rounded-lg text-sm
+                           text-[#D4C4B0] hover:bg-[#5A3A22] hover:text-[#F5F0E8] transition-colors"
+              >
+                <span className="font-semibold tracking-wide">{entry.label}</span>
+                <ChevronDown size={14} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+              </button>
+              {open && (
+                <div className="mt-0.5 ml-3 pl-2 border-l border-[#5A3A22] space-y-0.5">
+                  {entry.children.map(leaf => (
+                    <NavLink
+                      key={leaf.id}
+                      leaf={leaf}
+                      active={active?.leafId === leaf.id}
+                      onNavigate={onNavigate}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          )
+        })}
       </nav>
 
       {/* Sign out */}
