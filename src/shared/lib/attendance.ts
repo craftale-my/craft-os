@@ -33,6 +33,24 @@ export function isOvernightShift(shift: ShiftWindow): boolean {
   return toMinutes(shift.end_time) <= toMinutes(shift.start_time)
 }
 
+/** Paid hours in one shift: its span minus its breaks.
+ *
+ *  An overnight shift ends on the FOLLOWING day, so a plain end-minus-start
+ *  goes negative — 17:00–01:00 measured as -16h, which then summed into a
+ *  night worker's upcoming-hours total as a large negative number. */
+export function shiftDurationHours(
+  shift: ShiftWindow & {
+    break1_duration_minutes?: number | null
+    break2_duration_minutes?: number | null
+  },
+): number {
+  const span =
+    toMinutes(shift.end_time) - toMinutes(shift.start_time) +
+    (isOvernightShift(shift) ? 24 * 60 : 0)
+  const breaks = (shift.break1_duration_minutes ?? 0) + (shift.break2_duration_minutes ?? 0)
+  return (span - breaks) / 60
+}
+
 /** How long past an overnight shift's scheduled end the previous day stays the
  *  active attendance day. Generous enough for a late clock-out, short enough
  *  that a forgotten one never swallows the following day. */

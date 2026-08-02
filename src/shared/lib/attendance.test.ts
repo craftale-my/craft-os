@@ -5,6 +5,7 @@ import {
   localDateStr,
   prevDateStr,
   resolveAttendanceDate,
+  shiftDurationHours,
 } from './attendance'
 
 const NIGHT = { start_time: '17:00:00', end_time: '01:00:00' }
@@ -80,6 +81,37 @@ describe('isOvernightShift', () => {
   it('tolerates HH:MM times without seconds', () => {
     expect(isOvernightShift({ start_time: '22:00', end_time: '06:00' })).toBe(true)
     expect(isOvernightShift({ start_time: '09:00', end_time: '17:00' })).toBe(false)
+  })
+})
+
+describe('shiftDurationHours', () => {
+  it('measures a normal day shift, minus its breaks', () => {
+    expect(shiftDurationHours({ ...DAY, break1_duration_minutes: 60 })).toBe(7.5)
+  })
+
+  // The bug: a plain end-minus-start made 17:00–01:00 come out as -16.75h, so a
+  // night worker's upcoming-hours total was a large negative number.
+  it('measures an overnight shift as a positive span', () => {
+    expect(shiftDurationHours({ ...NIGHT, break1_duration_minutes: 45 })).toBe(7.25)
+  })
+
+  it('measures a 10pm–6am shift with no break', () => {
+    expect(shiftDurationHours({ start_time: '22:00:00', end_time: '06:00:00' })).toBe(8)
+  })
+
+  it('adds both breaks together', () => {
+    expect(shiftDurationHours({ ...NIGHT, break1_duration_minutes: 30, break2_duration_minutes: 15 })).toBe(7.25)
+  })
+
+  it('treats missing break fields as no break', () => {
+    expect(shiftDurationHours(NIGHT)).toBe(8)
+    expect(shiftDurationHours({ ...NIGHT, break1_duration_minutes: null })).toBe(8)
+  })
+
+  it('never returns a negative span for any overnight pairing', () => {
+    for (const [start, end] of [['17:00:00', '01:00:00'], ['23:30:00', '07:30:00'], ['20:00:00', '04:00:00']]) {
+      expect(shiftDurationHours({ start_time: start, end_time: end })).toBeGreaterThan(0)
+    }
   })
 })
 

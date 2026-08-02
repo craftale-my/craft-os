@@ -6,7 +6,7 @@ import type { Staff, ShiftType, ScheduledShift, LeaveType, Attendance } from '..
 import { BRANCHES, DEPT_LABELS, DEPT_SHIFT_COLORS, SCHEDULE_LEAVE_OPTIONS, SCHEDULE_LEAVE_LABELS, shouldClearLeaveAttendance } from '../../shared/types'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { Avatar } from '../../shared/components/Avatar'
-import { localDateStr } from '../../shared/lib/attendance'
+import { localDateStr, shiftDurationHours } from '../../shared/lib/attendance'
 
 // ─── Date utilities ───────────────────────────────────────────────────────────
 
@@ -40,12 +40,9 @@ function fmtTime(t: string): string {
   return `${hour % 12 || 12}:${m}${hour >= 12 ? 'pm' : 'am'}`
 }
 
-function shiftHours(st: ShiftType): number {
-  const [sh, sm] = st.start_time.split(':').map(Number)
-  const [eh, em] = st.end_time.split(':').map(Number)
-  const breakMins = (st.break1_duration_minutes ?? 0) + (st.break2_duration_minutes ?? 0)
-  return ((eh * 60 + em) - (sh * 60 + sm) - breakMins) / 60
-}
+// shiftDurationHours lives with isOvernightShift so both layers agree on what a
+// night shift is; the copy that used to live here read 17:00–01:00 as -16.75h.
+const shiftHours = shiftDurationHours
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
