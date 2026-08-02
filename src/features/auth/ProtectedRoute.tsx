@@ -50,7 +50,7 @@ export function OnboardingRoute({ children }: { children: React.ReactNode }) {
   if (!user) return <Navigate to="/login" replace />
 
   if (staff?.onboarding_completed || staff?.rank === 'manager') {
-    const dest = staff.rank === 'manager' || staff.rank === 'supervisor' ? '/dashboard' : '/profile'
+    const dest = staff.rank === 'manager' || staff.rank === 'supervisor' ? '/team' : '/profile'
     return <Navigate to={dest} replace />
   }
 

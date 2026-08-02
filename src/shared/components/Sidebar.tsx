@@ -42,13 +42,13 @@ const HR_NAV: NavItem[] = [
 ]
 
 const MGMT_NAV: NavItem[] = [
-  { id: 'team-dash',  label: 'Team Dashboard',    to: '/dashboard', icon: LayoutDashboard, activePaths: ['/dashboard', '/staff/'], cap: 'view_team' },
+  { id: 'team-dash',  label: 'Team Dashboard',    to: '/team', icon: LayoutDashboard, activePaths: ['/team', '/staff/'], cap: 'view_team' },
   { id: 'schedule',   label: 'Schedule',          to: '/schedule',  icon: CalendarDays,    activePaths: ['/schedule'], cap: 'manage_schedule' },
-  { id: 'tasks',      label: 'Tasks',             to: '/tasks',     icon: CheckSquare,     activePaths: ['/tasks'], cap: 'view_team' },
-  { id: 'reviews',    label: 'Reviews',           to: '/dashboard', icon: ClipboardList,   scrollTo: 'reviews-section', cap: 'conduct_reviews' },
-  { id: 'skills',     label: 'Skill Assessments', to: '/dashboard', icon: GraduationCap,   scrollTo: 'skill-assessments-section', cap: 'conduct_reviews' },
-  { id: 'probation',  label: 'Probation Reviews', to: '/dashboard', icon: UserCheck,       scrollTo: 'probation-section', cap: 'conduct_reviews' },
-  { id: 'staff-mgmt', label: 'Staff Management',  to: '/dashboard', icon: Users,           scrollTo: 'staff-section', cap: 'view_team' },
+  { id: 'tasks',      label: 'Tasks',             to: '/team/tasks',     icon: CheckSquare,     activePaths: ['/tasks'], cap: 'view_team' },
+  { id: 'reviews',    label: 'Reviews',           to: '/team', icon: ClipboardList,   scrollTo: 'reviews-section', cap: 'conduct_reviews' },
+  { id: 'skills',     label: 'Skill Assessments', to: '/team', icon: GraduationCap,   scrollTo: 'skill-assessments-section', cap: 'conduct_reviews' },
+  { id: 'probation',  label: 'Probation Reviews', to: '/team', icon: UserCheck,       scrollTo: 'probation-section', cap: 'conduct_reviews' },
+  { id: 'staff-mgmt', label: 'Staff Management',  to: '/team', icon: Users,           scrollTo: 'staff-section', cap: 'view_team' },
 ]
 
 const SETTINGS_NAV: NavItem[] = [

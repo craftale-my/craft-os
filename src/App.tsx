@@ -99,13 +99,35 @@ function AppRoutes() {
       />
 
       <Route
-        path="/dashboard"
+        path="/team"
         element={
           <ProtectedRoute requireCap="view_team">
             <AppLayout><DashboardPage /></AppLayout>
           </ProtectedRoute>
         }
       />
+
+      <Route
+        path="/team/tasks"
+        element={
+          <ProtectedRoute requireCap="view_team">
+            <AppLayout><TasksPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/team/missions"
+        element={
+          <ProtectedRoute requireCap="manage_missions">
+            <AppLayout><GrowthPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* 旧入口:保留至少一个发布周期,覆盖书签与已安装 PWA */}
+      <Route path="/dashboard" element={<Navigate to="/team" replace />} />
+      <Route path="/tasks" element={<Navigate to="/team/tasks" replace />} />
 
       <Route
         path="/staff/:id"
@@ -139,15 +161,6 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout><GrowthPage /></AppLayout>
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/tasks"
-        element={
-          <ProtectedRoute requireCap="view_team">
-            <AppLayout><TasksPage /></AppLayout>
           </ProtectedRoute>
         }
       />
@@ -212,7 +225,7 @@ function AppRoutes() {
           user
             ? <Navigate to={
                 effectiveSystemRole(staff) !== 'staff'
-                  ? '/dashboard'
+                  ? '/team'
                   : '/profile'
               } replace />
             : <Navigate to="/login" replace />
