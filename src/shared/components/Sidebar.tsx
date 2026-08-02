@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   User, Target, CheckSquare, ClipboardList,
-  Users, LogOut, Menu, X, Settings, ChevronDown,
+  Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -13,9 +13,13 @@ import type { NavLeaf, NavGroup } from '../lib/nav'
 import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
 
+// 叶子项与大类共用一张表:大类标题也要出图标,否则它的文字会顶到
+// 图标的位置,和下面子项的标签对不齐。
 const ICONS: Record<string, LucideIcon> = {
   profile: User,
-  directory: Users,
+  team: Users,
+  'time-pay': Clock,
+  directory: BookUser,
   'team-reviews': ClipboardList,
   'team-missions': Target,
   'team-tasks': CheckSquare,
@@ -117,6 +121,7 @@ export function SidebarContent({ onNavigate, onClose }: {
             )
           }
           const open = openGroup === entry.id
+          const GroupIcon = ICONS[entry.id]
           return (
             <div key={entry.id}>
               <button
@@ -124,8 +129,11 @@ export function SidebarContent({ onNavigate, onClose }: {
                 className="flex items-center justify-between w-full px-3 py-2.5 rounded-lg text-sm
                            text-[#D4C4B0] hover:bg-[#5A3A22] hover:text-[#F5F0E8] transition-colors"
               >
-                <span className="font-semibold tracking-wide">{entry.label}</span>
-                <ChevronDown size={14} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+                <span className="flex items-center gap-3 min-w-0">
+                  {GroupIcon && <GroupIcon size={16} className="flex-shrink-0" />}
+                  <span className="font-semibold tracking-wide truncate">{entry.label}</span>
+                </span>
+                <ChevronDown size={14} className={`flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
               </button>
               {open && (
                 <div className="mt-0.5 ml-3 pl-2 border-l border-[#5A3A22] space-y-0.5">
