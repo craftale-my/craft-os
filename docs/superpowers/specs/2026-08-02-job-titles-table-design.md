@@ -106,9 +106,16 @@ run in the Supabase SQL editor rather than through the app's client.
 - Whether `Admin` belongs in Job Titles at all (it overlaps with System Roles). Keeping it,
   filed under Management.
 - Reordering or renaming the System Roles tab.
-- **The `service crew` orphan.** Four staff carry `department = 'service crew'`, a slug from the
-  old hardcoded list that the live `departments` table has no row for — they render as the raw
-  slug. Pre-existing and unrelated to the Job Titles table; flagged, not touched.
+- Chan Jie Ling, the one staff row with a null department — mid-onboarding, no branch either.
+
+### Added after the first migration ran
+
+**The `service crew` orphan.** Four trainees carried `department = 'service crew'`, a slug from the
+old hardcoded list with no row in the live `departments` table. All four also had
+`job_title_id = null` — concrete casualties of the case-sensitive auto-assignment bug described
+above. `supabase/migration-2026-08-02-service-crew-backfill.sql` moves them to Front House,
+assigns the existing "Service Crew" job title, and runs `initialize_staff_skills` for each, which
+is what onboarding would have done.
 
 ## Verification
 
