@@ -172,7 +172,9 @@ capability 系统目前半失效,本设计的分组过滤建立在 capability �
 - `manage_hr` 仅在 `HrAttendance.tsx:1152` 使用一次
 - `HrSalary.tsx:370`、`HrLeave.tsx:624`、`HrClaims.tsx:357` 改用 `staff?.rank === ...` 硬判断,绕开 capability 系统
 
-后果:owner 在 Settings 中授予的能力不生效,侧栏可能显示出用户点进去发现无权限的项。**已拆为独立任务处理,应先于本设计落地。**
+后果:owner 在 Settings 中授予的能力不生效,侧栏可能显示出用户点进去发现无权限的项。
+
+**应先于本设计落地,且目前无人认领**——曾拆为独立后台任务,该会话已删除。不在本设计的实施范围内,开工前需确认它已完成或另行安排。
 
 ## 验收标准
 
