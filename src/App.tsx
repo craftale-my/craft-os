@@ -13,7 +13,7 @@ import { OnboardingPage } from './features/onboarding/Onboarding'
 import DirectoryPage from './features/team/Directory'
 import ReviewsPage from './features/team/Reviews'
 import { StaffProfilePage } from './features/staff/StaffProfile'
-import GrowthPage from './features/growth/GrowthPage'
+import { MissionsPage } from './features/missions/Missions'
 import ProbationReviewPage from './features/reviews/ProbationReview'
 import TasksPage from './features/tasks/Tasks'
 import SettingsPage from './features/settings/Settings'
@@ -130,7 +130,7 @@ function AppRoutes() {
         path="/team/missions"
         element={
           <ProtectedRoute requireCap="manage_missions">
-            <AppLayout><GrowthPage /></AppLayout>
+            <AppLayout><MissionsPage /></AppLayout>
           </ProtectedRoute>
         }
       />
