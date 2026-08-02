@@ -12,8 +12,8 @@
 //
 // 部署:
 //   supabase functions deploy provision-staff
-//   supabase secrets set SERVICE_ROLE_KEY=<key>   # 服务端密钥,不带 VITE_ 前缀
-// 注意 SUPABASE_URL 与 SUPABASE_ANON_KEY 由平台自动注入,无需手动设置。
+// 不需要手工设置任何密钥 —— SUPABASE_URL 与 SUPABASE_SECRET_KEYS 由平台自动
+// 注入每个 Edge Function(见控制台 Edge Functions → Secrets 的 Default secrets)。
 
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2'
 
@@ -111,13 +111,52 @@ async function assignJobTitle(admin: SupabaseClient, staffId: string, rank: Rank
 
 const today = () => new Date().toISOString().split('T')[0]
 
+/**
+ * 取一把能绕过 RLS 的服务端密钥。
+ *
+ * 优先用平台自动注入的 SUPABASE_SECRET_KEYS —— 它是经 JWT Signing Keys 签发的
+ * 新版 secret key,可以单独轮换,且在 legacy JWT 体系被停用后依然有效。
+ * 其形状官方文档描述为 "JSON dictionary",但没有承诺具体键名,所以这里对
+ * 对象/数组/裸字符串三种形态都做兜底,只认 sb_secret_ 前缀。
+ *
+ * 回退到 SUPABASE_SERVICE_ROLE_KEY 只是过渡:它已被标记 DEPRECATED,
+ * 且会随 legacy API keys 一起失效。
+ */
+function resolveSecretKey(): string | null {
+  const raw = Deno.env.get('SUPABASE_SECRET_KEYS')
+  if (raw) {
+    const looksRight = (v: unknown): v is string =>
+      typeof v === 'string' && v.startsWith('sb_secret_')
+    if (looksRight(raw)) return raw
+    try {
+      const parsed = JSON.parse(raw)
+      if (looksRight(parsed)) return parsed
+      const candidates = Array.isArray(parsed) ? parsed : Object.values(parsed ?? {})
+      for (const c of candidates) {
+        if (looksRight(c)) return c
+        // 元素也可能是 { name, api_key } 之类的对象
+        if (c && typeof c === 'object') {
+          for (const v of Object.values(c)) if (looksRight(v)) return v
+        }
+      }
+    } catch {
+      // 不是 JSON,继续往下回退
+    }
+  }
+  return Deno.env.get('SERVICE_ROLE_KEY')
+    ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    ?? null
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
 
-  const serviceKey = Deno.env.get('SERVICE_ROLE_KEY')
+  const serviceKey = resolveSecretKey()
   const url = Deno.env.get('SUPABASE_URL')
-  if (!serviceKey || !url) return json({ error: 'Function is not configured' }, 500)
+  if (!serviceKey || !url) {
+    return json({ error: 'Function is not configured: no secret key available' }, 500)
+  }
 
   const admin = createClient(url, serviceKey, {
     auth: { autoRefreshToken: false, persistSession: false },
