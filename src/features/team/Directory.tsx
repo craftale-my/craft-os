@@ -675,7 +675,7 @@ export default function DirectoryPage() {
   if (loading || staffLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-cream-light">
-        <p className="text-brown-medium animate-pulse">Loading dashboard...</p>
+        <p className="text-brown-medium animate-pulse">Loading directory...</p>
       </div>
     )
   }

@@ -426,7 +426,7 @@ function ReviewsTab({
           <p className="text-xs text-brown-muted mt-1">
             {isSelf
               ? 'Your supervisor will start a review cycle soon.'
-              : 'Use the Dashboard to start a review cycle.'}
+              : 'Use Team > Reviews to start a review cycle.'}
           </p>
         </div>
       )}
@@ -901,7 +901,7 @@ function StatusDot({ color }: { color: string }) {
 
 // ─── Missions Tab ─────────────────────────────────────────────────────────────
 
-export function MissionsTab({
+function MissionsTab({
   missions, staffId, completions, isSelf, onRefresh,
 }: {
   missions: Mission[]; staffId: string; completions: MissionCompletion[]; isSelf: boolean; onRefresh: () => void

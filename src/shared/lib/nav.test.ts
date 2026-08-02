@@ -66,3 +66,11 @@ describe('activeEntry', () => {
     expect(activeEntry(full, '/nowhere')).toBeNull()
   })
 })
+
+describe('visibleNav 的扁平化结果', () => {
+  it('所有 to 值互不相同(即使折叠在同一个大类里)', () => {
+    const full = visibleNav(() => true)
+    const flatTo = full.flatMap(e => (isGroup(e) ? e.children.map(c => c.to) : [e.to]))
+    expect(new Set(flatTo).size).toBe(flatTo.length)
+  })
+})

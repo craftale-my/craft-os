@@ -46,7 +46,7 @@ export function CareerProgress({ staff, isSelf }: { staff: Staff; isSelf: boolea
       <div className="bg-white rounded-xl shadow-card px-5 py-10 text-center">
         <p className="text-2xl mb-2">🧭</p>
         <p className="text-sm font-semibold text-brown-dark">No job title assigned yet</p>
-        <p className="text-xs text-brown-muted mt-1">Ask your manager to assign your job title to unlock your career path.</p>
+        <p className="text-xs text-brown-muted mt-1">A job title must be assigned to unlock the career path.</p>
       </div>
     )
   }
@@ -55,9 +55,9 @@ export function CareerProgress({ staff, isSelf }: { staff: Staff; isSelf: boolea
     return (
       <div className="bg-white rounded-xl shadow-card px-5 py-10 text-center">
         <p className="text-2xl mb-2">🏔️</p>
-        <p className="text-sm font-semibold text-brown-dark">No promotion path from your current title</p>
+        <p className="text-sm font-semibold text-brown-dark">No promotion path from the current job title</p>
         <p className="text-xs text-brown-muted mt-1">
-          Either you're at the top of your ladder, or the next segment hasn't been configured yet.
+          Either this is the top of the ladder, or the next segment hasn't been configured yet.
         </p>
       </div>
     )

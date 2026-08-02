@@ -1,7 +1,7 @@
 import type { Capability } from '../types'
 
 /**
- * 侧栏的导航树。与 shared/lib/tabs.ts 同样刻意不含 React 与图标,
+ * 侧栏的导航树。刻意不含 React 与图标,
  * 好让过滤与高亮规则能脱离渲染单测。图标映射在 Sidebar.tsx。
  */
 
