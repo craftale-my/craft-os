@@ -10,6 +10,7 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import { useCan } from '../../shared/lib/permissions'
+import { Avatar } from '../../shared/components/Avatar'
 import { useTeamData } from './useTeamData'
 
 const CURRENT_MONTH = new Date().getMonth() + 1
@@ -32,28 +33,6 @@ function genTempPassword(): string {
   return Math.random().toString(36).slice(-8) + 'A1!'
 }
 
-// ─── Avatar (shared across pages) ────────────────────────────────────────────
-
-export function Avatar({
-  name,
-  avatar,
-  size = 'md',
-}: {
-  name: string
-  avatar: string | null
-  size?: 'sm' | 'md' | 'lg'
-}) {
-  const sizeClass = { sm: 'w-7 h-7 text-xs', md: 'w-9 h-9 text-sm', lg: 'w-12 h-12 text-base' }[size]
-  if (avatar) {
-    return <img src={avatar} alt={name} className={`${sizeClass} rounded-full object-cover flex-shrink-0`} />
-  }
-  return (
-    <div className={`${sizeClass} rounded-full bg-[#C4813A20] flex items-center justify-center font-bold text-[#8B6344] flex-shrink-0`}>
-      {name.charAt(0).toUpperCase()}
-    </div>
-  )
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function shortenBranch(branch: string | null): string {
@@ -63,7 +42,7 @@ function shortenBranch(branch: string | null): string {
   return branch
 }
 
-/** Reviews 页也要用,所以对外导出(和 Avatar 一样)。 */
+/** Reviews 页也要用,所以对外导出。 */
 export function formatTimeAgo(ts: string): string {
   const diff = Date.now() - new Date(ts).getTime()
   const mins = Math.floor(diff / 60000)

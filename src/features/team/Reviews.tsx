@@ -15,7 +15,8 @@ import { useAuth } from '../auth/AuthContext'
 import { useCan, canReviewStaff } from '../../shared/lib/permissions'
 import { bucketProbations } from '../../shared/lib/probation'
 import { StarRating } from '../../shared/components/StarRating'
-import { Avatar, formatTimeAgo } from './Directory'
+import { Avatar } from '../../shared/components/Avatar'
+import { formatTimeAgo } from './Directory'
 import { useTeamData } from './useTeamData'
 
 const CURRENT_MONTH = new Date().getMonth() + 1
