@@ -1377,10 +1377,12 @@ function AvatarUploadCard({ staff, onSaved }: { staff: Staff; onSaved: () => voi
     try {
       const ext = file.name.split('.').pop() ?? 'jpg'
       const filePath = `${staff.id}/${Date.now()}.${ext}`
-      // 路径首段是 staff id,storage 策略据此限定"只能写自己的目录"
-      // (supabase/migration-2026-08-03-avatar-storage-policies.sql)。
-      // 这里曾有一段用 service_role 客户端的兜底 —— 那把 key 会被打进构建产物,
-      // 等于公开一把绕过全部 RLS 的钥匙,已随策略上线一并移除。
+      // 路径首段是 staff id。storage 策略 staff_avatars_write 据此放行:写自己的
+      // 目录,或调用者是 manager / hr / supervisor / admin / owner —— 后者正是
+      // 经理替下属换头像的通路。
+      // 这里曾有一段用 service_role 客户端的兜底,理由是"策略还没配";实际策略
+      // 一直都在,兜底是历史遗留。而那把 key 会被打进构建产物,等于公开一把绕过
+      // 全部 RLS 的钥匙,已移除。
       const { error: upErr } = await supabase.storage.from('staff-avatars').upload(filePath, file, {
         contentType: file.type, upsert: true,
       })
