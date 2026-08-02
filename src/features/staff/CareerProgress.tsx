@@ -5,7 +5,7 @@ import { SKILL_STATUS_LABELS, SKILL_STATUS_COLORS, SKILL_STATUS_ICONS } from '..
 
 // ─── Career Progress (skill matrix — gates promotion) ─────────────────────────
 
-export function CareerProgress({ staff }: { staff: Staff }) {
+export function CareerProgress({ staff, isSelf }: { staff: Staff; isSelf: boolean }) {
   const [path, setPath] = useState<CareerPath | null>(null)
   const [assessments, setAssessments] = useState<SkillAssessment[]>([])
   const [loading, setLoading] = useState(true)
@@ -188,7 +188,7 @@ export function CareerProgress({ staff }: { staff: Staff }) {
                   )}
                 </div>
                 <div className="flex-shrink-0">
-                  {(status === 'not_started' || status === 'failed') && (
+                  {isSelf && (status === 'not_started' || status === 'failed') && (
                     <button
                       onClick={() => startLearning(skill, a)}
                       disabled={isBusy}
@@ -197,7 +197,7 @@ export function CareerProgress({ staff }: { staff: Staff }) {
                       {isBusy ? '…' : status === 'failed' ? 'Practice Again' : 'Start Learning'}
                     </button>
                   )}
-                  {status === 'learning' && (
+                  {isSelf && status === 'learning' && (
                     <button
                       onClick={() => requestReview(skill)}
                       disabled={isBusy}

@@ -302,7 +302,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         {tab === 'skills' && (
           <SkillsTab skills={skills} canEdit={canRateSkills} onRate={saveSkillRating} />
         )}
-        {tab === 'career' && <CareerProgress staff={staff} />}
+        {tab === 'career' && <CareerProgress staff={staff} isSelf={isSelf} />}
         {tab === 'personal' && (
           <PersonalInfoTab
             staff={staff}
