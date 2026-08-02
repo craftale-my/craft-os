@@ -674,7 +674,7 @@ export default function Dashboard() {
       .from('mission_completions')
       .update({ status: 'approved', approved_by: currentStaff?.id })
       .eq('id', id)
-    loadAll()
+    reloadAll()
   }
 
   async function handleReject(id: string) {

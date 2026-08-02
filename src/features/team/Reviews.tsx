@@ -562,7 +562,7 @@ function MonthlyReviews({ staff, loading, me }: SectionProps) {
       .select('*, staff:staff!monthly_reviews_staff_id_fkey(id,name,rank,department,branch,branch_id)')
       .eq('month', CURRENT_MONTH)
       .eq('year', CURRENT_YEAR)
-    setReviews((data as MonthlyReview[]) ?? [])
+    if (data) setReviews(data as MonthlyReview[])
     setReviewsLoading(false)
   }, [])
 
@@ -734,7 +734,7 @@ function ProbationReviews({ staff, loading, me }: SectionProps) {
       .from('probation_reviews')
       .select('*, staff:staff!probation_reviews_staff_id_fkey(id,name,avatar,rank,branch,department,branch_id)')
       .order('start_date', { ascending: false })
-    setProbations((data as ProbationReview[]) ?? [])
+    if (data) setProbations(data as ProbationReview[])
     setProbationsLoading(false)
   }, [])
 
