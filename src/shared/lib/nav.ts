@@ -75,18 +75,18 @@ export function activeEntry(
   nav: NavEntry[],
   pathname: string,
 ): { leafId: string; groupId: string | null } | null {
-  let best: { leafId: string; groupId: string | null; len: number } | null = null
+  const pairs: Array<{ leaf: NavLeaf; groupId: string | null }> = []
+  for (const entry of nav) {
+    if (isGroup(entry)) entry.children.forEach(c => pairs.push({ leaf: c, groupId: entry.id }))
+    else pairs.push({ leaf: entry, groupId: null })
+  }
 
-  const consider = (leaf: NavLeaf, groupId: string | null) => {
+  let best: { leafId: string; groupId: string | null; len: number } | null = null
+  for (const { leaf, groupId } of pairs) {
     for (const p of leaf.activePaths ?? [leaf.to]) {
       if (pathname !== p && !pathname.startsWith(p)) continue
       if (!best || p.length > best.len) best = { leafId: leaf.id, groupId, len: p.length }
     }
-  }
-
-  for (const entry of nav) {
-    if (isGroup(entry)) entry.children.forEach(c => consider(c, entry.id))
-    else consider(entry, null)
   }
 
   return best ? { leafId: best.leafId, groupId: best.groupId } : null
