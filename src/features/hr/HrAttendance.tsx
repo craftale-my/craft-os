@@ -6,6 +6,7 @@ import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, L
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
+import { writeOutcome, type WriteOutcome } from '../../shared/lib/db-write'
 import { Avatar } from '../../shared/components/Avatar'
 import { Camera, MapPin, CheckCircle, X, AlertTriangle, RefreshCw, ZoomIn, Coffee } from 'lucide-react'
 
@@ -674,6 +675,10 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   const [monthRecords, setMonthRecords] = useState<Attendance[]>([])
   const [clockModal, setClockModal] = useState<'in' | 'out' | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
+  // Write failures must be shown, not swallowed — a clock-out that silently
+  // fails leaves the staff member believing they went home on the record.
+  // Unlike successMsg this never auto-dismisses.
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [viewPhoto, setViewPhoto] = useState<string | null>(null)
   const [break1Allowed, setBreak1Allowed] = useState(0)
   const [break2Allowed, setBreak2Allowed] = useState(0)
@@ -779,13 +784,18 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   async function startBreak(breakNumber: 1 | 2, allowed: number) {
     if (!today) return
     setBreakBusy(true)
+    setErrorMsg(null)
     const nowIso = new Date().toISOString()
-    await supabase.from('attendance_breaks').upsert({
+    const outcome = writeOutcome(await supabase.from('attendance_breaks').upsert({
       attendance_id: today.id,
       break_number: breakNumber,
       clock_out_time: nowIso,
-    }, { onConflict: 'attendance_id,break_number' })
+    }, { onConflict: 'attendance_id,break_number' }).select())
     setBreakBusy(false)
+    if (!outcome.ok) {
+      setErrorMsg(`Could not start break ${breakNumber} — ${outcome.reason} Please try again.`)
+      return
+    }
     setNowMs(Date.now())
     setSuccessMsg(`Break ${breakNumber} started — ${allowed} min allowed ☕`)
     loadBreaks(today.id)
@@ -795,16 +805,21 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   async function endBreak(row: AttendanceBreak, allowed: number) {
     if (!row.clock_out_time) return
     setBreakBusy(true)
+    setErrorMsg(null)
     const endIso = new Date().toISOString()
     const { durationMinutes, overtimeMinutes, isOvertime } =
       computeBreakOvertime(row.clock_out_time, endIso, allowed)
-    await supabase.from('attendance_breaks').update({
+    const outcome = writeOutcome(await supabase.from('attendance_breaks').update({
       clock_in_time: endIso,
       duration_minutes: durationMinutes,
       overtime_minutes: overtimeMinutes,
       is_overtime: isOvertime,
-    }).eq('id', row.id)
+    }).eq('id', row.id).select())
     setBreakBusy(false)
+    if (!outcome.ok) {
+      setErrorMsg(`Could not end break ${row.break_number} — ${outcome.reason} Please try again.`)
+      return
+    }
     setSuccessMsg(
       isOvertime
         ? `Back from break ${row.break_number} — ${durationMinutes} min (${overtimeMinutes} min over) ⚠️`
@@ -814,13 +829,17 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     setTimeout(() => setSuccessMsg(null), 6000)
   }
 
+  // Every write below ends in `.select()` on purpose: without it a row rejected
+  // by RLS is indistinguishable from a successful write. See writeOutcome().
   async function handleClockDone(type: 'in' | 'out', result: ClockResult) {
     const now = new Date()
+    setErrorMsg(null)
+    let outcome: WriteOutcome
     if (type === 'in') {
       const lateness = todayShift
         ? calcLateness(now.toISOString(), attDate, todayShift.start_time)
         : { isLate: false, lateMinutes: 0 }
-      await supabase.from('attendance').upsert({
+      outcome = writeOutcome(await supabase.from('attendance').upsert({
         staff_id: staff.id,
         date: attDate,
         clock_in: now.toISOString(),
@@ -830,26 +849,38 @@ export function MyAttendance({ staff }: { staff: Staff }) {
         clock_in_lat: result.lat,
         clock_in_lng: result.lng,
         clock_in_distance_m: result.distanceM,
-      }, { onConflict: 'staff_id,date' })
-      setSuccessMsg(
-        lateness.isLate
-          ? `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️`
-          : `Clocked in at ${fmtTime(now.toISOString())} ✓`
-      )
+      }, { onConflict: 'staff_id,date' }).select())
+      if (outcome.ok) {
+        setSuccessMsg(
+          lateness.isLate
+            ? `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️`
+            : `Clocked in at ${fmtTime(now.toISOString())} ✓`
+        )
+      }
+    } else if (!today) {
+      // Previously this returned silently, leaving the modal open with no
+      // explanation after the staff member had taken the selfie.
+      outcome = { ok: false, reason: 'no open shift was found on this device. Reload the page and try again.' }
     } else {
-      if (!today) return
-      await supabase.from('attendance').update({
+      outcome = writeOutcome(await supabase.from('attendance').update({
         clock_out: now.toISOString(),
         clock_out_photo_url: result.photoUrl,
         clock_out_lat: result.lat,
         clock_out_lng: result.lng,
         clock_out_distance_m: result.distanceM,
-      }).eq('id', today.id)
-      setSuccessMsg(`Clocked out at ${fmtTime(now.toISOString())} ✓`)
+      }).eq('id', today.id).select())
+      if (outcome.ok) setSuccessMsg(`Clocked out at ${fmtTime(now.toISOString())} ✓`)
+    }
+
+    if (!outcome.ok) {
+      setErrorMsg(
+        `Clock ${type === 'in' ? 'in' : 'out'} FAILED — ${outcome.reason} ` +
+        `Nothing was saved. Please try again, and tell your manager if it keeps failing.`
+      )
     }
     setClockModal(null)
     load()
-    setTimeout(() => setSuccessMsg(null), 5000)
+    if (outcome.ok) setTimeout(() => setSuccessMsg(null), 5000)
   }
 
   const present = monthRecords.filter(r => r.status === 'present').length
@@ -984,6 +1015,16 @@ export function MyAttendance({ staff }: { staff: Staff }) {
             <div className="mt-3 flex items-center gap-2 bg-[#EBF5EE] text-[#2E5E3A] text-sm font-medium px-3 py-2 rounded-xl">
               <CheckCircle size={15} />
               {successMsg}
+            </div>
+          )}
+
+          {errorMsg && (
+            <div
+              role="alert"
+              className="mt-3 flex items-start gap-2 bg-[#FCF0EC] text-[#9E4A30] text-sm font-medium px-3 py-2 rounded-xl border border-[#E8BCAE]"
+            >
+              <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+              <span>{errorMsg}</span>
             </div>
           )}
         </div>
