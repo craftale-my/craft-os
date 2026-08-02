@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, CheckSquare, ClipboardList,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
@@ -60,7 +60,6 @@ export function SidebarContent({ onNavigate, onClose }: {
   const { staff, signOut } = useAuth()
   const { pathname } = useLocation()
   const { can } = useCan()
-  const navigate = useNavigate()
 
   const nav = visibleNav(can)
   const active = activeEntry(nav, pathname)
@@ -74,7 +73,6 @@ export function SidebarContent({ onNavigate, onClose }: {
   function toggleGroup(group: NavGroup) {
     if (openGroup === group.id) { setOpenGroup(null); return }
     setOpenGroup(group.id)
-    if (group.children[0]) { navigate(group.children[0].to); onNavigate() }
   }
 
   return (
@@ -122,10 +120,13 @@ export function SidebarContent({ onNavigate, onClose }: {
           }
           const open = openGroup === entry.id
           const GroupIcon = ICONS[entry.id]
+          const childrenId = `nav-group-${entry.id}`
           return (
             <div key={entry.id}>
               <button
                 onClick={() => toggleGroup(entry)}
+                aria-expanded={open}
+                aria-controls={childrenId}
                 className="flex items-center justify-between w-full px-3 py-2.5 rounded-lg text-sm
                            text-[#D4C4B0] hover:bg-[#5A3A22] hover:text-[#F5F0E8] transition-colors"
               >
@@ -136,7 +137,7 @@ export function SidebarContent({ onNavigate, onClose }: {
                 <ChevronDown size={14} className={`flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
               </button>
               {open && (
-                <div className="mt-0.5 ml-3 pl-2 border-l border-[#5A3A22] space-y-0.5">
+                <div id={childrenId} className="mt-0.5 ml-3 pl-2 border-l border-[#5A3A22] space-y-0.5">
                   {entry.children.map(leaf => (
                     <NavLink
                       key={leaf.id}
