@@ -11,6 +11,7 @@ import { ForgotPasswordPage } from './features/auth/ForgotPassword'
 import { ResetPasswordPage } from './features/auth/ResetPassword'
 import { OnboardingPage } from './features/onboarding/Onboarding'
 import DashboardPage from './features/staff/Dashboard'
+import ReviewsPage from './features/team/Reviews'
 import { StaffProfilePage } from './features/staff/StaffProfile'
 import GrowthPage from './features/growth/GrowthPage'
 import ProbationReviewPage from './features/reviews/ProbationReview'
@@ -103,6 +104,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="view_team">
             <AppLayout><DashboardPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/team/reviews"
+        element={
+          <ProtectedRoute requireCap="conduct_reviews">
+            <AppLayout><ReviewsPage /></AppLayout>
           </ProtectedRoute>
         }
       />
