@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, Navigate, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { supabaseAdmin } from '../../shared/lib/supabase-admin'
 import { useAuth } from '../auth/AuthContext'
 import { ErrorBoundary } from '../../shared/components/ErrorBoundary'
 import { StarRating } from '../../shared/components/StarRating'
@@ -1378,16 +1377,13 @@ function AvatarUploadCard({ staff, onSaved }: { staff: Staff; onSaved: () => voi
     try {
       const ext = file.name.split('.').pop() ?? 'jpg'
       const filePath = `${staff.id}/${Date.now()}.${ext}`
-      let { error: upErr } = await supabase.storage.from('staff-avatars').upload(filePath, file, {
+      // 路径首段是 staff id,storage 策略据此限定"只能写自己的目录"
+      // (supabase/migration-2026-08-03-avatar-storage-policies.sql)。
+      // 这里曾有一段用 service_role 客户端的兜底 —— 那把 key 会被打进构建产物,
+      // 等于公开一把绕过全部 RLS 的钥匙,已随策略上线一并移除。
+      const { error: upErr } = await supabase.storage.from('staff-avatars').upload(filePath, file, {
         contentType: file.type, upsert: true,
       })
-      // Until the staff-avatars storage policies are applied in Supabase, authenticated
-      // uploads are blocked by RLS — fall back to the admin client (same pattern as staff creation).
-      if (upErr && supabaseAdmin && /row-level security|unauthorized|bucket not found/i.test(upErr.message)) {
-        ;({ error: upErr } = await supabaseAdmin.storage.from('staff-avatars').upload(filePath, file, {
-          contentType: file.type, upsert: true,
-        }))
-      }
       if (upErr) throw upErr
       const url = supabase.storage.from('staff-avatars').getPublicUrl(filePath).data.publicUrl
       const { error: updErr } = await supabase.from('staff').update({ avatar: url }).eq('id', staff.id)

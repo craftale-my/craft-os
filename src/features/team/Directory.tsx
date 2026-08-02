@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { supabaseAdmin } from '../../shared/lib/supabase-admin'
+import { createStaff, approveRegistration } from '../../shared/lib/provision'
 import type { Staff, MissionCompletion } from '../../shared/types'
 import {
   RANK_LABELS, RANK_COLORS,
@@ -68,10 +68,6 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!supabaseAdmin) {
-      setError('Service role key not configured. Add VITE_SUPABASE_SERVICE_ROLE_KEY to .env.local')
-      return
-    }
     if (!form.name.trim() || !form.email.trim() || form.password.length < 6) {
       setError('Name, email, and a 6+ character password are required.')
       return
@@ -79,44 +75,21 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
     setSaving(true)
     setError('')
 
-    const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
-      email: form.email.trim(),
-      password: form.password,
-      email_confirm: true,
-    })
-    if (authErr || !authData.user) {
-      setError(authErr?.message ?? 'Failed to create auth user')
-      setSaving(false)
-      return
-    }
-
-    const { error: profileErr } = await supabaseAdmin.from('staff').insert({
-      id: authData.user.id,
+    // 建号、写 staff 行、指派岗位、初始化技能清单,以及权限校验,全部在
+    // provision-staff 里完成 —— 这些要 service_role,而那把 key 不能进前端。
+    const result = await createStaff({
       name: form.name.trim(),
       email: form.email.trim(),
+      password: form.password,
       rank: form.rank,
       branch: form.branch || null,
       department: form.department || null,
-      onboarding_completed: form.rank === 'manager',
-      joined_at: new Date().toISOString().split('T')[0],
     })
-    if (profileErr) {
-      // Roll back the just-created auth user so a failed staff insert doesn't
-      // leave an orphan that blocks re-creating this email later.
-      await supabaseAdmin.auth.admin.deleteUser(authData.user.id)
-      setError(profileErr.message)
+
+    if (!result.ok) {
+      setError(result.error)
       setSaving(false)
       return
-    }
-
-    // Auto-assign job title (rank + department, when unambiguous) + skill checklist.
-    if (form.department) {
-      const { data: roleRows } = await supabaseAdmin.from('roles')
-        .select('id').eq('rank', form.rank).eq('department', form.department).eq('is_active', true)
-      if (roleRows && roleRows.length === 1) {
-        await supabaseAdmin.from('staff').update({ job_title_id: roleRows[0].id }).eq('id', authData.user.id)
-        await supabaseAdmin.rpc('initialize_staff_skills', { p_staff_id: authData.user.id })
-      }
     }
 
     onCreated()
@@ -198,12 +171,10 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
 
 function ApproveRegModal({
   request,
-  reviewerId,
   onClose,
   onApproved,
 }: {
   request: RegRequest
-  reviewerId: string | undefined
   onClose: () => void
   onApproved: (creds: { email: string; password: string }) => void
 }) {
@@ -212,10 +183,6 @@ function ApproveRegModal({
   const [error, setError] = useState('')
 
   async function handleApprove() {
-    if (!supabaseAdmin) {
-      setError('Service role key not configured. Add VITE_SUPABASE_SERVICE_ROLE_KEY to .env.local')
-      return
-    }
     if (password.length < 6) {
       setError('Temporary password must be at least 6 characters.')
       return
@@ -223,78 +190,29 @@ function ApproveRegModal({
     setSaving(true)
     setError('')
 
-    // 1. Create the auth user — or recover one left behind by a previously
-    //    interrupted approval, so a half-finished attempt no longer dead-ends
-    //    every retry with "a user with this email has already been registered".
-    let userId: string
-    let createdNow = false
-    const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
-      email: request.email,
-      password,
-      email_confirm: true,
-    })
-    if (created?.user) {
-      userId = created.user.id
-      createdNow = true
-    } else if (createErr && /already/i.test(createErr.message)) {
-      const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 })
-      const existing = list?.users.find(u => u.email?.toLowerCase() === request.email.toLowerCase())
-      if (!existing) {
-        setError(createErr.message)
-        setSaving(false)
-        return
-      }
-      userId = existing.id
-      // Reset the password so the temp password shown to the manager is valid.
-      await supabaseAdmin.auth.admin.updateUserById(userId, { password, email_confirm: true })
-    } else {
-      setError(createErr?.message ?? 'Failed to create user')
-      setSaving(false)
-      return
-    }
-
-    // request.department is a department slug for new requests; DEPT_STORE
-    // converts any legacy display-string values from older requests.
+    // request.department 对新请求是 department slug;DEPT_STORE 负责把老请求里
+    // 残留的展示字符串转回 slug。
     const dept = request.department ? (DEPT_STORE[request.department] ?? request.department) : null
 
-    // 2. Create the staff row (idempotent on id).
-    const { error: profileErr } = await supabaseAdmin.from('staff').upsert({
-      id: userId,
-      name: request.full_name,
+    // 建号(含接管中断审批遗留的用户)、写 staff 行、指派岗位、标记请求已批准,
+    // 全部在 provision-staff 里完成 —— 这些要 service_role,不能放在前端。
+    // reviewed_by 由函数从调用者的 JWT 推出,不接受前端传入。
+    const result = await approveRegistration({
+      requestId: request.id,
       email: request.email,
-      rank: 'trainee',
+      fullName: request.full_name,
+      password,
       branch: request.branch,
       department: dept,
-      employment_type: request.employment_type,
-      contact_number: request.phone,
-      onboarding_completed: false,
-      joined_at: new Date().toISOString().split('T')[0],
-    }, { onConflict: 'id' })
-    if (profileErr) {
-      // Roll back a just-created auth user so it can't become an orphan that
-      // blocks every future approval of this email.
-      if (createdNow) await supabaseAdmin.auth.admin.deleteUser(userId)
-      setError(profileErr.message)
+      employmentType: request.employment_type,
+      phone: request.phone,
+    })
+
+    if (!result.ok) {
+      setError(result.error)
       setSaving(false)
       return
     }
-
-    // 3. Auto-assign the job title (rank + department, when unambiguous) and
-    //    create the career-path skill checklist. Best-effort: a new hire with
-    //    no matching title simply starts without one until a manager assigns it.
-    if (dept) {
-      const { data: roleRows } = await supabaseAdmin.from('roles')
-        .select('id').eq('rank', 'trainee').eq('department', dept).eq('is_active', true)
-      if (roleRows && roleRows.length === 1) {
-        await supabaseAdmin.from('staff').update({ job_title_id: roleRows[0].id }).eq('id', userId)
-        await supabaseAdmin.rpc('initialize_staff_skills', { p_staff_id: userId })
-      }
-    }
-
-    await supabase
-      .from('registration_requests')
-      .update({ status: 'approved', reviewed_by: reviewerId ?? null, reviewed_at: new Date().toISOString() })
-      .eq('id', request.id)
 
     setSaving(false)
     onApproved({ email: request.email, password })
@@ -692,7 +610,6 @@ export default function DirectoryPage() {
       {approveTarget && (
         <ApproveRegModal
           request={approveTarget}
-          reviewerId={currentStaff?.id}
           onClose={() => setApproveTarget(null)}
           onApproved={handleRegApproved}
         />
