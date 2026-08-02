@@ -10,7 +10,7 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import { useCan } from '../../shared/lib/permissions'
-import { useTeamData } from '../team/useTeamData'
+import { useTeamData } from './useTeamData'
 
 const CURRENT_MONTH = new Date().getMonth() + 1
 const CURRENT_YEAR = new Date().getFullYear()
@@ -572,9 +572,9 @@ function PendingCard({
   )
 }
 
-// ─── Dashboard ────────────────────────────────────────────────────────────────
+// ─── Directory ────────────────────────────────────────────────────────────────
 
-export default function Dashboard() {
+export default function DirectoryPage() {
   const navigate = useNavigate()
   const { deptName } = useLookups()
   const { ownBranchOnly } = useCan()
@@ -739,7 +739,7 @@ export default function Dashboard() {
         {/* Header */}
         <div className="flex items-start justify-between mb-8">
           <div>
-            <h1 className="text-2xl font-bold text-brown-dark">Dashboard</h1>
+            <h1 className="text-2xl font-bold text-brown-dark">Directory</h1>
             <p className="text-sm text-brown-faint mt-0.5">
               {monthLabel} {CURRENT_YEAR} · Welcome back, {currentStaff?.name?.split(' ')[0] ?? 'there'}
             </p>

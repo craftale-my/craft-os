@@ -18,7 +18,7 @@ import { canReviewStaff } from '../../shared/lib/permissions'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
-import { Avatar } from './Dashboard'
+import { Avatar } from '../team/Directory'
 import { canPromote } from '../../shared/lib/xp'
 
 type Tab = 'missions' | 'skills' | 'personal' | 'reviews' | 'history'

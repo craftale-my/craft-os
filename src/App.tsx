@@ -10,7 +10,7 @@ import { RegisterPage } from './features/auth/Register'
 import { ForgotPasswordPage } from './features/auth/ForgotPassword'
 import { ResetPasswordPage } from './features/auth/ResetPassword'
 import { OnboardingPage } from './features/onboarding/Onboarding'
-import DashboardPage from './features/staff/Dashboard'
+import DirectoryPage from './features/team/Directory'
 import ReviewsPage from './features/team/Reviews'
 import { StaffProfilePage } from './features/staff/StaffProfile'
 import GrowthPage from './features/growth/GrowthPage'
@@ -103,7 +103,7 @@ function AppRoutes() {
         path="/team"
         element={
           <ProtectedRoute requireCap="view_team">
-            <AppLayout><DashboardPage /></AppLayout>
+            <AppLayout><DirectoryPage /></AppLayout>
           </ProtectedRoute>
         }
       />
