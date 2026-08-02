@@ -18,14 +18,16 @@ import { canReviewStaff } from '../../shared/lib/permissions'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
-import { Avatar } from './Dashboard'
+import { Avatar } from '../../shared/components/Avatar'
 import { canPromote } from '../../shared/lib/xp'
+import { CareerProgress } from './CareerProgress'
 
-type Tab = 'missions' | 'skills' | 'personal' | 'reviews' | 'history'
+type Tab = 'missions' | 'skills' | 'career' | 'personal' | 'reviews' | 'history'
 
 const TAB_LABELS: Record<Tab, string> = {
   missions: 'Missions',
   skills:   'Skills',
+  career:   'Career',
   personal: 'Personal',
   reviews:  'Reviews',
   history:  'History',
@@ -300,6 +302,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         {tab === 'skills' && (
           <SkillsTab skills={skills} canEdit={canRateSkills} onRate={saveSkillRating} />
         )}
+        {tab === 'career' && <CareerProgress staff={staff} isSelf={isSelf} />}
         {tab === 'personal' && (
           <PersonalInfoTab
             staff={staff}
@@ -423,7 +426,7 @@ function ReviewsTab({
           <p className="text-xs text-brown-muted mt-1">
             {isSelf
               ? 'Your supervisor will start a review cycle soon.'
-              : 'Use the Dashboard to start a review cycle.'}
+              : 'Use Team > Reviews to start a review cycle.'}
           </p>
         </div>
       )}
@@ -898,7 +901,7 @@ function StatusDot({ color }: { color: string }) {
 
 // ─── Missions Tab ─────────────────────────────────────────────────────────────
 
-export function MissionsTab({
+function MissionsTab({
   missions, staffId, completions, isSelf, onRefresh,
 }: {
   missions: Mission[]; staffId: string; completions: MissionCompletion[]; isSelf: boolean; onRefresh: () => void

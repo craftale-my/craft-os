@@ -10,9 +10,10 @@ import { RegisterPage } from './features/auth/Register'
 import { ForgotPasswordPage } from './features/auth/ForgotPassword'
 import { ResetPasswordPage } from './features/auth/ResetPassword'
 import { OnboardingPage } from './features/onboarding/Onboarding'
-import DashboardPage from './features/staff/Dashboard'
+import DirectoryPage from './features/team/Directory'
+import ReviewsPage from './features/team/Reviews'
 import { StaffProfilePage } from './features/staff/StaffProfile'
-import GrowthPage from './features/growth/GrowthPage'
+import { MissionsPage } from './features/missions/Missions'
 import ProbationReviewPage from './features/reviews/ProbationReview'
 import TasksPage from './features/tasks/Tasks'
 import SettingsPage from './features/settings/Settings'
@@ -99,13 +100,44 @@ function AppRoutes() {
       />
 
       <Route
-        path="/dashboard"
+        path="/team"
         element={
           <ProtectedRoute requireCap="view_team">
-            <AppLayout><DashboardPage /></AppLayout>
+            <AppLayout><DirectoryPage /></AppLayout>
           </ProtectedRoute>
         }
       />
+
+      <Route
+        path="/team/reviews"
+        element={
+          <ProtectedRoute requireCap="conduct_reviews">
+            <AppLayout><ReviewsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/team/tasks"
+        element={
+          <ProtectedRoute requireCap="view_team">
+            <AppLayout><TasksPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/team/missions"
+        element={
+          <ProtectedRoute requireCap="manage_missions">
+            <AppLayout><MissionsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* 旧入口:保留至少一个发布周期,覆盖书签与已安装 PWA */}
+      <Route path="/dashboard" element={<Navigate to="/team" replace />} />
+      <Route path="/tasks" element={<Navigate to="/team/tasks" replace />} />
 
       <Route
         path="/staff/:id"
@@ -134,23 +166,7 @@ function AppRoutes() {
         }
       />
 
-      <Route
-        path="/missions"
-        element={
-          <ProtectedRoute>
-            <AppLayout><GrowthPage /></AppLayout>
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/tasks"
-        element={
-          <ProtectedRoute requireCap="view_team">
-            <AppLayout><TasksPage /></AppLayout>
-          </ProtectedRoute>
-        }
-      />
+      <Route path="/missions" element={<Navigate to="/profile" replace />} />
 
       <Route
         path="/hr/attendance"
@@ -212,7 +228,7 @@ function AppRoutes() {
           user
             ? <Navigate to={
                 effectiveSystemRole(staff) !== 'staff'
-                  ? '/dashboard'
+                  ? '/team'
                   : '/profile'
               } replace />
             : <Navigate to="/login" replace />

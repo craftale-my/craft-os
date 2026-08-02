@@ -1,19 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../../shared/lib/supabase'
-import { useAuth } from '../auth/AuthContext'
-import { useCan } from '../../shared/lib/permissions'
-import type {
-  Staff, Mission, MissionCompletion, CareerPath, Skill, SkillAssessment, SkillAssessmentStatus,
-} from '../../shared/types'
+import type { Staff, CareerPath, Skill, SkillAssessment, SkillAssessmentStatus } from '../../shared/types'
 import { SKILL_STATUS_LABELS, SKILL_STATUS_COLORS, SKILL_STATUS_ICONS } from '../../shared/types'
-import { MissionsTab } from '../staff/StaffProfile'
-import { MissionsPage } from '../missions/Missions'
-
-type GrowthTab = 'career' | 'missions' | 'manage'
 
 // ─── Career Progress (skill matrix — gates promotion) ─────────────────────────
 
-function CareerProgress({ staff }: { staff: Staff }) {
+export function CareerProgress({ staff, isSelf }: { staff: Staff; isSelf: boolean }) {
   const [path, setPath] = useState<CareerPath | null>(null)
   const [assessments, setAssessments] = useState<SkillAssessment[]>([])
   const [loading, setLoading] = useState(true)
@@ -54,7 +46,7 @@ function CareerProgress({ staff }: { staff: Staff }) {
       <div className="bg-white rounded-xl shadow-card px-5 py-10 text-center">
         <p className="text-2xl mb-2">🧭</p>
         <p className="text-sm font-semibold text-brown-dark">No job title assigned yet</p>
-        <p className="text-xs text-brown-muted mt-1">Ask your manager to assign your job title to unlock your career path.</p>
+        <p className="text-xs text-brown-muted mt-1">A job title must be assigned to unlock the career path.</p>
       </div>
     )
   }
@@ -63,9 +55,9 @@ function CareerProgress({ staff }: { staff: Staff }) {
     return (
       <div className="bg-white rounded-xl shadow-card px-5 py-10 text-center">
         <p className="text-2xl mb-2">🏔️</p>
-        <p className="text-sm font-semibold text-brown-dark">No promotion path from your current title</p>
+        <p className="text-sm font-semibold text-brown-dark">No promotion path from the current job title</p>
         <p className="text-xs text-brown-muted mt-1">
-          Either you're at the top of your ladder, or the next segment hasn't been configured yet.
+          Either this is the top of the ladder, or the next segment hasn't been configured yet.
         </p>
       </div>
     )
@@ -196,7 +188,7 @@ function CareerProgress({ staff }: { staff: Staff }) {
                   )}
                 </div>
                 <div className="flex-shrink-0">
-                  {(status === 'not_started' || status === 'failed') && (
+                  {isSelf && (status === 'not_started' || status === 'failed') && (
                     <button
                       onClick={() => startLearning(skill, a)}
                       disabled={isBusy}
@@ -205,7 +197,7 @@ function CareerProgress({ staff }: { staff: Staff }) {
                       {isBusy ? '…' : status === 'failed' ? 'Practice Again' : 'Start Learning'}
                     </button>
                   )}
-                  {status === 'learning' && (
+                  {isSelf && status === 'learning' && (
                     <button
                       onClick={() => requestReview(skill)}
                       disabled={isBusy}
@@ -225,81 +217,6 @@ function CareerProgress({ staff }: { staff: Staff }) {
         {activeSkills.length === 0 && (
           <p className="px-4 py-8 text-xs text-brown-faint text-center">No skills configured for this path yet.</p>
         )}
-      </div>
-    </div>
-  )
-}
-
-// ─── Page (Career Progress | Missions | Manage) ───────────────────────────────
-
-export default function GrowthPage() {
-  const { staff } = useAuth()
-  const { can } = useCan()
-  const [tab, setTab] = useState<GrowthTab>('career')
-  const [missions, setMissions] = useState<Mission[]>([])
-  const [completions, setCompletions] = useState<MissionCompletion[]>([])
-
-  const canManage = can('manage_missions')
-
-  const loadMissions = useCallback(async () => {
-    if (!staff) return
-    const [mRes, cRes] = await Promise.all([
-      supabase.from('missions').select('*').order('created_at'),
-      supabase.from('mission_completions').select('*, mission:missions(*)').eq('staff_id', staff.id),
-    ])
-    setMissions((mRes.data as Mission[]) ?? [])
-    setCompletions((cRes.data as MissionCompletion[]) ?? [])
-  }, [staff?.id])
-
-  useEffect(() => { loadMissions() }, [loadMissions])
-
-  if (!staff) return null
-
-  const tabs: { id: GrowthTab; label: string }[] = [
-    { id: 'career',   label: '🎯 Career Progress' },
-    { id: 'missions', label: '⚡ Missions' },
-    ...(canManage ? [{ id: 'manage' as const, label: '🛠 Manage' }] : []),
-  ]
-
-  return (
-    <div className="min-h-screen bg-cream-light">
-      <div className="max-w-3xl mx-auto px-4 py-8 lg:px-8 space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-brown-dark">Growth</h1>
-          <p className="text-sm text-brown-faint mt-0.5">
-            Career skills gate your promotion · missions earn XP and honour.
-          </p>
-        </div>
-
-        <div className="flex gap-1 bg-white shadow-card rounded-xl p-1 overflow-x-auto">
-          {tabs.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`flex-1 py-2 text-sm rounded-lg whitespace-nowrap px-3 transition-colors ${
-                tab === t.id
-                  ? 'bg-[#4A2E1A] text-[#F5F0E8] font-medium'
-                  : 'text-brown-muted hover:text-brown-dark'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {tab === 'career' && <CareerProgress staff={staff} />}
-
-        {tab === 'missions' && (
-          <MissionsTab
-            missions={missions}
-            staffId={staff.id}
-            completions={completions}
-            isSelf
-            onRefresh={loadMissions}
-          />
-        )}
-
-        {tab === 'manage' && <MissionsPage />}
       </div>
     </div>
   )
