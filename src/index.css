@@ -3,11 +3,47 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    /* Device insets, exposed as custom properties so Tailwind arbitrary values
+       can reference them (`pb-[var(--safe-bottom)]`). They are 0 everywhere
+       except an installed app on a notched phone, so the shell can apply them
+       unconditionally without affecting the desktop layout. */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+
+    /* Height of the mobile bottom tab bar, excluding the home-indicator inset.
+       BottomTabs sets its own height from this, and AppLayout reserves the same
+       amount of space below the page so the bar never covers content. */
+    --tabbar-h: 3.25rem;
+  }
+
   body {
     background-color: #F5F0E8;
     color: #3D2B1F;
     font-family: 'DM Sans', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
+    /* Kill the grey flash on tap — it's the clearest "this is a web page" tell
+       on a phone. Focus-visible rings still work for keyboard users. */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html,
+  body {
+    /* Stop the whole document from chaining its scroll to the viewport. Note
+       this deliberately uses `contain` rather than `none` so Android keeps
+       pull-to-refresh — the only way to force a data refresh in standalone. */
+    overscroll-behavior-y: contain;
+  }
+
+  /* Skip the 300ms double-tap-to-zoom delay on anything meant to be tapped. */
+  a,
+  button,
+  [role='button'],
+  label,
+  summary {
+    touch-action: manipulation;
   }
 
   * {
@@ -27,5 +63,18 @@
   }
   ::-webkit-scrollbar-thumb:hover {
     background: #B8A890;
+  }
+}
+
+/* Deliberately outside @layer so it outranks the `min-h-screen` utility.
+
+   Every page sets `min-h-screen` on its own wrapper. That was right when the
+   page owned the whole viewport, but AppLayout now also reserves room for the
+   tab bar below it — leaving a screenful plus a tab bar of scrollable height on
+   pages with little content. Capping the wrapper on phones removes the dead
+   scroll; from `sm:` up the tab bar is hidden and the original rule stands. */
+@media (max-width: 639px) {
+  main > .min-h-screen {
+    min-height: 0;
   }
 }

@@ -1,8 +1,7 @@
-import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, LayoutDashboard, CheckSquare, ClipboardList,
-  UserCheck, Users, LogOut, Menu, X, Settings,
+  UserCheck, Users, LogOut, X, Settings,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, GraduationCap,
   Truck, Package, ShoppingCart, PackageCheck, Boxes,
 } from 'lucide-react'
@@ -100,7 +99,8 @@ function NavLink({ item, pathname, onNavigate }: {
   )
 }
 
-function SidebarContent({ onNavigate, onClose }: {
+/** Shared by the desktop rail and the mobile "More" drawer in BottomTabs. */
+export function SidebarContent({ onNavigate, onClose }: {
   onNavigate: () => void
   onClose?: () => void
 }) {
@@ -214,43 +214,18 @@ function SidebarContent({ onNavigate, onClose }: {
   )
 }
 
+/**
+ * Desktop rail only. On phones the equivalent navigation is BottomTabs, whose
+ * "More" tab opens SidebarContent as a drawer — there is no longer a mobile top
+ * bar, so pages start directly under the status bar.
+ */
 export function Sidebar() {
-  const [mobileOpen, setMobileOpen] = useState(false)
-  const { pathname } = useLocation()
-
-  useEffect(() => { setMobileOpen(false) }, [pathname])
-
   return (
-    <>
-      {/* Desktop fixed sidebar */}
-      <aside className="hidden sm:block fixed left-0 top-0 h-full w-60 z-30 bg-[#4A2E1A]">
-        <SidebarContent onNavigate={() => {}} />
-      </aside>
-
-      {/* Mobile sticky top bar */}
-      <header className="sm:hidden fixed top-0 left-0 right-0 z-30 h-14 bg-[#4A2E1A] flex items-center justify-between px-4">
-        <button onClick={() => setMobileOpen(true)} className="text-[#D4C4B0] hover:text-[#F5F0E8] p-1">
-          <Menu size={22} />
-        </button>
-        <span className="flex items-center gap-2">
-          <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-7 h-7 rounded-full object-cover" />
-          <span className="font-display text-lg font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
-        </span>
-        <div className="w-7" />
-      </header>
-
-      {/* Mobile overlay sidebar */}
-      {mobileOpen && (
-        <>
-          <div
-            className="sm:hidden fixed inset-0 z-40 bg-black/50"
-            onClick={() => setMobileOpen(false)}
-          />
-          <aside className="sm:hidden fixed left-0 top-0 h-full w-60 z-50 bg-[#4A2E1A] shadow-xl">
-            <SidebarContent onNavigate={() => setMobileOpen(false)} onClose={() => setMobileOpen(false)} />
-          </aside>
-        </>
-      )}
-    </>
+    <aside
+      className="hidden sm:block fixed left-0 top-0 h-full w-60 z-30 bg-[#4A2E1A]
+                 pt-[var(--safe-top)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]"
+    >
+      <SidebarContent onNavigate={() => {}} />
+    </aside>
   )
 }

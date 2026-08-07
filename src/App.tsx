@@ -5,6 +5,8 @@ import { LookupsProvider } from './shared/lib/lookups'
 import { effectiveSystemRole } from './shared/lib/permissions'
 import { ProtectedRoute, OnboardingRoute } from './features/auth/ProtectedRoute'
 import { Sidebar } from './shared/components/Sidebar'
+import { BottomTabs } from './shared/components/BottomTabs'
+import { InstallPrompt } from './shared/components/InstallPrompt'
 import { LoginPage } from './features/auth/Login'
 import { RegisterPage } from './features/auth/Register'
 import { ForgotPasswordPage } from './features/auth/ForgotPassword'
@@ -36,7 +38,19 @@ function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-[#F5F0E8]">
       <Sidebar />
-      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen">{children}</main>
+      {/* The safe-area insets resolve to 0 outside an installed app on a notched
+          device, so they're applied unconditionally. Only the tab-bar reserve is
+          breakpointed, because the bar itself is mobile-only. */}
+      <main
+        className="sm:ml-60 min-h-screen
+                   pt-[var(--safe-top)]
+                   pl-[var(--safe-left)] sm:pl-0 pr-[var(--safe-right)]
+                   pb-[calc(var(--tabbar-h)+var(--safe-bottom))] sm:pb-[var(--safe-bottom)]"
+      >
+        {children}
+      </main>
+      <BottomTabs />
+      <InstallPrompt />
     </div>
   )
 }

@@ -198,6 +198,17 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
   return (
     <ErrorBoundary>
       <div className="max-w-3xl mx-auto px-4 py-8">
+        {/* Installed as an app there is no browser back button, so viewing
+            someone else's profile needs its own way back to the team list. */}
+        {!selfView && (
+          <Link
+            to="/dashboard"
+            className="text-sm text-[#C4813A] font-semibold hover:underline mb-3 inline-block"
+          >
+            ← Back to Team Dashboard
+          </Link>
+        )}
+
         {/* Probation banner */}
         {staff.rank === 'trainee' && probation && (
           <div className="bg-[#FEF3E2] border border-[#C4813A40] rounded-xl px-4 py-3 mb-4 flex items-center gap-3">

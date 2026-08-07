@@ -2,9 +2,35 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Browser-tab icon: the monkey mark, same source as the PWA icons below.
+         The .ico carries 16/32/48 for browsers and pinned Windows shortcuts;
+         the PNG is what modern browsers actually pick. -->
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <!-- viewport-fit=cover lets the app paint into the notch / home-indicator
+         areas; the safe-area insets in index.css keep content out of them. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <title>Craft OS — Craftale</title>
+    <meta
+      name="description"
+      content="Craft Cafe staff operations: attendance, schedule, growth, HR and procurement."
+    />
+
+    <!-- Installed-app shell. theme_color is the cream page background so both
+         Android and iOS tint the status bar to match the first screen. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#F5F0E8" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Craft OS" />
+    <!-- Must stay "default". "black-translucent" forces WHITE status bar text,
+         which is invisible against this app's cream background. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
