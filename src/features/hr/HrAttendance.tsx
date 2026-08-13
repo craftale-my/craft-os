@@ -743,12 +743,22 @@ type ReportBreak = DailyDetail['breaks'][number]
 
 const breakAt = (d: DailyDetail, n: 1 | 2): ReportBreak | null => d.breaks.find(b => b.number === n) ?? null
 
+/** ISO timestamp -> `9:32am`. The page-wide `fmtTime` renders `09:32 am`
+ *  (zero-padded, spaced); the report puts clock times next to shift times
+ *  formatted by `fmtTime2`, so it needs the same compact spelling. Changing
+ *  `fmtTime` itself would restyle the clock card and daily roster too. */
+function fmtClock(iso: string): string {
+  const d = new Date(iso)
+  const h = d.getHours()
+  return `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}${h >= 12 ? 'pm' : 'am'}`
+}
+
 /** "12:05pm–12:38pm (33m)" — the overtime suffix is added separately so the UI
  *  can paint it red while the CSV keeps it inline. */
 function fmtBreakWindow(b: ReportBreak | null): string {
   if (!b?.start) return '—'
-  if (!b.end) return `${fmtTime(b.start)}–…`
-  return `${fmtTime(b.start)}–${fmtTime(b.end)}${b.durationMinutes != null ? ` (${b.durationMinutes}m)` : ''}`
+  if (!b.end) return `${fmtClock(b.start)}–…`
+  return `${fmtClock(b.start)}–${fmtClock(b.end)}${b.durationMinutes != null ? ` (${b.durationMinutes}m)` : ''}`
 }
 
 function breakCellText(b: ReportBreak | null): string {
@@ -826,7 +836,11 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
     if (attErr) { setError(`Could not load attendance — ${attErr.message}`); setLoading(false); return }
     const attRows = (attData as Attendance[] | null) ?? []
     setAttendance(attRows)
-    setTruncated(attRows.length >= REPORT_ROW_LIMIT)
+    // Every one of the three queries is capped at the same server-side row
+    // limit. The breaks query blows it first (up to 2 rows per attendance day),
+    // and a silently truncated breaks set inflates Worked minutes and hides
+    // break overtime — so the banner must reflect ALL three, not just this one.
+    let hitLimit = attRows.length >= REPORT_ROW_LIMIT
 
     // Breaks hang off the attendance rows we just read (same fetch shape as the
     // daily roster).
@@ -839,7 +853,9 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
         .select('*')
         .in('attendance_id', attIds)
       if (brkErr) { setError(`Could not load breaks — ${brkErr.message}`); setLoading(false); return }
-      setBreaks((brkData as AttendanceBreak[] | null) ?? [])
+      const brkRows = (brkData as AttendanceBreak[] | null) ?? []
+      if (brkRows.length >= REPORT_ROW_LIMIT) hitLimit = true
+      setBreaks(brkRows)
     }
 
     // Shifts drive the "missed clock-in" count and the detail table's shift column.
@@ -850,7 +866,10 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       .gte('date', from)
       .lte('date', to)
     if (shiftErr) { setError(`Could not load shifts — ${shiftErr.message}`); setLoading(false); return }
-    setShifts((shiftData as unknown as ReportShift[] | null) ?? [])
+    const shiftRows = (shiftData as unknown as ReportShift[] | null) ?? []
+    if (shiftRows.length >= REPORT_ROW_LIMIT) hitLimit = true
+    setShifts(shiftRows)
+    setTruncated(hitLimit)
     setLoading(false)
   }
 
@@ -882,8 +901,8 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       d.date,
       weekdayShort(d.date),
       shiftLabel(d),
-      d.clockIn ? fmtTime(d.clockIn) : '—',
-      d.clockOut ? fmtTime(d.clockOut) : '—',
+      d.clockIn ? fmtClock(d.clockIn) : '—',
+      d.clockOut ? fmtClock(d.clockOut) : '—',
       fmtWorked(d.workedMinutes),
       breakCellText(breakAt(d, 1)),
       breakCellText(breakAt(d, 2)),
@@ -971,7 +990,7 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
 
       {truncated && (
         <p className="text-xs text-[#9E4A30] bg-[#FDF3F0] rounded-lg px-3 py-2">
-          Showing the first {REPORT_ROW_LIMIT} attendance records — narrow the date range or pick one staff member for a complete report.
+          This range hit the {REPORT_ROW_LIMIT}-record limit, so some attendance, break or shift rows were left out and the totals below are incomplete — narrow the date range or pick one staff member.
         </p>
       )}
 
@@ -1068,8 +1087,8 @@ function DailyDetailTable({ days }: { days: DailyDetail[] }) {
                 <td className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">{d.date}</td>
                 <td className="px-2.5 py-1.5 text-brown-faint whitespace-nowrap">{weekdayShort(d.date)}</td>
                 <td className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">{shiftLabel(d)}</td>
-                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockIn ? fmtTime(d.clockIn) : '—'}</td>
-                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockOut ? fmtTime(d.clockOut) : '—'}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockIn ? fmtClock(d.clockIn) : '—'}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockOut ? fmtClock(d.clockOut) : '—'}</td>
                 <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap tabular-nums">{fmtWorked(d.workedMinutes)}</td>
                 {[b1, b2].map((b, i) => (
                   <td key={i} className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">
