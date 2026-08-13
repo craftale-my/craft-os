@@ -22,6 +22,23 @@ describe('normalizeTagName', () => {
   it('returns null for blank input', () => {
     expect(normalizeTagName('   ')).toBeNull()
   })
+
+  it('collapses precomposed and combining-mark Unicode forms to the same slug', () => {
+    // 用明确的 \u 转义而非直接贴字元，避免编辑器/存档时把两种编码悄悄改写成
+    // 同一种正规化形式，那样测试就测不出这个 bug 了
+    // precomposed: 'Caf' + U+00E9（预组合的 é）
+    const precomposed = normalizeTagName('Caf\u00e9')!
+    // decomposed: 'Cafe' + U+0301（combining acute accent），画面上和上面一模一样
+    const decomposed = normalizeTagName('Cafe\u0301')!
+    expect(precomposed.slug).toBe(decomposed.slug)
+    expect(precomposed.slug).toBe('caf\u00e9')
+  })
+
+  it('round-trips a Chinese tag unchanged', () => {
+    const tag = normalizeTagName('奶茶')!
+    expect(tag.name).toBe('奶茶')
+    expect(tag.slug).toBe('奶茶')
+  })
 })
 
 describe('computeDropPosition', () => {
@@ -72,6 +89,10 @@ describe('projectProgress', () => {
     expect(projectProgress(1, 3)).toBe(33)
     expect(projectProgress(8, 15)).toBe(53)
     expect(projectProgress(6, 6)).toBe(100)
+  })
+
+  it('clamps to 100 when done exceeds total (stale counts from a race)', () => {
+    expect(projectProgress(9, 6)).toBe(100)
   })
 })
 
