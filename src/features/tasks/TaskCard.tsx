@@ -70,6 +70,25 @@ export function TaskCard({
 
       <p className="text-sm font-semibold text-[#3D2B1F] leading-snug mb-3">{task.title}</p>
 
+      {task.tags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 mb-2">
+          {task.tags.slice(0, 2).map(t => (
+            <span
+              key={t.id}
+              className="text-[11px] font-medium px-1.5 py-0.5 rounded-full"
+              style={{ color: t.color, background: `${t.color}1A` }}
+            >
+              {t.name}
+            </span>
+          ))}
+          {task.tags.length > 2 && (
+            <span className="text-[11px] font-medium text-[#A09080]">
+              +{task.tags.length - 2}
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="flex items-center gap-2">
         {task.assignee ? (
           <div className="flex items-center gap-1.5 flex-1 min-w-0">

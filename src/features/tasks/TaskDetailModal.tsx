@@ -6,21 +6,25 @@ import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Staff } from '../../shared/types'
 import {
   fetchAttachments, uploadAttachment, deleteAttachment, updateTask, deleteTask,
+  upsertTag, attachTag, detachTag,
 } from './api'
 import { TASK_COLUMNS } from './types'
-import type { Attachment, Task, TaskPriority, TaskStatus } from './types'
+import type { Attachment, Tag, Task, TaskPriority, TaskStatus } from './types'
 import { PRIORITY_CFG, fmtDate } from './TaskCard'
 import { CommentThread } from './CommentThread'
+import { TagInput } from './TagInput'
 
 const statusLabel: Record<TaskStatus, string> = {
   todo: 'To Do', in_progress: 'In Progress', done: 'Done',
 }
 
 export function TaskDetailModal({
-  task, allStaff, canManage, currentStaffId, onClose, onChanged, onStatusChange,
+  task, allStaff, allTags, canManage, currentStaffId, onClose, onChanged, onStatusChange,
 }: {
   task: Task
   allStaff: Staff[]
+  /** 给 TagInput 做建议清单;新建的 tag 要等下一次 onChanged() 落地后才会出现在这里。 */
+  allTags: Tag[]
   canManage: boolean
   currentStaffId: string
   onClose: () => void
@@ -119,6 +123,44 @@ export function TaskDetailModal({
     if (!res.ok) { setError(`Could not remove the image — ${res.reason}`); return }
     setError('')
     await loadAttachments()
+    onChanged()
+  }
+
+  /**
+   * upsert → attach,中间没有乐观 UI —— 跟这个弹窗其它写入(存档、传附件)同款,
+   * 使用者等两趟网路来回才看到 pill 出现,靠 onChanged() 的重拉板落地。
+   *
+   * attachTag 若在 upsertTag 已经把 tag 列写进去之后才失败,这里刻意不回滚
+   * 那笔 tag:
+   *  1. tags 本来就是人人可建的自由列表,一笔没被挂上任何任务的 tag 不是
+   *     「孤儿」——它就是还没被用到,下次打同样的名字照样能透过 slug 命中它。
+   *  2. upsertTag 用 onConflict 保证回传的是「这个 slug 目前唯一的那一列」,
+   *     不保证「这次呼叫是造出它的那一次」;这段空档里,另一个使用者的
+   *     handleAddTag 完全可能已经把同一笔 tag 挂到别的任务上。删掉它会连带
+   *     扯断那笔已经成功的挂载。
+   *  3. tags_delete 这条 RLS 只放行 manage_projects,大多数能挂 tag 的人根本
+   *     没有删 tag 的权限——真的尝试回滚,对多数使用者而言只会是另一次静默
+   *     失败,不会让状态更乾净。
+   * 保留这笔 tag、把错误显示出来,让使用者重打一次:upsertTag 是幂等的,
+   * 会拿回同一笔,重试的 attachTag 才是真正需要成功的那一步。
+   */
+  async function handleAddTag(raw: string) {
+    try {
+      const tag = await upsertTag(raw, currentStaffId)
+      if (task.tags.some(t => t.id === tag.id)) return   // 已经挂上了,不重复插入 task_tags
+      const res = await attachTag(task.id, tag.id)
+      if (!res.ok) { setError(`Could not add the tag — ${res.reason}`); return }
+      setError('')
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not add the tag.')
+    }
+  }
+
+  async function handleRemoveTag(tagId: string) {
+    const res = await detachTag(task.id, tagId)
+    if (!res.ok) { setError(`Could not remove the tag — ${res.reason}`); return }
+    setError('')
     onChanged()
   }
 
@@ -269,6 +311,12 @@ export function TaskDetailModal({
               </p>
             </div>
           )}
+
+          {/* Tags —— 自由输入,谁都能加,不跟 "Edit Task" 的表单绑在一起。 */}
+          <div>
+            <p className="text-xs font-semibold text-[#8B7355] mb-1.5">Tags</p>
+            <TagInput value={task.tags} allTags={allTags} onAdd={handleAddTag} onRemove={handleRemoveTag} />
+          </div>
 
           {editing && (
             <div className="flex gap-2">

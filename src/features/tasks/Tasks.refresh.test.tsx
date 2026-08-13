@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   postComment:      vi.fn(),
   fetchComments:    vi.fn(),
   fetchAttachments: vi.fn(),
+  fetchTags:        vi.fn(),
 }))
 
 vi.mock('./api', () => ({
@@ -29,11 +30,15 @@ vi.mock('./api', () => ({
   postComment:      h.postComment,
   fetchComments:    h.fetchComments,
   fetchAttachments: h.fetchAttachments,
+  fetchTags:        h.fetchTags,
   createTask:       vi.fn(),
   updateTask:       vi.fn(),
   deleteTask:       vi.fn(),
   uploadAttachment: vi.fn(),
   deleteAttachment: vi.fn(),
+  upsertTag:        vi.fn(),
+  attachTag:        vi.fn(),
+  detachTag:        vi.fn(),
 }))
 
 // 页面层只剩 staff 下拉还直接打 supabase,给它一份空清单就够。
@@ -87,6 +92,7 @@ beforeEach(() => {
   h.fetchBoardTasks.mockImplementation(async () => [{ ...TASK }])
   h.fetchComments.mockResolvedValue([])
   h.fetchAttachments.mockResolvedValue([])
+  h.fetchTags.mockResolvedValue([])
   h.postComment.mockResolvedValue(OK)
   h.moveTask.mockResolvedValue(OK)
 })

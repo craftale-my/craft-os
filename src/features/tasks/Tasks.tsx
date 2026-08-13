@@ -4,8 +4,8 @@ import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
 import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Staff } from '../../shared/types'
-import { fetchBoardTasks, moveTask } from './api'
-import type { Task, TaskStatus } from './types'
+import { fetchBoardTasks, fetchTags, moveTask } from './api'
+import type { Tag, Task, TaskStatus } from './types'
 import { TaskBoard, bottomPosition } from './TaskBoard'
 import { TaskDetailModal } from './TaskDetailModal'
 import { TaskFormModal } from './TaskFormModal'
@@ -15,6 +15,7 @@ export default function TasksPage() {
   const { departmentOptions } = useLookups()
   const [tasks,    setTasks]    = useState<Task[]>([])
   const [allStaff, setAllStaff] = useState<Staff[]>([])
+  const [allTags,  setAllTags]  = useState<Tag[]>([])
   const [firstLoad, setFirstLoad] = useState(true)
   const [error,    setError]    = useState('')
 
@@ -23,6 +24,7 @@ export default function TasksPage() {
   const [myTasksOnly,    setMyTasksOnly]    = useState(false)
   const [filterDept,     setFilterDept]     = useState('')
   const [filterAssignee, setFilterAssignee] = useState('')
+  const [filterTag,      setFilterTag]      = useState('')
 
   // Modals
   const [formOpen, setFormOpen] = useState(false)
@@ -39,12 +41,14 @@ export default function TasksPage() {
    */
   const load = useCallback(async () => {
     try {
-      const [t, s] = await Promise.all([
+      const [t, s, g] = await Promise.all([
         fetchBoardTasks(),
         supabase.from('staff').select('id,name,avatar,rank,department').order('name'),
+        fetchTags(),
       ])
       setTasks(t)
       setAllStaff((s.data ?? []) as Staff[])
+      setAllTags(g)
       setError('')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load tasks.')
@@ -90,6 +94,7 @@ export default function TasksPage() {
     if (myTasksOnly && t.assigned_to !== currentStaffId) return false
     if (filterDept && t.department !== filterDept) return false
     if (filterAssignee && t.assigned_to !== filterAssignee) return false
+    if (filterTag && !t.tags.some(tg => tg.id === filterTag)) return false
     if (search && !t.title.toLowerCase().includes(search.toLowerCase())) return false
     return true
   })
@@ -126,6 +131,7 @@ export default function TasksPage() {
         <TaskDetailModal
           task={detailTask}
           allStaff={allStaff}
+          allTags={allTags}
           canManage={canManage}
           currentStaffId={currentStaffId}
           onClose={() => setDetailId(null)}
@@ -195,6 +201,12 @@ export default function TasksPage() {
             <option value="">All assignees</option>
             {allStaff.map(s => (
               <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <select className={selectCls} value={filterTag} onChange={e => setFilterTag(e.target.value)}>
+            <option value="">All tags</option>
+            {allTags.map(tag => (
+              <option key={tag.id} value={tag.id}>{tag.name}</option>
             ))}
           </select>
         </div>
