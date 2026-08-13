@@ -55,8 +55,8 @@ export interface Task {
   completed_at: string | null
   created_at: string
   updated_at: string
-  assignee?: StaffLite
-  creator?: StaffLite
+  assignee?: StaffLite | null
+  creator?: StaffLite | null
   project?: { id: string; name: string; color: string } | null
   tags: Tag[]
   /** 由 board 查询聚合,不是资料表栏位。 */
@@ -78,7 +78,7 @@ export interface Project {
   created_by: string | null
   created_at: string
   updated_at: string
-  owner?: StaffLite
+  owner?: StaffLite | null
   /** 来自 project_progress view。 */
   total_tasks: number
   done_tasks: number

@@ -223,7 +223,11 @@ export async function uploadAttachment(
     }).select(),
   )
   // 纪录写不进去就把已上传的档案收掉,不要留孤儿。
-  if (!res.ok) await supabase.storage.from('task-attachments').remove([storagePath])
+  if (!res.ok) {
+    const { error: rmErr } = await supabase.storage.from('task-attachments').remove([storagePath])
+    // remove() 本身失败的话孤儿档案还是留着——记下来,不要连这个失败都吞掉。
+    if (rmErr) console.error(`[tasks] orphaned attachment not removed: ${storagePath}`, rmErr.message)
+  }
   return res
 }
 
