@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
+import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Staff } from '../../shared/types'
 import { fetchBoardTasks, moveTask } from './api'
 import type { Task, TaskStatus } from './types'
@@ -14,7 +15,7 @@ export default function TasksPage() {
   const { departmentOptions } = useLookups()
   const [tasks,    setTasks]    = useState<Task[]>([])
   const [allStaff, setAllStaff] = useState<Staff[]>([])
-  const [loading,  setLoading]  = useState(true)
+  const [firstLoad, setFirstLoad] = useState(true)
   const [error,    setError]    = useState('')
 
   // Filters
@@ -31,8 +32,12 @@ export default function TasksPage() {
   const canManage      = currentStaff?.rank === 'supervisor' || currentStaff?.rank === 'manager'
   const currentStaffId = currentStaff?.id ?? ''
 
+  /**
+   * 重新拉板。刻意不切任何「读取中」旗标 —— 全屏 loader 只属于第一次进板。
+   * 这个函式同时是 onSaved / onChanged / onPosted 的回呼,一旦它让整棵树卸载,
+   * 开着的详情弹窗会跟着重挂,使用者刚打好、还没存档的内容就这样消失。
+   */
   const load = useCallback(async () => {
-    setLoading(true)
     try {
       const [t, s] = await Promise.all([
         fetchBoardTasks(),
@@ -44,16 +49,22 @@ export default function TasksPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load tasks.')
     } finally {
-      setLoading(false)
+      setFirstLoad(false)
     }
   }, [])
 
   useEffect(() => { load() }, [load])
 
-  /** 乐观换栏。RLS 静默挡掉的写入没有 error 也没有 rows,所以一定要看 WriteOutcome。 */
-  async function handleMove(taskId: string, status: TaskStatus, position: number) {
+  /**
+   * 乐观换栏。RLS 静默挡掉的写入没有 error 也没有 rows,所以一定要看 WriteOutcome。
+   * 结果原样回传,不自己决定错误显示在哪 —— 详情弹窗是 fixed inset-0 z-50,
+   * 整个盖住页面横幅,失败讯息得进它自己的错误位才看得到。
+   */
+  async function moveOptimistic(
+    taskId: string, status: TaskStatus, position: number,
+  ): Promise<WriteOutcome> {
     const before = tasks.find(t => t.id === taskId)
-    if (!before) return
+    if (!before) return { ok: false, reason: 'it is no longer on the board.' }
     setTasks(prev => prev.map(t => (t.id === taskId ? { ...t, status, position } : t)))
 
     const res = await moveTask(taskId, status, position)
@@ -61,8 +72,14 @@ export default function TasksPage() {
       setTasks(prev => prev.map(t => (
         t.id === taskId ? { ...t, status: before.status, position: before.position } : t
       )))
-      setError(`Could not move the task — ${res.reason}`)
     }
+    return res
+  }
+
+  /** 板上的拖放与 mobile 换栏钮 —— 回报到页面横幅。成功要把上一次的失败收掉。 */
+  async function handleBoardMove(taskId: string, status: TaskStatus, position: number) {
+    const res = await moveOptimistic(taskId, status, position)
+    setError(res.ok ? '' : `Could not move the task — ${res.reason}`)
   }
 
   const filteredTasks = tasks.filter(t => {
@@ -76,7 +93,8 @@ export default function TasksPage() {
   // 详情弹窗读同一份 tasks,重新拉板时弹窗内容跟着更新,不必另外同步一份副本。
   const detailTask = tasks.find(t => t.id === detailId) ?? null
 
-  if (loading) {
+  // 全屏 loader 只挡第一次进板;背景重拉一定要保留整棵树。
+  if (firstLoad) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F5F0E8]">
         <p className="text-[#8B7355] animate-pulse">Loading tasks...</p>
@@ -108,7 +126,7 @@ export default function TasksPage() {
           currentStaffId={currentStaffId}
           onClose={() => setDetailId(null)}
           onChanged={load}
-          onStatusChange={status => handleMove(detailTask.id, status, bottomPosition(tasks, status))}
+          onStatusChange={status => moveOptimistic(detailTask.id, status, bottomPosition(tasks, status))}
         />
       )}
 
@@ -183,7 +201,7 @@ export default function TasksPage() {
           currentStaffId={currentStaffId}
           onCardClick={task => setDetailId(task.id)}
           onAddClick={() => { setEditTask(null); setFormOpen(true) }}
-          onMove={handleMove}
+          onMove={handleBoardMove}
         />
 
       </div>

@@ -26,6 +26,7 @@ export function TaskCard({
   onClick,
   showMobileActions,
   onStatusChange,
+  testIdPrefix = '',
 }: {
   task: Task
   draggable: boolean
@@ -35,6 +36,8 @@ export function TaskCard({
   onClick: () => void
   showMobileActions?: boolean
   onStatusChange?: (status: TaskStatus) => void
+  /** 同一张卡在桌面栏与 mobile 栏各挂一次,靠这个前缀区分 —— 详见 KanbanColumn。 */
+  testIdPrefix?: string
 }) {
   const { deptName } = useLookups()
   const pCfg = PRIORITY_CFG[task.priority]
@@ -43,7 +46,7 @@ export function TaskCard({
 
   return (
     <div
-      data-testid={`task-card-${task.id}`}
+      data-testid={`${testIdPrefix}task-card-${task.id}`}
       draggable={isDraggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}

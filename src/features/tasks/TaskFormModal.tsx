@@ -58,7 +58,9 @@ export function TaskFormModal({
         )
 
     setSaving(false)
-    if (!res.ok) { setError(res.reason); return }
+    // res.reason 是没有主词的句子片段(「it was not saved — …」),
+    // 一定要接在自己的句首后面,别裸着丢给使用者。
+    if (!res.ok) { setError(`Could not save the task — ${res.reason}`); return }
     onSaved()
     onClose()
   }

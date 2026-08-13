@@ -19,12 +19,19 @@ export function bottomPosition(tasks: Task[], status: TaskStatus): number {
   return computeDropPosition(positions.length ? Math.max(...positions) : undefined, undefined)
 }
 
+/**
+ * 一栏。`variant` 决定 data-testid 的命名空间:桌面三栏与 mobile 单栏会同时挂在
+ * DOM 上(靠 CSS 二选一显示),不套 CSS 的环境(jsdom)两边都看得到。只有桌面版
+ * 那一份带真正的拖放 handler,所以只有它能用没有前缀的 `column-*` / `task-card-*`;
+ * mobile 那份一律加 `mobile-` 前缀,免得测试抓到空的 no-op handler 还查不出原因。
+ */
 function KanbanColumn({
-  colKey, label, tasks, canManage, currentStaffId,
+  variant, colKey, label, tasks, canManage, currentStaffId,
   isDragOver, onDragOver, onDragLeave, onDrop,
   draggingId, onDragStart, onDragEnd, onCardClick, onAddClick,
   showMobileActions, onCardStatusChange,
 }: {
+  variant: 'desktop' | 'mobile'
   colKey: TaskStatus
   label: string
   tasks: Task[]
@@ -43,10 +50,11 @@ function KanbanColumn({
   onCardStatusChange?: (taskId: string, status: TaskStatus) => void
 }) {
   const s = COL_STYLE[colKey]
+  const idPrefix = variant === 'mobile' ? 'mobile-' : ''
 
   return (
     <div
-      data-testid={`column-${colKey}`}
+      data-testid={`${idPrefix}column-${colKey}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -88,6 +96,7 @@ function KanbanColumn({
             <TaskCard
               key={task.id}
               task={task}
+              testIdPrefix={idPrefix}
               draggable={canManage || task.assigned_to === currentStaffId}
               isDragging={draggingId === task.id}
               onDragStart={() => onDragStart(task.id)}
@@ -172,6 +181,7 @@ export function TaskBoard({
         {TASK_COLUMNS.map(col => (
           <KanbanColumn
             key={col.key}
+            variant="desktop"
             colKey={col.key}
             label={col.label}
             tasks={byCol[col.key]}
@@ -193,6 +203,7 @@ export function TaskBoard({
       {/* Mobile: single active column */}
       <div className="sm:hidden">
         <KanbanColumn
+          variant="mobile"
           colKey={mobileTab}
           label={TASK_COLUMNS.find(c => c.key === mobileTab)!.label}
           tasks={byCol[mobileTab]}

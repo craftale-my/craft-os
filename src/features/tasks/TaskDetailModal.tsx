@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Avatar } from '../../shared/components/Avatar'
 import { useLookups } from '../../shared/lib/lookups'
 import { isOverdue } from '../../shared/lib/tasks'
+import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Staff } from '../../shared/types'
 import {
   fetchAttachments, uploadAttachment, deleteAttachment, updateTask, deleteTask,
@@ -25,7 +26,8 @@ export function TaskDetailModal({
   onClose: () => void
   /** 任务本体有变动 —— 请页面层重新拉板。 */
   onChanged: () => void
-  onStatusChange: (status: TaskStatus) => void
+  /** 换栏交给页面层写入,但结果要回传 —— 失败得显示在弹窗里,见 handleStatusChange。 */
+  onStatusChange: (status: TaskStatus) => Promise<WriteOutcome>
 }) {
   const { deptName } = useLookups()
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -88,6 +90,15 @@ export function TaskDetailModal({
     setError('')
     setEditing(false)
     onChanged()
+  }
+
+  /**
+   * 换栏失败必须说在这里。弹窗是 fixed inset-0 z-50,页面横幅整个被盖在底下,
+   * 使用者只会看到状态标签弹回去,却完全没有理由。
+   */
+  async function handleStatusChange(status: TaskStatus) {
+    const res = await onStatusChange(status)
+    setError(res.ok ? '' : `Could not move the task — ${res.reason}`)
   }
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -319,7 +330,7 @@ export function TaskDetailModal({
                 {TASK_COLUMNS.map(col => (
                   <button
                     key={col.key}
-                    onClick={() => task.status !== col.key && onStatusChange(col.key)}
+                    onClick={() => task.status !== col.key && handleStatusChange(col.key)}
                     disabled={task.status === col.key}
                     className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
                       task.status === col.key
