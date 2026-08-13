@@ -820,9 +820,17 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
   const staffKey = staffIds.join(',')
 
   async function load() {
+    // The three result sets are only meaningful together: breaks join to
+    // attendance rows by id, shifts join by date. Publishing them one-by-one
+    // means a later failure leaves fresh attendance beside the PREVIOUS
+    // selection's breaks/shifts, so the Shift column and Missed clock-in count
+    // silently read as empty instead of as an error. Clear on every exit that
+    // isn't a full success; publish all three together at the end.
+    const clear = () => { setAttendance([]); setBreaks([]); setShifts([]); setTruncated(false) }
+
     setTruncated(false)
-    if (staffIds.length === 0) { setAttendance([]); setBreaks([]); setShifts([]); setError(null); return }
-    if (from > to) { setError('Start date must be on or before the end date.'); return }
+    if (staffIds.length === 0) { clear(); setError(null); return }
+    if (from > to) { clear(); setError('Start date must be on or before the end date.'); return }
     setLoading(true)
     setError(null)
 
@@ -833,9 +841,8 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       .gte('date', from)
       .lte('date', to)
       .order('date')
-    if (attErr) { setError(`Could not load attendance — ${attErr.message}`); setLoading(false); return }
+    if (attErr) { clear(); setError(`Could not load attendance — ${attErr.message}`); setLoading(false); return }
     const attRows = (attData as Attendance[] | null) ?? []
-    setAttendance(attRows)
     // Every one of the three queries is capped at the same server-side row
     // limit. The breaks query blows it first (up to 2 rows per attendance day),
     // and a silently truncated breaks set inflates Worked minutes and hides
@@ -845,17 +852,15 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
     // Breaks hang off the attendance rows we just read (same fetch shape as the
     // daily roster).
     const attIds = attRows.map(r => r.id)
-    if (attIds.length === 0) {
-      setBreaks([])
-    } else {
+    let brkRows: AttendanceBreak[] = []
+    if (attIds.length > 0) {
       const { data: brkData, error: brkErr } = await supabase
         .from('attendance_breaks')
         .select('*')
         .in('attendance_id', attIds)
-      if (brkErr) { setError(`Could not load breaks — ${brkErr.message}`); setLoading(false); return }
-      const brkRows = (brkData as AttendanceBreak[] | null) ?? []
+      if (brkErr) { clear(); setError(`Could not load breaks — ${brkErr.message}`); setLoading(false); return }
+      brkRows = (brkData as AttendanceBreak[] | null) ?? []
       if (brkRows.length >= REPORT_ROW_LIMIT) hitLimit = true
-      setBreaks(brkRows)
     }
 
     // Shifts drive the "missed clock-in" count and the detail table's shift column.
@@ -865,9 +870,12 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       .in('staff_id', staffIds)
       .gte('date', from)
       .lte('date', to)
-    if (shiftErr) { setError(`Could not load shifts — ${shiftErr.message}`); setLoading(false); return }
+    if (shiftErr) { clear(); setError(`Could not load shifts — ${shiftErr.message}`); setLoading(false); return }
     const shiftRows = (shiftData as unknown as ReportShift[] | null) ?? []
     if (shiftRows.length >= REPORT_ROW_LIMIT) hitLimit = true
+
+    setAttendance(attRows)
+    setBreaks(brkRows)
     setShifts(shiftRows)
     setTruncated(hitLimit)
     setLoading(false)
