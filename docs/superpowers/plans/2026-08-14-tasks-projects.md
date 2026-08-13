@@ -1259,7 +1259,7 @@ Create `src/features/tasks/Tasks.drag-failure.test.tsx`:
 // 纯排序数学在 shared/lib/tasks.test.ts;这里测的是 WIRING:
 // moveTask 回 { ok: false } 时卡片要回到原栏,并显示错误。
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 
 const moveTask = vi.fn()
 
@@ -1309,8 +1309,10 @@ describe('board drag persistence', () => {
     render(<TasksPage />)
     await screen.findByText('Refill the beans')
 
-    // 直接呼叫暴露给板的搬移处理器,绕开 jsdom 不支援的 HTML5 拖放。
-    await window.__taskBoardMove!('task-1', 'done', 2048)
+    // React 的 onDragStart / onDrop 是委派事件,fireEvent 触发得到 ——
+    // 不需要真的 DataTransfer,因为板子用 draggingId state 而非 dataTransfer 传递。
+    fireEvent.dragStart(screen.getByTestId('task-card-task-1'))
+    fireEvent.drop(screen.getByTestId('column-done'))
 
     await waitFor(() => {
       expect(screen.getByTestId('column-todo').textContent).toMatch(/Refill the beans/)
@@ -1325,7 +1327,8 @@ describe('board drag persistence', () => {
     render(<TasksPage />)
     await screen.findByText('Refill the beans')
 
-    await window.__taskBoardMove!('task-1', 'done', 2048)
+    fireEvent.dragStart(screen.getByTestId('task-card-task-1'))
+    fireEvent.drop(screen.getByTestId('column-done'))
 
     await waitFor(() => {
       expect(screen.getByTestId('column-done').textContent).toMatch(/Refill the beans/)
@@ -1334,18 +1337,15 @@ describe('board drag persistence', () => {
 })
 ```
 
-测试透过 `window.__taskBoardMove` 呼叫搬移处理器,因为 jsdom 不实作 HTML5 拖放
-事件。在 `Tasks.tsx` 里加一行仅测试环境用的挂载:
+测试用 `fireEvent` 直接触发 React 的拖放 props,**production 代码不留任何测试后门**。
+需要的只是两个 `data-testid`:
 
-```tsx
-useEffect(() => {
-  if (import.meta.env.MODE === 'test') {
-    (window as unknown as { __taskBoardMove?: typeof handleMove }).__taskBoardMove = handleMove
-  }
-})
-```
+- `TaskBoard.tsx` 每一栏外层加 ``data-testid={`column-${colKey}`}``
+- `TaskCard.tsx` 卡片根节点加 ``data-testid={`task-card-${task.id}`}``
 
-并在 `TaskBoard.tsx` 的每一栏外层加 `data-testid={`column-${colKey}`}`。
+jsdom 不实作原生拖放行为,但 React 的 `onDragStart` / `onDrop` 是委派到 root 的合成
+事件,`fireEvent.dragStart` / `fireEvent.drop` 派发的真实 DOM 事件会被接到。板子用
+`draggingId` state 传递被拖的卡(不是 `dataTransfer`),所以不需要伪造 `DataTransfer`。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -1825,8 +1825,10 @@ export function useBoardTasks(projectId?: string): {
 - [ ] **Step 5: 型别检查与测试**
 
 Run: `npx tsc --noEmit -p tsconfig.app.json && npx vitest run`
-Expected: 全绿 —— 包含 Task 5 那两个案例(`handleMove` 签章改了,测试呼叫要跟着
-改成 `window.__taskBoardMove!('task-1', 'done', null)`)。
+Expected: 全绿 —— 包含 Task 5 那两个案例。`handleMove` 签章改了,但测试是
+`fireEvent.drop(screen.getByTestId('column-done'))`,落在栏位本体等同「放到栏尾」
+(`beforeTaskId = null`),不需要改测试;若失败,检查栏位的 `onDrop` 是否被新的
+drop zone 挡掉 —— 栏位本体必须仍能接住 drop。
 
 - [ ] **Step 6: Commit**
 
