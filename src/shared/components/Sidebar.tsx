@@ -10,6 +10,7 @@ import { useAuth } from '../../features/auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
 import { visibleNav, activeEntry, isGroup } from '../lib/nav'
 import type { NavLeaf, NavGroup } from '../lib/nav'
+import { AddToHomeScreenLogo } from './AddToHomeScreen'
 import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
 
@@ -185,10 +186,7 @@ export function Sidebar() {
         <button onClick={() => setMobileOpen(true)} className="text-[#D4C4B0] hover:text-[#F5F0E8] p-1">
           <Menu size={22} />
         </button>
-        <span className="flex items-center gap-2">
-          <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-7 h-7 rounded-full object-cover" />
-          <span className="font-display text-lg font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
-        </span>
+        <AddToHomeScreenLogo />
         <div className="w-7" />
       </header>
 
