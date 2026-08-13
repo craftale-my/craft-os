@@ -72,6 +72,10 @@ export default function TasksPage() {
       setTasks(prev => prev.map(t => (
         t.id === taskId ? { ...t, status: before.status, position: before.position } : t
       )))
+    } else {
+      // 详情弹窗的换栏钮直接呼叫这里,不经过 handleBoardMove —— 若不在这收掉,
+      // 之前拖放失败留下的页面横幅会一直挂著,即使这次换栏明明成功了。
+      setError('')
     }
     return res
   }

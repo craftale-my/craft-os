@@ -186,6 +186,22 @@ describe('板上的 data-testid 必须唯一,而且指向真的会动的那一�
   })
 })
 
+describe('写入没落地时卡片要回到原栏', () => {
+  it('puts the card back under To Do and out of Done when the write is silently rejected by RLS', async () => {
+    // 这是 RLS 挡掉时的真实形状:没有 error,也没有 rows(见 db-write.ts writeOutcome)。
+    h.moveTask.mockResolvedValue(BLOCKED)
+    const card = await renderBoard()
+
+    fireEvent.dragStart(card)
+    fireEvent.drop(screen.getByTestId('column-done'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('column-todo').textContent).toMatch(/Restock the beans/)
+    })
+    expect(screen.getByTestId('column-done').textContent).not.toMatch(/Restock the beans/)
+  })
+})
+
 describe('换栏失败要说在使用者看得到的地方', () => {
   it('clears the board banner once a later drag succeeds', async () => {
     h.moveTask.mockResolvedValueOnce(BLOCKED)
@@ -197,6 +213,27 @@ describe('换栏失败要说在使用者看得到的地方', () => {
 
     fireEvent.dragStart(screen.getByTestId('task-card-task-1'))
     fireEvent.drop(screen.getByTestId('column-in_progress'))
+
+    await waitFor(() => expect(screen.queryByText(/Could not move the task/i)).toBeNull())
+  })
+
+  it('clears a stale board banner once a later move through the detail modal succeeds', async () => {
+    // 先让一次拖放失败,留下页面横幅 —— 这条路走 handleBoardMove。
+    h.moveTask.mockResolvedValueOnce(BLOCKED)
+    const card = await renderBoard()
+
+    fireEvent.dragStart(card)
+    fireEvent.drop(screen.getByTestId('column-done'))
+    expect(await screen.findByText(/Could not move the task/i)).toBeTruthy()
+
+    // 再从详情弹窗成功换栏 —— 这条路直接呼叫 moveOptimistic,不经过
+    // handleBoardMove,横幅原本不会被这条路径收掉。
+    // 注意:失败那趟的乐观更新 + 回滚,让这张卡先搬去 done 栏又搬回 todo
+    // 栏 —— 两栏是不同的 KanbanColumn 实例,卡片的 DOM 节点被整个换掉,
+    // 所以这里要重新查一次,不能沿用拖放前那个已经脱离文件的 `card`。
+    h.moveTask.mockResolvedValueOnce(OK)
+    fireEvent.click(screen.getByTestId('task-card-task-1'))
+    fireEvent.click(await screen.findByRole('button', { name: 'In Progress' }))
 
     await waitFor(() => expect(screen.queryByText(/Could not move the task/i)).toBeNull())
   })
