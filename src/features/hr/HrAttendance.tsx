@@ -1,14 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, LeaveType } from '../../shared/types'
+import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ScheduledShift, ShiftType, LeaveType } from '../../shared/types'
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
 import { writeOutcome, type WriteOutcome } from '../../shared/lib/db-write'
+import { buildStaffReport } from '../../shared/lib/attendance-report'
+import type { DailyDetail } from '../../shared/lib/attendance-report'
 import { Avatar } from '../../shared/components/Avatar'
-import { Camera, MapPin, CheckCircle, X, AlertTriangle, RefreshCw, ZoomIn, Coffee } from 'lucide-react'
+import { Camera, MapPin, CheckCircle, X, AlertTriangle, RefreshCw, ZoomIn, Coffee, ChevronDown, ChevronRight } from 'lucide-react'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -667,6 +669,451 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
   )
 }
 
+// ─── Manager: date-range report ───────────────────────────────────────────────
+
+/** A scheduled_shifts row with its shift_type embedded — the shape
+ *  buildStaffReport reads shift name/start/end from. */
+type ReportShift = ScheduledShift & {
+  shift_type?: Pick<ShiftType, 'name' | 'start_time' | 'end_time'> | null
+}
+
+type RangePreset = 'last7' | 'last30' | 'this_month' | 'last_month' | 'custom'
+
+const RANGE_PRESETS: { key: Exclude<RangePreset, 'custom'>; label: string }[] = [
+  { key: 'last7',      label: 'Last 7 days' },
+  { key: 'last30',     label: 'Last 30 days' },
+  { key: 'this_month', label: 'This month' },
+  { key: 'last_month', label: 'Last month' },
+]
+
+/** PostgREST's default page size. Hitting it means the range was too wide and
+ *  the tables below are showing a truncated slice. */
+const REPORT_ROW_LIMIT = 1000
+
+/** `dateStr` shifted by whole calendar days — prevDateStr, generalised. */
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  return localDateStr(d)
+}
+
+/** First and last day of the month `offset` months from the current one.
+ *  Day 0 of the next month is the last day of this one — same trick as
+ *  daysInMonth above. */
+function monthBounds(offset: number): { first: string; last: string } {
+  const now = new Date()
+  return {
+    first: localDateStr(new Date(now.getFullYear(), now.getMonth() + offset, 1)),
+    last: localDateStr(new Date(now.getFullYear(), now.getMonth() + offset + 1, 0)),
+  }
+}
+
+function presetRange(preset: Exclude<RangePreset, 'custom'>): { from: string; to: string } {
+  const today = todayStr()
+  if (preset === 'last7') return { from: addDays(today, -6), to: today }
+  if (preset === 'last30') return { from: addDays(today, -29), to: today }
+  // "This month" stops at today — days that haven't happened yet would only pad
+  // the detail table with empty rows.
+  if (preset === 'this_month') return { from: monthBounds(0).first, to: today }
+  const prev = monthBounds(-1)
+  return { from: prev.first, to: prev.last }
+}
+
+/** 465 → "7h 45m", 45 → "45m", null (a missing clock) → "—". */
+function fmtWorked(minutes: number | null): string {
+  if (minutes == null) return '—'
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+function weekdayShort(date: string): string {
+  return new Date(`${date}T00:00:00`).toLocaleDateString('en-MY', { weekday: 'short' })
+}
+
+/** "Morning 9:30am–6:00pm", the leave label on a leave-marker day, else "—". */
+function shiftLabel(d: DailyDetail): string {
+  if (d.leaveType) return SCHEDULE_LEAVE_LABELS[d.leaveType as LeaveType] ?? d.leaveType
+  if (!d.shiftName) return '—'
+  if (!d.shiftStart || !d.shiftEnd) return d.shiftName
+  return `${d.shiftName} ${fmtTime2(d.shiftStart)}–${fmtTime2(d.shiftEnd)}`
+}
+
+type ReportBreak = DailyDetail['breaks'][number]
+
+const breakAt = (d: DailyDetail, n: 1 | 2): ReportBreak | null => d.breaks.find(b => b.number === n) ?? null
+
+/** "12:05pm–12:38pm (33m)" — the overtime suffix is added separately so the UI
+ *  can paint it red while the CSV keeps it inline. */
+function fmtBreakWindow(b: ReportBreak | null): string {
+  if (!b?.start) return '—'
+  if (!b.end) return `${fmtTime(b.start)}–…`
+  return `${fmtTime(b.start)}–${fmtTime(b.end)}${b.durationMinutes != null ? ` (${b.durationMinutes}m)` : ''}`
+}
+
+function breakCellText(b: ReportBreak | null): string {
+  const base = fmtBreakWindow(b)
+  if (base === '—' || !b?.isOvertime) return base
+  return `${base} +${b.overtimeMinutes}m`
+}
+
+/** Status as plain text for the CSV — the missed-clock-in chip becomes a suffix. */
+function statusText(d: DailyDetail): string {
+  const base = d.status ? ATTENDANCE_STATUS_LABELS[d.status] : 'No record'
+  return d.missedClockIn ? `${base} · Missed` : base
+}
+
+const SUMMARY_HEADERS = ['Staff', 'Present', 'Late', 'Late mins', 'Absent', 'Leave', 'Half day', 'Missed clock-in', 'Break OT']
+const DETAIL_HEADERS = ['Staff', 'Date', 'Day', 'Shift', 'Clock In', 'Clock Out', 'Worked', 'Break 1', 'Break 2', 'Late', 'Status', 'GPS']
+
+/** Summary counter cell: zero is muted, non-zero is highlighted in the column's
+ *  warning colour (red for absent/missed, amber for late/break overtime). */
+function CountCell({ value, warnColor }: { value: number; warnColor?: string }) {
+  const hot = value > 0 && !!warnColor
+  return (
+    <td
+      className={`px-3 py-2 text-center tabular-nums ${
+        value === 0 ? 'text-brown-faint' : hot ? 'font-semibold' : 'text-brown-dark'
+      }`}
+      style={hot ? { color: warnColor } : undefined}
+    >
+      {value}
+    </td>
+  )
+}
+
+function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
+  const [preset, setPreset] = useState<RangePreset>('last30')
+  const [from, setFrom] = useState(() => presetRange('last30').from)
+  const [to, setTo] = useState(() => presetRange('last30').to)
+  const [filterStaff, setFilterStaff] = useState('')
+  const [filterBranch, setFilterBranch] = useState('')
+  const [filterDept, setFilterDept] = useState('')
+  const [attendance, setAttendance] = useState<Attendance[]>([])
+  const [breaks, setBreaks] = useState<AttendanceBreak[]>([])
+  const [shifts, setShifts] = useState<ReportShift[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [truncated, setTruncated] = useState(false)
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  // Branch/department narrow the pool the staff dropdown offers; the dropdown
+  // then narrows the report itself to one person.
+  const scopeStaff = allStaff.filter(s => {
+    if (filterBranch && s.branch !== filterBranch) return false
+    if (filterDept && s.department !== filterDept) return false
+    return true
+  })
+  const visibleStaff = filterStaff ? scopeStaff.filter(s => s.id === filterStaff) : scopeStaff
+  const staffIds = visibleStaff.map(s => s.id)
+  // Effect key — the id array itself is a fresh object on every render.
+  const staffKey = staffIds.join(',')
+
+  async function load() {
+    setTruncated(false)
+    if (staffIds.length === 0) { setAttendance([]); setBreaks([]); setShifts([]); setError(null); return }
+    if (from > to) { setError('Start date must be on or before the end date.'); return }
+    setLoading(true)
+    setError(null)
+
+    const { data: attData, error: attErr } = await supabase
+      .from('attendance')
+      .select('*')
+      .in('staff_id', staffIds)
+      .gte('date', from)
+      .lte('date', to)
+      .order('date')
+    if (attErr) { setError(`Could not load attendance — ${attErr.message}`); setLoading(false); return }
+    const attRows = (attData as Attendance[] | null) ?? []
+    setAttendance(attRows)
+    setTruncated(attRows.length >= REPORT_ROW_LIMIT)
+
+    // Breaks hang off the attendance rows we just read (same fetch shape as the
+    // daily roster).
+    const attIds = attRows.map(r => r.id)
+    if (attIds.length === 0) {
+      setBreaks([])
+    } else {
+      const { data: brkData, error: brkErr } = await supabase
+        .from('attendance_breaks')
+        .select('*')
+        .in('attendance_id', attIds)
+      if (brkErr) { setError(`Could not load breaks — ${brkErr.message}`); setLoading(false); return }
+      setBreaks((brkData as AttendanceBreak[] | null) ?? [])
+    }
+
+    // Shifts drive the "missed clock-in" count and the detail table's shift column.
+    const { data: shiftData, error: shiftErr } = await supabase
+      .from('scheduled_shifts')
+      .select('*, shift_type:shift_types(name,start_time,end_time)')
+      .in('staff_id', staffIds)
+      .gte('date', from)
+      .lte('date', to)
+    if (shiftErr) { setError(`Could not load shifts — ${shiftErr.message}`); setLoading(false); return }
+    setShifts((shiftData as unknown as ReportShift[] | null) ?? [])
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [from, to, staffKey])
+  // Picking one person makes their detail the whole point — open it immediately.
+  useEffect(() => { setExpanded(filterStaff || null) }, [filterStaff])
+
+  function applyPreset(p: Exclude<RangePreset, 'custom'>) {
+    const r = presetRange(p)
+    setPreset(p)
+    setFrom(r.from)
+    setTo(r.to)
+  }
+
+  const summaries = buildStaffReport(staffIds, attendance, breaks, shifts)
+  const staffName = (id: string) => allStaff.find(s => s.id === id)?.name ?? id
+
+  function exportSummaryCSV() {
+    const rows = summaries.map(s => [
+      staffName(s.staffId), s.present, s.late, s.lateMinutes,
+      s.absent, s.onLeave, s.halfDay, s.missedClockIn, s.breakOvertimes,
+    ])
+    downloadCSV(`attendance_summary_${from}_${to}.csv`, toCSV(SUMMARY_HEADERS, rows))
+  }
+
+  function exportDetailCSV() {
+    const rows = summaries.flatMap(s => s.days.map(d => [
+      staffName(s.staffId),
+      d.date,
+      weekdayShort(d.date),
+      shiftLabel(d),
+      d.clockIn ? fmtTime(d.clockIn) : '—',
+      d.clockOut ? fmtTime(d.clockOut) : '—',
+      fmtWorked(d.workedMinutes),
+      breakCellText(breakAt(d, 1)),
+      breakCellText(breakAt(d, 2)),
+      d.lateMinutes > 0 ? `+${d.lateMinutes}m` : '',
+      statusText(d),
+      d.distanceM != null ? `${d.distanceM}m` : '',
+    ]))
+    downloadCSV(`attendance_detail_${from}_${to}.csv`, toCSV(DETAIL_HEADERS, rows))
+  }
+
+  const selectCls = 'px-3 py-1.5 rounded-lg border border-[#D4C5B0] bg-white text-xs text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+
+  return (
+    <div className="space-y-4">
+      {/* Range presets */}
+      <div className="flex flex-wrap items-center gap-2">
+        {RANGE_PRESETS.map(p => (
+          <button
+            key={p.key}
+            onClick={() => applyPreset(p.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${
+              preset === p.key
+                ? 'bg-[#C4813A] text-white border-[#C4813A]'
+                : 'bg-white text-brown-muted border-[#D4C5B0] hover:bg-[#F5EDE0]'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+        <input
+          type="date"
+          value={from}
+          onChange={e => { setFrom(e.target.value); setPreset('custom') }}
+          className={selectCls}
+        />
+        <span className="text-xs text-brown-faint">to</span>
+        <input
+          type="date"
+          value={to}
+          onChange={e => { setTo(e.target.value); setPreset('custom') }}
+          className={selectCls}
+        />
+      </div>
+
+      {/* Staff / branch / department + exports */}
+      <div className="flex flex-wrap items-center gap-2">
+        <select className={selectCls} value={filterStaff} onChange={e => setFilterStaff(e.target.value)}>
+          <option value="">All staff</option>
+          {scopeStaff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <select
+          className={selectCls}
+          value={filterBranch}
+          onChange={e => { setFilterBranch(e.target.value); setFilterStaff('') }}
+        >
+          <option value="">All branches</option>
+          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <select
+          className={selectCls}
+          value={filterDept}
+          onChange={e => { setFilterDept(e.target.value); setFilterStaff('') }}
+        >
+          <option value="">All depts</option>
+          {Object.entries(DEPT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <button
+          onClick={exportSummaryCSV}
+          className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+        >
+          Export Summary CSV
+        </button>
+        <button
+          onClick={exportDetailCSV}
+          className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+        >
+          Export Detail CSV
+        </button>
+        {loading && <span className="text-xs text-brown-faint">Loading…</span>}
+      </div>
+
+      {error && (
+        <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
+      )}
+
+      {truncated && (
+        <p className="text-xs text-[#9E4A30] bg-[#FDF3F0] rounded-lg px-3 py-2">
+          Showing the first {REPORT_ROW_LIMIT} attendance records — narrow the date range or pick one staff member for a complete report.
+        </p>
+      )}
+
+      {staffIds.length === 0 ? (
+        <div className="bg-white rounded-xl border border-[#E8DDD0] px-4 py-8 text-center">
+          <p className="text-sm text-brown-muted font-medium">No staff match these filters.</p>
+          <p className="text-xs text-brown-faint mt-1">Try clearing the branch or department filter.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-x-auto">
+          <table className="text-xs min-w-max w-full">
+            <thead>
+              <tr className="border-b border-[#EDE5D8]">
+                <th className="text-left px-3 py-2 font-semibold text-brown-faint">Staff</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Present</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Late</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Late mins</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Absent</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Leave</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Half day</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Missed clock-in</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Break OT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summaries.map(s => {
+                const open = expanded === s.staffId
+                return (
+                  <Fragment key={s.staffId}>
+                    <tr
+                      onClick={() => setExpanded(open ? null : s.staffId)}
+                      className="border-t border-[#F0E8DC] cursor-pointer hover:bg-[#FBF7F0] transition-colors"
+                    >
+                      <td className="px-3 py-2 font-medium text-brown-dark whitespace-nowrap">
+                        <span className="flex items-center gap-1.5">
+                          {open
+                            ? <ChevronDown size={13} className="text-brown-faint" />
+                            : <ChevronRight size={13} className="text-brown-faint" />}
+                          {staffName(s.staffId)}
+                        </span>
+                      </td>
+                      <CountCell value={s.present} />
+                      <CountCell value={s.late} warnColor="#C4813A" />
+                      <CountCell value={s.lateMinutes} warnColor="#C4813A" />
+                      <CountCell value={s.absent} warnColor="#9E4A30" />
+                      <CountCell value={s.onLeave} />
+                      <CountCell value={s.halfDay} />
+                      <CountCell value={s.missedClockIn} warnColor="#9E4A30" />
+                      <CountCell value={s.breakOvertimes} warnColor="#C4813A" />
+                    </tr>
+                    {open && (
+                      <tr className="border-t border-[#F0E8DC] bg-[#FDFBF7]">
+                        <td colSpan={9} className="px-3 py-3">
+                          <DailyDetailTable days={s.days} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DailyDetailTable({ days }: { days: DailyDetail[] }) {
+  if (days.length === 0) {
+    return <p className="text-xs text-brown-faint py-2">No attendance or scheduled shifts in this range.</p>
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-xs min-w-max w-full">
+        <thead>
+          <tr className="border-b border-[#EDE5D8]">
+            {['Date', 'Day', 'Shift', 'Clock In', 'Clock Out', 'Worked', 'Break 1', 'Break 2', 'Late', 'Status', 'GPS'].map(h => (
+              <th key={h} className="text-left px-2.5 py-1.5 font-semibold text-brown-faint whitespace-nowrap">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {days.map(d => {
+            const b1 = breakAt(d, 1)
+            const b2 = breakAt(d, 2)
+            const highDist = d.distanceM != null && d.distanceM > 200
+            return (
+              <tr
+                key={d.date}
+                className={`border-t border-[#F0E8DC] ${d.missedClockIn ? 'bg-[#FDF3F0]' : ''}`}
+              >
+                <td className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">{d.date}</td>
+                <td className="px-2.5 py-1.5 text-brown-faint whitespace-nowrap">{weekdayShort(d.date)}</td>
+                <td className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">{shiftLabel(d)}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockIn ? fmtTime(d.clockIn) : '—'}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockOut ? fmtTime(d.clockOut) : '—'}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap tabular-nums">{fmtWorked(d.workedMinutes)}</td>
+                {[b1, b2].map((b, i) => (
+                  <td key={i} className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">
+                    {fmtBreakWindow(b)}
+                    {b?.isOvertime && <span className="text-[#9E4A30] font-semibold"> +{b.overtimeMinutes}m</span>}
+                  </td>
+                ))}
+                <td className="px-2.5 py-1.5 whitespace-nowrap font-semibold text-[#9E4A30]">
+                  {d.lateMinutes > 0 ? `+${d.lateMinutes}m` : ''}
+                </td>
+                <td className="px-2.5 py-1.5 whitespace-nowrap">
+                  <span className="flex items-center gap-1.5">
+                    {d.status ? (
+                      <span
+                        className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                        style={{ background: `${ATTENDANCE_STATUS_COLORS[d.status]}20`, color: ATTENDANCE_STATUS_COLORS[d.status] }}
+                      >
+                        {ATTENDANCE_STATUS_LABELS[d.status]}
+                      </span>
+                    ) : (
+                      <span className="text-brown-faint">No record</span>
+                    )}
+                    {d.missedClockIn && (
+                      <span
+                        className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#FCF0EC] text-[#9E4A30]"
+                        title="Scheduled to work but never clocked in"
+                      >
+                        Missed
+                      </span>
+                    )}
+                  </span>
+                </td>
+                <td className={`px-2.5 py-1.5 whitespace-nowrap tabular-nums ${highDist ? 'text-[#9E4A30] font-semibold' : 'text-brown-faint'}`}>
+                  {d.distanceM != null ? `${d.distanceM}m` : '—'}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 // ─── Staff: my attendance ─────────────────────────────────────────────────────
 
 // Exported for tests — the night-shift/midnight behaviour lives entirely in here.
@@ -1185,11 +1632,13 @@ export function MyAttendance({ staff }: { staff: Staff }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+const VIEW_LABELS = { daily: 'Daily', monthly: 'Monthly', report: 'Report' } as const
+
 export default function HrAttendancePage() {
   const { staff } = useAuth()
   const { can, ownBranchOnly } = useCan()
   const [allStaff, setAllStaff] = useState<Staff[]>([])
-  const [view, setView] = useState<'daily' | 'monthly'>('daily')
+  const [view, setView] = useState<'daily' | 'monthly' | 'report'>('daily')
   const canSeeTeam = can('manage_hr')
 
   useEffect(() => {
@@ -1221,7 +1670,7 @@ export default function HrAttendancePage() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-base font-bold text-brown-dark">Team Attendance</h2>
               <div className="flex gap-1 bg-white rounded-lg border border-[#E8DDD0] p-0.5">
-                {(['daily', 'monthly'] as const).map(v => (
+                {(['daily', 'monthly', 'report'] as const).map(v => (
                   <button
                     key={v}
                     onClick={() => setView(v)}
@@ -1229,15 +1678,17 @@ export default function HrAttendancePage() {
                       view === v ? 'bg-[#C4813A] text-white' : 'text-brown-muted hover:bg-[#F5EDE0]'
                     }`}
                   >
-                    {v === 'daily' ? 'Daily' : 'Monthly'}
+                    {VIEW_LABELS[v]}
                   </button>
                 ))}
               </div>
             </div>
             {view === 'daily' ? (
               <DailyRoster allStaff={scopedStaff} managerId={staff.id} />
-            ) : (
+            ) : view === 'monthly' ? (
               <MonthlyGrid allStaff={scopedStaff} />
+            ) : (
+              <AttendanceReport allStaff={scopedStaff} />
             )}
           </section>
         )}
