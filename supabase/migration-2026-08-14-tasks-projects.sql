@@ -135,16 +135,29 @@ create or replace function tasks_touch() returns trigger
 language plpgsql as $$
 begin
   new.updated_at := now();
-  if new.status = 'done' and old.status is distinct from 'done' then
-    new.completed_at := now();
-  elsif new.status <> 'done' then
-    new.completed_at := null;
+  if TG_OP = 'INSERT' then
+    -- 批量汇入 / 后台工具可能直接以 status = 'done' 插入;这里若不补设 completed_at,
+    -- 该笔会同时被看板(status<>done)和 14 天归档窗口(completed_at 过滤)排除,永远消失。
+    if new.status = 'done' then
+      new.completed_at := now();
+    else
+      new.completed_at := null;
+    end if;
+  elsif TG_OP = 'UPDATE' then
+    if new.status = 'done' and old.status is distinct from 'done' then
+      new.completed_at := now();
+    elsif new.status <> 'done' then
+      new.completed_at := null;
+    end if;
+    -- created_by 是建立者的溯源栏位;tasks_update policy 刻意宽松、未限制此栏,
+    -- 若不锁住,任何人可先把 created_by 改成自己,再用 tasks_delete 的「建立者可删」规则删掉别人的任务。
+    new.created_by := old.created_by;
   end if;
   return new;
 end $$;
 
 drop trigger if exists tasks_touch_trg on tasks;
-create trigger tasks_touch_trg before update on tasks
+create trigger tasks_touch_trg before insert or update on tasks
   for each row execute function tasks_touch();
 
 create or replace function projects_touch() returns trigger
