@@ -118,22 +118,28 @@ export async function fetchTags(): Promise<Tag[]> {
 }
 
 /**
- * 自由输入的标签。冲突时刻意写回自己的旧 name(先到者胜),
- * 目的是让 RETURNING 回传既有列 —— 所以打 `Urgent` 会命中已存在的 `urgent`,
- * 不会产生第二笔。
+ * 自由输入的标签:打 `Urgent` 会命中已存在的 `urgent`,不会产生第二笔。
+ *
+ * 刻意不用 supabase-js 的 .upsert()。它只能送出
+ * `on conflict (slug) do update set <每个给定栏位> = excluded.<栏位>`,
+ * 没有语法能表达「冲突时保留既有值」—— 给了 { slug, name, created_by },
+ * 撞库存时这三栏就会被后来者整包盖掉:A 建的 `Urgent` 只因为 B 在别的任务上
+ * 打了 `urgent`,全板的 pill 就无声变成 `urgent`,created_by 也改判给 B。
+ *
+ * 改走 upsert_tag() 这支 Postgres function(migration-2026-08-14-tasks-upsert-fn.sql):
+ * `on conflict (slug) do update set name = tags.name` 写回既有值,只为了让
+ * RETURNING 有列可回 —— 去重照旧,name / created_by 归先写入者,
+ * 与 tasks_touch() 锁住 tasks.created_by 是同一个规则。单一 statement,
+ * 没有「先 select 再 insert」的空窗。
  *
  * 这是唯一不经 writeOutcome 的写入:`.single()` 在零列时会回 PGRST116 error,
- * 所以 RLS 挡掉会直接 throw,不会静默通过。
+ * 所以权限挡掉会直接 throw,不会静默通过。
  */
 export async function upsertTag(raw: string, createdBy: string): Promise<Tag> {
   const norm = normalizeTagName(raw)
   if (!norm) throw new Error('Tag name cannot be empty.')
   const { data, error } = await supabase
-    .from('tags')
-    .upsert(
-      { slug: norm.slug, name: norm.name, created_by: createdBy },
-      { onConflict: 'slug', ignoreDuplicates: false },
-    )
+    .rpc('upsert_tag', { p_slug: norm.slug, p_name: norm.name, p_created_by: createdBy })
     .select('id,slug,name,color')
     .single()
   if (error) throw new Error(error.message)
