@@ -20,23 +20,25 @@ import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Task } from './types'
 
 const h = vi.hoisted(() => ({
-  fetchBoardTasks:  vi.fn(),
-  moveTask:         vi.fn(),
-  fetchTags:        vi.fn(),
-  fetchComments:    vi.fn(),
-  postComment:      vi.fn(),
-  fetchAttachments: vi.fn(),
-  fetchChecklist:   vi.fn(),
+  fetchBoardTasks:      vi.fn(),
+  moveTask:             vi.fn(),
+  fetchTags:            vi.fn(),
+  fetchComments:        vi.fn(),
+  postComment:          vi.fn(),
+  fetchAttachments:     vi.fn(),
+  fetchChecklist:       vi.fn(),
+  fetchAssignableStaff: vi.fn(),
 }))
 
 vi.mock('./api', () => ({
-  fetchBoardTasks:  h.fetchBoardTasks,
-  moveTask:         h.moveTask,
-  fetchTags:        h.fetchTags,
-  fetchComments:    h.fetchComments,
-  postComment:      h.postComment,
-  fetchAttachments: h.fetchAttachments,
-  fetchChecklist:   h.fetchChecklist,
+  fetchBoardTasks:      h.fetchBoardTasks,
+  moveTask:             h.moveTask,
+  fetchTags:            h.fetchTags,
+  fetchComments:        h.fetchComments,
+  postComment:          h.postComment,
+  fetchAttachments:     h.fetchAttachments,
+  fetchChecklist:       h.fetchChecklist,
+  fetchAssignableStaff: h.fetchAssignableStaff,
   createTask:           vi.fn(),
   updateTask:           vi.fn(),
   deleteTask:           vi.fn(),
@@ -49,12 +51,6 @@ vi.mock('./api', () => ({
   setChecklistDone:     vi.fn(),
   setChecklistAssignee: vi.fn(),
   deleteChecklistItem:  vi.fn(),
-}))
-
-vi.mock('../../shared/lib/supabase', () => ({
-  supabase: {
-    from: () => ({ select: () => ({ order: () => Promise.resolve({ data: [], error: null }) }) }),
-  },
 }))
 
 vi.mock('../auth/AuthContext', () => ({
@@ -107,6 +103,7 @@ beforeEach(() => {
   h.fetchComments.mockResolvedValue([])
   h.fetchAttachments.mockResolvedValue([])
   h.fetchChecklist.mockResolvedValue([])
+  h.fetchAssignableStaff.mockResolvedValue([])
   h.moveTask.mockResolvedValue(OK)
 })
 afterEach(() => {

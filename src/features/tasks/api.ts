@@ -6,6 +6,7 @@ import type {
   Task, Project, Tag, ChecklistItem, Attachment, TaskComment,
   TaskStatus, TaskPriority, ProjectStatus,
 } from './types'
+import type { Staff } from '../../shared/types'
 
 /**
  * Tasks 模块唯一的 Supabase 出入口。
@@ -72,6 +73,20 @@ export async function fetchArchivedTasks(): Promise<Task[]> {
     .order('completed_at', { ascending: false })
   if (error) throw new Error(error.message)
   return (data ?? []).map(shapeTask)
+}
+
+/**
+ * 指派用的下拉清单(表单、详情弹窗、checklist 认领共用)。曾经直接写在
+ * Tasks.tsx 里、不查 s.error —— staff 读不到时下拉只剩 "Unassigned",使用者
+ * 编辑既有任务再存档,原本的 assignee 就被无声洗成 null。搬进这支档案,
+ * 跟其他读取一样失败就 throw,页面层用板本来就有的那条错误横幅显示,
+ * 不再是这个模块里唯一一笔吞掉 error 的读取。
+ */
+export async function fetchAssignableStaff(): Promise<Staff[]> {
+  const { data, error } = await supabase
+    .from('staff').select('id,name,avatar,rank,department').order('name')
+  if (error) throw new Error(error.message)
+  return (data ?? []) as Staff[]
 }
 
 export interface TaskInput {

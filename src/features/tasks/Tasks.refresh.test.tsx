@@ -16,23 +16,25 @@ import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Task } from './types'
 
 const h = vi.hoisted(() => ({
-  fetchBoardTasks:  vi.fn(),
-  moveTask:         vi.fn(),
-  postComment:      vi.fn(),
-  fetchComments:    vi.fn(),
-  fetchAttachments: vi.fn(),
-  fetchTags:        vi.fn(),
-  fetchChecklist:   vi.fn(),
+  fetchBoardTasks:      vi.fn(),
+  moveTask:             vi.fn(),
+  postComment:          vi.fn(),
+  fetchComments:        vi.fn(),
+  fetchAttachments:     vi.fn(),
+  fetchTags:            vi.fn(),
+  fetchChecklist:       vi.fn(),
+  fetchAssignableStaff: vi.fn(),
 }))
 
 vi.mock('./api', () => ({
-  fetchBoardTasks:  h.fetchBoardTasks,
-  moveTask:         h.moveTask,
-  postComment:      h.postComment,
-  fetchComments:    h.fetchComments,
-  fetchAttachments: h.fetchAttachments,
-  fetchTags:        h.fetchTags,
-  fetchChecklist:   h.fetchChecklist,
+  fetchBoardTasks:      h.fetchBoardTasks,
+  moveTask:             h.moveTask,
+  postComment:          h.postComment,
+  fetchComments:        h.fetchComments,
+  fetchAttachments:     h.fetchAttachments,
+  fetchTags:            h.fetchTags,
+  fetchChecklist:       h.fetchChecklist,
+  fetchAssignableStaff: h.fetchAssignableStaff,
   createTask:       vi.fn(),
   updateTask:       vi.fn(),
   deleteTask:       vi.fn(),
@@ -45,13 +47,6 @@ vi.mock('./api', () => ({
   setChecklistDone:    vi.fn(),
   setChecklistAssignee: vi.fn(),
   deleteChecklistItem: vi.fn(),
-}))
-
-// 页面层只剩 staff 下拉还直接打 supabase,给它一份空清单就够。
-vi.mock('../../shared/lib/supabase', () => ({
-  supabase: {
-    from: () => ({ select: () => ({ order: () => Promise.resolve({ data: [], error: null }) }) }),
-  },
 }))
 
 vi.mock('../auth/AuthContext', () => ({
@@ -107,6 +102,7 @@ beforeEach(() => {
   h.fetchAttachments.mockResolvedValue([])
   h.fetchTags.mockResolvedValue([])
   h.fetchChecklist.mockResolvedValue([])
+  h.fetchAssignableStaff.mockResolvedValue([])
   h.postComment.mockResolvedValue(OK)
   h.moveTask.mockResolvedValue(OK)
 })

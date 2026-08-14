@@ -1,12 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Settings2 } from 'lucide-react'
-import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
 import { useCan } from '../../shared/lib/permissions'
 import { needsRebalance, openChecklistCount, rebalance } from '../../shared/lib/tasks'
 import type { Staff } from '../../shared/types'
-import { fetchBoardTasks, fetchTags, moveTask, updateTask } from './api'
+import { fetchAssignableStaff, fetchBoardTasks, fetchTags, moveTask, updateTask } from './api'
 import type { MoveResult, Tag, Task, TaskStatus } from './types'
 import { TaskBoard, bottomPosition } from './TaskBoard'
 import { TaskDetailModal } from './TaskDetailModal'
@@ -60,16 +59,22 @@ export default function TasksPage() {
    * 重新拉板。刻意不切任何「读取中」旗标 —— 全屏 loader 只属于第一次进板。
    * 这个函式同时是 onSaved / onChanged / onPosted 的回呼,一旦它让整棵树卸载,
    * 开着的详情弹窗会跟着重挂,使用者刚打好、还没存档的内容就这样消失。
+   *
+   * fetchAssignableStaff() 跟 fetchBoardTasks() / fetchTags() 一样失败就 throw
+   * (定义见 api.ts)——旧版直接摆一句 supabase.from('staff')...、不查 error,
+   * staff 读不到时下拉只剩 "Unassigned",使用者编辑既有任务再存档,原本的
+   * assignee 就被无声洗成 null。三笔任何一笔失败都要让下面这个 catch 接到,
+   * 板才会显示错误横幅而不是一块「看起来正常」的空清单。
    */
   const load = useCallback(async () => {
     try {
       const [t, s, g] = await Promise.all([
         fetchBoardTasks(),
-        supabase.from('staff').select('id,name,avatar,rank,department').order('name'),
+        fetchAssignableStaff(),
         fetchTags(),
       ])
       setTasks(t)
-      setAllStaff((s.data ?? []) as Staff[])
+      setAllStaff(s)
       setAllTags(g)
       setError('')
     } catch (e) {

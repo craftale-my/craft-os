@@ -20,25 +20,27 @@ import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Task, TaskStatus } from './types'
 
 const h = vi.hoisted(() => ({
-  fetchBoardTasks:  vi.fn(),
-  moveTask:         vi.fn(),
-  updateTask:       vi.fn(),
-  createTask:       vi.fn(),
-  fetchTags:        vi.fn(),
-  fetchComments:    vi.fn(),
-  fetchAttachments: vi.fn(),
-  fetchChecklist:   vi.fn(),
+  fetchBoardTasks:      vi.fn(),
+  moveTask:             vi.fn(),
+  updateTask:           vi.fn(),
+  createTask:           vi.fn(),
+  fetchTags:            vi.fn(),
+  fetchComments:        vi.fn(),
+  fetchAttachments:     vi.fn(),
+  fetchChecklist:       vi.fn(),
+  fetchAssignableStaff: vi.fn(),
 }))
 
 vi.mock('./api', () => ({
-  fetchBoardTasks:  h.fetchBoardTasks,
-  moveTask:         h.moveTask,
-  updateTask:       h.updateTask,
-  createTask:       h.createTask,
-  fetchTags:        h.fetchTags,
-  fetchComments:    h.fetchComments,
-  fetchAttachments: h.fetchAttachments,
-  fetchChecklist:   h.fetchChecklist,
+  fetchBoardTasks:      h.fetchBoardTasks,
+  moveTask:             h.moveTask,
+  updateTask:           h.updateTask,
+  createTask:           h.createTask,
+  fetchTags:            h.fetchTags,
+  fetchComments:        h.fetchComments,
+  fetchAttachments:     h.fetchAttachments,
+  fetchChecklist:       h.fetchChecklist,
+  fetchAssignableStaff: h.fetchAssignableStaff,
   postComment:          vi.fn(),
   deleteTask:           vi.fn(),
   uploadAttachment:     vi.fn(),
@@ -50,12 +52,6 @@ vi.mock('./api', () => ({
   setChecklistDone:     vi.fn(),
   setChecklistAssignee: vi.fn(),
   deleteChecklistItem:  vi.fn(),
-}))
-
-vi.mock('../../shared/lib/supabase', () => ({
-  supabase: {
-    from: () => ({ select: () => ({ order: () => Promise.resolve({ data: [], error: null }) }) }),
-  },
 }))
 
 vi.mock('../auth/AuthContext', () => ({
@@ -112,6 +108,7 @@ beforeEach(() => {
   h.fetchComments.mockResolvedValue([])
   h.fetchAttachments.mockResolvedValue([])
   h.fetchChecklist.mockResolvedValue([])
+  h.fetchAssignableStaff.mockResolvedValue([])
   h.moveTask.mockResolvedValue(OK)
   h.updateTask.mockResolvedValue(OK)
   h.createTask.mockResolvedValue(OK)

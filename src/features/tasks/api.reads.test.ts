@@ -117,6 +117,7 @@ const SINGLE_QUERY_READS: Array<{
   { name: 'fetchChecklist',                    relation: 'task_checklist_items', run: () => api.fetchChecklist('task-1') },
   { name: 'fetchAttachments',                  relation: 'task_attachments',     run: () => api.fetchAttachments('task-1') },
   { name: 'fetchComments',                     relation: 'task_comments',        run: () => api.fetchComments('task-1') },
+  { name: 'fetchAssignableStaff',              relation: 'staff',                run: () => api.fetchAssignableStaff() },
 ]
 
 describe.each(SINGLE_QUERY_READS)('$name:读不到就 throw,不得退化成空清单', ({ relation, run }) => {
