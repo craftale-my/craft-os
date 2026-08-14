@@ -76,9 +76,13 @@ Authentication is **Supabase Auth (email/password)** layered over an application
    via `requireRank={['supervisor', 'manager']}`. `OnboardingRoute` handles the
    not-yet-onboarded state.
 4. Route access by rank (see `src/App.tsx`):
-   - **Everyone (logged in):** `/profile`, `/tasks`, `/hr/*`
+   - **Everyone (logged in):** `/profile`, `/hr/*`
    - **Supervisor + Manager:** `/dashboard`, `/staff/:id`, `/probation/:staffId`, `/schedule`
    - **Manager only:** `/missions`, `/settings`
+   - **Tasks & Projects** (`/team/tasks`, `/team/tasks/archive`, `/team/projects`,
+     `/team/projects/:id`) all require the `view_team` capability, which the `staff`
+     role does not have — the module is management-only, deliberately. `/tasks` is
+     kept only as a redirect to `/team/tasks` (old bookmarks / installed PWAs).
    - After login, managers/supervisors land on `/dashboard`; everyone else on `/profile`.
 
 ### How the rank / level / XP system works
@@ -104,7 +108,22 @@ Authentication is **Supabase Auth (email/password)** layered over an application
   member (`monthly_reviews` table) and surfaced on the staff profile.
 - **3-day probation reviews** (`/probation/:staffId`) — Early probation check-in for new
   hires (`probation_reviews` table).
-- **Task management (Kanban)** (`/tasks`) — Board-style task tracking for the team.
+- **Tasks & Projects** (`/team/tasks`, `/team/projects`) — Management-only
+  (`view_team`) Kanban task board, plus Projects to group related tasks.
+  - **Board** — three fixed columns (todo / in progress / done); manual
+    drag-to-reorder within a column.
+  - **Tags** — free-form, typeahead-assisted, de-duplicated by a normalized `slug`
+    (`Urgent` and `urgent` collapse to the same tag).
+  - **Checklists** — per-task sub-items; each item can be assigned an owner.
+  - **Attachments** — multiple files per task; deleting one also removes the
+    stored file.
+  - **Projects** (`/team/projects/:id`) — owner, dates, status, and a progress
+    bar computed from their tasks.
+  - **Archive** (`/team/tasks/archive`) — the board's Done column only shows
+    tasks completed in the last 14 days; older completed tasks are searchable
+    here.
+  - **Live sync** — task changes broadcast over Supabase Realtime so open
+    boards stay in sync across sessions.
 - **HR module** (`/hr/*`):
   - **Attendance** — Clock in/out with **GPS location + selfie** capture.
   - **Salary records** — Stored payroll records for compliance (see §7).
@@ -120,8 +139,28 @@ Authentication is **Supabase Auth (email/password)** layered over an application
 
 ## 4. Database
 
-**Source of truth: [`supabase/schema.sql`](supabase/schema.sql).** This file defines all
-tables, triggers, RLS policies, storage buckets, and seed data. Treat it as canonical.
+**Source of truth: [`supabase/schema.sql`](supabase/schema.sql)** for everything except
+the seven Tasks & Projects tables below. Those were added by three dated migration
+files under `supabase/` that have been run against production but not folded back into
+`schema.sql`:
+
+- `migration-2026-08-14-tasks-projects.sql` — creates all seven tables plus their RLS
+  policies, the `project_progress` view, and the `has_task_cap()` permission function.
+  `tasks` and `task_comments` had never existed in this Supabase project — they were
+  created ad hoc in the old `vvxg` project and never carried over in the 2026-07-05
+  migration to the current project. So this is a clean create, not a migration of
+  existing data.
+- `migration-2026-08-14-checklist-assignee.sql` — adds an `assigned_to` column to
+  `task_checklist_items` so an individual checklist item can carry its own owner
+  (distinct from the parent task's assignee).
+- `migration-2026-08-14-tasks-upsert-fn.sql` — adds an `upsert_tag()` Postgres function
+  and switches tag creation to call it. `supabase-js`'s `.upsert()` can't express
+  "keep the existing row's values on conflict", so the previous client-side upsert let
+  whoever typed a tag second silently overwrite the original tag's display name and
+  creator.
+
+Until someone folds these into `schema.sql`, treat the migration files as canonical for
+the tables they touch.
 
 ### Major tables
 
@@ -144,11 +183,19 @@ tables, triggers, RLS policies, storage buckets, and seed data. Treat it as cano
 | `leave_entitlements`    | Per-staff leave balances.                                     |
 | `leave_requests`        | Leave applications and their status.                          |
 | `claims`                | Expense claims with receipts.                                 |
+| `projects`               | Groups related tasks; owner, dates, status, progress.        |
+| `tasks`                  | Task cards: status, priority, project, assignee, `position`. |
+| `tags`                   | Free-form task labels, de-duplicated by a normalized `slug`. |
+| `task_tags`              | Join table linking `tasks` to `tags`.                        |
+| `task_checklist_items`   | Per-task checklist sub-items; each can carry an owner.       |
+| `task_attachments`       | Files attached to a task; `storage_path` lets deletion clean up the file too. |
+| `task_comments`          | Comments on a task.                                          |
 
 ### Row Level Security
 
-**RLS is used throughout.** Policies are defined in `schema.sql` and gate row access by
-the requesting user and their rank (e.g. managers see all staff; staff see their own
+**RLS is used throughout.** Policies are defined in `schema.sql` (or, for the Tasks &
+Projects tables, their own migration files — see above) and gate row access by the
+requesting user and their rank (e.g. managers see all staff; staff see their own
 records). When adding tables or columns, add matching RLS policies — a table without
 policies will be inaccessible to the anon/auth client.
 
