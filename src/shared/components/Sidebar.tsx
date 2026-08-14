@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
-  User, Target, CheckSquare, ClipboardList,
+  User, Target, CheckSquare, ClipboardList, FolderKanban,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays,
 } from 'lucide-react'
@@ -24,6 +24,7 @@ const ICONS: Record<string, LucideIcon> = {
   'team-reviews': ClipboardList,
   'team-missions': Target,
   'team-tasks': CheckSquare,
+  'team-projects': FolderKanban,
   schedule: CalendarDays,
   attendance: CalendarCheck,
   leave: Palmtree,

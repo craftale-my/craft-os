@@ -16,6 +16,7 @@ import { StaffProfilePage } from './features/staff/StaffProfile'
 import { MissionsPage } from './features/missions/Missions'
 import ProbationReviewPage from './features/reviews/ProbationReview'
 import TasksPage from './features/tasks/Tasks'
+import ProjectsPage from './features/tasks/Projects'
 import SettingsPage from './features/settings/Settings'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
@@ -131,6 +132,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="manage_missions">
             <AppLayout><MissionsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/team/projects"
+        element={
+          <ProtectedRoute requireCap="view_team">
+            <AppLayout><ProjectsPage /></AppLayout>
           </ProtectedRoute>
         }
       />
