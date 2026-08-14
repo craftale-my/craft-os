@@ -61,7 +61,7 @@ function KanbanColumn({
   variant, colKey, label, tasks, canManage, currentStaffId,
   dropAt, onDragOver, onDragLeave, onDrop, onZoneOver, onZoneDrop,
   draggingId, onDragStart, onDragEnd, onCardClick, onAddClick,
-  showMobileActions, onCardStatusChange,
+  showMobileActions, onCardStatusChange, showProject,
 }: {
   variant: 'desktop' | 'mobile'
   colKey: TaskStatus
@@ -83,6 +83,8 @@ function KanbanColumn({
   onAddClick: () => void
   showMobileActions?: boolean
   onCardStatusChange?: (taskId: string, status: TaskStatus) => void
+  /** 卡上要不要画 project 标签,原样转给每一张 TaskCard —— 见 TaskBoard 的说明。 */
+  showProject: boolean
 }) {
   const s = COL_STYLE[colKey]
   const idPrefix = variant === 'mobile' ? 'mobile-' : ''
@@ -155,6 +157,7 @@ function KanbanColumn({
                 onClick={() => onCardClick(task)}
                 showMobileActions={showMobileActions && (canManage || task.assigned_to === currentStaffId)}
                 onStatusChange={onCardStatusChange ? status => onCardStatusChange(task.id, status) : undefined}
+                showProject={showProject}
               />
 
               {/* 落点指示线。栏尾(beforeId = null)画在最后一张卡的下缘。 */}
@@ -206,6 +209,7 @@ function KanbanColumn({
  */
 export function TaskBoard({
   tasks, allTasks, canManage, currentStaffId, onCardClick, onAddClick, onMove,
+  showProject = false,
 }: {
   /** 画面上看得到的卡 —— 页面层已经套过筛选。 */
   tasks: Task[]
@@ -219,6 +223,17 @@ export function TaskBoard({
   onCardClick: (task: Task) => void
   onAddClick: () => void
   onMove: (taskId: string, status: TaskStatus, position: number) => void
+  /**
+   * 卡上要不要画 project 标签。**故意预设 false**,不是 true:这块板有两个
+   * 呼叫端 —— `/team/tasks`(整间公司的板,project 标签是有用的资讯)与
+   * `/team/projects/:id`(专案页自己的板,每一张卡都属于同一个专案,标签只是
+   * 噪音)。后者目前是另一支并行任务在顾的档案,这里没办法改它去传
+   * `showProject={false}`;把「不画」定成默认值,那块板就**不需要改任何一行
+   * 代码**也自动是对的 —— 唯一需要显式打开的是 `/team/tasks`,而这里正是那一行。
+   * 换句话说:忘了传这个 prop,最多是少一个标签(看得出来的小遗憾),
+   * 不会是专案页突然冒出一堆噪音标签(看不出来哪里错的那种)。
+   */
+  showProject?: boolean
 }) {
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropAt, setDropAt] = useState<DropAt | null>(null)
@@ -328,6 +343,7 @@ export function TaskBoard({
             onDragEnd={clearDragState}
             onCardClick={onCardClick}
             onAddClick={onAddClick}
+            showProject={showProject}
           />
         ))}
       </div>
@@ -354,6 +370,7 @@ export function TaskBoard({
           onAddClick={onAddClick}
           showMobileActions
           onCardStatusChange={(taskId, status) => requestMove(taskId, status, null)}
+          showProject={showProject}
         />
       </div>
     </>

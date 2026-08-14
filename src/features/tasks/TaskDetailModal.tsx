@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Avatar } from '../../shared/components/Avatar'
 import { useLookups } from '../../shared/lib/lookups'
 import { isOverdue } from '../../shared/lib/tasks'
-import { updateTask, deleteTask, upsertTag, attachTag, detachTag } from './api'
+import { updateTask, deleteTask, upsertTag, attachTag, detachTag, fetchProjects } from './api'
 import { TASK_COLUMNS } from './types'
-import type { MoveResult, StaffLite, Tag, Task, TaskPriority, TaskStatus } from './types'
+import type { MoveResult, Project, StaffLite, Tag, Task, TaskPriority, TaskStatus } from './types'
 import { PRIORITY_CFG, fmtDate } from './TaskCard'
 import { AttachmentGallery } from './AttachmentGallery'
 import { ChecklistEditor } from './ChecklistEditor'
@@ -45,7 +45,31 @@ export function TaskDetailModal({
     priority:    task.priority,
     assigned_to: task.assigned_to ?? '',
     due_date:    task.due_date ?? '',
+    project_id:  task.project_id ?? '',
   })
+
+  // 专案下拉的选项,跟 TaskFormModal 同一套规格:自己管自己的读取,不靠
+  // ProjectDetail 往下传 —— 那一页现在有另一支任务在顾,不该为了这一颗下拉
+  // 多接一条 props 线路。读失败就把话说在下拉旁边,不挡住整个编辑表单。
+  const [projects, setProjects] = useState<Project[]>([])
+  const [projectsError, setProjectsError] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const rows = await fetchProjects()
+        if (cancelled) return
+        setProjects(rows ?? [])
+        setProjectsError('')
+      } catch (e) {
+        if (!cancelled) {
+          setProjectsError(e instanceof Error ? e.message : 'Could not load the project list.')
+        }
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
 
   const isAssignee      = task.assigned_to === currentStaffId
   const canChangeStatus = canManage || isAssignee
@@ -60,10 +84,27 @@ export function TaskDetailModal({
       priority:    task.priority,
       assigned_to: task.assigned_to ?? '',
       due_date:    task.due_date ?? '',
+      project_id:  task.project_id ?? '',
     })
     setEditing(true)
   }
 
+  /**
+   * 这一步可能同时动到两个专案的进度:任务原本算在 task.project_id 那个
+   * 专案的 done/total/overdue 里,改到别的专案(或改成没有专案)之后,旧专案
+   * 的分母少一、新专案的分母多一。这里不必自己去戳任何一边的进度 ——
+   * onChanged() 在 /team/tasks 是 load()(那一页根本不画进度条),在
+   * /team/projects/:id 是 reload() = loadProject() + loadBoard() 一起重拉
+   * (见 useBoardTasks 顶端的 onMoved 说明,以及 ProjectDetail 把它接给
+   * useBoardTasks 的那一行):loadProject() 用 URL 上的 :id 重新查
+   * project_progress,不管任务是「刚离开这个专案」还是「刚被搬进来」都会
+   * 对;loadBoard() 用同一个 :id 筛任务,任务一旦不再属于这个专案就会自然
+   * 从板上消失。唯一没被这两条路盖到的是**另一个**专案 —— 例如任务被改派
+   * 到专案 B,而使用者当下在看专案 A 或整块 /team/tasks——但那正是任何页面
+   * 对「别人正在看的另一页」都有的一般性过期(另一个分页开着专案 B,也不会
+   * 知道这里发生的事);等使用者真的导去专案 B,那一页会重新 mount、
+   * 重新查一次,不是这个改动该负责的范围。
+   */
   async function saveEdit() {
     if (!form.title.trim()) return
     setSaving(true)
@@ -73,6 +114,7 @@ export function TaskDetailModal({
       priority:    form.priority,
       assigned_to: form.assigned_to || null,
       due_date:    form.due_date || null,
+      project_id:  form.project_id || null,
     })
     setSaving(false)
     if (!res.ok) { setError(`Could not save the task — ${res.reason}`); return }
@@ -160,6 +202,20 @@ export function TaskDetailModal({
               {task.department && (
                 <span className="text-xs font-medium text-[#8B6344] bg-[#F5EDE0] px-2 py-0.5 rounded-full capitalize">
                   {deptName(task.department)}
+                </span>
+              )}
+              {/* 跟卡片上那颗一样的样子(点 + 名字),读态与编辑态都画 —— department
+                  也是这个规格:不锁在编辑模式后面。 */}
+              {task.project && (
+                <span
+                  data-testid="task-detail-project-badge"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-[#8B6344] bg-[#F5EDE0] px-2 py-0.5 rounded-full max-w-[160px]"
+                >
+                  <span
+                    className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    style={{ background: task.project.color }}
+                  />
+                  <span className="truncate">{task.project.name}</span>
                 </span>
               )}
               {!editing && (
@@ -254,6 +310,24 @@ export function TaskDetailModal({
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
                 </select>
+              </div>
+            )}
+            {editing && (
+              <div>
+                <p className="text-[#A09080] font-medium mb-1">Project</p>
+                <select
+                  className={inputCls}
+                  value={form.project_id}
+                  onChange={e => setForm(f => ({ ...f, project_id: e.target.value }))}
+                >
+                  <option value="">No project</option>
+                  {projects.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                {projectsError && (
+                  <p className="text-[11px] text-red-600 mt-1">Could not load projects — {projectsError}</p>
+                )}
               </div>
             )}
           </div>

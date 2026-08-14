@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Settings2 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
 import { useCan } from '../../shared/lib/permissions'
-import type { Task } from './types'
+import { fetchProjects } from './api'
+import type { Project, Task } from './types'
 import { TaskBoard, bottomPosition } from './TaskBoard'
 import { TaskDetailModal } from './TaskDetailModal'
 import { TaskFormModal } from './TaskFormModal'
@@ -24,6 +25,24 @@ export default function TasksPage() {
   const [filterDept,     setFilterDept]     = useState('')
   const [filterAssignee, setFilterAssignee] = useState('')
   const [filterTag,      setFilterTag]      = useState('')
+  const [filterProject,  setFilterProject]  = useState('')
+
+  // Project 下拉的选项(表单的下拉自己管自己的读取,但筛选列在页面层,这里
+  // 单独拉一份)。跟板本身的三笔读取(tasks / staff / tags)不合并进
+  // useBoardTasks —— 那支 hook 也给 /team/projects/:id 用,这一页专属的筛选
+  // 不该往那支共用 hook 里加一颗只有这一页用得到的状态。读失败一样要显示出来,
+  // 不能退化成一份空的项目清单;跟其余三笔一样共用同一条错误横幅与 Retry。
+  const [projects,      setProjects]      = useState<Project[]>([])
+  const [projectsError, setProjectsError] = useState('')
+  const loadProjects = useCallback(async () => {
+    try {
+      setProjects(await fetchProjects())
+      setProjectsError('')
+    } catch (e) {
+      setProjectsError(e instanceof Error ? e.message : 'Could not load projects.')
+    }
+  }, [])
+  useEffect(() => { loadProjects() }, [loadProjects])
 
   // Modals
   const [formOpen, setFormOpen] = useState(false)
@@ -38,6 +57,7 @@ export default function TasksPage() {
     if (myTasksOnly && t.assigned_to !== currentStaffId) return false
     if (filterDept && t.department !== filterDept) return false
     if (filterAssignee && t.assigned_to !== filterAssignee) return false
+    if (filterProject && t.project_id !== filterProject) return false
     if (filterTag && !t.tags.some(tg => tg.id === filterTag)) return false
     if (search && !t.title.toLowerCase().includes(search.toLowerCase())) return false
     return true
@@ -111,11 +131,15 @@ export default function TasksPage() {
           )}
         </div>
 
-        {error && (
+        {/* board 的三笔读取(tasks/staff/tags)与这一页专属的 projects 读取共用
+            一条横幅:两边同时失败也只讲得出第一句,但下一步动作是同一个
+            —— 都是再读一次 —— 不值得为此叠第二条横幅,跟 ProjectDetail 那条
+            pageError 是同一个规格。 */}
+        {(error || projectsError) && (
           <div className="flex items-center justify-between gap-3 mb-4 px-4 py-3 rounded-xl bg-red-50 border border-red-200">
-            <p className="text-sm text-red-700">{error}</p>
+            <p className="text-sm text-red-700">{error || projectsError}</p>
             <button
-              onClick={load}
+              onClick={() => { load(); loadProjects() }}
               className="text-xs font-semibold text-red-700 underline flex-shrink-0"
             >
               Retry
@@ -154,6 +178,12 @@ export default function TasksPage() {
               <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
+          <select className={selectCls} value={filterProject} onChange={e => setFilterProject(e.target.value)}>
+            <option value="">All projects</option>
+            {projects.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
           <select className={selectCls} value={filterTag} onChange={e => setFilterTag(e.target.value)}>
             <option value="">All tags</option>
             {allTags.map(tag => (
@@ -171,6 +201,9 @@ export default function TasksPage() {
           )}
         </div>
 
+        {/* showProject=true —— 这是整间公司的板,每一张卡可能属于不同专案,
+            标签是有用的资讯。/team/projects/:id 那块板不传这个 prop,默认值
+            就是 false,详见 TaskBoard 里的说明。 */}
         <TaskBoard
           tasks={filteredTasks}
           allTasks={tasks}
@@ -179,6 +212,7 @@ export default function TasksPage() {
           onCardClick={task => setDetailId(task.id)}
           onAddClick={() => { setEditTask(null); setFormOpen(true) }}
           onMove={handleMove}
+          showProject
         />
 
       </div>

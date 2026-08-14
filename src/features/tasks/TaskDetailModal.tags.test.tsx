@@ -30,6 +30,9 @@ vi.mock('./api', () => ({
   detachTag:        h.detachTag,
   fetchAttachments: h.fetchAttachments,
   fetchChecklist:   h.fetchChecklist,
+  // 弹窗现在自己会拉一份 project 清单喂给编辑态的下拉;这份测试跟 project
+  // 挑选无关,给个空清单让它悄悄过去就好。
+  fetchProjects:    vi.fn().mockResolvedValue([]),
   uploadAttachment: vi.fn(),
   deleteAttachment: vi.fn(),
   updateTask:       vi.fn(),

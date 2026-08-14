@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useLookups } from '../../shared/lib/lookups'
-import { createTask, updateTask } from './api'
-import type { StaffLite, Task, TaskPriority } from './types'
+import { createTask, updateTask, fetchProjects } from './api'
+import type { Project, StaffLite, Task, TaskPriority } from './types'
 
 /**
  * 新增 / 编辑任务。`task` 为 null 即新增。
@@ -15,10 +15,11 @@ export function TaskFormModal({
   currentStaffId: string
   nextPosition: number
   /**
-   * 新建的任务归给哪个专案。从 /team/projects/:id 开的表单一律带着那个专案,
-   * 不然使用者在专案页上建的任务会掉进「没有专案」那一堆,而且当场从这块板上
-   * 消失(这块板只查这个专案)。编辑既有任务不动这一栏 —— payload 里根本没有
-   * project_id,从专案页编辑不会把任务搬来搬去。
+   * 新建的任务预设归给哪个专案。从 /team/projects/:id 开的表单一律带着那个
+   * 专案,不然使用者在专案页上建的任务会掉进「没有专案」那一堆,而且当场从
+   * 这块板上消失(这块板只查这个专案)。这一栏现在是表单里一个真的下拉
+   * (见下面的 form.project_id),这个 prop 只决定它的初始值 —— 使用者存档前
+   * 仍然可以改选别的专案,或改回 "No project"。
    */
   projectId?: string | null
   onClose: () => void
@@ -32,9 +33,35 @@ export function TaskFormModal({
     priority:    (task?.priority   ?? 'medium') as TaskPriority,
     due_date:    task?.due_date    ?? '',
     department:  task?.department  ?? '',
+    project_id:  task?.project_id  ?? projectId ?? '',
   })
   const [saving, setSaving] = useState(false)
   const [error,  setError]  = useState('')
+
+  // 专案下拉的选项。自己管自己的读取,不靠呼叫端往下传 —— 这个弹窗从
+  // /team/tasks 与 /team/projects/:id 两处开,后者不该为了这一颗下拉多接一条
+  // props 线路。跟 ChecklistEditor / AttachmentGallery 同一个规格:读失败不
+  // 挡住表单其余栏位,但要把话说出来,不能静静吞掉 —— "reads throw" 那条
+  // 规则不是只管 api.ts 那一层,呼叫端接到之后也不能假装什么都没发生。
+  const [projects, setProjects] = useState<Project[]>([])
+  const [projectsError, setProjectsError] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const rows = await fetchProjects()
+        if (cancelled) return
+        setProjects(rows ?? [])
+        setProjectsError('')
+      } catch (e) {
+        if (!cancelled) {
+          setProjectsError(e instanceof Error ? e.message : 'Could not load the project list.')
+        }
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
 
   const set = (k: keyof typeof form) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
@@ -53,13 +80,14 @@ export function TaskFormModal({
       priority:    form.priority,
       due_date:    form.due_date || null,
       department:  form.department || null,
+      project_id:  form.project_id || null,
     }
 
     // updated_at 由 tasks_touch trigger 维护,不再从前端塞。
     const res = task
       ? await updateTask(task.id, payload)
       : await createTask(
-          { ...payload, status: 'todo', project_id: projectId, position: nextPosition },
+          { ...payload, status: 'todo', position: nextPosition },
           currentStaffId,
         )
 
@@ -128,14 +156,28 @@ export function TaskFormModal({
               ))}
             </select>
           </div>
-          <div>
-            <label className={labelCls}>Department (optional)</label>
-            <select className={inputCls} value={form.department} onChange={set('department')}>
-              <option value="">All departments</option>
-              {departmentOptions(form.department).map(d => (
-                <option key={d.slug} value={d.slug}>{d.name}</option>
-              ))}
-            </select>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>Department (optional)</label>
+              <select className={inputCls} value={form.department} onChange={set('department')}>
+                <option value="">All departments</option>
+                {departmentOptions(form.department).map(d => (
+                  <option key={d.slug} value={d.slug}>{d.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={labelCls}>Project (optional)</label>
+              <select className={inputCls} value={form.project_id} onChange={set('project_id')}>
+                <option value="">No project</option>
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              {projectsError && (
+                <p className="text-[11px] text-red-600 mt-1">Could not load projects — {projectsError}</p>
+              )}
+            </div>
           </div>
           <div className="flex gap-3 pt-1">
             <button

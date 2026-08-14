@@ -27,6 +27,7 @@ export function TaskCard({
   showMobileActions,
   onStatusChange,
   testIdPrefix = '',
+  showProject = false,
 }: {
   task: Task
   draggable: boolean
@@ -38,6 +39,12 @@ export function TaskCard({
   onStatusChange?: (status: TaskStatus) => void
   /** 同一张卡在桌面栏与 mobile 栏各挂一次,靠这个前缀区分 —— 详见 KanbanColumn。 */
   testIdPrefix?: string
+  /**
+   * 卡上要不要画 project 标签。默认 false —— 由 TaskBoard 一路往下传,详见那边
+   * `showProject` 的说明:安全的默认值就是「不画」,专案页那块板什么都不用做
+   * 就自动是对的。
+   */
+  showProject?: boolean
 }) {
   const { deptName } = useLookups()
   const pCfg = PRIORITY_CFG[task.priority]
@@ -64,6 +71,24 @@ export function TaskCard({
         {task.department && (
           <span className="text-xs font-medium text-[#8B6344] bg-[#F5EDE0] px-2 py-0.5 rounded-full capitalize">
             {deptName(task.department)}
+          </span>
+        )}
+        {/*
+          专案页那块板每张卡都属于同一个专案,标签只是噪音 —— showProject 由
+          TaskBoard 一路往下传,预设 false 就是为了让那块板不用改一行代码。
+          max-w + truncate 挡住长专案名把这一列撑爆:这一列在窄卡上已经挤着
+          priority 与 department 两个 pill,第三个 pill 只能省字,不能抢位置。
+        */}
+        {showProject && task.project && (
+          <span
+            data-testid={`${testIdPrefix}project-badge-${task.id}`}
+            className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-[#F5EDE0] text-[#8B6344] max-w-[110px]"
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ background: task.project.color }}
+            />
+            <span className="truncate">{task.project.name}</span>
           </span>
         )}
       </div>

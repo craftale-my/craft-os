@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
   fetchAttachments:     vi.fn(),
   fetchChecklist:       vi.fn(),
   fetchAssignableStaff: vi.fn(),
+  fetchProjects:        vi.fn(),
 }))
 
 vi.mock('./api', () => ({
@@ -41,6 +42,7 @@ vi.mock('./api', () => ({
   fetchAttachments:     h.fetchAttachments,
   fetchChecklist:       h.fetchChecklist,
   fetchAssignableStaff: h.fetchAssignableStaff,
+  fetchProjects:        h.fetchProjects,
   postComment:          vi.fn(),
   deleteTask:           vi.fn(),
   uploadAttachment:     vi.fn(),
@@ -109,6 +111,7 @@ beforeEach(() => {
   h.fetchAttachments.mockResolvedValue([])
   h.fetchChecklist.mockResolvedValue([])
   h.fetchAssignableStaff.mockResolvedValue([])
+  h.fetchProjects.mockResolvedValue([])
   h.moveTask.mockResolvedValue(OK)
   h.updateTask.mockResolvedValue(OK)
   h.createTask.mockResolvedValue(OK)
