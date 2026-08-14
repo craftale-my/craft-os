@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { computeDropPosition } from '../../shared/lib/tasks'
+import { insertPosition } from '../../shared/lib/tasks'
 import { TASK_COLUMNS } from './types'
 import type { Task, TaskStatus } from './types'
 import { TaskCard } from './TaskCard'
@@ -13,10 +13,28 @@ const COL_STYLE: Record<TaskStatus, {
   done:        { bg: '#EBF5EE', border: '#B8DCC4', countBg: '#CCE8D4', countColor: '#3D7A50', labelColor: '#3D7A50' },
 }
 
-/** 换栏后的落点 = 该栏底部。栏内手动排序是后续 task,这里只需要一个合法的 position。 */
+/**
+ * 该栏底部的落点。新任务、详情弹窗的 "Move to" 与 mobile 的换栏钮都用它 ——
+ * 这三条路没有「插在哪两张之间」的概念,一律进栏尾。空栏回 POSITION_STEP。
+ */
 export function bottomPosition(tasks: Task[], status: TaskStatus): number {
-  const positions = tasks.filter(t => t.status === status).map(t => t.position)
-  return computeDropPosition(positions.length ? Math.max(...positions) : undefined, undefined)
+  const column = tasks.filter(t => t.status === status)
+  return insertPosition(column, column.length)
+}
+
+/** 拖曳中的落点:col = 目标栏,beforeId = 插在哪一张卡之前,null = 栏尾。 */
+type DropAt = { col: TaskStatus; beforeId: string | null }
+
+/** 落点指示线。用的是栏位 dragOver 外框那支强调色,不另外开一套配色。 */
+function DropLine({ edge }: { edge: 'top' | 'bottom' }) {
+  return (
+    <div
+      className={`absolute left-1 right-1 h-[3px] rounded-full pointer-events-none ${
+        edge === 'top' ? '-top-1.5' : '-bottom-1.5'
+      }`}
+      style={{ background: '#C4813A' }}
+    />
+  )
 }
 
 /**
@@ -27,7 +45,7 @@ export function bottomPosition(tasks: Task[], status: TaskStatus): number {
  */
 function KanbanColumn({
   variant, colKey, label, tasks, canManage, currentStaffId,
-  isDragOver, onDragOver, onDragLeave, onDrop,
+  dropAt, onDragOver, onDragLeave, onDrop, onZoneOver, onZoneDrop,
   draggingId, onDragStart, onDragEnd, onCardClick, onAddClick,
   showMobileActions, onCardStatusChange,
 }: {
@@ -37,10 +55,13 @@ function KanbanColumn({
   tasks: Task[]
   canManage: boolean
   currentStaffId: string
-  isDragOver: boolean
+  /** 落点落在**这一栏**时才给,别栏一律 null —— 由 TaskBoard 先筛过。 */
+  dropAt: DropAt | null
   onDragOver: (e: React.DragEvent) => void
-  onDragLeave: () => void
+  onDragLeave: (e: React.DragEvent) => void
   onDrop: (e: React.DragEvent) => void
+  onZoneOver: (beforeId: string | null) => void
+  onZoneDrop: (beforeId: string | null) => void
   draggingId: string | null
   onDragStart: (id: string) => void
   onDragEnd: () => void
@@ -51,6 +72,22 @@ function KanbanColumn({
 }) {
   const s = COL_STYLE[colKey]
   const idPrefix = variant === 'mobile' ? 'mobile-' : ''
+  const isDragOver = dropAt !== null
+
+  /**
+   * 插入点必须吃掉事件,不能让它冒泡到栏位本体:栏位的 handler 是「放到栏尾」,
+   * 冒上去就会把刚指定的落点盖掉,细分的落点等於白做。
+   */
+  const zoneOver = (beforeId: string | null) => (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onZoneOver(beforeId)
+  }
+  const zoneDrop = (beforeId: string | null) => (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onZoneDrop(beforeId)
+  }
 
   return (
     <div
@@ -92,19 +129,51 @@ function KanbanColumn({
             <p className="text-xs text-[#A09080]">No tasks here yet</p>
           </div>
         ) : (
-          tasks.map(task => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              testIdPrefix={idPrefix}
-              draggable={canManage || task.assigned_to === currentStaffId}
-              isDragging={draggingId === task.id}
-              onDragStart={() => onDragStart(task.id)}
-              onDragEnd={onDragEnd}
-              onClick={() => onCardClick(task)}
-              showMobileActions={showMobileActions && (canManage || task.assigned_to === currentStaffId)}
-              onStatusChange={onCardStatusChange ? status => onCardStatusChange(task.id, status) : undefined}
-            />
+          tasks.map((task, i) => (
+            <div key={task.id} className="relative">
+              <TaskCard
+                task={task}
+                testIdPrefix={idPrefix}
+                draggable={canManage || task.assigned_to === currentStaffId}
+                isDragging={draggingId === task.id}
+                onDragStart={() => onDragStart(task.id)}
+                onDragEnd={onDragEnd}
+                onClick={() => onCardClick(task)}
+                showMobileActions={showMobileActions && (canManage || task.assigned_to === currentStaffId)}
+                onStatusChange={onCardStatusChange ? status => onCardStatusChange(task.id, status) : undefined}
+              />
+
+              {/* 落点指示线。栏尾(beforeId = null)画在最后一张卡的下缘。 */}
+              {dropAt?.beforeId === task.id && <DropLine edge="top" />}
+              {dropAt?.beforeId === null && i === tasks.length - 1 && <DropLine edge="bottom" />}
+
+              {/*
+                插入点。刻意不是卡与卡之间那条 8px 细缝:8px 对滑鼠是个很难瞄准的
+                目标,而且那条缝要占位,拖曳一开始就会把整栏往下推。改成盖在卡片上、
+                各半张高的两块透明覆盖层 —— 上半 = 插在这张之前,下半 = 插在下一张
+                之前(最后一张的下半就是栏尾)。命中区大了一个量级,栏位版面一格没动,
+                而且每个落点都有自己的 data-testid,测试不必依赖 jsdom 量不出来的座标。
+
+                只在拖曳进行中挂上:平时挂着会盖住卡片,连点开详情都点不到。
+                mobile 那一份的 draggingId 永远是 null,所以那边根本不会长出来。
+              */}
+              {draggingId !== null && (
+                <>
+                  <div
+                    data-testid={`${idPrefix}drop-before-${task.id}`}
+                    className="absolute inset-x-0 top-0 h-1/2"
+                    onDragOver={zoneOver(task.id)}
+                    onDrop={zoneDrop(task.id)}
+                  />
+                  <div
+                    data-testid={`${idPrefix}drop-after-${task.id}`}
+                    className="absolute inset-x-0 bottom-0 h-1/2"
+                    onDragOver={zoneOver(tasks[i + 1]?.id ?? null)}
+                    onDrop={zoneDrop(tasks[i + 1]?.id ?? null)}
+                  />
+                </>
+              )}
+            </div>
           ))
         )}
       </div>
@@ -127,33 +196,63 @@ export function TaskBoard({
   onMove: (taskId: string, status: TaskStatus, position: number) => void
 }) {
   const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [dragOverCol, setDragOverCol] = useState<TaskStatus | null>(null)
+  const [dropAt, setDropAt] = useState<DropAt | null>(null)
   const [mobileTab, setMobileTab] = useState<TaskStatus>('todo')
 
+  /**
+   * 每栏一律依 position 排序。乐观更新只改 position、不动阵列顺序,不在这里排的话
+   * 栏内重排会完全看不出来 —— 卡片得等下一次重拉板才跳到新位置,中间那段时间
+   * 画面讲的顺序和资料库讲的顺序是两回事。
+   */
+  function sorted(status: TaskStatus): Task[] {
+    return tasks.filter(t => t.status === status).sort((a, b) => a.position - b.position)
+  }
+
   const byCol: Record<TaskStatus, Task[]> = {
-    todo:        tasks.filter(t => t.status === 'todo'),
-    in_progress: tasks.filter(t => t.status === 'in_progress'),
-    done:        tasks.filter(t => t.status === 'done'),
+    todo:        sorted('todo'),
+    in_progress: sorted('in_progress'),
+    done:        sorted('done'),
   }
 
-  /** 非管理层只能搬自己名下的任务 —— 这条规则同时守住拖放与 mobile 的换栏钮。 */
-  function requestMove(taskId: string, status: TaskStatus) {
+  /**
+   * 非管理层只能搬自己名下的任务 —— 这条规则同时守住拖放与 mobile 的换栏钮。
+   *
+   * `beforeId` 是落点:插在目标栏的哪一张卡之前,null = 栏尾。栏位本体接到的 drop
+   * 一律传 null ——「丢在这一栏上」就是「放到这一栏的最后」,拖放原本的行为
+   * (以及既有的测试)因此原封不动。
+   */
+  function requestMove(taskId: string, status: TaskStatus, beforeId: string | null) {
     const task = tasks.find(t => t.id === taskId)
-    if (!task || task.status === status) return
+    if (!task) return
     if (!canManage && task.assigned_to !== currentStaffId) return
-    onMove(taskId, status, bottomPosition(tasks, status))
+    if (beforeId === taskId) return   // 丢在自己身上 —— 没动
+
+    // 落点算在**画面上看得到的**那一栏:有筛选时,使用者瞄准的就是这两张卡之间。
+    // 被筛掉的卡还留在原本的号码上,可能夹在中间 —— 那是筛选下重排的固有结果,
+    // 拿完整清单去算反而会算出一个使用者没看过的落点。
+    const shown = byCol[status]
+    const rest  = shown.filter(t => t.id !== taskId)
+    const found = beforeId === null ? -1 : rest.findIndex(t => t.id === beforeId)
+    const at    = found === -1 ? rest.length : found
+
+    // 落回原位就什么都不做。同一个插入点有两条路指得到(这张的下半 = 下一张的
+    // 上半),不挡的话很容易送出一笔什么都没改的写入,而那笔写入还会让已经在
+    // Done 的卡再被问一次「还有子项没做完」。
+    if (task.status === status && at === shown.indexOf(task)) return
+
+    onMove(taskId, status, insertPosition(rest, at))
   }
 
-  function handleDrop(status: TaskStatus) {
+  function handleDrop(status: TaskStatus, beforeId: string | null) {
     const id = draggingId
     setDraggingId(null)
-    setDragOverCol(null)
-    if (id) requestMove(id, status)
+    setDropAt(null)
+    if (id) requestMove(id, status, beforeId)
   }
 
   function clearDragState() {
     setDraggingId(null)
-    setDragOverCol(null)
+    setDropAt(null)
   }
 
   return (
@@ -187,10 +286,16 @@ export function TaskBoard({
             tasks={byCol[col.key]}
             canManage={canManage}
             currentStaffId={currentStaffId}
-            isDragOver={dragOverCol === col.key}
-            onDragOver={e => { e.preventDefault(); setDragOverCol(col.key) }}
-            onDragLeave={() => setDragOverCol(null)}
-            onDrop={e => { e.preventDefault(); handleDrop(col.key) }}
+            dropAt={dropAt?.col === col.key ? dropAt : null}
+            onDragOver={e => { e.preventDefault(); setDropAt({ col: col.key, beforeId: null }) }}
+            // 只有真的离开整栏才熄灯。dragleave 会从每一张卡上冒泡上来,不看
+            // relatedTarget 的话,指标从卡片移到隔壁卡片就足以让指示线闪一下。
+            onDragLeave={e => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropAt(null)
+            }}
+            onDrop={e => { e.preventDefault(); handleDrop(col.key, null) }}
+            onZoneOver={beforeId => setDropAt({ col: col.key, beforeId })}
+            onZoneDrop={beforeId => handleDrop(col.key, beforeId)}
             draggingId={draggingId}
             onDragStart={id => setDraggingId(id)}
             onDragEnd={clearDragState}
@@ -209,17 +314,19 @@ export function TaskBoard({
           tasks={byCol[mobileTab]}
           canManage={canManage}
           currentStaffId={currentStaffId}
-          isDragOver={false}
+          dropAt={null}
           onDragOver={() => {}}
           onDragLeave={() => {}}
           onDrop={() => {}}
+          onZoneOver={() => {}}
+          onZoneDrop={() => {}}
           draggingId={null}
           onDragStart={() => {}}
           onDragEnd={() => {}}
           onCardClick={onCardClick}
           onAddClick={onAddClick}
           showMobileActions
-          onCardStatusChange={requestMove}
+          onCardStatusChange={(taskId, status) => requestMove(taskId, status, null)}
         />
       </div>
     </>

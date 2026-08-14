@@ -4,9 +4,9 @@ import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
 import { useCan } from '../../shared/lib/permissions'
-import { openChecklistCount } from '../../shared/lib/tasks'
+import { needsRebalance, openChecklistCount, rebalance } from '../../shared/lib/tasks'
 import type { Staff } from '../../shared/types'
-import { fetchBoardTasks, fetchTags, moveTask } from './api'
+import { fetchBoardTasks, fetchTags, moveTask, updateTask } from './api'
 import type { MoveResult, Tag, Task, TaskStatus } from './types'
 import { TaskBoard, bottomPosition } from './TaskBoard'
 import { TaskDetailModal } from './TaskDetailModal'
@@ -97,7 +97,11 @@ export default function TasksPage() {
   ): Promise<MoveResult> {
     const before = tasks.find(t => t.id === taskId)
     if (!before) return { ok: false, reason: 'it is no longer on the board.' }
-    if (status === 'done' && !confirmDoneWithOpenItems(before)) return null
+    // 只在「真的把任务收掉」时问 —— 已经在 Done 的卡在栏内换个位置不是收工,
+    // 每挪一次就问一次「还有子项没做完」,问的是一件早就发生过的事。
+    if (status === 'done' && before.status !== 'done' && !confirmDoneWithOpenItems(before)) {
+      return null
+    }
     setTasks(prev => prev.map(t => (t.id === taskId ? { ...t, status, position } : t)))
 
     const res = await moveTask(taskId, status, position)
@@ -105,19 +109,65 @@ export default function TasksPage() {
       setTasks(prev => prev.map(t => (
         t.id === taskId ? { ...t, status: before.status, position: before.position } : t
       )))
-    } else {
-      // 详情弹窗的换栏钮直接呼叫这里,不经过 handleBoardMove —— 若不在这收掉,
-      // 之前拖放失败留下的页面横幅会一直挂著,即使这次换栏明明成功了。
-      setError('')
+      return res
     }
+    // 详情弹窗的换栏钮直接呼叫这里,不经过 handleBoardMove —— 若不在这收掉,
+    // 之前拖放失败留下的页面横幅会一直挂著,即使这次换栏明明成功了。
+    setError('')
+
+    // 目标栏搬进来之后长这样。用整份 tasks(不是画面上筛过的那份)——
+    // 重新编号会重写整栏,被筛掉的卡也在里面,漏算它们就会算出错的号码。
+    const column = [
+      ...tasks.filter(t => t.status === status && t.id !== taskId),
+      { ...before, status, position },
+    ].sort((a, b) => a.position - b.position)
+    if (needsRebalance(column.map(t => t.position))) await rebalanceColumn(column)
     return res
   }
 
-  /** 板上的拖放与 mobile 换栏钮 —— 回报到页面横幅。成功要把上一次的失败收掉。 */
+  /**
+   * 整栏重新编号。反覆往同一条缝插中点,double 的间距最后会小到再也切不开
+   * (needsRebalance 就是在喊这件事),这时把整栏摊平回 POSITION_STEP 的间距。
+   *
+   * 这是搬动成功之后的收尾,不是搬动本身:使用者要的那一步已经落地了,所以这里
+   * 失败不能讲成「搬不动」。写入一笔一笔送、第一笔失败就停手 —— 半套的重新编号
+   * 会把整栏的顺序打乱成没人预期的样子(新号码可能比还没改到的旧号码小),
+   * 本地状态无从推测那到底变成什么,唯一诚实的做法是重新拉板,让画面回到
+   * 资料库真正的样子,再把失败讲出来。
+   */
+  async function rebalanceColumn(column: Task[]) {
+    const planned = rebalance(column)
+    for (let i = 0; i < planned.length; i++) {
+      // 号码本来就对的那几张不用写:少送几趟网路,能失败的面也跟着变小。
+      if (planned[i].position === column[i].position) continue
+      const res = await updateTask(planned[i].id, { position: planned[i].position })
+      if (!res.ok) {
+        // load() 成功会自己清掉 error,所以讯息要摆在它之后;代价是万一连重拉
+        // 都失败,读取的错误会被这一句盖掉 —— 横幅上的 Retry 仍然是同一颗钮。
+        await load()
+        setError(`Could not tidy up the column order — ${res.reason}`)
+        return
+      }
+    }
+    // 全部落地了,本地直接吃新号码,不必再为了这件事多拉一次板。
+    setTasks(prev => prev.map(t => {
+      const next = planned.find(p => p.id === t.id)
+      return next ? { ...t, position: next.position } : t
+    }))
+  }
+
+  /**
+   * 板上的拖放与 mobile 换栏钮 —— 失败回报到页面横幅。
+   *
+   * 成功刻意**不**在这里收横幅:moveOptimistic 一成功就收掉了,收完之后还接着
+   * 整栏重新编号,那一步失败会把讯息写进同一条横幅。这里若再无条件清一次,
+   * 就会把刚写上去的那句抹掉 —— 使用者看到的是一块什么都没说、顺序却和资料库
+   * 对不起来的板。
+   */
   async function handleBoardMove(taskId: string, status: TaskStatus, position: number) {
     const res = await moveOptimistic(taskId, status, position)
     if (!res) return   // 确认被取消 —— 什么都没发生,横幅维持原样。
-    setError(res.ok ? '' : `Could not move the task — ${res.reason}`)
+    if (!res.ok) setError(`Could not move the task — ${res.reason}`)
   }
 
   const filteredTasks = tasks.filter(t => {

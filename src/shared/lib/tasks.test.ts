@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  normalizeTagName, computeDropPosition, needsRebalance, rebalance,
+  normalizeTagName, computeDropPosition, insertPosition, needsRebalance, rebalance,
   projectProgress, isOverdue, deriveParticipants, openChecklistCount, POSITION_STEP,
 } from './tasks'
 
@@ -56,6 +56,33 @@ describe('computeDropPosition', () => {
 
   it('splits the gap between two cards', () => {
     expect(computeDropPosition(1024, 2048)).toBe(1536)
+  })
+})
+
+describe('insertPosition', () => {
+  const column = [{ position: 1024 }, { position: 2048 }, { position: 3072 }]
+
+  it('seeds an empty column', () => {
+    expect(insertPosition([], 0)).toBe(POSITION_STEP)
+  })
+
+  it('lands above the first card', () => {
+    expect(insertPosition(column, 0)).toBe(1024 - POSITION_STEP)
+  })
+
+  it('lands between the two cards it was dropped between', () => {
+    expect(insertPosition(column, 1)).toBe(1536)
+    expect(insertPosition(column, 2)).toBe(2560)
+  })
+
+  it('lands at the bottom when the index is the length', () => {
+    expect(insertPosition(column, 3)).toBe(3072 + POSITION_STEP)
+  })
+
+  /** 落点是从 DOM 事件来的,一个过期的索引不该算出 NaN,只该退回栏尾 / 栏首。 */
+  it('clamps an out-of-range index to the ends of the column', () => {
+    expect(insertPosition(column, 99)).toBe(3072 + POSITION_STEP)
+    expect(insertPosition(column, -3)).toBe(1024 - POSITION_STEP)
   })
 })
 

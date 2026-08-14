@@ -36,6 +36,19 @@ export function computeDropPosition(prev: number | undefined, next: number | und
   return (prev + next) / 2
 }
 
+/**
+ * 插在 `column[index]` 之前时该拿的 position;`index` 大于等于长度就是落到栏尾。
+ *
+ * `column` 是目标栏**现有**的卡,依显示顺序(= position 升幂),而且**不含正在拖的
+ * 那一张** —— 把被拖的卡留在里面,它自己的 position 会成为落点的邻居,算出来的
+ * 中点就只是「它现在的位置附近」,毫无意义。index 会先夹回 [0, length],
+ * 落点来自 DOM 事件,不该让一个过期的索引算出 NaN。
+ */
+export function insertPosition(column: Array<{ position: number }>, index: number): number {
+  const at = Math.max(0, Math.min(index, column.length))
+  return computeDropPosition(column[at - 1]?.position, column[at]?.position)
+}
+
 /** 该栏是否已经挤到需要整栏重新编号。 */
 export function needsRebalance(positions: number[]): boolean {
   const sorted = [...positions].sort((a, b) => a - b)
