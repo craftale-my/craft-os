@@ -101,9 +101,41 @@ describe('needsRebalance', () => {
 
 describe('rebalance', () => {
   it('renumbers in order with a full step between neighbours', () => {
-    const out = rebalance([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
+    const out = rebalance([{ id: 'a', position: 0 }, { id: 'b', position: 0 }, { id: 'c', position: 0 }])
     expect(out.map(o => o.position)).toEqual([1024, 2048, 3072])
     expect(out.map(o => o.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  /** 号码还是落在 POSITION_STEP 的格子上,只是整段抬到现有最大号之上。 */
+  it('lifts the whole run above the column maximum, still on the step lattice', () => {
+    const out = rebalance([
+      { id: 'a', position: 1024 },
+      { id: 'b', position: 1024.00005 },
+      { id: 'c', position: 3072 },
+    ])
+    expect(out.map(o => o.position)).toEqual([4096, 5120, 6144])
+  })
+
+  /**
+   * 这条是呼叫端「由下往上写、失败就停手」的地基:每一个新号码都必须大于整栏现有
+   * 的最大号。少了这一条,写到一半停手就会留下一栏顺序被打乱的卡 —— 而不是一栏
+   * 号码还挤着、顺序却完好的卡。
+   */
+  it('keeps the column in order however far a bottom-up write gets', () => {
+    const column = [
+      { id: 'a', position: 5000 },
+      { id: 'b', position: 5000.00001 },
+      { id: 'c', position: 5000.00002 },
+      { id: 'd', position: 9000 },
+    ]
+    const planned = rebalance(column)
+
+    // 由下往上写,停在每一个可能的中断点上 —— 顺序都必须还是 a b c d。
+    for (let stop = planned.length - 1; stop >= 0; stop--) {
+      const live = column.map((t, i) => (i >= stop ? planned[i] : t))
+      const shown = [...live].sort((x, y) => x.position - y.position)
+      expect(shown.map(t => t.id)).toEqual(['a', 'b', 'c', 'd'])
+    }
   })
 })
 

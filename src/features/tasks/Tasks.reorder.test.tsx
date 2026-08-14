@@ -227,6 +227,79 @@ describe('落在栏位本体', () => {
   })
 })
 
+/**
+ * 有筛选时的「栏尾」。板子拿到的是筛过的清单,但「放到这一栏的最后」讲的是这一栏
+ * **真正的**最后一张 —— 底下压着别人的卡看不到,不代表它不在。算错的话卡片会停在
+ * 栏位中间,而且要等清掉筛选才看得到;新任务走的 bottomPosition() 吃的是整份 tasks,
+ * 两边对「栏尾在哪」的说法当场就对不起来。
+ */
+describe('筛选之下的栏尾', () => {
+  /** 只看自己的卡 —— y / z 是别人的,筛掉之后画面上就没有它们了。 */
+  function onlyMyTasks() {
+    fireEvent.click(screen.getByRole('button', { name: 'My Tasks' }))
+  }
+
+  /** Done 栏:看得到的 x(1024)在上,看不到的 y(5000)才是真正的最后一张。 */
+  const HIDDEN_BOTTOM = [
+    task('a', 1024),
+    task('x', 1024, { status: 'done' }),
+    task('y', 5000, { status: 'done', assigned_to: 'staff-2' }),
+  ]
+
+  it('drops onto the column body below the hidden last card, not the last visible one', async () => {
+    await boardOf(HIDDEN_BOTTOM)
+    onlyMyTasks()
+    // 先确认筛选真的把 y 挡掉了,否则这一则就只是在测没有筛选的情况。
+    expect(orderIn('done')).toEqual(['x'])
+
+    dragOnto('a', 'column-done')
+
+    await waitFor(() => expect(h.moveTask).toHaveBeenCalledTimes(1))
+    expect(h.moveTask.mock.calls[0]).toEqual(['a', 'done', 5000 + 1024])
+  })
+
+  it('sends the mobile move button to the true bottom of the column', async () => {
+    await boardOf(HIDDEN_BOTTOM)
+    onlyMyTasks()
+
+    // mobile 卡上的换栏钮(桌面那份不长这些钮);栏位分页钮叫 "Done (1)",不会撞到。
+    fireEvent.click(screen.getByRole('button', { name: '→ Done' }))
+
+    await waitFor(() => expect(h.moveTask).toHaveBeenCalledTimes(1))
+    expect(h.moveTask.mock.calls[0]).toEqual(['a', 'done', 5000 + 1024])
+  })
+
+  /** 「看得到的最后一张」底下还压着别人的卡,把它丢到栏尾是一次真的搬动。 */
+  it('still moves the last visible card when a hidden card sits below it', async () => {
+    await boardOf(HIDDEN_BOTTOM)
+    onlyMyTasks()
+
+    dragOnto('x', 'column-done')
+
+    await waitFor(() => expect(h.moveTask).toHaveBeenCalledTimes(1))
+    expect(h.moveTask.mock.calls[0]).toEqual(['x', 'done', 5000 + 1024])
+  })
+
+  /**
+   * 指名插在某张卡之前则**照旧**算在看得到的那一栏:使用者瞄准的就是这张卡的
+   * 上缘。这里 z(500)被筛掉了却夹在 x 上面 —— 若改用完整清单,落点会变成
+   * z 与 x 的中点(762),那是一个使用者没看过、也没指过的位置。
+   */
+  it('still resolves a between-cards drop against the visible column', async () => {
+    await boardOf([
+      task('a', 1024),
+      task('z', 500,  { status: 'done', assigned_to: 'staff-2' }),
+      task('x', 1024, { status: 'done' }),
+    ])
+    onlyMyTasks()
+
+    dragOnto('a', 'drop-before-x')
+
+    await waitFor(() => expect(h.moveTask).toHaveBeenCalledTimes(1))
+    expect(h.moveTask.mock.calls[0]).toEqual(['a', 'done', 1024 - 1024])
+  })
+})
+
 describe('写入没落地', () => {
   /**
    * 同栏重排的 status 从头到尾都是 todo,唯一能把顺序放回去的就是 position 的
@@ -259,11 +332,12 @@ describe('整栏重新编号', () => {
 
     dragOnto('c', 'drop-before-b')
 
-    await waitFor(() => expect(h.updateTask).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(h.updateTask).toHaveBeenCalledTimes(3))
     expect(h.moveTask.mock.calls[0]).toEqual(['c', 'todo', SPLIT])
-    // a 的号码本来就对(1024),不必重写;其余两张依顺序摊回整数步长。
-    expect(h.updateTask.mock.calls[0]).toEqual(['c', { position: 2048 }])
-    expect(h.updateTask.mock.calls[1]).toEqual(['b', { position: 3072 }])
+    // 整段新号码排在这一栏现有最大号(1024.00005)之上的第一格,由下往上写。
+    expect(h.updateTask.mock.calls[0]).toEqual(['b', { position: 5120 }])
+    expect(h.updateTask.mock.calls[1]).toEqual(['c', { position: 4096 }])
+    expect(h.updateTask.mock.calls[2]).toEqual(['a', { position: 3072 }])
     // 重新编号不改顺序,而且不必为了这件事再拉一次板。
     expect(orderIn('todo')).toEqual(['a', 'c', 'b'])
     expect(h.fetchBoardTasks).toHaveBeenCalledTimes(1)
@@ -279,8 +353,8 @@ describe('整栏重新编号', () => {
   })
 
   /**
-   * 半套的重新编号会把顺序打乱成没人预期的样子(新号码可能比还没改到的旧号码
-   * 小),本地无从推测,所以停手 + 重拉板。搬动本身是成功的,不能讲成「搬不动」。
+   * 半套的重新编号,本地那份号码新旧混着、无从推测,所以停手 + 重拉板。
+   * 搬动本身是成功的,不能讲成「搬不动」。
    */
   it('stops at the first rejected renumber, reloads the board, and says so', async () => {
     h.updateTask.mockResolvedValueOnce(BLOCKED)
@@ -292,6 +366,40 @@ describe('整栏重新编号', () => {
     expect(h.updateTask).toHaveBeenCalledTimes(1)
     expect(h.fetchBoardTasks).toHaveBeenCalledTimes(2)
     expect(screen.queryByText(/Could not move the task/i)).toBeNull()
+  })
+
+  /**
+   * 停在半路也不准把顺序弄乱。写入由下往上送,而且每一个新号码都在整栏现有最大号
+   * 之上 —— 所以不管停在哪一笔,资料库里的顺序都还是使用者刚刚看到的那个。
+   * 这里让第二笔被挡下来,再拿「资料库现在长这样」重拉一次板:第一笔的新号码
+   * (b = 5120)与另外两张的旧号码摆在一起,栏内顺序必须还是 a c b。
+   */
+  it('leaves the column in the right order when a renumber is rejected halfway', async () => {
+    // 一份最小的「资料库」:落地的写入才改得动它,重拉板一律照它现在的样子回答。
+    // 顺序断言因此吃的是**实作真的写了什么、依什么次序写**,不是一份写死的期望值。
+    const db = new Map(TIGHT.map(t => [t.id, t.position]))
+    h.fetchBoardTasks.mockImplementation(async () =>
+      [...db].map(([id, position]) => task(id, position)),
+    )
+    h.moveTask.mockImplementation(async (id: string, _status: TaskStatus, position: number) => {
+      db.set(id, position)
+      return OK
+    })
+    let writes = 0
+    h.updateTask.mockImplementation(async (id: string, patch: { position: number }) => {
+      if (++writes === 2) return BLOCKED   // 第二笔被挡下来,停手
+      db.set(id, patch.position)
+      return OK
+    })
+    render(<TasksPage />)
+    await screen.findByTestId('task-card-a')
+
+    dragOnto('c', 'drop-before-b')
+
+    expect(await screen.findByText(/Could not tidy up the column order/i)).toBeTruthy()
+    expect(h.updateTask).toHaveBeenCalledTimes(2)
+    // 重拉之后画面 = 资料库那一刻的样子,顺序还是使用者刚刚看到的 a c b。
+    expect(orderIn('todo')).toEqual(['a', 'c', 'b'])
   })
 })
 

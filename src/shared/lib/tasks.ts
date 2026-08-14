@@ -58,9 +58,26 @@ export function needsRebalance(positions: number[]): boolean {
   return false
 }
 
-/** 依现有顺序以 POSITION_STEP 重新编号。 */
-export function rebalance<T>(items: T[]): Array<T & { position: number }> {
-  return items.map((item, i) => ({ ...item, position: (i + 1) * POSITION_STEP }))
+/**
+ * 依现有顺序重新编号,间距一律 POSITION_STEP,而且整段**排在这一栏现有最大号之上**:
+ * base 是大于等于现有最大号的第一个 POSITION_STEP 倍数,第 i 张拿
+ * base + (i + 1) * POSITION_STEP。
+ *
+ * 「排在最大号之上」不是为了好看,是为了让呼叫端能一笔一笔写、而且写到一半被挡下来
+ * 也不会把顺序弄乱:任何一个新号码都大于所有还没改到的旧号码,也小于已经改好的
+ * 那几张,所以只要**由下往上**写,每写完一笔整栏的顺序都还是同一个 —— 中断只会
+ * 留下「号码还挤着」,不会留下「顺序被打乱」。号码固定落在 POSITION_STEP 的格子上,
+ * 代价是每重新编号一次就往上长一截;一栏要连插二十几次中点才触发一次,double
+ * 装得下这个速度。
+ */
+export function rebalance<T extends { position: number }>(
+  items: T[],
+): Array<T & { position: number }> {
+  // 用 0 起头:整栏都是负号码(从栏首往上插能插出负数)时 base 退回 0,
+  // 新号码照样在所有旧号码之上。
+  const max  = items.reduce((m, item) => Math.max(m, item.position), 0)
+  const base = Math.ceil(max / POSITION_STEP) * POSITION_STEP
+  return items.map((item, i) => ({ ...item, position: base + (i + 1) * POSITION_STEP }))
 }
 
 /**

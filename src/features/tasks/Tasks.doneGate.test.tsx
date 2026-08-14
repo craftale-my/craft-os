@@ -3,10 +3,11 @@
 // 子项没做完就把任务丢进 Done,要先问一句。这个闸门刻意是**软的** —— 确认就
 // 放行,子项可能作废、可能被情势跳过,硬挡会让任务永远结不掉。
 //
-// 有两条路会把任务搬到 Done,而且它们不共用同一个入口:板上的拖放(与 mobile
-// 的换栏钮)走 TaskBoard → handleBoardMove,详情弹窗的 "Move to" 却是直接呼叫
-// moveOptimistic、绕过 handleBoardMove。只在其中一条挂确认,另一条就成了后门,
-// 而且是使用者最常用的那一条(卡片开着弹窗才看得到子项)。所以两条都测。
+// 有三条路会把任务搬到 Done,而且它们不共用同一个入口:板上的拖放与 mobile 卡上的
+// 换栏钮虽然都走 TaskBoard → handleBoardMove,进 TaskBoard 的却是两个不同的呼叫点
+// (拖放的 drop handler,对上卡片钮直接呼叫 requestMove);详情弹窗的 "Move to"
+// 更是直接呼叫 moveOptimistic、绕过 handleBoardMove。只在其中一条挂确认,其余就成了
+// 后门 —— 而弹窗那条还是使用者最常用的(卡片开着弹窗才看得到子项)。所以三条都测。
 //
 // 「取消」的验收标准比「没有送出写入」更严格:连乐观更新都不准跑。卡片先跳去
 // Done 再弹回来,等於问了也白问 —— 使用者已经看到它进了 Done。
@@ -194,6 +195,36 @@ describe('板上拖到 Done', () => {
 
     await waitFor(() => expect(h.moveTask).toHaveBeenCalledTimes(1))
     expect(asked).not.toHaveBeenCalled()
+  })
+})
+
+describe('mobile 卡上的 → Done', () => {
+  /** mobile 卡上的换栏钮;栏位分页钮叫 "Done (0)",不会撞到。 */
+  function tapMoveToDone() {
+    fireEvent.click(screen.getByRole('button', { name: '→ Done' }))
+  }
+
+  it('asks before closing a task that still has open items', async () => {
+    const confirmed = answerConfirm(true)
+    await renderBoard()
+
+    tapMoveToDone()
+
+    await waitFor(() => expect(h.moveTask).toHaveBeenCalledTimes(1))
+    expect(confirmed).toHaveBeenCalledWith(PROMPT)
+    expect(h.moveTask.mock.calls[0][1]).toBe('done')
+  })
+
+  it('does nothing at all when the confirmation is cancelled', async () => {
+    answerConfirm(false)
+    await renderBoard()
+
+    tapMoveToDone()
+
+    await waitFor(() => expect(window.confirm).toHaveBeenCalledTimes(1))
+    expect(h.moveTask).not.toHaveBeenCalled()
+    expect(screen.queryByText(/Could not move the task/i)).toBeNull()
+    expectStillInTodo()
   })
 })
 

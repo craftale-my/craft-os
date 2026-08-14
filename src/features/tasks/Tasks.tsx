@@ -127,19 +127,24 @@ export default function TasksPage() {
 
   /**
    * 整栏重新编号。反覆往同一条缝插中点,double 的间距最后会小到再也切不开
-   * (needsRebalance 就是在喊这件事),这时把整栏摊平回 POSITION_STEP 的间距。
+   * (needsRebalance 就是在喊这件事),这时把整栏摊回 POSITION_STEP 的间距。
    *
    * 这是搬动成功之后的收尾,不是搬动本身:使用者要的那一步已经落地了,所以这里
-   * 失败不能讲成「搬不动」。写入一笔一笔送、第一笔失败就停手 —— 半套的重新编号
-   * 会把整栏的顺序打乱成没人预期的样子(新号码可能比还没改到的旧号码小),
-   * 本地状态无从推测那到底变成什么,唯一诚实的做法是重新拉板,让画面回到
-   * 资料库真正的样子,再把失败讲出来。
+   * 失败不能讲成「搬不动」。写入一笔一笔送、第一笔失败就停手 —— 而**由下往上**
+   * 送这件事是刻意的:rebalance() 把整段新号码排在这一栏现有最大号之上,所以每
+   * 一笔新号码都大于所有还没改到的旧号码、也小于已经改好的那几张。写到哪停手,
+   * 整栏的顺序都还是使用者刚刚看到的那个顺序;停手留下的只是「号码还挤着」,
+   * 下一次搬动会再喊一次 needsRebalance,不是「顺序被打乱」这种没人救得回来的
+   * 状态。(由上往下送就会:第一张拿到的新号码可能比下面那些还没改的旧号码大。)
+   *
+   * 顺序虽然保住了,本地那份号码已经新旧混着、无从推测,所以照样重新拉板让画面
+   * 回到资料库真正的样子,再把没收干净这件事讲出来。
+   *
+   * 每一张都要写:新号码一律在现有最大号之上,不可能有哪一张的号码「本来就对」。
    */
   async function rebalanceColumn(column: Task[]) {
     const planned = rebalance(column)
-    for (let i = 0; i < planned.length; i++) {
-      // 号码本来就对的那几张不用写:少送几趟网路,能失败的面也跟着变小。
-      if (planned[i].position === column[i].position) continue
+    for (let i = planned.length - 1; i >= 0; i--) {
       const res = await updateTask(planned[i].id, { position: planned[i].position })
       if (!res.ok) {
         // load() 成功会自己清掉 error,所以讯息要摆在它之后;代价是万一连重拉
@@ -309,6 +314,7 @@ export default function TasksPage() {
 
         <TaskBoard
           tasks={filteredTasks}
+          allTasks={tasks}
           canManage={canManage}
           currentStaffId={currentStaffId}
           onCardClick={task => setDetailId(task.id)}

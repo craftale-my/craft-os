@@ -14,11 +14,25 @@ const COL_STYLE: Record<TaskStatus, {
 }
 
 /**
- * 该栏底部的落点。新任务、详情弹窗的 "Move to" 与 mobile 的换栏钮都用它 ——
- * 这三条路没有「插在哪两张之间」的概念,一律进栏尾。空栏回 POSITION_STEP。
+ * 一栏由上到下的卡。一律依 position 排序:乐观更新只改 position、不动阵列顺序,
+ * 不在这里排的话栏内重排会完全看不出来 —— 卡片得等下一次重拉板才跳到新位置,
+ * 中间那段时间画面讲的顺序和资料库讲的顺序是两回事。同一个理由,「栏尾在哪」
+ * 也不能靠阵列的最后一格:那一格在乐观更新之后不一定还是号码最大的那张。
+ */
+function sortedIn(tasks: Task[], status: TaskStatus): Task[] {
+  return tasks.filter(t => t.status === status).sort((a, b) => a.position - b.position)
+}
+
+/**
+ * 该栏底部的落点。新任务、详情弹窗的 "Move to" 都用它 —— 这两条路没有
+ * 「插在哪两张之间」的概念,一律进栏尾。空栏回 POSITION_STEP。
+ *
+ * `tasks` 必须是**整份**任务,不是画面上筛过的那份:栏尾讲的是这一栏真正的
+ * 最后一张。板上「丢在栏位本体」与 mobile 的换栏钮走 TaskBoard 内部同一套
+ * 规则(见 requestMove),两边算出来的栏尾因此是同一个。
  */
 export function bottomPosition(tasks: Task[], status: TaskStatus): number {
-  const column = tasks.filter(t => t.status === status)
+  const column = sortedIn(tasks, status)
   return insertPosition(column, column.length)
 }
 
@@ -156,12 +170,17 @@ function KanbanColumn({
 
                 只在拖曳进行中挂上:平时挂着会盖住卡片,连点开详情都点不到。
                 mobile 那一份的 draggingId 永远是 null,所以那边根本不会长出来。
+
+                上半那块往上多吃 gap-2.5 那 10px:两块覆盖层加起来只盖满卡片本身,
+                卡与卡之间那条缝就成了没人认领的死带 —— 指标慢慢划过去,指示线会
+                从「插在这里」跳成「放到栏尾」再跳回来。这块本来就把指示线画在
+                -top-1.5(缝里),把命中区补到同一个地方而已。
               */}
               {draggingId !== null && (
                 <>
                   <div
                     data-testid={`${idPrefix}drop-before-${task.id}`}
-                    className="absolute inset-x-0 top-0 h-1/2"
+                    className="absolute inset-x-0 -top-2.5 bottom-1/2"
                     onDragOver={zoneOver(task.id)}
                     onDrop={zoneDrop(task.id)}
                   />
@@ -182,13 +201,19 @@ function KanbanColumn({
 }
 
 /**
- * 三栏板本体。只吃 `tasks`,不自己查资料 —— 好让 `/team/tasks` 与
+ * 三栏板本体。只吃传进来的清单,不自己查资料 —— 好让 `/team/tasks` 与
  * `/team/projects/:id` 共用同一块板。写入由 `onMove` 交回页面层。
  */
 export function TaskBoard({
-  tasks, canManage, currentStaffId, onCardClick, onAddClick, onMove,
+  tasks, allTasks, canManage, currentStaffId, onCardClick, onAddClick, onMove,
 }: {
+  /** 画面上看得到的卡 —— 页面层已经套过筛选。 */
   tasks: Task[]
+  /**
+   * 整份任务,没套筛选。只有「栏尾」那个落点吃它 —— 见 requestMove。
+   * 页面层不筛的时候两者是同一份,拿同一个阵列传两次也完全没问题。
+   */
+  allTasks: Task[]
   canManage: boolean
   currentStaffId: string
   onCardClick: (task: Task) => void
@@ -199,27 +224,30 @@ export function TaskBoard({
   const [dropAt, setDropAt] = useState<DropAt | null>(null)
   const [mobileTab, setMobileTab] = useState<TaskStatus>('todo')
 
-  /**
-   * 每栏一律依 position 排序。乐观更新只改 position、不动阵列顺序,不在这里排的话
-   * 栏内重排会完全看不出来 —— 卡片得等下一次重拉板才跳到新位置,中间那段时间
-   * 画面讲的顺序和资料库讲的顺序是两回事。
-   */
-  function sorted(status: TaskStatus): Task[] {
-    return tasks.filter(t => t.status === status).sort((a, b) => a.position - b.position)
-  }
-
+  // 画面上的三栏。排序的理由见 sortedIn。
   const byCol: Record<TaskStatus, Task[]> = {
-    todo:        sorted('todo'),
-    in_progress: sorted('in_progress'),
-    done:        sorted('done'),
+    todo:        sortedIn(tasks, 'todo'),
+    in_progress: sortedIn(tasks, 'in_progress'),
+    done:        sortedIn(tasks, 'done'),
   }
 
   /**
    * 非管理层只能搬自己名下的任务 —— 这条规则同时守住拖放与 mobile 的换栏钮。
    *
    * `beforeId` 是落点:插在目标栏的哪一张卡之前,null = 栏尾。栏位本体接到的 drop
-   * 一律传 null ——「丢在这一栏上」就是「放到这一栏的最后」,拖放原本的行为
-   * (以及既有的测试)因此原封不动。
+   * 与 mobile 的换栏钮一律传 null ——「丢在这一栏上」就是「放到这一栏的最后」。
+   *
+   * 落点要算在哪一份清单上,看使用者指的是什么:
+   *
+   *  - 指名插在某张卡之前 → 算在**画面上看得到的**那一栏。有筛选时,使用者瞄准的
+   *    就是这两张卡之间;被筛掉的卡还留在原本的号码上,可能夹在中间,那是筛选下
+   *    重排的固有结果,拿完整清单去算反而会算出一个使用者没看过的落点。
+   *
+   *  - 栏尾 → 算在**完整**的那一栏。这里没有「使用者瞄准的两张卡」可以依据,
+   *    「最后」讲的就是这一栏真正的最后一张。拿筛过的清单去算,「放到 Done 的
+   *    最后」在有筛选时会变成「放到 Done 的中间」—— 而且要等清掉筛选才看得到;
+   *    新任务与详情弹窗的 "Move to" 走的 bottomPosition() 吃的是整份 tasks,
+   *    两边对栏尾的说法也会当场对不起来。
    */
   function requestMove(taskId: string, status: TaskStatus, beforeId: string | null) {
     const task = tasks.find(t => t.id === taskId)
@@ -227,18 +255,17 @@ export function TaskBoard({
     if (!canManage && task.assigned_to !== currentStaffId) return
     if (beforeId === taskId) return   // 丢在自己身上 —— 没动
 
-    // 落点算在**画面上看得到的**那一栏:有筛选时,使用者瞄准的就是这两张卡之间。
-    // 被筛掉的卡还留在原本的号码上,可能夹在中间 —— 那是筛选下重排的固有结果,
-    // 拿完整清单去算反而会算出一个使用者没看过的落点。
-    const shown = byCol[status]
-    const rest  = shown.filter(t => t.id !== taskId)
-    const found = beforeId === null ? -1 : rest.findIndex(t => t.id === beforeId)
-    const at    = found === -1 ? rest.length : found
+    const column = beforeId === null ? sortedIn(allTasks, status) : byCol[status]
+    const rest   = column.filter(t => t.id !== taskId)
+    const found  = beforeId === null ? -1 : rest.findIndex(t => t.id === beforeId)
+    const at     = found === -1 ? rest.length : found
 
     // 落回原位就什么都不做。同一个插入点有两条路指得到(这张的下半 = 下一张的
     // 上半),不挡的话很容易送出一笔什么都没改的写入,而那笔写入还会让已经在
-    // Done 的卡再被问一次「还有子项没做完」。
-    if (task.status === status && at === shown.indexOf(task)) return
+    // Done 的卡再被问一次「还有子项没做完」。比对的是同一份清单里的位置:
+    // 栏尾那条路比的是完整清单,所以「看得到的最后一张、但底下还压着别人的卡」
+    // 会被正确地当成一次真的搬动。
+    if (task.status === status && at === column.findIndex(t => t.id === taskId)) return
 
     onMove(taskId, status, insertPosition(rest, at))
   }
