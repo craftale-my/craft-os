@@ -3,10 +3,9 @@ import { writeOutcome, type WriteOutcome } from '../../shared/lib/db-write'
 import { normalizeTagName } from '../../shared/lib/tasks'
 import { DONE_WINDOW_DAYS } from './types'
 import type {
-  Task, Project, Tag, ChecklistItem, Attachment, TaskComment,
+  Task, Project, Tag, ChecklistItem, Attachment, TaskComment, StaffLite,
   TaskStatus, TaskPriority, ProjectStatus,
 } from './types'
-import type { Staff } from '../../shared/types'
 
 /**
  * Tasks 模块唯一的 Supabase 出入口。
@@ -81,12 +80,18 @@ export async function fetchArchivedTasks(): Promise<Task[]> {
  * 编辑既有任务再存档,原本的 assignee 就被无声洗成 null。搬进这支档案,
  * 跟其他读取一样失败就 throw,页面层用板本来就有的那条错误横幅显示,
  * 不再是这个模块里唯一一笔吞掉 error 的读取。
+ *
+ * 回传 StaffLite,不是 Staff:这支查询只拿三栏,硬转成二十几栏的 Staff 是
+ * 一句谎 —— 呼叫端写 staff.email 会拿到 undefined,而型别检查一声都不会吭。
+ * 搬进这支共用函式之后这句谎还会被到处重用,所以型别一律照着真的查了什么写;
+ * 要多的栏位就把栏位加进 select,再一起改型别。Projects.tsx 的 owner 下拉
+ * 用的也是这个形状。
  */
-export async function fetchAssignableStaff(): Promise<Staff[]> {
+export async function fetchAssignableStaff(): Promise<StaffLite[]> {
   const { data, error } = await supabase
-    .from('staff').select('id,name,avatar,rank,department').order('name')
+    .from('staff').select('id,name,avatar').order('name')
   if (error) throw new Error(error.message)
-  return (data ?? []) as Staff[]
+  return (data ?? []) as StaffLite[]
 }
 
 export interface TaskInput {

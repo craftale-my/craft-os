@@ -112,5 +112,13 @@ export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   cancelled: 'Cancelled',
 }
 
+/** status pill 的配色。清单页与详情页共用同一份,不各自留一份色码。 */
+export const PROJECT_STATUS_STYLES: Record<ProjectStatus, string> = {
+  active:    'bg-[#C4813A20] text-[#A86C2C]',
+  on_hold:   'bg-[#EDE5D8] text-[#8B7355]',
+  completed: 'bg-[#6B8E5A20] text-[#4F6B43]',
+  cancelled: 'bg-[#F5EDE0] text-[#A09080]',
+}
+
 /** Done 栏保留几天。超过的只在 /team/tasks/archive 出现。 */
 export const DONE_WINDOW_DAYS = 14

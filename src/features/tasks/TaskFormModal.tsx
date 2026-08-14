@@ -1,20 +1,26 @@
 import { useState } from 'react'
 import { useLookups } from '../../shared/lib/lookups'
-import type { Staff } from '../../shared/types'
 import { createTask, updateTask } from './api'
-import type { Task, TaskPriority } from './types'
+import type { StaffLite, Task, TaskPriority } from './types'
 
 /**
  * 新增 / 编辑任务。`task` 为 null 即新增。
  * `nextPosition` 是 To Do 栏底部的落点 —— 建立时必须给,栏内排序才有依据。
  */
 export function TaskFormModal({
-  task, allStaff, currentStaffId, nextPosition, onClose, onSaved,
+  task, allStaff, currentStaffId, nextPosition, projectId = null, onClose, onSaved,
 }: {
   task: Task | null
-  allStaff: Staff[]
+  allStaff: StaffLite[]
   currentStaffId: string
   nextPosition: number
+  /**
+   * 新建的任务归给哪个专案。从 /team/projects/:id 开的表单一律带着那个专案,
+   * 不然使用者在专案页上建的任务会掉进「没有专案」那一堆,而且当场从这块板上
+   * 消失(这块板只查这个专案)。编辑既有任务不动这一栏 —— payload 里根本没有
+   * project_id,从专案页编辑不会把任务搬来搬去。
+   */
+  projectId?: string | null
   onClose: () => void
   onSaved: () => void
 }) {
@@ -53,7 +59,7 @@ export function TaskFormModal({
     const res = task
       ? await updateTask(task.id, payload)
       : await createTask(
-          { ...payload, status: 'todo', project_id: null, position: nextPosition },
+          { ...payload, status: 'todo', project_id: projectId, position: nextPosition },
           currentStaffId,
         )
 

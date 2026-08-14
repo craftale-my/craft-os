@@ -7,7 +7,7 @@ import { useCan } from '../../shared/lib/permissions'
 import { projectProgress } from '../../shared/lib/tasks'
 import { Avatar } from '../../shared/components/Avatar'
 import { fetchProjects, deleteProject } from './api'
-import { PROJECT_STATUS_LABELS } from './types'
+import { PROJECT_STATUS_LABELS, PROJECT_STATUS_STYLES } from './types'
 import type { Project, ProjectStatus, StaffLite } from './types'
 import { ProjectFormModal } from './ProjectFormModal'
 
@@ -20,13 +20,6 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'completed', label: 'Completed' },
   { key: 'all',       label: 'All' },
 ]
-
-const STATUS_STYLES: Record<ProjectStatus, string> = {
-  active:    'bg-[#C4813A20] text-[#A86C2C]',
-  on_hold:   'bg-[#EDE5D8] text-[#8B7355]',
-  completed: 'bg-[#6B8E5A20] text-[#4F6B43]',
-  cancelled: 'bg-[#F5EDE0] text-[#A09080]',
-}
 
 /**
  * 删除 Project 的确认。tasks.project_id 是 on delete set null,所以任务不会跟着
@@ -193,7 +186,7 @@ export default function ProjectsPage() {
                   />
                   <span className="font-semibold text-[#3D2B1F] truncate">{p.name}</span>
                   {p.owner && <Avatar name={p.owner.name} avatar={p.owner.avatar} size="sm" />}
-                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ${STATUS_STYLES[p.status]}`}>
+                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex-shrink-0 ${PROJECT_STATUS_STYLES[p.status]}`}>
                     {PROJECT_STATUS_LABELS[p.status]}
                   </span>
                   <div className="h-1.5 w-24 rounded-full bg-[#EDE5D8] overflow-hidden flex-shrink-0">

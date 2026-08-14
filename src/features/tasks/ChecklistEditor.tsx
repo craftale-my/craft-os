@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import { CheckSquare, Square, X } from 'lucide-react'
 import { Avatar } from '../../shared/components/Avatar'
 import { POSITION_STEP, projectProgress } from '../../shared/lib/tasks'
-import type { Staff } from '../../shared/types'
 import {
   fetchChecklist, addChecklistItem, setChecklistDone,
   setChecklistAssignee, deleteChecklistItem,
@@ -23,7 +22,7 @@ import type { ChecklistItem, StaffLite } from './types'
  */
 export function ChecklistEditor({ taskId, allStaff, onChanged }: {
   taskId: string
-  allStaff: Staff[]
+  allStaff: StaffLite[]
   /** 子项的完成数变了 —— 请页面层重拉板,卡片上的 `3/7` 与完成闸门都靠它。 */
   onChanged: () => void
 }) {

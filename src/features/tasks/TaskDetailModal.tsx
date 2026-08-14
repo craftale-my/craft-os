@@ -2,10 +2,9 @@ import { useState } from 'react'
 import { Avatar } from '../../shared/components/Avatar'
 import { useLookups } from '../../shared/lib/lookups'
 import { isOverdue } from '../../shared/lib/tasks'
-import type { Staff } from '../../shared/types'
 import { updateTask, deleteTask, upsertTag, attachTag, detachTag } from './api'
 import { TASK_COLUMNS } from './types'
-import type { MoveResult, Tag, Task, TaskPriority, TaskStatus } from './types'
+import type { MoveResult, StaffLite, Tag, Task, TaskPriority, TaskStatus } from './types'
 import { PRIORITY_CFG, fmtDate } from './TaskCard'
 import { AttachmentGallery } from './AttachmentGallery'
 import { ChecklistEditor } from './ChecklistEditor'
@@ -20,7 +19,7 @@ export function TaskDetailModal({
   task, allStaff, allTags, canManage, currentStaffId, onClose, onChanged, onStatusChange,
 }: {
   task: Task
-  allStaff: Staff[]
+  allStaff: StaffLite[]
   /** 给 TagInput 做建议清单;新建的 tag 要等下一次 onChanged() 落地后才会出现在这里。 */
   allTags: Tag[]
   canManage: boolean

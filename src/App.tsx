@@ -17,6 +17,7 @@ import { MissionsPage } from './features/missions/Missions'
 import ProbationReviewPage from './features/reviews/ProbationReview'
 import TasksPage from './features/tasks/Tasks'
 import ProjectsPage from './features/tasks/Projects'
+import ProjectDetailPage from './features/tasks/ProjectDetail'
 import SettingsPage from './features/settings/Settings'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
@@ -141,6 +142,16 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="view_team">
             <AppLayout><ProjectsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* 单一专案:清单每一列都连到这里,在此之前它掉进 * 的 catch-all。 */}
+      <Route
+        path="/team/projects/:id"
+        element={
+          <ProtectedRoute requireCap="view_team">
+            <AppLayout><ProjectDetailPage /></AppLayout>
           </ProtectedRoute>
         }
       />
