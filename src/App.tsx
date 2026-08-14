@@ -16,6 +16,9 @@ import { StaffProfilePage } from './features/staff/StaffProfile'
 import { MissionsPage } from './features/missions/Missions'
 import ProbationReviewPage from './features/reviews/ProbationReview'
 import TasksPage from './features/tasks/Tasks'
+import TasksArchivePage from './features/tasks/TasksArchive'
+import ProjectsPage from './features/tasks/Projects'
+import ProjectDetailPage from './features/tasks/ProjectDetail'
 import SettingsPage from './features/settings/Settings'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
@@ -126,11 +129,42 @@ function AppRoutes() {
         }
       />
 
+      {/* 一定要放在 /team/tasks 后面:上面那条是精确匹配(没有写成 /team/tasks/*
+          之类的通配),所以顺序其实不影响谁吃到谁 —— 但摆在这里让读代码的人
+          一眼看出这是同一个功能区块底下的子路由,不必扫过整份 Routes 才找到。 */}
+      <Route
+        path="/team/tasks/archive"
+        element={
+          <ProtectedRoute requireCap="view_team">
+            <AppLayout><TasksArchivePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
       <Route
         path="/team/missions"
         element={
           <ProtectedRoute requireCap="manage_missions">
             <AppLayout><MissionsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/team/projects"
+        element={
+          <ProtectedRoute requireCap="view_team">
+            <AppLayout><ProjectsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* 单一专案:清单每一列都连到这里,在此之前它掉进 * 的 catch-all。 */}
+      <Route
+        path="/team/projects/:id"
+        element={
+          <ProtectedRoute requireCap="view_team">
+            <AppLayout><ProjectDetailPage /></AppLayout>
           </ProtectedRoute>
         }
       />

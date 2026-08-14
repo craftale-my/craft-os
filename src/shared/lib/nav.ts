@@ -39,6 +39,7 @@ export const NAV: NavEntry[] = [
       { id: 'team-reviews', label: 'Reviews',   to: '/team/reviews',  activePaths: ['/team/reviews', '/probation/'], cap: 'conduct_reviews' },
       { id: 'team-missions',label: 'Missions',  to: '/team/missions', cap: 'manage_missions' },
       { id: 'team-tasks',   label: 'Tasks',     to: '/team/tasks' },
+      { id: 'team-projects',label: 'Projects',  to: '/team/projects' },
     ],
   },
   {

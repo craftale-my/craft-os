@@ -41,6 +41,7 @@ export type Capability =
   | 'all_branches'     // see data across every branch (false ⇒ own branch only)
   | 'access_settings'  // company settings
   | 'manage_system_roles' // owner-only; assign system roles + edit matrix
+  | 'manage_projects'  // create/edit/delete Projects; edit the Tasks tag vocabulary
 
 export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'view_team',           label: 'View Team' },
@@ -48,6 +49,7 @@ export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'manage_schedule',     label: 'Manage Schedule' },
   { key: 'conduct_reviews',     label: 'Conduct Reviews' },
   { key: 'manage_missions',     label: 'Manage Missions' },
+  { key: 'manage_projects',     label: 'Manage Projects' },
   { key: 'view_salary',         label: 'View Salary' },
   { key: 'manage_hr',           label: 'Manage HR' },
   { key: 'all_branches',        label: 'All Branches' },
@@ -62,32 +64,32 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
   owner: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
-    access_settings: true, manage_system_roles: true,
+    access_settings: true, manage_system_roles: true, manage_projects: true,
   },
   admin: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
-    access_settings: true, manage_system_roles: false,
+    access_settings: true, manage_system_roles: false, manage_projects: true,
   },
   hr: {
     view_team: true, manage_staff: true, manage_schedule: false, conduct_reviews: false,
     manage_missions: false, view_salary: true, manage_hr: true, all_branches: true,
-    access_settings: false, manage_system_roles: false,
+    access_settings: false, manage_system_roles: false, manage_projects: true,
   },
   manager: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
-    access_settings: true, manage_system_roles: false,
+    access_settings: true, manage_system_roles: false, manage_projects: true,
   },
   supervisor: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: false, view_salary: false, manage_hr: true, all_branches: false,
-    access_settings: false, manage_system_roles: false,
+    access_settings: false, manage_system_roles: false, manage_projects: true,
   },
   staff: {
     view_team: false, manage_staff: false, manage_schedule: false, conduct_reviews: false,
     manage_missions: false, view_salary: false, manage_hr: false, all_branches: false,
-    access_settings: false, manage_system_roles: false,
+    access_settings: false, manage_system_roles: false, manage_projects: false,
   },
 }
 
