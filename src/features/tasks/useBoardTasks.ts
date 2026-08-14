@@ -50,7 +50,31 @@ export interface BoardTasks {
   moveOptimistic: (taskId: string, status: TaskStatus, position: number) => Promise<MoveResult>
 }
 
-export function useBoardTasks(projectId?: string): BoardTasks {
+/**
+ * @param projectId 只读这个专案的任务;省略就是整块 /team/tasks。
+ * @param onMoved   一次搬动**真的落地**之后叫一次。给的是页面层那些「由任务算出来、
+ *   却不在这块板上」的数字一个重拉的机会 —— 专案头部的 done/total/overdue 来自
+ *   project_progress view(以 `status = 'done'` 计数),板上换一次栏它就过期一次。
+ *
+ *   做成这支 hook 的合约,而不是让每个页面在自己的 onMove 后面补一句 loadProject():
+ *   漏补的那一页不会坏给你看,只会安静地把 `0/1` 与一条空的进度条,挂在一张已经
+ *   躺在 Done 的卡正上方 —— 那个数字正是这一页存在的理由。搬动有两个入口
+ *   (handleMove 与弹窗直接呼叫的 moveOptimistic),通知只挂在两者交会的那一点上,
+ *   没有一条路径能绕过它。
+ *
+ *   什么时候**不**叫:软性完成确认被取消(没送出写入,也没跑乐观更新)、写入被挡
+ *   下来并已回滚(status 从头到尾没变过),以及整栏重新编号之后 —— 重新编号只改
+ *   position,不动 status 也不动 due_date,project_progress 的三个数字没有一个看得
+ *   到它,再叫一次只是多一趟白跑的读取。
+ *
+ *   它必须自己吞掉自己的错误(ProjectDetail 的 loadProject 会把讯息写进自己那条
+ *   横幅)。这里会 await 它,而板上的 onMove 型别是 `=> void`、没有人接这个
+ *   promise,丢出来的例外会变成没人处理的 rejection。
+ */
+export function useBoardTasks(
+  projectId?: string,
+  onMoved?: () => void | Promise<void>,
+): BoardTasks {
   const [tasks,     setTasks]     = useState<Task[]>([])
   const [allStaff,  setAllStaff]  = useState<StaffLite[]>([])
   const [allTags,   setAllTags]   = useState<Tag[]>([])
@@ -86,6 +110,22 @@ export function useBoardTasks(projectId?: string): BoardTasks {
     }
   }, [projectId])
 
+  /**
+   * 换专案 = 换一块板,firstLoad 要跟着回到 true:新专案的三笔读还没落地之前,
+   * 画面上的头部、板、连开着的详情弹窗都还是上一个专案的东西,而它们没有一处
+   * 看得出来自己是旧的。
+   *
+   * 刻意钉在 projectId 这个**值**上,不是钉在 load 的身分上:load 今天的 deps
+   * 只有 projectId,但只要有人往那个 useCallback 多加一个 dep,钉身分的写法就会
+   * 让每一次背景重拉都升起全屏 loader,把开着的弹窗连同还没存档的内容一起卸载
+   * —— 那正是这块板不准再发生的事(见 load 上方)。
+   *
+   * 今天从 UI 走不到这条路(专案页唯一的出口是回清单,回去再进来是重新挂载),
+   * 留着是因为「换一个 :id」迟早会有第二个入口(专案切换器、上一个/下一个),
+   * 而那次改动没有理由回头看这支 hook。
+   */
+  useEffect(() => { setFirstLoad(true) }, [projectId])
+
   useEffect(() => { load() }, [load])
 
   /**
@@ -120,6 +160,11 @@ export function useBoardTasks(projectId?: string): BoardTasks {
     // 详情弹窗的换栏钮直接呼叫这里,不经过 handleMove —— 若不在这收掉,
     // 之前拖放失败留下的页面横幅会一直挂著,即使这次换栏明明成功了。
     setError('')
+
+    // 搬动落地了,让页面层重拉它自己那份衍生数字(合约见 useBoardTasks 上方)。
+    // 摆在重新编号之前:使用者盯着的是头部那个数字,重新编号是一步看不见的收尾,
+    // 先把画面讲对,再去整理号码。
+    await onMoved?.()
 
     // 目标栏搬进来之后长这样。用整份 tasks(不是画面上筛过的那份)——
     // 重新编号会重写整栏,被筛掉的卡也在里面,漏算它们就会算出错的号码。

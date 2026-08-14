@@ -35,11 +35,6 @@ export default function ProjectDetailPage() {
   const { staff: currentStaff } = useAuth()
   const { can } = useCan()
 
-  const {
-    tasks, allStaff, allTags, firstLoad: boardFirstLoad,
-    error: boardError, load: loadBoard, handleMove, moveOptimistic,
-  } = useBoardTasks(id)
-
   const [project,      setProject]      = useState<Project | null>(null)
   const [projectError, setProjectError] = useState('')
   const [firstLoad,    setFirstLoad]    = useState(true)
@@ -69,7 +64,24 @@ export default function ProjectDetailPage() {
     }
   }, [id])
 
+  /**
+   * 换专案 = 换一个页面,firstLoad 要跟着回到 true。理由与写法(钉在 id 这个值上,
+   * 不钉在 loadProject 的身分上)同 useBoardTasks 里那一则 —— 两个 firstLoad 都得
+   * 回到 true,少一个,全屏 loader 就挡不住上一个专案的画面。
+   */
+  useEffect(() => { setFirstLoad(true) }, [id])
+
   useEffect(() => { loadProject() }, [loadProject])
+
+  /**
+   * 板。onMoved 收下 loadProject:板上换一次栏,头部的 done/total/overdue 就过期
+   * 一次(它们来自 project_progress view,以 status 计数)。挂在这里而不是在下面的
+   * onMove / onStatusChange 各补一句,才不会有哪一条路径漏掉 —— 详见 useBoardTasks。
+   */
+  const {
+    tasks, allStaff, allTags, firstLoad: boardFirstLoad,
+    error: boardError, load: loadBoard, handleMove, moveOptimistic,
+  } = useBoardTasks(id, loadProject)
 
   /** 任务一变动,专案的 done/total/overdue 就跟着变 —— 两边一起重拉。 */
   const reload = useCallback(async () => {
