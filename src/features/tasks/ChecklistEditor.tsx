@@ -103,6 +103,9 @@ export function ChecklistEditor({ taskId, allStaff, onChanged }: {
   }
 
   async function remove(item: ChecklistItem) {
+    // X 就贴在负责人选单旁边,一列里差几个 px,而按下去连认领一起消失、没有 undo。
+    // 删任务、删标签都先问一句,这里跟着走同一个 window.confirm 规格。
+    if (!window.confirm(`Delete "${item.title}"? This cannot be undone.`)) return
     const res = await deleteChecklistItem(item.id)
     if (!res.ok) { setError(`Could not remove the item — ${res.reason}`); return }
     setError('')

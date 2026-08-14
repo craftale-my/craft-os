@@ -344,6 +344,12 @@ export async function fetchProject(id: string): Promise<Project> {
     supabase.from('project_progress').select('*').eq('project_id', id).maybeSingle(),
   ])
   if (projRes.error) throw new Error(projRes.error.message)
+  // progRes 有两种「没有列」,只有一种是正常的:.maybeSingle() 查无此列回
+  // data: null / error: null(还没有任何任务的新专案就长这样,counts 归 0 是对的),
+  // view 读不到才是 error。后者一定要 throw —— 吞掉的话专案页会把「读不到进度」
+  // 画成一个 0/0 的空专案,而 fetchProjects 在同样情况下是丢错误的,
+  // 同一份资料两个页面两种说法。
+  if (progRes.error) throw new Error(progRes.error.message)
   return {
     ...projRes.data,
     total_tasks:   progRes.data?.total_tasks   ?? 0,

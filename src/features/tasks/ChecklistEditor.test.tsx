@@ -54,7 +54,11 @@ beforeEach(() => {
   h.fetchChecklist.mockResolvedValue([{ ...ITEM }])
   h.setChecklistAssignee.mockResolvedValue({ ok: true })
 })
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  // window.confirm 是 spy 上去的,不还原会留给下一个测试档。
+  vi.restoreAllMocks()
+})
 
 async function renderEditor(onChanged = vi.fn()) {
   render(<ChecklistEditor taskId="task-1" allStaff={STAFF} onChanged={onChanged} />)
@@ -127,5 +131,50 @@ describe('打勾', () => {
     expect(onChanged).not.toHaveBeenCalled()
     // 0/1 —— 计数没有停在乐观更新过的 1/1。
     await waitFor(() => expect(screen.getByTestId('checklist-count').textContent).toBe('0/1'))
+  })
+})
+
+describe('删掉一条子项', () => {
+  // X 挨着负责人选单,一列里差几个 px,按下去连认领一起消失、没有 undo。
+  // 删任务、删标签都先问一句,这条不该是全模块唯一的例外。
+  function deleteButton() {
+    return screen.findByLabelText('Delete "Count the bean bags"')
+  }
+
+  it('asks first, and does nothing at all when the confirmation is cancelled', async () => {
+    const confirmed = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const onChanged = vi.fn()
+    render(<ChecklistEditor taskId="task-1" allStaff={STAFF} onChanged={onChanged} />)
+
+    fireEvent.click(await deleteButton())
+
+    await waitFor(() => expect(confirmed).toHaveBeenCalledTimes(1))
+    expect(h.deleteChecklistItem).not.toHaveBeenCalled()
+    expect(onChanged).not.toHaveBeenCalled()
+    // 取消不是失败:不该冒出「Could not remove the item」。
+    expect(screen.queryByText(/Could not remove the item/i)).toBeNull()
+    expect(screen.getByTestId('checklist-item-item-1')).toBeTruthy()
+  })
+
+  it('names the item in the prompt, so it is clear which X was hit', async () => {
+    const confirmed = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<ChecklistEditor taskId="task-1" allStaff={STAFF} onChanged={vi.fn()} />)
+
+    fireEvent.click(await deleteButton())
+
+    await waitFor(() => expect(confirmed).toHaveBeenCalledTimes(1))
+    expect(confirmed.mock.calls[0][0]).toMatch(/Count the bean bags/)
+  })
+
+  it('deletes and refreshes the board once confirmed', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    h.deleteChecklistItem.mockResolvedValue({ ok: true })
+    const onChanged = vi.fn()
+    render(<ChecklistEditor taskId="task-1" allStaff={STAFF} onChanged={onChanged} />)
+
+    fireEvent.click(await deleteButton())
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1))
+    expect(h.deleteChecklistItem.mock.calls[0]).toEqual(['item-1'])
   })
 })
