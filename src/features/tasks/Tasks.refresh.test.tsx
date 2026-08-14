@@ -52,8 +52,15 @@ vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({ staff: { id: 'staff-1', name: 'Yong Tan', rank: 'manager' } }),
 }))
 
+// useCan() 读 roleCaps 决定 "Manage tags" 钮显不显示;mock 的 staff 是
+// rank: 'manager',所以只需要给 manager 这一格,与 DEFAULT_SYSTEM_ROLE_CAPS
+// 的 manager.manage_projects 保持一致。
 vi.mock('../../shared/lib/lookups', () => ({
-  useLookups: () => ({ deptName: (slug: string) => slug, departmentOptions: () => [] }),
+  useLookups: () => ({
+    deptName: (slug: string) => slug,
+    departmentOptions: () => [],
+    roleCaps: { manager: { manage_projects: true } },
+  }),
 }))
 
 const { default: TasksPage } = await import('./Tasks')

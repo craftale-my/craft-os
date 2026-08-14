@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Settings2 } from 'lucide-react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
+import { useCan } from '../../shared/lib/permissions'
 import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Staff } from '../../shared/types'
 import { fetchBoardTasks, fetchTags, moveTask } from './api'
@@ -9,10 +11,12 @@ import type { Tag, Task, TaskStatus } from './types'
 import { TaskBoard, bottomPosition } from './TaskBoard'
 import { TaskDetailModal } from './TaskDetailModal'
 import { TaskFormModal } from './TaskFormModal'
+import { TagManagerModal } from './TagManagerModal'
 
 export default function TasksPage() {
   const { staff: currentStaff } = useAuth()
   const { departmentOptions } = useLookups()
+  const { can } = useCan()
   const [tasks,    setTasks]    = useState<Task[]>([])
   const [allStaff, setAllStaff] = useState<Staff[]>([])
   const [allTags,  setAllTags]  = useState<Tag[]>([])
@@ -30,6 +34,7 @@ export default function TasksPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editTask, setEditTask] = useState<Task | null>(null)
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [tagManagerOpen, setTagManagerOpen] = useState(false)
 
   const canManage      = currentStaff?.rank === 'supervisor' || currentStaff?.rank === 'manager'
   const currentStaffId = currentStaff?.id ?? ''
@@ -139,6 +144,13 @@ export default function TasksPage() {
           onStatusChange={status => moveOptimistic(detailTask.id, status, bottomPosition(tasks, status))}
         />
       )}
+      {tagManagerOpen && (
+        <TagManagerModal
+          tags={allTags}
+          onClose={() => setTagManagerOpen(false)}
+          onChanged={load}
+        />
+      )}
 
       <div className="max-w-7xl mx-auto px-4 py-6 lg:px-8">
 
@@ -209,6 +221,15 @@ export default function TasksPage() {
               <option key={tag.id} value={tag.id}>{tag.name}</option>
             ))}
           </select>
+          {can('manage_projects') && (
+            <button
+              onClick={() => setTagManagerOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#D4C5B0] bg-white text-xs font-semibold text-[#8B7355] hover:bg-[#F5EDE0] transition-colors"
+            >
+              <Settings2 size={13} />
+              Manage tags
+            </button>
+          )}
         </div>
 
         <TaskBoard

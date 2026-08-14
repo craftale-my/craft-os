@@ -159,10 +159,35 @@ export async function detachTag(taskId: string, tagId: string): Promise<WriteOut
   )
 }
 
+/**
+ * 改名 / 换色。呼叫端传不了 `slug` —— 这栏刻意不在参数里,想改名就一定会
+ * 经过 normalizeTagName() 重算 slug,不存在「name 换了、slug 忘了跟」这种
+ * 半吊子状态。TagManagerModal 那边不用记得两栏要一起送,是这支函式的形状
+ * 逼出来的,不是靠呼叫端自律。
+ *
+ * 撞名(改到一个已经有别人在用的 slug)会撞上 `tags.slug` 的 unique index,
+ * Postgres 回 23505。刻意不做自动合并——合并要把两笔 tag 底下的 task_tags
+ * 一起改判、还要处理同一张卡可能同时挂着「合并前」两笔 tag 的情境,是比
+ * 「改名」大一个量级的操作,不是这支函式该硬做的决定。改回一句看得懂的
+ * 错误,让打字的人自己决定:换个不撞名的字,或是先把其中一笔删掉
+ * (删除会连带清掉 task_tags,呼叫端的确认文字要讲清楚)。
+ */
 export async function updateTag(
-  id: string, patch: { name?: string; slug?: string; color?: string },
+  id: string, patch: { name?: string; color?: string },
 ): Promise<WriteOutcome> {
-  return writeOutcome(await supabase.from('tags').update(patch).eq('id', id).select())
+  const dbPatch: { name?: string; slug?: string; color?: string } = {}
+  if (patch.color !== undefined) dbPatch.color = patch.color
+  if (patch.name !== undefined) {
+    const norm = normalizeTagName(patch.name)
+    if (!norm) return { ok: false, reason: 'the tag name cannot be empty.' }
+    dbPatch.name = norm.name
+    dbPatch.slug = norm.slug
+  }
+  const res = await supabase.from('tags').update(dbPatch).eq('id', id).select()
+  if (res.error?.code === '23505') {
+    return { ok: false, reason: `a tag named "${dbPatch.name}" already exists — pick a different name, or delete one of them.` }
+  }
+  return writeOutcome(res)
 }
 
 export async function deleteTag(id: string): Promise<WriteOutcome> {
