@@ -32,18 +32,23 @@ function confirmDoneWithOpenItems(task: Task): boolean {
  * 不订阅:那四张表的内容只在详情弹窗里看得到,而弹窗一开就自己重读一次,拿四条
  * 长驻的订阅去换「弹窗开着的时候别人刚好改了子项」这一格,不划算。
  *
- * 事件流本身不会帮你处理的两件事:
+ * 事件流本身不会帮你处理的三件事:
  *
  * · **回音**。自己写出去的那一笔也会广播回来。板上换栏是乐观更新,本地那份早就
- *   是对的,收到自己的回音再重拉一次不只是白跑 —— 整栏重新编号失败时,
- *   rebalanceColumn 是先 load() 再把讯息写进横幅,晚一步到的回音会再跑一次
- *   load(),而 load() 一成功就 setError(''),那句「没收干净」当场被抹掉,使用者
- *   看到的是一块什么都没说、号码却还挤着的板。所以每一笔自己送出去的写入都先
+ *   是对的,收到自己的回音再重拉一次只是白跑。所以每一笔自己送出去的写入都先
  *   按下一张票,回音拿票换行程,换不到才重拉。
  *
  * · **连发**。整栏重新编号是一笔一笔写的,N 张卡就是 N 个事件;别人做这件事,
  *   这块板会连收 N 发,naive 版本就是重拉 N 次板。所以收敛成一次:事件还在来就
  *   一直把计时器往后推,安静下来才真的去拉。
+ *
+ * · **断线**。postgres_changes 不补送断线期间的事件,而 supabase-js 会自己安静地
+ *   重新 join。笔电睡二十分钟醒来,socket 接回来了,板上却还是睡前那一份 ——
+ *   而且它看起来跟「线上、且是最新的」一模一样,realtime 的存在只会让人更信它。
+ *   所以 channel 每次报到 SUBSCRIBED 就重拉一次。
+ *
+ * 另外,收到别人的事件而重拉,**不准**顺手清掉横幅上那句「你刚刚那一笔没存进去」:
+ * 那句话只有使用者自己的下一个动作有资格收掉,详见 readError / writeError。
  */
 
 /**
@@ -122,6 +127,7 @@ export interface BoardTasks {
   allTags: Tag[]
   /** 只有第一次进板为 true —— 全屏 loader 只能挡这一次,背景重拉不得卸载整棵树。 */
   firstLoad: boolean
+  /** 横幅上要显示的那一句(读取失败与写入失败共用一条横幅,见下面的两格状态)。 */
   error: string
   load: () => Promise<void>
   handleMove: (taskId: string, status: TaskStatus, position: number) => Promise<void>
@@ -157,7 +163,23 @@ export function useBoardTasks(
   const [allStaff,  setAllStaff]  = useState<StaffLite[]>([])
   const [allTags,   setAllTags]   = useState<Tag[]>([])
   const [firstLoad, setFirstLoad] = useState(true)
-  const [error,     setError]     = useState('')
+
+  /**
+   * 横幅上的字分两格存,依「这句话在讲什么」分:
+   *
+   * · `readError`  —— 那三笔读取失败了。板上这份资料本身可疑,任何一次成功的重拉
+   *   都该收掉它(不管是谁触发的),否则就是一条永远不会消失的横幅。
+   * · `writeError` —— 使用者送出去的写入没落地(换栏被挡、整栏重新编号没收干净)。
+   *   这句话讲的是**画面上刚刚发生的那件事**,只有使用者自己的下一个动作(再搬一次、
+   *   按 Retry、弹窗里存档)有资格收掉它。别人 session 的一发事件走的是背景重拉,
+   *   收得掉它的话,使用者看到的就是一张自己跳回原栏、却没人解释为什么的卡。
+   *
+   * 两句同时活着就先讲写入那句:使用者盯着的是自己刚做的那一步,而横幅上的 Retry
+   * 是同一颗钮,读取那句被压着也不会少掉任何一个可以按的动作。
+   */
+  const [readError,  setReadError]  = useState('')
+  const [writeError, setWriteError] = useState('')
+  const error = writeError || readError
 
   /**
    * 重新拉板。刻意不切任何「读取中」旗标 —— 全屏 loader 只属于第一次进板。
@@ -169,8 +191,11 @@ export function useBoardTasks(
    * 使用者编辑既有任务再存档,原本的 assignee 就被无声洗成 null。三笔任何一笔
    * 失败都要让下面这个 catch 接到,板才会显示错误横幅而不是一块「看起来正常」
    * 的空清单。
+   *
+   * @param clearWriteError 这一趟是不是使用者自己按出来的。只有使用者自己那条路
+   *   可以顺手把「没存进去」那句收掉;realtime 的背景重拉传 false。
    */
-  const load = useCallback(async () => {
+  const runLoad = useCallback(async (clearWriteError: boolean) => {
     try {
       const [t, s, g] = await Promise.all([
         fetchBoardTasks({ projectId }),
@@ -180,13 +205,20 @@ export function useBoardTasks(
       setTasks(t)
       setAllStaff(s)
       setAllTags(g)
-      setError('')
+      setReadError('')
+      if (clearWriteError) setWriteError('')
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load tasks.')
+      setReadError(e instanceof Error ? e.message : 'Could not load tasks.')
     } finally {
       setFirstLoad(false)
     }
   }, [projectId])
+
+  /** 使用者自己触发的重拉:横幅的 Retry、弹窗存档 / 留言 / 改标签之后的回呼。 */
+  const load = useCallback(() => runLoad(true), [runLoad])
+
+  /** realtime 触发的背景重拉:资料要跟上,横幅上那句「没存进去」不准动。 */
+  const refreshFromRealtime = useCallback(() => runLoad(false), [runLoad])
 
   /**
    * 换专案 = 换一块板,firstLoad 要跟着回到 true:新专案的三笔读还没落地之前,
@@ -207,27 +239,47 @@ export function useBoardTasks(
   useEffect(() => { load() }, [load])
 
   /**
-   * 订阅那支 effect 要用的、永远最新的 load —— 但**不**把 load 放进它的 deps。
+   * 订阅那支 effect 要用的、永远最新的背景重拉 —— 但**不**把它放进 effect 的 deps。
    *
-   * 钉在 load 的身分上,换一次 :id 就会把 WebSocket channel 拆掉重开一条;更糟的是
-   * 只要有人往 load 那个 useCallback 多加一个 dep,那条 channel 就会跟着每一次
+   * 钉在它的身分上,换一次 :id 就会把 WebSocket channel 拆掉重开一条;更糟的是
+   * 只要有人往上面那个 useCallback 多加一个 dep,那条 channel 就会跟着每一次
    * 重新渲染退订、重订。订阅内容与 projectId 无关(见下面为什么不下 filter),
    * 一条 channel 撑完整个挂载期间就够了,所以这里钉的是「挂载」这件事本身。
    */
-  const loadRef = useRef(load)
-  useEffect(() => { loadRef.current = load }, [load])
+  const refreshRef = useRef(refreshFromRealtime)
+  useEffect(() => { refreshRef.current = refreshFromRealtime }, [refreshFromRealtime])
 
   const echoMarks    = useRef<EchoMarks>(new Map())
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   /**
-   * 每个 hook 实例一条自己的 channel。StrictMode 下 effect 会挂 → 拆 → 再挂,
-   * 两块板也可能在同一棵树上;共用一个固定名字迟早会撞在同一个 topic 上。
+   * 每个 hook 实例一条自己的 channel:两块板可能挂在同一棵树上(今天没有,但
+   * 「专案页旁边再放一块我的任务」是随时会发生的一次改动),共用一个固定名字就是
+   * 两个实例抢同一个 topic。
+   *
+   * 挡不到的是 StrictMode 的挂 → 拆 → 再挂:useId 对同一个实例回同一个 id,
+   * 前后两次拿到的 topic 一模一样。那一格是靠 cleanup 里的 removeChannel 收的。
    */
   const channelKey = useId().replace(/[^a-zA-Z0-9]/g, '')
 
   useEffect(() => {
     const marks = echoMarks.current
+    /** 退订之后到达的回呼不准再排行程 —— 那一趟会在元件卸载之后才去拉板。 */
+    let live = true
+
+    /** 连发收敛:事件还在来就一直把计时器往后推,安静下来才真的去拉。 */
+    const scheduleRefresh = () => {
+      if (!live) return
+      if (refreshTimer.current !== null) clearTimeout(refreshTimer.current)
+      refreshTimer.current = setTimeout(() => {
+        refreshTimer.current = null
+        // 背景重拉:不碰 firstLoad(全屏 loader 只属于第一次进板),别人搬一张卡
+        // 不该让这里开着的详情弹窗连同还没存档的内容一起被卸载(见 load 上方);
+        // 也不碰 writeError(见上面那两格状态)。
+        void refreshRef.current()
+      }, REALTIME_DEBOUNCE_MS)
+    }
+
     const channel = supabase
       .channel(`tasks-board-${channelKey}`)
       // 刻意**不**下 `filter: 'project_id=eq.<id>'`。专案板只关心自己那些任务,但
@@ -241,19 +293,25 @@ export function useBoardTasks(
         (payload: RealtimePostgresChangesPayload<{ id: string }>) => {
           const taskId = changedTaskId(payload)
           if (taskId && claimOwnWrite(marks, taskId)) return   // 自己的回音
-          if (refreshTimer.current !== null) clearTimeout(refreshTimer.current)
-          refreshTimer.current = setTimeout(() => {
-            refreshTimer.current = null
-            // 背景重拉:load() 一律不碰 firstLoad,全屏 loader 只属于第一次进板 ——
-            // 这条路径尤其不能破例,别人搬一张卡不该让这里开着的详情弹窗连同还没
-            // 存档的内容一起被卸载(见 load 上方)。
-            void loadRef.current()
-          }, REALTIME_DEBOUNCE_MS)
+          scheduleRefresh()
         },
       )
-      .subscribe()
+      // 每次 channel 报到就重拉一次板。补的是事件流补不了的两道缝:
+      //  · **重连**。断线期间的事件不会补送,而 supabase-js 自己重新 join 完就没了
+      //    下文 —— 少了这一句,睡醒的那块板会一直停在睡前那一份,看起来却完全正常。
+      //  · **挂载**。第一次读取在 join 完成之前就回来了,那段窗口里别人的改动既不在
+      //    那份读取里,也不会有事件送来。所以第一次 SUBSCRIBED 也照拉,代价是进板
+      //    多一次查询。
+      // 走的是跟事件同一条 debounce:重连之后往往紧接着一串事件,各排各的计时器就
+      // 会各拉一次板。status 收成 string —— 为了一个字面值把 supabase 的 runtime
+      // enum(REALTIME_SUBSCRIBE_STATES)import 进来不划算。
+      .subscribe((status: string) => {
+        if (status !== 'SUBSCRIBED') return
+        scheduleRefresh()
+      })
 
     return () => {
+      live = false
       // 计时器要跟着退订一起收掉,否则最后那一发事件会在元件已经卸载之后才去拉板。
       if (refreshTimer.current !== null) {
         clearTimeout(refreshTimer.current)
@@ -298,7 +356,8 @@ export function useBoardTasks(
     }
     // 详情弹窗的换栏钮直接呼叫这里,不经过 handleMove —— 若不在这收掉,
     // 之前拖放失败留下的页面横幅会一直挂著,即使这次换栏明明成功了。
-    setError('')
+    // 只收写入那一句:读取失败是另一回事,它得等一次真的成功的重拉。
+    setWriteError('')
 
     // 搬动落地了,让页面层重拉它自己那份衍生数字(合约见 useBoardTasks 上方)。
     // 摆在重新编号之前:使用者盯着的是头部那个数字,重新编号是一步看不见的收尾,
@@ -340,10 +399,11 @@ export function useBoardTasks(
       const res = await updateTask(planned[i].id, { position: planned[i].position })
       if (!res.ok) {
         claimOwnWrite(echoMarks.current, planned[i].id)
-        // load() 成功会自己清掉 error,所以讯息要摆在它之后;代价是万一连重拉
-        // 都失败,读取的错误会被这一句盖掉 —— 横幅上的 Retry 仍然是同一颗钮。
+        // load() 是使用者自己那条路,成功会顺手清掉 writeError,所以这句话仍然要
+        // 摆在它之后。万一连重拉都失败,两句话都还在,横幅先讲这一句(见上面的
+        // 两格状态)—— 而 Retry 仍然是同一颗钮。
         await load()
-        setError(`Could not tidy up the column order — ${res.reason}`)
+        setWriteError(`Could not tidy up the column order — ${res.reason}`)
         return
       }
     }
@@ -365,7 +425,7 @@ export function useBoardTasks(
   async function handleMove(taskId: string, status: TaskStatus, position: number) {
     const res = await moveOptimistic(taskId, status, position)
     if (!res) return   // 确认被取消 —— 什么都没发生,横幅维持原样。
-    if (!res.ok) setError(`Could not move the task — ${res.reason}`)
+    if (!res.ok) setWriteError(`Could not move the task — ${res.reason}`)
   }
 
   return { tasks, allStaff, allTags, firstLoad, error, load, handleMove, moveOptimistic }

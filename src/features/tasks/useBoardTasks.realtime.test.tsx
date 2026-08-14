@@ -2,19 +2,24 @@
 //
 // Realtime:另一个 session 动了 tasks,这块板要自己跟上。
 //
-// naive 版本(收到事件就 load())会踩到四件事,这个档案一件一件钉住:
+// naive 版本(收到事件就 load())会踩到六件事,这个档案一件一件钉住:
 //
 // 1. **它真的会跟上**。别人改了一张卡,板要重拉一次。
 // 2. **它不准升起全屏 loader**。背景重拉一旦卸载整棵树,开着的详情弹窗会跟着
 //    重挂,使用者刚打好、还没存档的内容就这样消失。这条规则在
 //    Tasks.refresh.test.tsx 已经为「存档 / 留言」那条路钉过一次,realtime 是
 //    第二个入口,而且是使用者完全没动手的那个 —— 所以这里再钉一次,走真的页面。
-// 3. **自己的回音不算别人的改动**。板上换栏是乐观更新,自己那一笔的广播回来
-//    再拉一次不只是白跑:整栏重新编号失败时,横幅上那句「没收干净」是先 load()
-//    再写上去的,晚一步到的回音会再跑一次 load(),而 load() 一成功就 setError(''),
-//    那句话当场被抹掉。每一则回音测试都配一组对照:同一张卡、下一发事件,板
-//    必须照样跟上 —— 否则「回音抑制」很容易写成「这张卡从此不再更新」。
+// 3. **自己的回音不算别人的改动**。板上换栏是乐观更新,本地那份早就是对的,
+//    自己那一笔的广播回来再拉一次是白跑一趟查询。每一则回音测试都配一组对照:
+//    同一张卡、下一发事件,板必须照样跟上 —— 否则「回音抑制」很容易写成
+//    「这张卡从此不再更新」。
 // 4. **连发要收敛**。整栏重新编号是一笔一笔写的,别人做一次,这块板会连收 N 发。
+// 5. **写入失败的横幅不属於事件流**。「你刚刚那一笔没存进去」是使用者自己的事,
+//    别人 session 的一发事件把它抹掉,留下的是一张自己跳回原栏、却没人解释为什么
+//    的卡。背景重拉只准收掉**读取**失败那一句(它一成功就不再是真的了)。
+// 6. **重连要补拉**。postgres_changes 不补送断线期间的事件,supabase-js 又自己
+//    安静地重新 join;少了这一句,睡醒的板会停在睡前那一份,看起来却完全正常。
+//    挂载时的那道缝(第一次读取比 join 早落地)是同一发补的。
 //
 // 另外两件接线:退订要真的发生(而且计时器要跟着收掉,不能在卸载之后才拉板),
 // 换一个 projectId 不可以再开一条 channel、而且那条 channel 拉的必须是**新**专案。
@@ -34,11 +39,16 @@ const h = vi.hoisted(() => ({
   fetchAttachments:     vi.fn(),
   moveTask:             vi.fn(),
   updateTask:           vi.fn(),
-  /** 每呼叫一次 supabase.channel() 就多一笔,连同它收到的订阅条件与 handler。 */
+  /**
+   * 每呼叫一次 supabase.channel() 就多一笔,连同它收到的订阅条件、事件 handler,
+   * 以及 subscribe() 收到的那支状态回呼(真的 client 会拿 'SUBSCRIBED' 呼叫它,
+   * 重连之后也会再呼叫一次)。
+   */
   opened: [] as Array<{
     name: string
     filter: Record<string, unknown>
     handler: (payload: unknown) => void
+    onStatus: ((status: string) => void) | null
     channel: unknown
     subscribed: boolean
   }>,
@@ -94,6 +104,7 @@ vi.mock('../../shared/lib/supabase', () => ({
         name,
         filter: {} as Record<string, unknown>,
         handler: (() => {}) as (payload: unknown) => void,
+        onStatus: null as ((status: string) => void) | null,
         channel: null as unknown,
         subscribed: false,
       }
@@ -107,7 +118,13 @@ vi.mock('../../shared/lib/supabase', () => ({
           entry.handler = handler
           return ch
         },
-        subscribe(): unknown { entry.subscribed = true; return ch },
+        // 状态回呼收下来但**不**自己呼叫:真的 client 是在 join 完成之后才送
+        // 'SUBSCRIBED',什么时候送由测试自己决定(见 reconnect())。
+        subscribe(onStatus?: (status: string) => void): unknown {
+          entry.subscribed = true
+          entry.onStatus   = onStatus ?? null
+          return ch
+        },
       }
       entry.channel = ch
       h.opened.push(entry)
@@ -206,6 +223,16 @@ function emit(id: string, eventType: 'INSERT' | 'UPDATE' | 'DELETE' = 'UPDATE') 
   })
 }
 
+/**
+ * channel 报到:join 完成(挂载时的第一次)或断线之后自己重新 join 完成。
+ * supabase-js 两种情况都是拿 'SUBSCRIBED' 呼叫 subscribe() 收下的那支回呼。
+ */
+function reconnect(status = 'SUBSCRIBED') {
+  const sub = h.opened[h.opened.length - 1]
+  expect(sub.onStatus).not.toBeNull()
+  sub.onStatus?.(status)
+}
+
 /** 等 debounce 视窗过去,并让它触发的那次重拉落地。 */
 async function settle() {
   await act(async () => {
@@ -292,10 +319,122 @@ describe('自己的回音不算别人的改动', () => {
     expect(h.fetchBoardTasks).toHaveBeenCalledTimes(2)
     expect(result.current.error).toMatch(/Could not tidy up the column order/)
 
-    // 对照组:真的是别人改的,板照样重拉(而重拉成功本来就会收掉横幅)。
+    // 对照组:真的是别人改的,板照样重拉 —— 回音抑制不可以退化成「这块板从此
+    // 不再更新」。但那一趟重拉**不准**顺手把横幅收掉:整栏的号码还是挤着的,
+    // 收掉它只会留下一块什么都没说、号码却还挤着的板(见档案上方第 5 点)。
     emit('task-99')
     await settle()
     expect(h.fetchBoardTasks).toHaveBeenCalledTimes(3)
+    expect(result.current.error).toMatch(/Could not tidy up the column order/)
+  })
+})
+
+/**
+ * 横幅上那句话由谁收掉。分的是「这句话在讲什么」,不是「谁触发的重拉」:
+ * 讲写入的那句只有使用者自己的下一个动作收得掉,讲读取的那句一次成功的重拉就该收掉
+ * —— 少了后者,换来的是一条永远不会消失的横幅。
+ */
+describe('别人的事件不准抹掉「你刚刚那一笔没存进去」', () => {
+  it('keeps a write-failure banner when an unrelated remote change arrives', async () => {
+    h.moveTask.mockResolvedValue(BLOCKED)
+    const { result } = await mountBoard()
+
+    // 使用者拖了一张卡,RLS 静默挡掉,卡片弹回原栏 + 横幅解释为什么。
+    await act(async () => { await result.current.handleMove('task-1', 'done', 2048) })
+    expect(result.current.error).toMatch(/Could not move the task/)
+
+    // 200 毫秒后同事勾掉了另一张完全无关的卡。板要跟上(资料是别人的),
+    // 但那句解释是使用者的 —— 抹掉它,剩下的就是一张莫名其妙跳回来的卡。
+    emit('task-99')
+    await settle()
+
+    expect(h.fetchBoardTasks).toHaveBeenCalledTimes(2)   // 真的重拉了
+    expect(result.current.error).toMatch(/Could not move the task/)
+  })
+
+  it('lets the user clear it themselves — a Retry-triggered load does', async () => {
+    h.moveTask.mockResolvedValue(BLOCKED)
+    const { result } = await mountBoard()
+
+    await act(async () => { await result.current.handleMove('task-1', 'done', 2048) })
+    expect(result.current.error).toMatch(/Could not move the task/)
+
+    // 横幅上的 Retry(以及弹窗存档 / 留言)走的就是这支 load。挡下别人的事件是
+    // 为了不替使用者做决定,不是把这句话钉死在画面上。
+    await act(async () => { await result.current.load() })
+    expect(result.current.error).toBe('')
+  })
+
+  it('still clears a read-failure banner on the next successful load', async () => {
+    h.fetchBoardTasks.mockRejectedValueOnce(new Error('permission denied for table tasks'))
+    const { result } = await mountBoard()
+    expect(result.current.error).toMatch(/permission denied for table tasks/)
+
+    // 这一趟是别人的事件触发的背景重拉,而且它成功了:那句「读不到」已经不是
+    // 真的了,留着就是一条永远不会消失的横幅。
+    emit('task-9')
+    await settle()
+
+    expect(h.fetchBoardTasks).toHaveBeenCalledTimes(2)
+    expect(result.current.error).toBe('')
+  })
+})
+
+/**
+ * 断线重连。事件流不补送断线期间的改动,supabase-js 又自己安静地重新 join ——
+ * 没有这一发补拉,睡醒的板会一直停在睡前那一份,而且因为「有 realtime」而更可信。
+ */
+describe('channel 报到就补拉一次', () => {
+  it('refetches the board when the channel reports SUBSCRIBED', async () => {
+    const { result } = await mountBoard()
+
+    reconnect()
+    await settle()
+
+    expect(h.fetchBoardTasks).toHaveBeenCalledTimes(2)
+    // 补拉是背景重拉:全屏 loader 只属于第一次进板,开着的弹窗不准被卸载。
+    expect(result.current.firstLoad).toBe(false)
+  })
+
+  it('ignores the statuses that are not a live subscription', async () => {
+    await mountBoard()
+
+    // 掉线、出错、join 逾时都会走同一支回呼。这几发只代表「现在没接上」,
+    // 拿它们去拉板是白跑 —— 真的接回来时还会再送一发 SUBSCRIBED。
+    reconnect('CLOSED')
+    reconnect('CHANNEL_ERROR')
+    reconnect('TIMED_OUT')
+    await settle()
+
+    expect(h.fetchBoardTasks).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces the reconnect refetch with the events that follow it', async () => {
+    await mountBoard()
+
+    // 接回来之后常常紧接着一串事件(别人在这段时间里动过好几张卡)。
+    // 补拉与事件走同一条 debounce,所以这一整串只该拉一次板。
+    reconnect()
+    emit('t1')
+    emit('t2')
+    await settle()
+
+    expect(h.fetchBoardTasks).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not let the reconnect refetch wipe a write-failure banner either', async () => {
+    h.moveTask.mockResolvedValue(BLOCKED)
+    const { result } = await mountBoard()
+
+    await act(async () => { await result.current.handleMove('task-1', 'done', 2048) })
+    expect(result.current.error).toMatch(/Could not move the task/)
+
+    // 笔电睡醒:socket 接回来,板补拉一次 —— 使用者那句解释还在原地。
+    reconnect()
+    await settle()
+
+    expect(h.fetchBoardTasks).toHaveBeenCalledTimes(2)
+    expect(result.current.error).toMatch(/Could not move the task/)
   })
 })
 

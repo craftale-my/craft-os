@@ -12,8 +12,9 @@
 // 跟 fetchBoardTasks() / fetchTags() 一样送进同一个 Promise.all + try/catch,
 // 任何一笔失败都会被 load() 的 catch 接到,显示板本来就有的那条错误横幅。
 //
-// 这里跟 Tasks.refresh.test.tsx / Tasks.doneGate.test.tsx 用同一套 mock 骨架
-// (mock ./api,不 mock ../../shared/lib/supabase —— 页面层已经不直接碰它了)。
+// 这里跟 Tasks.refresh.test.tsx / Tasks.doneGate.test.tsx 用同一套 mock 骨架:
+// 资料一律从 ./api 进来(页面层已经不直接碰 supabase),再补一支最小的 supabase
+// 假货,单纯为了 useBoardTasks 的 realtime 订阅 —— 理由见下面那一则。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
