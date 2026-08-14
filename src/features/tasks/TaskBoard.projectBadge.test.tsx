@@ -52,7 +52,7 @@ function renderBoard(showProject: boolean | undefined) {
   const props = {
     tasks: [TASK],
     allTasks: [TASK],
-    canManage: true,
+    canManageTasks: true,
     currentStaffId: 'staff-1',
     onCardClick: vi.fn(),
     onAddClick: vi.fn(),

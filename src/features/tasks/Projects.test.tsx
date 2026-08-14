@@ -18,22 +18,18 @@ import type { Project } from './types'
 
 const h = vi.hoisted(() => ({
   fetchProjects: vi.fn(),
+  fetchAssignableStaff: vi.fn(),
   deleteProject: vi.fn(),
   /** useCan().can 的回传;逐案改写,用来验证 manage_projects 的闸门。 */
-  canManage: { value: true },
+  canManageProjects: { value: true },
 }))
 
 vi.mock('./api', () => ({
   fetchProjects: h.fetchProjects,
+  fetchAssignableStaff: h.fetchAssignableStaff,
   deleteProject: h.deleteProject,
   createProject: vi.fn(),
   updateProject: vi.fn(),
-}))
-
-vi.mock('../../shared/lib/supabase', () => ({
-  supabase: {
-    from: () => ({ select: () => ({ order: () => Promise.resolve({ data: [], error: null }) }) }),
-  },
 }))
 
 vi.mock('../auth/AuthContext', () => ({
@@ -41,7 +37,7 @@ vi.mock('../auth/AuthContext', () => ({
 }))
 
 vi.mock('../../shared/lib/permissions', () => ({
-  useCan: () => ({ can: () => h.canManage.value }),
+  useCan: () => ({ can: () => h.canManageProjects.value }),
 }))
 
 const { default: ProjectsPage } = await import('./Projects')
@@ -75,8 +71,10 @@ const renderPage = () =>
 
 beforeEach(() => {
   h.fetchProjects.mockReset()
+  h.fetchAssignableStaff.mockReset()
+  h.fetchAssignableStaff.mockResolvedValue([])
   h.deleteProject.mockReset()
-  h.canManage.value = true
+  h.canManageProjects.value = true
 })
 afterEach(cleanup)
 
@@ -116,7 +114,7 @@ describe('Projects 清单', () => {
   })
 
   it('没有 manage_projects 就看不到 New Project 与每一列的编辑 / 删除', async () => {
-    h.canManage.value = false
+    h.canManageProjects.value = false
     h.fetchProjects.mockResolvedValue([PROJECT])
 
     renderPage()

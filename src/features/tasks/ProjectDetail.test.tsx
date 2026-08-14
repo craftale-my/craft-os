@@ -41,8 +41,12 @@ const h = vi.hoisted(() => ({
   fetchChecklist:       vi.fn(),
   fetchComments:        vi.fn(),
   fetchAttachments:     vi.fn(),
-  /** useCan() 实际吃的那份能力表;逐案改写,用来验证 manage_projects 的闸门。 */
-  roleCaps: { value: { manager: { manage_projects: true } } as Record<string, Record<string, boolean>> },
+  /** useCan() 实际吃的那份能力表;逐案改写,用来验证两条闸门各自挡的是什么。 */
+  roleCaps: { value: { manager: { view_team: true, manage_projects: true } } as Record<string, Record<string, boolean>> },
+  /** 登入者。system_role 与 rank 要能分开改 —— 两者不一致正是门禁那一则要验的事。 */
+  staff: {
+    value: { id: 'staff-1', name: 'Yong Tan', rank: 'manager' } as Record<string, unknown>,
+  },
 }))
 
 vi.mock('./api', () => ({
@@ -74,7 +78,7 @@ vi.mock('./api', () => ({
 }))
 
 vi.mock('../auth/AuthContext', () => ({
-  useAuth: () => ({ staff: { id: 'staff-1', name: 'Yong Tan', rank: 'manager' } }),
+  useAuth: () => ({ staff: h.staff.value }),
 }))
 
 // useCan() 跑真的(它读 useAuth + roleCaps),只把 lookups 换掉 —— 与
@@ -160,7 +164,8 @@ const BOOM = 'permission denied for table projects'
 
 beforeEach(() => {
   vi.resetAllMocks()
-  h.roleCaps.value = { manager: { manage_projects: true } }
+  h.roleCaps.value = { manager: { view_team: true, manage_projects: true } }
+  h.staff.value = { id: 'staff-1', name: 'Yong Tan', rank: 'manager' }
   h.fetchProject.mockResolvedValue({ ...PROJECT })
   h.fetchBoardTasks.mockImplementation(async () => [task('t1')])
   h.fetchAssignableStaff.mockResolvedValue(STAFF)
@@ -378,11 +383,70 @@ describe('从这一页开的表单', () => {
   })
 
   it('hides Edit without manage_projects', async () => {
-    h.roleCaps.value = { manager: { manage_projects: false } }
+    h.roleCaps.value = { manager: { view_team: true, manage_projects: false } }
     await renderLoaded()
 
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
     expect(screen.getByRole('heading', { name: 'Bean Sourcing' })).toBeTruthy()
+  })
+})
+
+/**
+ * 门禁在这一页上曾经是 `rank === 'supervisor' || rank === 'manager'`,而紧邻的
+ * Edit 钮走的是 `can('manage_projects')` —— 同一排两颗按钮,两套答案。
+ *
+ * `Rank` 里没有 owner / admin / hr 这几格,所以 `system_role = 'owner'` 配上
+ * `rank = 'senior'` 是完全正常的一笔资料。那个人 view_team 与 manage_projects
+ * 都有,却看得到 Edit、看不到 + New Task,而且拖不动任何不是指派给自己的卡 ——
+ * 那张卡的 tasks_update 其实是放行的。
+ *
+ * 现在两颗钮都走 useTaskPermissions():任务那半对齐 tasks_* 的 view_team,
+ * 专案那半对齐 projects_manage 的 manage_projects。三则一起钉:少了后面两则
+ * 反向的,把 canManageTasks 直接写成 can('manage_projects') 一样会全绿。
+ */
+describe('板上的门禁跟着 RLS 走,不是跟着 rank', () => {
+  /** system_role 与 rank 不一致 —— 这一格资料完全合法,而旧的 rank 判断读不懂它。 */
+  const OWNER_SENIOR = { id: 'staff-9', name: 'Siti Rahman', rank: 'senior', system_role: 'owner' }
+
+  /** 卡指派给别人:拖得动与否只能来自门禁,不会被「这是我的卡」蒙混过去。 */
+  function boardWithSomeoneElsesCard() {
+    h.fetchBoardTasks.mockImplementation(async () => [task('t1', { assigned_to: 'staff-1' })])
+  }
+
+  it('gives an owner ranked senior both buttons, and lets them drag a card assigned to someone else', async () => {
+    h.staff.value = OWNER_SENIOR
+    h.roleCaps.value = { owner: { view_team: true, manage_projects: true } }
+    boardWithSomeoneElsesCard()
+
+    await renderLoaded()
+
+    expect(screen.getByRole('button', { name: '+ New Task' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy()
+    expect(screen.getByTestId('task-card-t1').getAttribute('draggable')).toBe('true')
+  })
+
+  it('leaves the task half open when only manage_projects is off — that switch is about projects and tags', async () => {
+    h.staff.value = OWNER_SENIOR
+    h.roleCaps.value = { owner: { view_team: true, manage_projects: false } }
+    boardWithSomeoneElsesCard()
+
+    await renderLoaded()
+
+    expect(screen.getByRole('button', { name: '+ New Task' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.getByTestId('task-card-t1').getAttribute('draggable')).toBe('true')
+  })
+
+  it('closes the task half when view_team is off, even with manage_projects on', async () => {
+    h.staff.value = OWNER_SENIOR
+    h.roleCaps.value = { owner: { view_team: false, manage_projects: true } }
+    boardWithSomeoneElsesCard()
+
+    await renderLoaded()
+
+    expect(screen.queryByRole('button', { name: '+ New Task' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy()
+    expect(screen.getByTestId('task-card-t1').getAttribute('draggable')).toBe('false')
   })
 })
 

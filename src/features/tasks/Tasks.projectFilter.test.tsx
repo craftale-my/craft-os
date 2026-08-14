@@ -55,7 +55,7 @@ vi.mock('../../shared/lib/lookups', () => ({
       { slug: 'kitchen', name: 'Kitchen' },
       { slug: 'service', name: 'Service' },
     ],
-    roleCaps: { manager: { manage_projects: true } },
+    roleCaps: { manager: { view_team: true, manage_projects: true } },
   }),
 }))
 

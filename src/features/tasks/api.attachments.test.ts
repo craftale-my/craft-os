@@ -172,6 +172,25 @@ describe('deleteAttachment:先删 DB 列,列真的没了才清 storage 物件', 
     expect(res.ok === false && res.reason).toMatch(/permission denied/)
     expect(h.removeCalls).toEqual([])
   })
+
+  // 列删掉了、档案没删掉 = 一个再也没有纪录指得到的孤儿档案,跟 uploadAttachment
+  // 回滚失败留下的那种一模一样。删除本身成功,不该因此对使用者报错;但也不能
+  // 连这个失败都吞掉 —— 两支相邻的函式对同一件事得有同一个说法。
+  it('logs the orphan when the row is gone but the stored object could not be removed', async () => {
+    const att = seedRow()
+    h.failRemove('Object not found')
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const res = await deleteAttachment(att)
+
+    expect(res.ok).toBe(true)          // 纪录真的删掉了,使用者那边就是成功
+    expect(h.rows).toHaveLength(0)
+    expect(logged).toHaveBeenCalledTimes(1)
+    expect(String(logged.mock.calls[0][0])).toContain('task-1/111.jpg')
+    expect(logged.mock.calls[0][1]).toBe('Object not found')
+
+    logged.mockRestore()
+  })
 })
 
 describe('uploadAttachment:传档案与写 DB 列,任何一步失败都不留孤儿档案', () => {

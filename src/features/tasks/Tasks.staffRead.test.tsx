@@ -59,7 +59,7 @@ vi.mock('../../shared/lib/lookups', () => ({
   useLookups: () => ({
     deptName: (slug: string) => slug,
     departmentOptions: () => [],
-    roleCaps: { manager: { manage_projects: true } },
+    roleCaps: { manager: { view_team: true, manage_projects: true } },
   }),
 }))
 

@@ -59,7 +59,7 @@ function DropLine({ edge }: { edge: 'top' | 'bottom' }) {
  * mobile 那份一律加 `mobile-` 前缀,免得测试抓到空的 no-op handler 还查不出原因。
  */
 function KanbanColumn({
-  variant, colKey, label, tasks, canManage, currentStaffId,
+  variant, colKey, label, tasks, canManageTasks, currentStaffId,
   dropAt, onDragOver, onDragLeave, onDrop, onZoneOver, onZoneDrop,
   draggingId, onDragStart, onDragEnd, onCardClick, onAddClick,
   showMobileActions, onCardStatusChange, showProject, showArchiveLink,
@@ -68,7 +68,7 @@ function KanbanColumn({
   colKey: TaskStatus
   label: string
   tasks: Task[]
-  canManage: boolean
+  canManageTasks: boolean
   currentStaffId: string
   /** 落点落在**这一栏**时才给,别栏一律 null —— 由 TaskBoard 先筛过。 */
   dropAt: DropAt | null
@@ -131,7 +131,7 @@ function KanbanColumn({
             {tasks.length}
           </span>
         </div>
-        {canManage && colKey === 'todo' && (
+        {canManageTasks && colKey === 'todo' && (
           <button
             onClick={onAddClick}
             className="w-6 h-6 flex items-center justify-center rounded-full bg-[#C4813A] text-white text-base font-bold leading-none hover:bg-[#A86C2C] transition-colors"
@@ -157,12 +157,12 @@ function KanbanColumn({
               <TaskCard
                 task={task}
                 testIdPrefix={idPrefix}
-                draggable={canManage || task.assigned_to === currentStaffId}
+                draggable={canManageTasks || task.assigned_to === currentStaffId}
                 isDragging={draggingId === task.id}
                 onDragStart={() => onDragStart(task.id)}
                 onDragEnd={onDragEnd}
                 onClick={() => onCardClick(task)}
-                showMobileActions={showMobileActions && (canManage || task.assigned_to === currentStaffId)}
+                showMobileActions={showMobileActions && (canManageTasks || task.assigned_to === currentStaffId)}
                 onStatusChange={onCardStatusChange ? status => onCardStatusChange(task.id, status) : undefined}
                 showProject={showProject}
               />
@@ -227,7 +227,7 @@ function KanbanColumn({
  * `/team/projects/:id` 共用同一块板。写入由 `onMove` 交回页面层。
  */
 export function TaskBoard({
-  tasks, allTasks, canManage, currentStaffId, onCardClick, onAddClick, onMove,
+  tasks, allTasks, canManageTasks, currentStaffId, onCardClick, onAddClick, onMove,
   showProject = false, showArchiveLink = false,
 }: {
   /** 画面上看得到的卡 —— 页面层已经套过筛选。 */
@@ -237,7 +237,7 @@ export function TaskBoard({
    * 页面层不筛的时候两者是同一份,拿同一个阵列传两次也完全没问题。
    */
   allTasks: Task[]
-  canManage: boolean
+  canManageTasks: boolean
   currentStaffId: string
   onCardClick: (task: Task) => void
   onAddClick: () => void
@@ -294,7 +294,7 @@ export function TaskBoard({
   function requestMove(taskId: string, status: TaskStatus, beforeId: string | null) {
     const task = tasks.find(t => t.id === taskId)
     if (!task) return
-    if (!canManage && task.assigned_to !== currentStaffId) return
+    if (!canManageTasks && task.assigned_to !== currentStaffId) return
     if (beforeId === taskId) return   // 丢在自己身上 —— 没动
 
     const column = beforeId === null ? sortedIn(allTasks, status) : byCol[status]
@@ -353,7 +353,7 @@ export function TaskBoard({
             colKey={col.key}
             label={col.label}
             tasks={byCol[col.key]}
-            canManage={canManage}
+            canManageTasks={canManageTasks}
             currentStaffId={currentStaffId}
             dropAt={dropAt?.col === col.key ? dropAt : null}
             onDragOver={e => { e.preventDefault(); setDropAt({ col: col.key, beforeId: null }) }}
@@ -383,7 +383,7 @@ export function TaskBoard({
           colKey={mobileTab}
           label={TASK_COLUMNS.find(c => c.key === mobileTab)!.label}
           tasks={byCol[mobileTab]}
-          canManage={canManage}
+          canManageTasks={canManageTasks}
           currentStaffId={currentStaffId}
           dropAt={null}
           onDragOver={() => {}}

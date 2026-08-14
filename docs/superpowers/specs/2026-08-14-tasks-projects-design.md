@@ -314,24 +314,42 @@ realtime——避免为了低频事件常驻多条订阅。
 `src/features/hr/` 与 `src/features/team/` 的惯例(平铺档案、不开子资料夹、纯逻辑
 可就地放 `.ts`)拆开:
 
-| 档案 | 约略行数 | 作用 |
+下表是**实作完成后**的样子(行数为实际值,含注释)。原始规划少列了
+`useBoardTasks.ts` 与 `permissions.ts`,而这两支各自收着一整块跨页面共用的决策,
+不是可有可无的胶水:
+
+| 档案 | 行数 | 作用 |
 |---|---|---|
-| `Tasks.tsx` | 180 | `/team/tasks` 页面外壳 + 筛选列 |
-| `TasksArchive.tsx` | 120 | `/team/tasks/archive`,全部已完成任务 + 搜寻 |
-| `Projects.tsx` | 150 | `/team/projects` 列表 |
-| `ProjectDetail.tsx` | 200 | `/team/projects/:id` |
-| `TaskBoard.tsx` | 150 | 三栏板本体,总板与项目页共用 |
-| `TaskCard.tsx` | 120 | 卡片 |
-| `TaskDetailModal.tsx` | 220 | 详情弹窗外壳 |
-| `TaskFormModal.tsx` | 180 | 新增 / 编辑表单 |
-| `ProjectFormModal.tsx` | 150 | 项目表单 |
-| `TagInput.tsx` | 100 | typeahead 输入 |
-| `TagManagerModal.tsx` | 90 | 改名 / 换色 / 删除 tag,需 `manage_projects` |
-| `ChecklistEditor.tsx` | 100 | 子项清单 |
-| `AttachmentGallery.tsx` | 120 | 多附件 + lightbox |
-| `CommentThread.tsx` | 110 | 评论 |
-| `api.ts` | 220 | 全部 supabase 查询 |
-| `types.ts` | 60 | 型别 |
+| `Tasks.tsx` | 225 | `/team/tasks` 页面外壳 + 筛选列 |
+| `TasksArchive.tsx` | 157 | `/team/tasks/archive`,全部已完成任务 + 搜寻 |
+| `Projects.tsx` | 230 | `/team/projects` 列表 |
+| `ProjectDetail.tsx` | 297 | `/team/projects/:id` |
+| `TaskBoard.tsx` | 407 | 三栏板本体(桌面三栏 + mobile 单栏、落点指示线),总板与项目页共用 |
+| `TaskCard.tsx` | 178 | 卡片 |
+| `TaskDetailModal.tsx` | 461 | 详情弹窗外壳 |
+| `TaskFormModal.tsx` | 202 | 新增 / 编辑表单 |
+| `ProjectFormModal.tsx` | 183 | 项目表单 |
+| `TagInput.tsx` | 81 | typeahead 输入 |
+| `TagManagerModal.tsx` | 129 | 改名 / 换色 / 删除 tag,需 `manage_projects` |
+| `ChecklistEditor.tsx` | 221 | 子项清单 |
+| `AttachmentGallery.tsx` | 200 | 多附件 + lightbox |
+| `CommentThread.tsx` | 99 | 评论 |
+| `useBoardTasks.ts` | 432 | **板的全部行为**:三笔读取、乐观换栏与回滚、软性完成闸门、整栏重新编号、realtime 订阅与自身回音的辨识 |
+| `permissions.ts` | 60 | 这个模块的两条门禁(`useTaskPermissions` / `canDeleteTask`),对齐 RLS |
+| `api.ts` | 417 | 全部 supabase 查询 |
+| `types.ts` | 124 | 型别 |
+
+`useBoardTasks.ts` 是拆档真正的重点,不只是「把 useState 搬出去」:`/team/tasks`
+与 `/team/projects/:id` 是同一块板,复制一份过去,两边迟早会对「拖失败要滚回哪里」
+或「什么算一次真的搬动」有两种说法。两页各自只保留自己独有的东西(前者是筛选列,
+后者是专案头部与 `project_progress` 的重拉)。
+
+`permissions.ts` 收的是第一节那张能力表在 UI 上的落点。分成两支是因为 RLS 本来就
+分成两条:板上的任务写入对齐 `tasks_*` 的 `view_team`,专案与 tag 词表对齐
+`projects_manage` / `tags_update` 的 `manage_projects`,删除任务再紧一格
+(`tasks_delete`:自己建的,或是有 `manage_projects`)。三个页面共用这一份,
+不各自写一份 rank 判断 —— `Rank` 里没有 owner / admin / hr,
+`system_role='owner'` 配 `rank='senior'` 会被 rank 判断当成没有权限的人。
 
 `TagManagerModal` 是自由输入方案的配套:既然不设建立门槛,就必须留一条修正打错字
 的路,否则 `urgnet` 会永远躺在下拉选单里。入口放在筛选列的 Tag 下拉底部
@@ -437,9 +455,11 @@ name / description / color(色票选择)/ status / owner / start date / due date
 |---|---|
 | `normalizeTagName(input)` | → `{ slug, name }`。trim、内部空白收敛成单一空格、slug 转 lowercase |
 | `computeDropPosition(prev?, next?)` | 拖放后的新 position |
+| `insertPosition(column, index)` | 「插在第 index 张之前」该拿的 position。`column` 不含正在拖的那一张,`index` 先夹回 `[0, length]` —— 落点来自 DOM 事件,一个过期的索引不该算出 `NaN` |
 | `needsRebalance(positions)` | 相邻间距过小时回报需要重新编号 |
 | `rebalance(items)` | 以 1024 为步长重新编号 |
 | `projectProgress(done, total)` | → 0–100 整数,`total = 0` 时回 0 |
+| `openChecklistCount(task)` | 还没做完的子项数,clamp 到 0。软性完成闸门的确认文字与 `open > 0` 的判断都吃它 |
 | `isOverdue(dueDate, today)` | 当天到期不算逾期 |
 | `deriveParticipants(tasks, ownerId)` | 项目参与者去重推导 |
 
@@ -456,20 +476,48 @@ name / description / color(色票选择)/ status / owner / start date / due date
 - `normalizeTagName` 让 `'Urgent'` / `' urgent '` / `'URGENT'` 产生同一个 slug,且
   保留各自输入的 `name` 供 upsert 决定
 - `computeDropPosition(undefined, undefined)` 空栏情形
+- `insertPosition` 的 index 越界(负数、大于长度)夹回栏首 / 栏尾,不回 `NaN`
 - 连续在同两卡之间插入 60 次后 `needsRebalance` 为 true
+- `openChecklistCount` 在 done > total 时回 0,不回负数
 - `deriveParticipants` 去重、忽略 `assigned_to = null`、owner 恒在结果内
 
 ### 元件测试
 
-照 `src/features/hr/HrAttendance.write-failure.test.tsx` 的写法(docblock 指定
-`@vitest-environment jsdom`,因为 `vitest.config.ts` 全域是 `node`)补一个
-`Tasks.drag-failure.test.tsx`:
+全部照 `src/features/hr/HrAttendance.write-failure.test.tsx` 的写法:docblock 指定
+`@vitest-environment jsdom`(`vitest.config.ts` 全域是 `node`),不引
+`@testing-library/jest-dom`。
 
-- 拖卡换栏 → 乐观更新立即生效
-- supabase 回传 **`{ data: [], error: null }`**(RLS 静默挡掉的形状)时,卡片必须
-  滚回原栏原位置,并显示错误横条
+规划时只写了一个 `Tasks.drag-failure.test.tsx`,实际拆成了下面这些 —— 板的拖放
+最后落在 `Tasks.reorder.test.tsx`,那个档名从未存在过:
 
-这个形状是重点:只测 `error !== null` 会漏掉真正咬过人的那种失败。
+| 档案 | 钉住的事 |
+|---|---|
+| `Tasks.reorder.test.tsx` | 拖卡换栏的乐观更新、RLS 静默挡掉时滚回原栏原位、栏内重新编号 |
+| `Tasks.doneGate.test.tsx` | 「还有子项没做完」的软性确认,三条进 done 的路都要问 |
+| `Tasks.refresh.test.tsx` | 背景重拉不得卸载开着的弹窗(全屏 loader 只挡第一次) |
+| `Tasks.projectFilter.test.tsx` | Project 筛选下拉,以及它自己那笔读取的失败横幅 |
+| `Tasks.staffRead.test.tsx` | staff 读失败要说出来,不得退化成只剩 "Unassigned" 的下拉 |
+| `TasksArchive.test.tsx` | `/team/tasks/archive` 的清单与搜寻 |
+| `Projects.test.tsx` | 清单读失败不得画成空清单;删除的 `WriteOutcome` |
+| `ProjectDetail.test.tsx` | 专案头部、参与者推导、板的搬动接线、进度重拉,以及门禁对齐 RLS(不是对齐 rank) |
+| `ProjectFormModal.test.tsx` | 新增 / 编辑两条路各自的 `WriteOutcome` |
+| `TaskFormModal.project.test.tsx` | 从专案页建的任务要归给那个专案 |
+| `TaskDetailModal.tags.test.tsx` | 重打一个已存在的 tag 名字要挂到同一笔上 |
+| `TaskDetailModal.write-failure.test.tsx` | 存档 / 删除的 `WriteOutcome`、删除闸门、专案清单读失败的显示位置 |
+| `TagManagerModal.write-failure.test.tsx` | 改名 / 删除的 `WriteOutcome`,含撞名那句话 |
+| `CommentThread.write-failure.test.tsx` | 张贴的 `WriteOutcome`(失败要留住草稿)、读失败的显示 |
+| `ChecklistEditor.test.tsx` | 认领 / 取消认领(空字串要送成 null)与 `WriteOutcome` |
+| `AttachmentGallery.test.tsx` | 上传 / 删除的接线与 lightbox |
+| `TaskBoard.archiveLink.test.tsx` / `TaskBoard.projectBadge.test.tsx` | Done 栏底的 archive 出口;卡上的 project 标签只在总板画 |
+| `useBoardTasks.realtime.test.tsx` | realtime 订阅、自身回音的辨识、重连补拉,以及这些都不得抹掉写入失败的横幅 |
+
+`api.*.test.ts` 那一组(`reads` / `boardQuery` / `tags` / `updateTag` / `checklist` /
+`attachments` / `projects.write`)让 `api.ts` 跑真的,只把 supabase client 换成假的
+—— 验的是「送出去的查询长什么样」,以及读失败真的 throw。
+
+RLS 静默挡掉的形状(**`{ data: [], error: null }`**)是所有写入测试的重点:
+只测 `error !== null` 会漏掉真正咬过人的那一种失败。凡是呼叫端要看 `.ok` 的地方,
+都必须有一则测试会因为那段判断被删掉而变红 —— 否则那段判断等於没有人守着。
 
 ### 既有测试
 

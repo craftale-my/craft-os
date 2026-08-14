@@ -47,7 +47,7 @@ function renderBoard(opts: { tasks: Task[]; showArchiveLink?: boolean }) {
   const props = {
     tasks: opts.tasks,
     allTasks: opts.tasks,
-    canManage: true,
+    canManageTasks: true,
     currentStaffId: 'staff-1',
     onCardClick: vi.fn(),
     onAddClick: vi.fn(),

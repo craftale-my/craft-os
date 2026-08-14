@@ -310,7 +310,17 @@ export async function deleteAttachment(att: Attachment): Promise<WriteOutcome> {
   const res = writeOutcome(
     await supabase.from('task_attachments').delete().eq('id', att.id).select(),
   )
-  if (res.ok) await supabase.storage.from('task-attachments').remove([att.storage_path])
+  // 列真的没了才清 storage 物件。remove() 自己失败是同一类结果 —— 一个再也没有
+  // 纪录指得到的孤儿档案,跟 uploadAttachment 回滚失败时留下的那种一模一样。
+  // 不因此对使用者报错(纪录已经删掉了,删除本身是成功的),但也不能连这个失败
+  // 都吞掉:两支相邻的函式对同一件事得有同一个说法。
+  if (res.ok) {
+    const { error: rmErr } = await supabase.storage
+      .from('task-attachments').remove([att.storage_path])
+    if (rmErr) {
+      console.error(`[tasks] orphaned attachment not removed: ${att.storage_path}`, rmErr.message)
+    }
+  }
   return res
 }
 

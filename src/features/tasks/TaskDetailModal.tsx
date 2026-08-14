@@ -10,19 +10,24 @@ import { AttachmentGallery } from './AttachmentGallery'
 import { ChecklistEditor } from './ChecklistEditor'
 import { CommentThread } from './CommentThread'
 import { TagInput } from './TagInput'
+import { canDeleteTask } from './permissions'
 
 const statusLabel: Record<TaskStatus, string> = {
   todo: 'To Do', in_progress: 'In Progress', done: 'Done',
 }
 
 export function TaskDetailModal({
-  task, allStaff, allTags, canManage, currentStaffId, onClose, onChanged, onStatusChange,
+  task, allStaff, allTags, canManageTasks, canManageProjects,
+  currentStaffId, onClose, onChanged, onStatusChange,
 }: {
   task: Task
   allStaff: StaffLite[]
   /** 给 TagInput 做建议清单;新建的 tag 要等下一次 onChanged() 落地后才会出现在这里。 */
   allTags: Tag[]
-  canManage: boolean
+  /** 板上的写入门禁(view_team)。删除比这紧一格,见下面的 canDelete。 */
+  canManageTasks: boolean
+  /** 只影响删除:tasks_delete 对「不是自己建的」那些卡额外要这一格。 */
+  canManageProjects: boolean
   currentStaffId: string
   onClose: () => void
   /** 任务本体有变动 —— 请页面层重新拉板。 */
@@ -50,7 +55,13 @@ export function TaskDetailModal({
 
   // 专案下拉的选项,跟 TaskFormModal 同一套规格:自己管自己的读取,不靠
   // ProjectDetail 往下传 —— 那一页现在有另一支任务在顾,不该为了这一颗下拉
-  // 多接一条 props 线路。读失败就把话说在下拉旁边,不挡住整个编辑表单。
+  // 多接一条 props 线路。
+  //
+  // 这笔读取在弹窗一开就跑,所以它的失败也要在弹窗一开就说出来 —— 跟
+  // CommentThread / AttachmentGallery 那两笔一样,读失败当场画一条讯息。
+  // 曾经只画在编辑态的 Project 下拉旁边:读不到专案清单的人得先按下 "Edit Task"
+  // 才知道这件事,没按的人则完全看不到 —— 而「下拉是空的」跟「一个专案都还没建」
+  // 在画面上长得一模一样,正是这个模块重建的起点那个形状。
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsError, setProjectsError] = useState('')
   useEffect(() => {
@@ -72,8 +83,10 @@ export function TaskDetailModal({
   }, [])
 
   const isAssignee      = task.assigned_to === currentStaffId
-  const canChangeStatus = canManage || isAssignee
-  const canAttach       = canManage || isAssignee
+  const canChangeStatus = canManageTasks || isAssignee
+  const canAttach       = canManageTasks || isAssignee
+  // 删除比其它写入紧一格 —— 对齐 tasks_delete 那条 RLS,不是另订一套。
+  const canDelete       = canDeleteTask({ canManageTasks, canManageProjects }, task, currentStaffId)
   const pCfg            = PRIORITY_CFG[editing ? form.priority : task.priority]
   const overdue         = isOverdue(task.due_date, new Date())
 
@@ -257,6 +270,15 @@ export function TaskDetailModal({
             <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
           )}
 
+          {projectsError && (
+            <p
+              data-testid="task-detail-projects-error"
+              className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2"
+            >
+              Could not load projects — {projectsError}
+            </p>
+          )}
+
           {/* Meta */}
           <div className="grid grid-cols-2 gap-4 text-xs">
             <div>
@@ -325,9 +347,6 @@ export function TaskDetailModal({
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>
-                {projectsError && (
-                  <p className="text-[11px] text-red-600 mt-1">Could not load projects — {projectsError}</p>
-                )}
               </div>
             )}
           </div>
@@ -417,7 +436,7 @@ export function TaskDetailModal({
         </div>
 
         {/* Footer actions (manager only) */}
-        {canManage && !editing && (
+        {canManageTasks && !editing && (
           <div className="px-6 py-4 border-t border-[#EDE5D8] flex gap-2">
             <button
               onClick={startEdit}
@@ -425,13 +444,15 @@ export function TaskDetailModal({
             >
               Edit Task
             </button>
-            <button
-              onClick={handleDelete}
-              disabled={deleting}
-              className="px-4 py-2 rounded-xl bg-[#FCF0EC] text-[#9E4A30] text-sm font-semibold hover:bg-[#F5DDD5] transition-colors disabled:opacity-60"
-            >
-              {deleting ? '...' : 'Delete'}
-            </button>
+            {canDelete && (
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="px-4 py-2 rounded-xl bg-[#FCF0EC] text-[#9E4A30] text-sm font-semibold hover:bg-[#F5DDD5] transition-colors disabled:opacity-60"
+              >
+                {deleting ? '...' : 'Delete'}
+              </button>
+            )}
           </div>
         )}
       </div>

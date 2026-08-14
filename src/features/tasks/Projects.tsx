@@ -1,15 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { Pencil, Trash2 } from 'lucide-react'
-import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
-import { useCan } from '../../shared/lib/permissions'
 import { projectProgress } from '../../shared/lib/tasks'
 import { Avatar } from '../../shared/components/Avatar'
-import { fetchProjects, deleteProject } from './api'
+import { fetchProjects, fetchAssignableStaff, deleteProject } from './api'
 import { PROJECT_STATUS_LABELS, PROJECT_STATUS_STYLES } from './types'
 import type { Project, ProjectStatus, StaffLite } from './types'
 import { ProjectFormModal } from './ProjectFormModal'
+import { useTaskPermissions } from './permissions'
 
 /** 顶部的切换。`all` 不是 status,是「不过滤」—— cancelled 只在这一档出现。 */
 type Filter = ProjectStatus | 'all'
@@ -37,7 +36,7 @@ function confirmDelete(project: Project): boolean {
 
 export default function ProjectsPage() {
   const { staff: currentStaff } = useAuth()
-  const { can } = useCan()
+  const { canManageProjects } = useTaskPermissions()
   const [projects, setProjects] = useState<Project[]>([])
   const [allStaff, setAllStaff] = useState<StaffLite[]>([])
   const [firstLoad, setFirstLoad] = useState(true)
@@ -46,25 +45,26 @@ export default function ProjectsPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editProject, setEditProject] = useState<Project | null>(null)
 
-  const canManage = can('manage_projects')
   const currentStaffId = currentStaff?.id ?? ''
 
   /**
    * 读取失败一定要显示出来,不能退化成一份空清单 —— 「读不到」跟「还没有任何
    * 专案」在画面上长得一模一样,而这个模块重建的起点就是这个 bug。
    *
-   * staff 那一笔的 error 同样要炸:静静吞掉的话 Owner 下拉会变成只剩
-   * "Unassigned",使用者编辑任何专案再存档,就把原本的 owner 洗掉了。
+   * staff 走 fetchAssignableStaff() —— Owner 下拉跟指派下拉要的是同一份清单、
+   * 同样三栏。自己在这里再写一次同样的查询,只是多一份会各自漂移的副本:
+   * 那支函式的失败即 throw 语义(静静吞掉的话 Owner 下拉会变成只剩
+   * "Unassigned",使用者编辑任何专案再存档,就把原本的 owner 洗掉了)
+   * 也就跟着要在这里重讲一遍。
    */
   const load = useCallback(async () => {
     try {
       const [p, s] = await Promise.all([
         fetchProjects(),
-        supabase.from('staff').select('id,name,avatar').order('name'),
+        fetchAssignableStaff(),
       ])
-      if (s.error) throw new Error(s.error.message)
       setProjects(p)
-      setAllStaff((s.data ?? []) as StaffLite[])
+      setAllStaff(s)
       setError('')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load projects.')
@@ -117,7 +117,7 @@ export default function ProjectsPage() {
               {projects.length} total · {shown.length} shown
             </p>
           </div>
-          {canManage && (
+          {canManageProjects && (
             <button
               onClick={() => { setEditProject(null); setFormOpen(true) }}
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors shadow-sm"
@@ -201,7 +201,7 @@ export default function ProjectsPage() {
                     <span className="text-xs font-medium text-red-600 flex-shrink-0">⚠ {p.overdue_tasks} overdue</span>
                   )}
                 </Link>
-                {canManage && (
+                {canManageProjects && (
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <button
                       onClick={() => { setFormOpen(false); setEditProject(p) }}

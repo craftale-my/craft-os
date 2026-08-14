@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, Pencil } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
-import { useCan } from '../../shared/lib/permissions'
 import { deriveParticipants, projectProgress } from '../../shared/lib/tasks'
 import { Avatar } from '../../shared/components/Avatar'
 import { fetchProject } from './api'
@@ -13,6 +12,7 @@ import { TaskDetailModal } from './TaskDetailModal'
 import { TaskFormModal } from './TaskFormModal'
 import { ProjectFormModal } from './ProjectFormModal'
 import { useBoardTasks } from './useBoardTasks'
+import { useTaskPermissions } from './permissions'
 
 /** 带年份的日期。专案会跨年,`5 Aug – 3 Feb` 这种写法读者得自己猜是哪一年。 */
 function fmtProjectDate(d: string | null): string | null {
@@ -33,7 +33,7 @@ function fmtProjectDate(d: string | null): string | null {
 export default function ProjectDetailPage() {
   const { id = '' } = useParams<{ id: string }>()
   const { staff: currentStaff } = useAuth()
-  const { can } = useCan()
+  const { canManageTasks, canManageProjects } = useTaskPermissions()
 
   const [project,      setProject]      = useState<Project | null>(null)
   const [projectError, setProjectError] = useState('')
@@ -44,7 +44,6 @@ export default function ProjectDetailPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [detailId, setDetailId] = useState<string | null>(null)
 
-  const canManage      = currentStaff?.rank === 'supervisor' || currentStaff?.rank === 'manager'
   const currentStaffId = currentStaff?.id ?? ''
 
   /**
@@ -140,7 +139,8 @@ export default function ProjectDetailPage() {
           task={detailTask}
           allStaff={allStaff}
           allTags={allTags}
-          canManage={canManage}
+          canManageTasks={canManageTasks}
+          canManageProjects={canManageProjects}
           currentStaffId={currentStaffId}
           onClose={() => setDetailId(null)}
           onChanged={reload}
@@ -197,7 +197,7 @@ export default function ProjectDetailPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  {canManage && (
+                  {canManageTasks && (
                     <button
                       onClick={() => setFormOpen(true)}
                       className="px-4 py-2 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors shadow-sm"
@@ -205,7 +205,7 @@ export default function ProjectDetailPage() {
                       + New Task
                     </button>
                   )}
-                  {can('manage_projects') && (
+                  {canManageProjects && (
                     <button
                       onClick={() => setEditOpen(true)}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#D4C5B0] bg-white text-sm font-semibold text-[#8B7355] hover:bg-[#F5EDE0] transition-colors"
@@ -281,7 +281,7 @@ export default function ProjectDetailPage() {
               <TaskBoard
                 tasks={tasks}
                 allTasks={tasks}
-                canManage={canManage}
+                canManageTasks={canManageTasks}
                 currentStaffId={currentStaffId}
                 onCardClick={task => setDetailId(task.id)}
                 onAddClick={() => setFormOpen(true)}

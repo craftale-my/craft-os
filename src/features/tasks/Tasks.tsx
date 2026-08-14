@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect } from 'react'
 import { Settings2 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
-import { useCan } from '../../shared/lib/permissions'
 import { fetchProjects } from './api'
 import type { Project, Task } from './types'
 import { TaskBoard, bottomPosition } from './TaskBoard'
@@ -10,11 +9,12 @@ import { TaskDetailModal } from './TaskDetailModal'
 import { TaskFormModal } from './TaskFormModal'
 import { TagManagerModal } from './TagManagerModal'
 import { useBoardTasks } from './useBoardTasks'
+import { useTaskPermissions } from './permissions'
 
 export default function TasksPage() {
   const { staff: currentStaff } = useAuth()
   const { departmentOptions } = useLookups()
-  const { can } = useCan()
+  const { canManageTasks, canManageProjects } = useTaskPermissions()
   // 板的资料与搬动逻辑都在这支 hook 里 —— /team/projects/:id 用的是同一份。
   const { tasks, allStaff, allTags, firstLoad, error, load, handleMove, moveOptimistic } =
     useBoardTasks()
@@ -50,7 +50,6 @@ export default function TasksPage() {
   const [detailId, setDetailId] = useState<string | null>(null)
   const [tagManagerOpen, setTagManagerOpen] = useState(false)
 
-  const canManage      = currentStaff?.rank === 'supervisor' || currentStaff?.rank === 'manager'
   const currentStaffId = currentStaff?.id ?? ''
 
   const filteredTasks = tasks.filter(t => {
@@ -96,7 +95,8 @@ export default function TasksPage() {
           task={detailTask}
           allStaff={allStaff}
           allTags={allTags}
-          canManage={canManage}
+          canManageTasks={canManageTasks}
+          canManageProjects={canManageProjects}
           currentStaffId={currentStaffId}
           onClose={() => setDetailId(null)}
           onChanged={load}
@@ -121,7 +121,7 @@ export default function TasksPage() {
               {tasks.length} total · {filteredTasks.length} shown
             </p>
           </div>
-          {canManage && (
+          {canManageTasks && (
             <button
               onClick={() => { setEditTask(null); setFormOpen(true) }}
               className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors shadow-sm"
@@ -190,7 +190,7 @@ export default function TasksPage() {
               <option key={tag.id} value={tag.id}>{tag.name}</option>
             ))}
           </select>
-          {can('manage_projects') && (
+          {canManageProjects && (
             <button
               onClick={() => setTagManagerOpen(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#D4C5B0] bg-white text-xs font-semibold text-[#8B7355] hover:bg-[#F5EDE0] transition-colors"
@@ -210,7 +210,7 @@ export default function TasksPage() {
         <TaskBoard
           tasks={filteredTasks}
           allTasks={tasks}
-          canManage={canManage}
+          canManageTasks={canManageTasks}
           currentStaffId={currentStaffId}
           onCardClick={task => setDetailId(task.id)}
           onAddClick={() => { setEditTask(null); setFormOpen(true) }}

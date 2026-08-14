@@ -108,7 +108,8 @@ function renderModal(onChanged: () => void = vi.fn()) {
       task={TASK}
       allStaff={[]}
       allTags={[]}
-      canManage={false}
+      canManageTasks={false}
+      canManageProjects={false}
       currentStaffId="staff-1"
       onClose={() => {}}
       onChanged={onChanged}
