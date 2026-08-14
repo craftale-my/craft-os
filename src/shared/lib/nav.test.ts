@@ -88,6 +88,14 @@ describe('activeEntry', () => {
     expect(activeEntry(full, '/team/projects/abc-123')).toEqual({ leafId: 'team-projects', groupId: 'team' })
   })
 
+  it('Task 14:/team/tasks/archive 一样归 Tasks,不会落到别的叶子上', () => {
+    // team-tasks 没有自己的 activePaths,靠预设的 [leaf.to] = ['/team/tasks']
+    // 做前缀匹配。Archive 是 /team/tasks 底下的子路由,这里钉住「新增子路由不必
+    // 手动帮每个既有叶子补 activePaths」这件事真的成立 —— 少了这一条,侧栏会在
+    // 使用者点进 Archive 之后连 Tasks 都不亮,看起来像是离开了整个 Team 大类。
+    expect(activeEntry(full, '/team/tasks/archive')).toEqual({ leafId: 'team-tasks', groupId: 'team' })
+  })
+
   it('未知路径返回 null', () => {
     expect(activeEntry(full, '/nowhere')).toBeNull()
   })

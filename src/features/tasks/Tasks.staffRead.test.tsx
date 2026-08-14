@@ -16,6 +16,7 @@
 // (mock ./api,不 mock ../../shared/lib/supabase —— 页面层已经不直接碰它了)。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import type { Task } from './types'
 
 const h = vi.hoisted(() => ({
@@ -102,7 +103,7 @@ describe('staff 读失败要顶上错误横幅,不能退化成空的指派清单
   it('surfaces the failed staff read on the board banner', async () => {
     h.fetchAssignableStaff.mockRejectedValue(new Error(BOOM))
 
-    render(<TasksPage />)
+    render(<MemoryRouter><TasksPage /></MemoryRouter>)
 
     // 关键是横幅上真的出现了这句话 —— 旧版的 load() 从不为 staff 读取失败呼叫
     // setError,这一行在修好之前永远等不到。
@@ -117,7 +118,7 @@ describe('staff 读失败要顶上错误横幅,不能退化成空的指派清单
   it('never shows the full-screen loader forever just because one of the three reads failed', async () => {
     h.fetchAssignableStaff.mockRejectedValue(new Error(BOOM))
 
-    render(<TasksPage />)
+    render(<MemoryRouter><TasksPage /></MemoryRouter>)
 
     await screen.findByText(new RegExp(BOOM, 'i'))
     expect(screen.queryByText(/Loading tasks/i)).toBeNull()
@@ -129,7 +130,7 @@ describe('staff 读失败要顶上错误横幅,不能退化成空的指派清单
       { id: 'staff-1', name: 'Yong Tan', avatar: null, rank: 'staff', department: null },
     ])
 
-    render(<TasksPage />)
+    render(<MemoryRouter><TasksPage /></MemoryRouter>)
     await screen.findByText(new RegExp(BOOM, 'i'))
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))

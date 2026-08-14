@@ -10,6 +10,7 @@
 // 全部消失或全部留着,而不是精准剩一张。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import type { Project, Task } from './types'
 
 const h = vi.hoisted(() => ({
@@ -123,7 +124,7 @@ beforeEach(() => {
 afterEach(cleanup)
 
 async function renderBoard() {
-  render(<TasksPage />)
+  render(<MemoryRouter><TasksPage /></MemoryRouter>)
   await screen.findByTestId('task-card-kitchen-task')
 }
 

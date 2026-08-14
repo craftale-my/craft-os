@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { insertPosition } from '../../shared/lib/tasks'
-import { TASK_COLUMNS } from './types'
+import { DONE_WINDOW_DAYS, TASK_COLUMNS } from './types'
 import type { Task, TaskStatus } from './types'
 import { TaskCard } from './TaskCard'
 
@@ -61,7 +62,7 @@ function KanbanColumn({
   variant, colKey, label, tasks, canManage, currentStaffId,
   dropAt, onDragOver, onDragLeave, onDrop, onZoneOver, onZoneDrop,
   draggingId, onDragStart, onDragEnd, onCardClick, onAddClick,
-  showMobileActions, onCardStatusChange, showProject,
+  showMobileActions, onCardStatusChange, showProject, showArchiveLink,
 }: {
   variant: 'desktop' | 'mobile'
   colKey: TaskStatus
@@ -85,6 +86,8 @@ function KanbanColumn({
   onCardStatusChange?: (taskId: string, status: TaskStatus) => void
   /** 卡上要不要画 project 标签,原样转给每一张 TaskCard —— 见 TaskBoard 的说明。 */
   showProject: boolean
+  /** Done 栏底要不要画「View archive →」。见 TaskBoard 的说明。 */
+  showArchiveLink: boolean
 }) {
   const s = COL_STYLE[colKey]
   const idPrefix = variant === 'mobile' ? 'mobile-' : ''
@@ -142,7 +145,11 @@ function KanbanColumn({
       <div className="flex flex-col gap-2.5 flex-1">
         {tasks.length === 0 ? (
           <div className="flex-1 flex items-center justify-center py-10">
-            <p className="text-xs text-[#A09080]">No tasks here yet</p>
+            <p className="text-xs text-[#A09080]">
+              {/* Done 栏的时间窗把旧卡挪去了 archive,「没有任务」在这里不是真的 ——
+                  这一栏很可能挤满了做完的东西,只是不在最近 DONE_WINDOW_DAYS 天内。 */}
+              {colKey === 'done' ? `Nothing completed in the last ${DONE_WINDOW_DAYS} days` : 'No tasks here yet'}
+            </p>
           </div>
         ) : (
           tasks.map((task, i) => (
@@ -199,6 +206,18 @@ function KanbanColumn({
           ))
         )}
       </div>
+
+      {/* Done 栏底的出口,通往「全部已完成任务」的清单页。只有 /team/tasks 传
+          showArchiveLink=true —— /team/projects/:id 那块板范围就是这一个专案,
+          archive 页不分专案,连去那里没有意义,见 TaskBoard 的说明。 */}
+      {colKey === 'done' && showArchiveLink && (
+        <Link
+          to="/team/tasks/archive"
+          className="block mt-2 text-center text-xs font-semibold text-[#8B6344] hover:underline"
+        >
+          View archive →
+        </Link>
+      )}
     </div>
   )
 }
@@ -209,7 +228,7 @@ function KanbanColumn({
  */
 export function TaskBoard({
   tasks, allTasks, canManage, currentStaffId, onCardClick, onAddClick, onMove,
-  showProject = false,
+  showProject = false, showArchiveLink = false,
 }: {
   /** 画面上看得到的卡 —— 页面层已经套过筛选。 */
   tasks: Task[]
@@ -234,6 +253,14 @@ export function TaskBoard({
    * 不会是专案页突然冒出一堆噪音标签(看不出来哪里错的那种)。
    */
   showProject?: boolean
+  /**
+   * Done 栏底要不要画「View archive →」。**故意预设 false**,同一个理由跟
+   * `showProject` 一样:`/team/tasks` 的 archive 涵盖全公司,`/team/projects/:id`
+   * 只是一个专案的板,连过去看到的是别的专案的卡,对着一块范围对不上的板
+   * 硬塞一个入口,比没有入口更容易让人以为「这个专案的完成任务都在那里」。
+   * 只有 `/team/tasks` 显式传 true。
+   */
+  showArchiveLink?: boolean
 }) {
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropAt, setDropAt] = useState<DropAt | null>(null)
@@ -344,6 +371,7 @@ export function TaskBoard({
             onCardClick={onCardClick}
             onAddClick={onAddClick}
             showProject={showProject}
+            showArchiveLink={showArchiveLink}
           />
         ))}
       </div>
@@ -371,6 +399,7 @@ export function TaskBoard({
           showMobileActions
           onCardStatusChange={(taskId, status) => requestMove(taskId, status, null)}
           showProject={showProject}
+          showArchiveLink={showArchiveLink}
         />
       </div>
     </>

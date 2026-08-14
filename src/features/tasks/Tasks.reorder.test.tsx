@@ -16,6 +16,7 @@
 // null,所以它根本不会长出落点 —— 详见 KanbanColumn。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Task, TaskStatus } from './types'
 
@@ -125,7 +126,7 @@ afterEach(() => {
 async function boardOf(rows: Task[]): Promise<void> {
   // 每次重拉都回传全新的物件,模拟真的重新查过资料库。
   h.fetchBoardTasks.mockImplementation(async () => rows.map(r => ({ ...r })))
-  render(<TasksPage />)
+  render(<MemoryRouter><TasksPage /></MemoryRouter>)
   await screen.findByTestId(`task-card-${rows[0].id}`)
 }
 
@@ -391,7 +392,7 @@ describe('整栏重新编号', () => {
       db.set(id, patch.position)
       return OK
     })
-    render(<TasksPage />)
+    render(<MemoryRouter><TasksPage /></MemoryRouter>)
     await screen.findByTestId('task-card-a')
 
     dragOnto('c', 'drop-before-b')

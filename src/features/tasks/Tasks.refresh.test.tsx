@@ -12,6 +12,7 @@
 //    "Found multiple elements" 炸掉,而不是变成看不懂的 no-op。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Task } from './types'
 
@@ -113,7 +114,7 @@ afterEach(cleanup)
 
 /** 渲染并等第一次拉板落地,回传桌面版那张卡。 */
 async function renderBoard(): Promise<HTMLElement> {
-  render(<TasksPage />)
+  render(<MemoryRouter><TasksPage /></MemoryRouter>)
   return await screen.findByTestId('task-card-task-1')
 }
 
@@ -177,7 +178,7 @@ describe('背景重拉不得卸载开着的弹窗', () => {
 
   it('still shows the full-screen loader for the very first load', () => {
     h.fetchBoardTasks.mockImplementationOnce(() => new Promise<Task[]>(() => {}))
-    render(<TasksPage />)
+    render(<MemoryRouter><TasksPage /></MemoryRouter>)
     expect(screen.getByText(/Loading tasks/i)).toBeTruthy()
   })
 })

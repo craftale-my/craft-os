@@ -16,6 +16,7 @@
 // 删标签)本来就是 window.confirm,不为了一句提示新开一层 modal。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Task } from './types'
 
@@ -124,7 +125,7 @@ function answerConfirm(answer: boolean) {
 }
 
 async function renderBoard(): Promise<HTMLElement> {
-  render(<TasksPage />)
+  render(<MemoryRouter><TasksPage /></MemoryRouter>)
   return await screen.findByTestId('task-card-task-1')
 }
 

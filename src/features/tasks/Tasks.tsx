@@ -203,7 +203,10 @@ export default function TasksPage() {
 
         {/* showProject=true —— 这是整间公司的板,每一张卡可能属于不同专案,
             标签是有用的资讯。/team/projects/:id 那块板不传这个 prop,默认值
-            就是 false,详见 TaskBoard 里的说明。 */}
+            就是 false,详见 TaskBoard 里的说明。
+            showArchiveLink 同一个道理:archive 涵盖全公司,只有这块板该显示
+            出口去那里 —— /team/projects/:id 是单一专案的板,archive 不分专案,
+            连过去没有意义。 */}
         <TaskBoard
           tasks={filteredTasks}
           allTasks={tasks}
@@ -213,6 +216,7 @@ export default function TasksPage() {
           onAddClick={() => { setEditTask(null); setFormOpen(true) }}
           onMove={handleMove}
           showProject
+          showArchiveLink
         />
 
       </div>
