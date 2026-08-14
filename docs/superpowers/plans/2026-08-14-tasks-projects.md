@@ -1615,14 +1615,51 @@ git commit -m "feat(tasks): add tag rename, recolour and delete"
 
 ## Task 8:Checklist
 
+> **范围已於 2026-08-14 由使用者修订。** 原设计的子项只有「文字 + 打勾」,现追加两项:
+> 子项**可指定负责人**,以及**软性完成提醒** —— 子项未做完就要移到 Done 时跳确认,
+> 但不硬挡(子项可能作废或情况改变,硬挡会让任务结不掉)。
+
 **Files:**
+- Create: `supabase/migration-2026-08-14-checklist-assignee.sql`
 - Create: `src/features/tasks/ChecklistEditor.tsx`
+- Modify: `src/features/tasks/api.ts`(子项的 assignee 读写)
+- Modify: `src/features/tasks/types.ts`(`ChecklistItem.assigned_to` + `assignee`)
 - Modify: `src/features/tasks/TaskDetailModal.tsx`
 - Modify: `src/features/tasks/TaskCard.tsx`
+- Modify: `src/features/tasks/Tasks.tsx`(移到 Done 前的确认)
 
 **Interfaces:**
-- Consumes: `fetchChecklist` / `addChecklistItem` / `setChecklistDone` / `deleteChecklistItem`(Task 3)、`POSITION_STEP`(Task 2)
-- Produces: `<ChecklistEditor taskId onChanged />`
+- Consumes: `fetchChecklist` / `addChecklistItem` / `setChecklistDone` / `deleteChecklistItem`(Task 3)、`POSITION_STEP` / `projectProgress`(Task 2)
+- Produces:
+  - `<ChecklistEditor taskId allStaff onChanged />`
+  - `setChecklistAssignee(id: string, staffId: string | null): Promise<WriteOutcome>`
+  - `openChecklistCount(task: Task): number`(纯函数,放 `src/shared/lib/tasks.ts`)
+
+- [ ] **Step 0: 加栏位的 migration**
+
+Create `supabase/migration-2026-08-14-checklist-assignee.sql`:
+
+```sql
+-- ============================================================================
+-- Craft OS — Tasks:checklist 子项加负责人 (2026-08-14)
+--
+-- 在 Supabase SQL editor 里整份执行。幂等 — 可重复运行。
+-- 前置:migration-2026-08-14-tasks-projects.sql
+--
+-- 一个任务由多人分工时,「谁负责哪一条」原本只能写在子项文字里。加一栏
+-- assigned_to 让它成为结构化资料,卡片与筛选才有得依据。
+-- on delete set null:员工离职删档不该连带删掉工作纪录。
+-- ============================================================================
+alter table task_checklist_items
+  add column if not exists assigned_to uuid references staff(id) on delete set null;
+
+create index if not exists task_checklist_assignee_idx
+  on task_checklist_items (assigned_to);
+
+notify pgrst, 'reload schema';
+```
+
+**这份由使用者手动执行**,你不能跑 DDL。写好即可。
 
 - [ ] **Step 1: 建立 `ChecklistEditor.tsx`**
 
@@ -1653,7 +1690,34 @@ async function toggle(item: ChecklistItem) {
 }
 ```
 
-- [ ] **Step 2: 卡片显示 `3/7`**
+每一列子项右侧放一个小的 assignee 选择器(未指定时显示淡色的「Anyone」),
+选到人就显示 `Avatar` + 名字首字。写入走 `setChecklistAssignee`,同样检查
+`WriteOutcome`。
+
+- [ ] **Step 2: 移到 Done 前的软提醒**
+
+`Tasks.tsx` 的 `handleBoardMove` 与 `TaskDetailModal` 的 Move to,在目标是 `done`
+且该任务尚有未完成子项时,先跳确认:
+
+```
+Still 3 of 7 items open. Mark as done anyway?
+```
+
+按下取消就什么都不做(连乐观更新都不要跑)。刻意**不硬挡** —— 子项可能作废或
+情况改变,硬挡会让任务永远结不掉。
+
+判断用纯函数,放 `src/shared/lib/tasks.ts` 并写单测:
+
+```ts
+/** 尚未打勾的子项数。任务的 _checklist_total / _checklist_done 由看板查询聚合。 */
+export function openChecklistCount(
+  task: { _checklist_total: number; _checklist_done: number },
+): number {
+  return Math.max(0, task._checklist_total - task._checklist_done)
+}
+```
+
+- [ ] **Step 3: 卡片显示 `3/7`**
 
 footer 的 assignee 之后,`_checklist_total > 0` 才显示:
 
@@ -1666,20 +1730,16 @@ footer 的 assignee 之后,`_checklist_total > 0` 才显示:
 )}
 ```
 
-- [ ] **Step 3: 型别检查与测试**
+- [ ] **Step 4: 型别检查与测试**
 
 Run: `npx tsc --noEmit -p tsconfig.app.json && npx vitest run`
-Expected: 全绿。
-
-- [ ] **Step 4: 浏览器验证**
-
-新增三个子项、勾掉一个,卡片应显示 `1/3`;重整后仍是 `1/3`。
+Expected: 全绿。必测:`openChecklistCount` 的边界(0 项、全勾完、done > total 时不得回负数)。
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/features/tasks/
-git commit -m "feat(tasks): add per-task checklists with progress on the card"
+git add src/features/tasks/ src/shared/lib/tasks.ts src/shared/lib/tasks.test.ts supabase/migration-2026-08-14-checklist-assignee.sql
+git commit -m "feat(tasks): add per-task checklists with owners and a soft done gate"
 ```
 
 ---
