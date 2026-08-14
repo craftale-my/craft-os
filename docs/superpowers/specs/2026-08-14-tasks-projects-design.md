@@ -121,8 +121,13 @@ SQL 侧由 security definer 函数 `has_task_cap(p_cap text)` 兜底。它读
 
 ## 二、数据库设计
 
-完整 migration 见 `supabase/migration-2026-08-14-tasks-projects.sql`(单独交付,由
-使用者在 Supabase SQL editor 执行)。幂等,可重复运行。
+migration 最终是**三份**,全部已由使用者在 Supabase SQL editor 执行,皆幂等:
+
+| 档案 | 内容 | 为什么需要 |
+|---|---|---|
+| `migration-2026-08-14-tasks-projects.sql` | 7 张表、索引、trigger、`project_progress` view、RLS、realtime publication | 主体 |
+| `migration-2026-08-14-tasks-upsert-fn.sql` | `upsert_tag()` function | supabase-js 的 `.upsert()` 只能发 `do update set <栏位> = excluded.<栏位>`,无法表达「冲突时保留既有值」。原本的写法会让后打字的人覆盖掉 tag 的显示名与 `created_by` |
+| `migration-2026-08-14-checklist-assignee.sql` | `task_checklist_items.assigned_to` + 索引 | 使用者中途追加的子项负责人 |
 
 ### 表关系
 
@@ -200,7 +205,15 @@ FK 一律用 inline `references` 写法,让 Postgres 产生预设约束名
 
 ### `task_checklist_items`
 
-`id` / `task_id`(cascade) / `title` / `done` bool default false / `position` double precision
+`id` / `task_id`(cascade) / `title` / `done` bool default false / `position` double precision /
+**`assigned_to`** → `staff(id)` on delete set null
+
+> **2026-08-14 修订(使用者中途追加)。** 原设计的子项只有「文字 + 打勾」。使用者澄清实际
+> 用法是「一个任务底下几个子项,分给不同人去 take,全部清掉才算完成」,因此追加两件事:
+> 子项可指定负责人(`assigned_to`,由
+> `supabase/migration-2026-08-14-checklist-assignee.sql` 补上),以及**软性**完成提醒 ——
+> 子项未做完就要移到 Done 时跳确认(`Still 3 of 7 items open. Mark as done anyway?`),
+> 取消则什么都不做。刻意不硬挡:子项可能作废,硬挡会让任务永远结不掉。
 
 ### `task_attachments`
 
