@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import { needsRebalance, openChecklistCount, rebalance } from '../../shared/lib/tasks'
+import { supabase } from '../../shared/lib/supabase'
 import { fetchAssignableStaff, fetchBoardTasks, fetchTags, moveTask, updateTask } from './api'
 import type { MoveResult, StaffLite, Tag, Task, TaskStatus } from './types'
 
@@ -18,6 +20,82 @@ function confirmDoneWithOpenItems(task: Task): boolean {
   return window.confirm(
     `Still ${open} of ${task._checklist_total} items open. Mark as done anyway?`,
   )
+}
+
+/**
+ * Realtime:另一个 session 动了 `tasks`,这块板要自己跟上,不必有人按重整。
+ *
+ * 事件本身不带 join 进来的 assignee / project / tags,所以收到就重拉一次,而不是
+ * 就地打补丁 —— 板上最多几十张卡,一次查询比维护一整套补丁逻辑便宜太多。
+ *
+ * 只有 `tasks` 在 supabase_realtime publication 里。子项、附件、标签、留言的变动
+ * 不订阅:那四张表的内容只在详情弹窗里看得到,而弹窗一开就自己重读一次,拿四条
+ * 长驻的订阅去换「弹窗开着的时候别人刚好改了子项」这一格,不划算。
+ *
+ * 事件流本身不会帮你处理的两件事:
+ *
+ * · **回音**。自己写出去的那一笔也会广播回来。板上换栏是乐观更新,本地那份早就
+ *   是对的,收到自己的回音再重拉一次不只是白跑 —— 整栏重新编号失败时,
+ *   rebalanceColumn 是先 load() 再把讯息写进横幅,晚一步到的回音会再跑一次
+ *   load(),而 load() 一成功就 setError(''),那句「没收干净」当场被抹掉,使用者
+ *   看到的是一块什么都没说、号码却还挤着的板。所以每一笔自己送出去的写入都先
+ *   按下一张票,回音拿票换行程,换不到才重拉。
+ *
+ * · **连发**。整栏重新编号是一笔一笔写的,N 张卡就是 N 个事件;别人做这件事,
+ *   这块板会连收 N 发,naive 版本就是重拉 N 次板。所以收敛成一次:事件还在来就
+ *   一直把计时器往后推,安静下来才真的去拉。
+ */
+
+/**
+ * 连发收敛的等待时间(trailing debounce)。测试要照着这个数字等,所以 export ——
+ * 与其在测试里抄一个会各自漂走的魔术数字,不如让两边读同一个来源。
+ */
+export const REALTIME_DEBOUNCE_MS = 300
+
+/** 回音最多等这么久;超时的票要放行,理由见 EchoMarks。 */
+const ECHO_TTL_MS = 5_000
+
+/**
+ * 「这一笔是我自己写的」的票。用 id → 到期时间的**队列**,不是一个布尔值:整栏
+ * 重新编号会对同一块板送出好几笔写入,每一笔都要有自己的一张票,少算一张就有
+ * 一发回音会漏进来白拉一次板。
+ *
+ * 票被认领就消掉,而不是「这段时间内该 id 的事件一律不理」—— 后者是为了自己的
+ * 回音,把别人挡在门外:同一张卡在下一毫秒被别人改动,这块板就再也跟不上了。
+ * TTL 只是漏接时的保险丝(realtime 断线、回音根本没送来),没有它,那张卡的票会
+ * 永远挂着,等於把那张卡从 realtime 上摘掉。
+ */
+type EchoMarks = Map<string, number[]>
+
+function markOwnWrite(marks: EchoMarks, taskId: string) {
+  const queue = marks.get(taskId) ?? []
+  queue.push(Date.now() + ECHO_TTL_MS)
+  marks.set(taskId, queue)
+}
+
+/**
+ * 认领一张票:认得到就消掉它并回 true(这是自己的回音,不必重拉)。
+ * 写入没落地时也拿它把票收回来 —— 没写进去就不会有回音,票留着只会挡掉别人
+ * 接下来对同一张卡的改动。
+ */
+function claimOwnWrite(marks: EchoMarks, taskId: string): boolean {
+  const queue = marks.get(taskId)
+  if (!queue) return false
+  const now = Date.now()
+  while (queue.length > 0 && queue[0] <= now) queue.shift()
+  const claimed = queue.length > 0
+  if (claimed) queue.shift()
+  if (queue.length === 0) marks.delete(taskId)
+  return claimed
+}
+
+/** 事件里那一列的 id。DELETE 只带得到 old(而且只有主键)。 */
+function changedTaskId(
+  payload: RealtimePostgresChangesPayload<{ id: string }>,
+): string | undefined {
+  const next = payload.new as { id?: string } | undefined
+  const prev = payload.old as { id?: string } | undefined
+  return next?.id ?? prev?.id
 }
 
 /**
@@ -129,6 +207,63 @@ export function useBoardTasks(
   useEffect(() => { load() }, [load])
 
   /**
+   * 订阅那支 effect 要用的、永远最新的 load —— 但**不**把 load 放进它的 deps。
+   *
+   * 钉在 load 的身分上,换一次 :id 就会把 WebSocket channel 拆掉重开一条;更糟的是
+   * 只要有人往 load 那个 useCallback 多加一个 dep,那条 channel 就会跟着每一次
+   * 重新渲染退订、重订。订阅内容与 projectId 无关(见下面为什么不下 filter),
+   * 一条 channel 撑完整个挂载期间就够了,所以这里钉的是「挂载」这件事本身。
+   */
+  const loadRef = useRef(load)
+  useEffect(() => { loadRef.current = load }, [load])
+
+  const echoMarks    = useRef<EchoMarks>(new Map())
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /**
+   * 每个 hook 实例一条自己的 channel。StrictMode 下 effect 会挂 → 拆 → 再挂,
+   * 两块板也可能在同一棵树上;共用一个固定名字迟早会撞在同一个 topic 上。
+   */
+  const channelKey = useId().replace(/[^a-zA-Z0-9]/g, '')
+
+  useEffect(() => {
+    const marks = echoMarks.current
+    const channel = supabase
+      .channel(`tasks-board-${channelKey}`)
+      // 刻意**不**下 `filter: 'project_id=eq.<id>'`。专案板只关心自己那些任务,但
+      // postgres_changes 的 filter 比对的是事件里那一列本身,所以「把任务搬**出**
+      // 这个专案」的那笔 UPDATE(新值的 project_id 已经是别人了)根本不会送来 ——
+      // 那张卡会赖在这块板上直到有人手动重整,而它看起来跟一张正常的卡毫无差别。
+      // 宁可多收几发全公司的事件,每一发都用 projectId 收敛过的那句查询重拉。
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tasks' },
+        (payload: RealtimePostgresChangesPayload<{ id: string }>) => {
+          const taskId = changedTaskId(payload)
+          if (taskId && claimOwnWrite(marks, taskId)) return   // 自己的回音
+          if (refreshTimer.current !== null) clearTimeout(refreshTimer.current)
+          refreshTimer.current = setTimeout(() => {
+            refreshTimer.current = null
+            // 背景重拉:load() 一律不碰 firstLoad,全屏 loader 只属于第一次进板 ——
+            // 这条路径尤其不能破例,别人搬一张卡不该让这里开着的详情弹窗连同还没
+            // 存档的内容一起被卸载(见 load 上方)。
+            void loadRef.current()
+          }, REALTIME_DEBOUNCE_MS)
+        },
+      )
+      .subscribe()
+
+    return () => {
+      // 计时器要跟着退订一起收掉,否则最后那一发事件会在元件已经卸载之后才去拉板。
+      if (refreshTimer.current !== null) {
+        clearTimeout(refreshTimer.current)
+        refreshTimer.current = null
+      }
+      supabase.removeChannel(channel)
+    }
+  }, [channelKey])
+
+  /**
    * 乐观换栏。RLS 静默挡掉的写入没有 error 也没有 rows,所以一定要看 WriteOutcome。
    * 结果原样回传,不自己决定错误显示在哪 —— 详情弹窗那条路要自己接。
    *
@@ -150,8 +285,12 @@ export function useBoardTasks(
     }
     setTasks(prev => prev.map(t => (t.id === taskId ? { ...t, status, position } : t)))
 
+    // 先按票再送出:realtime 走的是另一条连线,广播很可能比这支 await 的回应
+    // 先到,写在後面就来不及认领了(见档案上方的 realtime 说明)。
+    markOwnWrite(echoMarks.current, taskId)
     const res = await moveTask(taskId, status, position)
     if (!res.ok) {
+      claimOwnWrite(echoMarks.current, taskId)   // 没写进去就不会有回音,票收回来
       setTasks(prev => prev.map(t => (
         t.id === taskId ? { ...t, status: before.status, position: before.position } : t
       )))
@@ -196,8 +335,11 @@ export function useBoardTasks(
   async function rebalanceColumn(column: Task[]) {
     const planned = rebalance(column)
     for (let i = planned.length - 1; i >= 0; i--) {
+      // 每一笔都要自己的一张票 —— 这一趟会送出整栏的写入,也就是整栏的回音。
+      markOwnWrite(echoMarks.current, planned[i].id)
       const res = await updateTask(planned[i].id, { position: planned[i].position })
       if (!res.ok) {
+        claimOwnWrite(echoMarks.current, planned[i].id)
         // load() 成功会自己清掉 error,所以讯息要摆在它之后;代价是万一连重拉
         // 都失败,读取的错误会被这一句盖掉 —— 横幅上的 Retry 仍然是同一颗钮。
         await load()

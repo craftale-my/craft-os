@@ -87,6 +87,18 @@ vi.mock('../../shared/lib/lookups', () => ({
   }),
 }))
 
+// useBoardTasks 会订阅 tasks 的 realtime。不换掉这支 client,测试会拿 .env.local
+// 里那组真的设定,对正式站开一条 WebSocket —— 测试不该连线,更不该连去 prod。
+// 只补它真的用到的两支;on / subscribe 照 supabase-js 的形状回传 channel 本身,
+// 链式呼叫才接得起来。
+vi.mock('../../shared/lib/supabase', () => {
+  const channel = {
+    on:        (): unknown => channel,
+    subscribe: (): unknown => channel,
+  }
+  return { supabase: { channel: () => channel, removeChannel: () => undefined } }
+})
+
 const { default: ProjectDetailPage } = await import('./ProjectDetail')
 
 const PROJECT: Project = {
