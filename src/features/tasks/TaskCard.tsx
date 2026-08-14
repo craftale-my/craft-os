@@ -1,4 +1,4 @@
-import { Paperclip, MessageSquare } from 'lucide-react'
+import { Paperclip, MessageSquare, CheckSquare } from 'lucide-react'
 import { Avatar } from '../../shared/components/Avatar'
 import { useLookups } from '../../shared/lib/lookups'
 import { isOverdue } from '../../shared/lib/tasks'
@@ -106,6 +106,19 @@ export function TaskCard({
           )}
           {task._attachment_count > 0 && (
             <Paperclip size={12} className="text-[#A09080]" />
+          )}
+          {/*
+            子项只在这里显示进度数字,负责人不上卡片。卡上已经有优先级、部门、
+            标签、任务本身的 assignee、日期、附件与留言数;子项负责人是多值的
+            (三个人分工就是三个头像),而且会跟任务 assignee 的头像混在一起,
+            让人误判「这张卡是谁的」。「快做完了吗」用 3/7 就答得完,
+            「谁负责哪一条」要看得到那一条本身才有意义 —— 那是弹窗的事。
+          */}
+          {task._checklist_total > 0 && (
+            <span className="flex items-center gap-0.5 text-xs font-medium text-[#8B7355]">
+              <CheckSquare size={11} />
+              {task._checklist_done}/{task._checklist_total}
+            </span>
           )}
           {task._comment_count > 0 && (
             <span className="flex items-center gap-0.5 text-xs font-medium text-[#8B7355] bg-[#F5EDE0] px-1.5 py-0.5 rounded-full">

@@ -1,3 +1,5 @@
+import type { WriteOutcome } from '../../shared/lib/db-write'
+
 export type TaskStatus   = 'todo' | 'in_progress' | 'done'
 export type TaskPriority = 'low' | 'medium' | 'high'
 export type ProjectStatus = 'active' | 'on_hold' | 'completed' | 'cancelled'
@@ -17,6 +19,9 @@ export interface ChecklistItem {
   title: string
   done: boolean
   position: number
+  /** 谁认领了这一条。null = 还没人认领(画面上的 "Anyone")。 */
+  assigned_to: string | null
+  assignee?: StaffLite | null
 }
 
 export interface Attachment {
@@ -84,6 +89,15 @@ export interface Project {
   done_tasks: number
   overdue_tasks: number
 }
+
+/**
+ * 换栏的结果。`null` 是「使用者在软性完成确认里按了取消」——不是失败:
+ * 没有送出写入,也没有跑乐观更新,所以呼叫端既不该显示错误,也不该
+ * 把既有的错误横幅当成「这次成功了」而收掉。用 null 而不是多一种
+ * `{ ok: false, reason }`,是因为后者一定会被现成的 `!res.ok` 分支
+ * 当成失败讲出来。
+ */
+export type MoveResult = WriteOutcome | null
 
 export const TASK_COLUMNS: { key: TaskStatus; label: string }[] = [
   { key: 'todo',        label: 'To Do' },

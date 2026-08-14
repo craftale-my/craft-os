@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   attachTag:        vi.fn(),
   detachTag:        vi.fn(),
   fetchAttachments: vi.fn(),
+  fetchChecklist:   vi.fn(),
 }))
 
 vi.mock('./api', () => ({
@@ -28,10 +29,15 @@ vi.mock('./api', () => ({
   attachTag:        h.attachTag,
   detachTag:        h.detachTag,
   fetchAttachments: h.fetchAttachments,
+  fetchChecklist:   h.fetchChecklist,
   uploadAttachment: vi.fn(),
   deleteAttachment: vi.fn(),
   updateTask:       vi.fn(),
   deleteTask:       vi.fn(),
+  addChecklistItem:     vi.fn(),
+  setChecklistDone:     vi.fn(),
+  setChecklistAssignee: vi.fn(),
+  deleteChecklistItem:  vi.fn(),
 }))
 
 // 评论串自己管自己的读取/张贴,跟 tag 去重无关,整块换掉免得还要另外喂
@@ -89,6 +95,7 @@ function fakeTagTable() {
 beforeEach(() => {
   vi.resetAllMocks()
   h.fetchAttachments.mockResolvedValue([])
+  h.fetchChecklist.mockResolvedValue([])
 })
 afterEach(cleanup)
 

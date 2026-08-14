@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   normalizeTagName, computeDropPosition, needsRebalance, rebalance,
-  projectProgress, isOverdue, deriveParticipants, POSITION_STEP,
+  projectProgress, isOverdue, deriveParticipants, openChecklistCount, POSITION_STEP,
 } from './tasks'
 
 describe('normalizeTagName', () => {
@@ -128,5 +128,30 @@ describe('deriveParticipants', () => {
 
   it('copes with no owner', () => {
     expect(deriveParticipants([{ assigned_to: 'amy' }], null)).toEqual(['amy'])
+  })
+})
+
+describe('openChecklistCount', () => {
+  const task = (total: number, done: number) => ({ _checklist_total: total, _checklist_done: done })
+
+  it('counts the items still to be ticked', () => {
+    expect(openChecklistCount(task(7, 4))).toBe(3)
+  })
+
+  it('is 0 for a task with no checklist at all', () => {
+    expect(openChecklistCount(task(0, 0))).toBe(0)
+  })
+
+  it('is 0 once every item is ticked', () => {
+    expect(openChecklistCount(task(7, 7))).toBe(0)
+  })
+
+  /**
+   * 两个分页同时开着时,done 的计数可能比 total 新,一瞬间会大於 total。
+   * 若让它变成负数,「Still -1 of 7 items open」会跳到使用者面前,
+   * 而且 `open > 0` 的闸门判断会翻转 —— 一个真的还没做完的任务反而不问就放行。
+   */
+  it('never goes negative when done outruns total', () => {
+    expect(openChecklistCount(task(7, 9))).toBe(0)
   })
 })

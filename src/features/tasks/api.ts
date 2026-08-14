@@ -196,12 +196,26 @@ export async function deleteTag(id: string): Promise<WriteOutcome> {
 
 // ── Checklist ───────────────────────────────────────────────────────────────
 
+/**
+ * 子项内嵌负责人。外键提示 `!task_checklist_items_assigned_to_fkey` 是必要的,
+ * 不是装饰:PostgREST 会把「两个外键的中介表」认成多对多关系,
+ * task_checklist_items 加了 staff 外键之后正好符合这个形状,裸写 `staff(...)`
+ * 迟早会撞上关系歧义。写死约束名与 TASK_SELECT 的 assignee/creator 同款。
+ *
+ * 这一栏由 migration-2026-08-14-checklist-assignee.sql 建立;没跑那份迁移的
+ * 环境这支读取会直接 throw,由弹窗显示出来 —— 比默默把每一条都画成
+ * "Anyone" 好,后者会让人以为资料真的没人认领。
+ */
+const CHECKLIST_SELECT =
+  'id,task_id,title,done,position,assigned_to,' +
+  'assignee:staff!task_checklist_items_assigned_to_fkey(id,name,avatar)'
+
 export async function fetchChecklist(taskId: string): Promise<ChecklistItem[]> {
   const { data, error } = await supabase
-    .from('task_checklist_items').select('*')
+    .from('task_checklist_items').select(CHECKLIST_SELECT)
     .eq('task_id', taskId).order('position')
   if (error) throw new Error(error.message)
-  return (data ?? []) as ChecklistItem[]
+  return (data ?? []) as unknown as ChecklistItem[]
 }
 
 export async function addChecklistItem(
@@ -216,6 +230,16 @@ export async function addChecklistItem(
 export async function setChecklistDone(id: string, done: boolean): Promise<WriteOutcome> {
   return writeOutcome(
     await supabase.from('task_checklist_items').update({ done }).eq('id', id).select(),
+  )
+}
+
+/** 认领 / 取消认领一条子项。`staffId` 为 null 就是放回 "Anyone"。 */
+export async function setChecklistAssignee(
+  id: string, staffId: string | null,
+): Promise<WriteOutcome> {
+  return writeOutcome(
+    await supabase.from('task_checklist_items')
+      .update({ assigned_to: staffId }).eq('id', id).select(),
   )
 }
 

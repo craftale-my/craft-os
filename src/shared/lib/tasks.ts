@@ -60,6 +60,19 @@ export function projectProgress(done: number, total: number): number {
   return Math.min(100, Math.max(0, Math.round((done / total) * 100)))
 }
 
+/**
+ * 尚未打勾的子项数。任务的 _checklist_total / _checklist_done 由看板查询聚合。
+ *
+ * clamp 到 0 的理由与 projectProgress 同款:两个分页同时开着时,done 的计数
+ * 可能比 total 新,一瞬间会大於 total。若让它变成负数,「Still -1 of 7 items
+ * open」这种确认文字就会跳到使用者面前,而且 `open > 0` 的闸门判断也会翻转。
+ */
+export function openChecklistCount(
+  task: { _checklist_total: number; _checklist_done: number },
+): number {
+  return Math.max(0, task._checklist_total - task._checklist_done)
+}
+
 /** 到期当日不算逾期;只比日期,不比时刻。 */
 export function isOverdue(dueDate: string | null, today: Date): boolean {
   if (!dueDate) return false

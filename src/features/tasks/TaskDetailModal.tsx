@@ -2,15 +2,15 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Avatar } from '../../shared/components/Avatar'
 import { useLookups } from '../../shared/lib/lookups'
 import { isOverdue } from '../../shared/lib/tasks'
-import type { WriteOutcome } from '../../shared/lib/db-write'
 import type { Staff } from '../../shared/types'
 import {
   fetchAttachments, uploadAttachment, deleteAttachment, updateTask, deleteTask,
   upsertTag, attachTag, detachTag,
 } from './api'
 import { TASK_COLUMNS } from './types'
-import type { Attachment, Tag, Task, TaskPriority, TaskStatus } from './types'
+import type { Attachment, MoveResult, Tag, Task, TaskPriority, TaskStatus } from './types'
 import { PRIORITY_CFG, fmtDate } from './TaskCard'
+import { ChecklistEditor } from './ChecklistEditor'
 import { CommentThread } from './CommentThread'
 import { TagInput } from './TagInput'
 
@@ -30,8 +30,11 @@ export function TaskDetailModal({
   onClose: () => void
   /** 任务本体有变动 —— 请页面层重新拉板。 */
   onChanged: () => void
-  /** 换栏交给页面层写入,但结果要回传 —— 失败得显示在弹窗里,见 handleStatusChange。 */
-  onStatusChange: (status: TaskStatus) => Promise<WriteOutcome>
+  /**
+   * 换栏交给页面层写入,但结果要回传 —— 失败得显示在弹窗里,见 handleStatusChange。
+   * 回 null 表示使用者在「还有子项没做完」的确认里按了取消:什么都没发生。
+   */
+  onStatusChange: (status: TaskStatus) => Promise<MoveResult>
 }) {
   const { deptName } = useLookups()
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -102,6 +105,9 @@ export function TaskDetailModal({
    */
   async function handleStatusChange(status: TaskStatus) {
     const res = await onStatusChange(status)
+    // null = 软性完成确认被取消。没有写入、没有乐观更新,所以既不报错,
+    // 也不把上一次真的失败留下的讯息当成「这次成功了」而收掉。
+    if (!res) return
     setError(res.ok ? '' : `Could not move the task — ${res.reason}`)
   }
 
@@ -317,6 +323,9 @@ export function TaskDetailModal({
             <p className="text-xs font-semibold text-[#8B7355] mb-1.5">Tags</p>
             <TagInput value={task.tags} allTags={allTags} onAdd={handleAddTag} onRemove={handleRemoveTag} />
           </div>
+
+          {/* Checklist —— 子项与它们各自的负责人。跟 Tags 一样不锁在编辑模式后面。 */}
+          <ChecklistEditor taskId={task.id} allStaff={allStaff} onChanged={onChanged} />
 
           {editing && (
             <div className="flex gap-2">

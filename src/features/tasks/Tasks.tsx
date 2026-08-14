@@ -4,14 +4,31 @@ import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
 import { useCan } from '../../shared/lib/permissions'
-import type { WriteOutcome } from '../../shared/lib/db-write'
+import { openChecklistCount } from '../../shared/lib/tasks'
 import type { Staff } from '../../shared/types'
 import { fetchBoardTasks, fetchTags, moveTask } from './api'
-import type { Tag, Task, TaskStatus } from './types'
+import type { MoveResult, Tag, Task, TaskStatus } from './types'
 import { TaskBoard, bottomPosition } from './TaskBoard'
 import { TaskDetailModal } from './TaskDetailModal'
 import { TaskFormModal } from './TaskFormModal'
 import { TagManagerModal } from './TagManagerModal'
+
+/**
+ * 子项没做完就要收工时的软性提醒。刻意**不硬挡**:子项可能作废、可能被
+ * 情势跳过,硬挡会让那个任务永远结不掉,最后大家学会绕过整套 checklist。
+ * 问一次就好,回 true 表示放行。
+ *
+ * 用 window.confirm 是跟着这个模块既有的破坏性确认走(删任务、删标签),
+ * 不为了一句提示新开一层 modal —— 这个弹窗已经是 z-50,再叠一层要自己
+ * 处理层级与焦点。测试端以 vi.spyOn(window, 'confirm') 决定按下确定或取消。
+ */
+function confirmDoneWithOpenItems(task: Task): boolean {
+  const open = openChecklistCount(task)
+  if (open === 0) return true
+  return window.confirm(
+    `Still ${open} of ${task._checklist_total} items open. Mark as done anyway?`,
+  )
+}
 
 export default function TasksPage() {
   const { staff: currentStaff } = useAuth()
@@ -68,12 +85,19 @@ export default function TasksPage() {
    * 乐观换栏。RLS 静默挡掉的写入没有 error 也没有 rows,所以一定要看 WriteOutcome。
    * 结果原样回传,不自己决定错误显示在哪 —— 详情弹窗是 fixed inset-0 z-50,
    * 整个盖住页面横幅,失败讯息得进它自己的错误位才看得到。
+   *
+   * 软性完成闸门也放在这里,而不是拖放与弹窗各写一份:板上拖放、mobile 的
+   * 换栏钮、详情弹窗的 "Move to" 三条路最后都收敛到这一个函式(弹窗那条
+   * 刻意绕过 handleBoardMove,见下方 onStatusChange),放在这里才没有一条
+   * 路径能绕过确认。确认必须挡在乐观更新之前 —— 按了取消却让卡片先跳去
+   * Done 再弹回来,等於没问。
    */
   async function moveOptimistic(
     taskId: string, status: TaskStatus, position: number,
-  ): Promise<WriteOutcome> {
+  ): Promise<MoveResult> {
     const before = tasks.find(t => t.id === taskId)
     if (!before) return { ok: false, reason: 'it is no longer on the board.' }
+    if (status === 'done' && !confirmDoneWithOpenItems(before)) return null
     setTasks(prev => prev.map(t => (t.id === taskId ? { ...t, status, position } : t)))
 
     const res = await moveTask(taskId, status, position)
@@ -92,6 +116,7 @@ export default function TasksPage() {
   /** 板上的拖放与 mobile 换栏钮 —— 回报到页面横幅。成功要把上一次的失败收掉。 */
   async function handleBoardMove(taskId: string, status: TaskStatus, position: number) {
     const res = await moveOptimistic(taskId, status, position)
+    if (!res) return   // 确认被取消 —— 什么都没发生,横幅维持原样。
     setError(res.ok ? '' : `Could not move the task — ${res.reason}`)
   }
 
