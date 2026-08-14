@@ -105,7 +105,10 @@ export function TaskCard({
             </span>
           )}
           {task._attachment_count > 0 && (
-            <Paperclip size={12} className="text-[#A09080]" />
+            <span className="flex items-center gap-0.5 text-xs font-medium text-[#8B7355]" data-testid="attachment-count-badge">
+              <Paperclip size={11} />
+              {task._attachment_count}
+            </span>
           )}
           {/*
             子项只在这里显示进度数字,负责人不上卡片。卡上已经有优先级、部门、

@@ -1,15 +1,13 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState } from 'react'
 import { Avatar } from '../../shared/components/Avatar'
 import { useLookups } from '../../shared/lib/lookups'
 import { isOverdue } from '../../shared/lib/tasks'
 import type { Staff } from '../../shared/types'
-import {
-  fetchAttachments, uploadAttachment, deleteAttachment, updateTask, deleteTask,
-  upsertTag, attachTag, detachTag,
-} from './api'
+import { updateTask, deleteTask, upsertTag, attachTag, detachTag } from './api'
 import { TASK_COLUMNS } from './types'
-import type { Attachment, MoveResult, Tag, Task, TaskPriority, TaskStatus } from './types'
+import type { MoveResult, Tag, Task, TaskPriority, TaskStatus } from './types'
 import { PRIORITY_CFG, fmtDate } from './TaskCard'
+import { AttachmentGallery } from './AttachmentGallery'
 import { ChecklistEditor } from './ChecklistEditor'
 import { CommentThread } from './CommentThread'
 import { TagInput } from './TagInput'
@@ -37,12 +35,8 @@ export function TaskDetailModal({
   onStatusChange: (status: TaskStatus) => Promise<MoveResult>
 }) {
   const { deptName } = useLookups()
-  const [attachments, setAttachments] = useState<Attachment[]>([])
   const [deleting, setDeleting] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [lightbox, setLightbox] = useState(false)
   const [error, setError] = useState('')
-  const fileRef = useRef<HTMLInputElement>(null)
 
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -59,17 +53,6 @@ export function TaskDetailModal({
   const canAttach       = canManage || isAssignee
   const pCfg            = PRIORITY_CFG[editing ? form.priority : task.priority]
   const overdue         = isOverdue(task.due_date, new Date())
-  const attachment: Attachment | null = attachments[0] ?? null
-
-  const loadAttachments = useCallback(async () => {
-    try {
-      setAttachments(await fetchAttachments(task.id))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load attachments.')
-    }
-  }, [task.id])
-
-  useEffect(() => { loadAttachments() }, [loadAttachments])
 
   function startEdit() {
     setForm({
@@ -109,27 +92,6 @@ export function TaskDetailModal({
     // 也不把上一次真的失败留下的讯息当成「这次成功了」而收掉。
     if (!res) return
     setError(res.ok ? '' : `Could not move the task — ${res.reason}`)
-  }
-
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setUploading(true)
-    const res = await uploadAttachment(task.id, file, currentStaffId)
-    setUploading(false)
-    if (fileRef.current) fileRef.current.value = ''
-    if (!res.ok) { setError(`Could not upload the image — ${res.reason}`); return }
-    setError('')
-    await loadAttachments()
-    onChanged()
-  }
-
-  async function removeAttachment(att: Attachment) {
-    const res = await deleteAttachment(att)
-    if (!res.ok) { setError(`Could not remove the image — ${res.reason}`); return }
-    setError('')
-    await loadAttachments()
-    onChanged()
   }
 
   /**
@@ -345,39 +307,13 @@ export function TaskDetailModal({
             </div>
           )}
 
-          {/* Attachment */}
-          <div>
-            <p className="text-xs font-semibold text-[#8B7355] mb-2">Attachment</p>
-            {attachment ? (
-              <div className="flex items-start gap-3">
-                <img
-                  src={attachment.url}
-                  alt="Task attachment"
-                  onClick={() => setLightbox(true)}
-                  className="w-24 h-24 object-cover rounded-lg border border-[#EDE5D8] shadow-sm cursor-pointer"
-                />
-                {canAttach && (
-                  <button
-                    onClick={() => removeAttachment(attachment)}
-                    className="text-xs text-[#9E4A30] hover:underline mt-1"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-            ) : canAttach ? (
-              <button
-                onClick={() => fileRef.current?.click()}
-                disabled={uploading}
-                className="flex items-center gap-2 px-4 py-3 border-2 border-dashed border-[#D4C5B0] rounded-xl text-sm text-[#8B7355] hover:border-[#C4813A] hover:text-[#3D2B1F] transition-colors w-full justify-center disabled:opacity-60"
-              >
-                {uploading ? 'Uploading...' : '+ Add Image'}
-              </button>
-            ) : (
-              <p className="text-xs text-[#A09080]">No attachment</p>
-            )}
-            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
-          </div>
+          {/* Attachments —— 缩图墙 + lightbox,自己管自己的载入/上传/删除,细节见 AttachmentGallery。 */}
+          <AttachmentGallery
+            taskId={task.id}
+            currentStaffId={currentStaffId}
+            canEdit={canAttach}
+            onChanged={onChanged}
+          />
 
           {/* Status change */}
           {canChangeStatus && (
@@ -406,16 +342,6 @@ export function TaskDetailModal({
 
           <CommentThread taskId={task.id} currentStaffId={currentStaffId} onPosted={onChanged} />
         </div>
-
-        {/* Lightbox */}
-        {lightbox && attachment && (
-          <div
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4"
-            onClick={() => setLightbox(false)}
-          >
-            <img src={attachment.url} alt="Task attachment full size" className="max-w-full max-h-full rounded-lg" />
-          </div>
-        )}
 
         {/* Footer actions (manager only) */}
         {canManage && !editing && (
