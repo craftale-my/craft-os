@@ -47,6 +47,12 @@ function makeBreak(overrides: Partial<AttendanceBreak> & { id: string; attendanc
 
 type ShiftWithType = ScheduledShift & { shift_type?: Pick<ShiftType, 'name' | 'start_time' | 'end_time'> | null }
 
+/** The report only ever receives shifts with their type embedded, and the
+ *  missed-clock-in rule needs the end time to know whether the shift is over. */
+const MORNING = { name: 'Morning', start_time: '09:30:00', end_time: '18:00:00' }
+/** Well after every date these tests use, so shifts count as ended. */
+const AFTER = new Date('2026-09-01T12:00:00+08:00')
+
 function makeShift(overrides: Partial<ShiftWithType> & { id: string; staff_id: string; date: string }): ShiftWithType {
   return {
     shift_type_id: null,
@@ -139,11 +145,11 @@ describe('buildStaffReport', () => {
     expect(summary.lateMinutes).toBe(17)
   })
 
-  it('marks missedClockIn true when a work shift is scheduled but there is no clock_in', () => {
+  it('marks missedClockIn true when an ended work shift has no clock_in', () => {
     const shifts = [
-      makeShift({ id: 'sh1', staff_id: 's1', date: '2026-08-01', shift_type_id: 'st1' }),
+      makeShift({ id: 'sh1', staff_id: 's1', date: '2026-08-01', shift_type_id: 'st1', shift_type: MORNING }),
     ]
-    const [summary] = buildStaffReport(['s1'], [], [], shifts)
+    const [summary] = buildStaffReport(['s1'], [], [], shifts, AFTER)
     expect(summary.missedClockIn).toBe(1)
     expect(summary.days[0].missedClockIn).toBe(true)
   })
@@ -155,7 +161,7 @@ describe('buildStaffReport', () => {
     const attendance = [
       makeAttendance({ id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'on_leave', clock_in: null }),
     ]
-    const [summary] = buildStaffReport(['s1'], attendance, [], shifts)
+    const [summary] = buildStaffReport(['s1'], attendance, [], shifts, AFTER)
     expect(summary.missedClockIn).toBe(0)
     expect(summary.days[0].missedClockIn).toBe(false)
     expect(summary.days[0].leaveType).toBe('annual')
@@ -163,7 +169,7 @@ describe('buildStaffReport', () => {
 
   it('does not count missedClockIn when a work shift was clocked in', () => {
     const shifts = [
-      makeShift({ id: 'sh1', staff_id: 's1', date: '2026-08-01', shift_type_id: 'st1' }),
+      makeShift({ id: 'sh1', staff_id: 's1', date: '2026-08-01', shift_type_id: 'st1', shift_type: MORNING }),
     ]
     const attendance = [
       makeAttendance({ id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'present', clock_in: localIso('2026-08-01', '09:30:00') }),
@@ -270,9 +276,9 @@ describe('buildStaffReport', () => {
       makeBreak({ id: 'b1', attendance_id: 'a1', break_number: 1, is_overtime: true }),
     ]
     const shifts = [
-      makeShift({ id: 'sh1', staff_id: 's2', date: '2026-08-02', shift_type_id: 'st1' }),
+      makeShift({ id: 'sh1', staff_id: 's2', date: '2026-08-02', shift_type_id: 'st1', shift_type: MORNING }),
     ]
-    const [s1, s2] = buildStaffReport(['s1', 's2'], attendance, breaks, shifts)
+    const [s1, s2] = buildStaffReport(['s1', 's2'], attendance, breaks, shifts, AFTER)
 
     expect(s1.staffId).toBe('s1')
     expect(s1.late).toBe(1)
@@ -311,5 +317,168 @@ describe('buildStaffReport', () => {
     ]
     const [summary] = buildStaffReport(['s1'], attendance, [], [])
     expect(summary.days[0].distanceM).toBe(42)
+  })
+})
+
+// ─── missed clock-in: the rule the auto-absent SQL job already implements ─────
+//
+// mark_absent_for_missed_shifts() marks a day missed only when a live shift
+// ('scheduled'/'confirmed') has ENDED in MYT — overnight shifts ending the next
+// day — and writes 'on_leave' rather than 'absent' when approved leave covers
+// the day. The report's red column has to agree with the row that job writes,
+// because the same day appears in both.
+describe('missedClockIn mirrors the auto-absent job', () => {
+  const NOON_AUG_1 = new Date('2026-08-01T12:00:00+08:00')
+  const workShift = (over: Partial<ShiftWithType> = {}) => makeShift({
+    id: 'sh1', staff_id: 's1', date: '2026-08-01', shift_type_id: 'st1', shift_type: MORNING, ...over,
+  })
+
+  it('does not count a shift that has not ended yet', () => {
+    // 09:30–18:00 seen at noon: still being worked, nobody has missed anything.
+    const [summary] = buildStaffReport(['s1'], [], [], [workShift()], NOON_AUG_1)
+    expect(summary.missedClockIn).toBe(0)
+    expect(summary.days[0].missedClockIn).toBe(false)
+  })
+
+  it('counts the same shift once it has ended', () => {
+    const afterEnd = new Date('2026-08-01T18:01:00+08:00')
+    const [summary] = buildStaffReport(['s1'], [], [], [workShift()], afterEnd)
+    expect(summary.missedClockIn).toBe(1)
+  })
+
+  it('does not count a future rostered day', () => {
+    const shift = workShift({ date: '2026-08-05' })
+    const [summary] = buildStaffReport(['s1'], [], [], [shift], NOON_AUG_1)
+    expect(summary.missedClockIn).toBe(0)
+  })
+
+  it('treats an overnight shift as ending the next day', () => {
+    const night = { name: 'Night', start_time: '17:00:00', end_time: '01:00:00' }
+    const shift = workShift({ shift_type: night })
+    // 00:30 on 08-02 is still inside a 17:00–01:00 shift that began on 08-01.
+    const midShift = new Date('2026-08-02T00:30:00+08:00')
+    expect(buildStaffReport(['s1'], [], [], [shift], midShift)[0].missedClockIn).toBe(0)
+    const afterShift = new Date('2026-08-02T01:30:00+08:00')
+    expect(buildStaffReport(['s1'], [], [], [shift], afterShift)[0].missedClockIn).toBe(1)
+  })
+
+  it('does not count an approved leave day that kept its work shift', () => {
+    // HrLeave.approve() writes the on_leave attendance row but leaves the
+    // rostered work shift in place, so the day used to land in Leave AND Missed.
+    const attendance = [
+      makeAttendance({ id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'on_leave', clock_in: null }),
+    ]
+    const [summary] = buildStaffReport(['s1'], attendance, [], [workShift()], AFTER)
+    expect(summary.onLeave).toBe(1)
+    expect(summary.missedClockIn).toBe(0)
+  })
+
+  it('does not count a public holiday', () => {
+    const attendance = [
+      makeAttendance({ id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'public_holiday', clock_in: null }),
+    ]
+    const [summary] = buildStaffReport(['s1'], attendance, [], [workShift()], AFTER)
+    expect(summary.missedClockIn).toBe(0)
+  })
+
+  it('still counts a day the system already marked absent', () => {
+    // 'absent' is what the job STORES for a missed shift — exempting it would
+    // blank the metric as soon as the hourly job caught up.
+    const attendance = [
+      makeAttendance({ id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'absent', clock_in: null }),
+    ]
+    const [summary] = buildStaffReport(['s1'], attendance, [], [workShift()], AFTER)
+    expect(summary.absent).toBe(1)
+    expect(summary.missedClockIn).toBe(1)
+  })
+
+  it('does not count a cancelled or swapped shift', () => {
+    for (const status of ['cancelled', 'swapped'] as const) {
+      const [summary] = buildStaffReport(['s1'], [], [], [workShift({ status })], AFTER)
+      expect(summary.missedClockIn).toBe(0)
+    }
+  })
+
+  it('does not count a shift whose type could not be resolved', () => {
+    // Mirrors the SQL's INNER JOIN shift_types: with no end time there is no
+    // way to know the shift is over, so it must not be reported as missed.
+    const [summary] = buildStaffReport(['s1'], [], [], [workShift({ shift_type: null })], AFTER)
+    expect(summary.missedClockIn).toBe(0)
+  })
+})
+
+describe('worked minutes stay honest', () => {
+  it('reports unknown rather than crediting an unclosed break as work', () => {
+    const attendance = [
+      makeAttendance({
+        id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'present',
+        clock_in: localIso('2026-08-01', '09:00:00'),
+        clock_out: localIso('2026-08-01', '18:00:00'),
+      }),
+    ]
+    const openBreak = [
+      makeBreak({
+        id: 'b1', attendance_id: 'a1', break_number: 1,
+        clock_out_time: localIso('2026-08-01', '12:00:00'),
+        clock_in_time: null, duration_minutes: null,
+      }),
+    ]
+    const [summary] = buildStaffReport(['s1'], attendance, openBreak, [], AFTER)
+    expect(summary.days[0].workedMinutes).toBeNull()
+  })
+
+  it('still subtracts a break that was closed', () => {
+    const attendance = [
+      makeAttendance({
+        id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'present',
+        clock_in: localIso('2026-08-01', '09:00:00'),
+        clock_out: localIso('2026-08-01', '18:00:00'),
+      }),
+    ]
+    const closed = [
+      makeBreak({
+        id: 'b1', attendance_id: 'a1', break_number: 1,
+        clock_out_time: localIso('2026-08-01', '12:00:00'),
+        clock_in_time: localIso('2026-08-01', '13:00:00'),
+        duration_minutes: 60,
+      }),
+    ]
+    const [summary] = buildStaffReport(['s1'], attendance, closed, [], AFTER)
+    expect(summary.days[0].workedMinutes).toBe(480)
+  })
+
+  it('clamps a clock_out a few minutes before clock_in instead of inventing a day', () => {
+    // Device clock skew, not a night shift: two minutes backwards used to
+    // become 1,438 minutes of work.
+    const clockIn = localIso('2026-08-01', '09:04:00')
+    const clockOut = localIso('2026-08-01', '09:02:00')
+    expect(computeWorkedMinutes(clockIn, clockOut, 0)).toBe(0)
+  })
+})
+
+describe('late minutes agree between the summary and the detail rows', () => {
+  it('ignores stale late_minutes left on a row no longer marked late', () => {
+    // "Mark all present" upserts without late_minutes, so a formerly-late row
+    // keeps its minutes while its status becomes present.
+    const attendance = [
+      makeAttendance({
+        id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'present', late_minutes: 25,
+        clock_in: localIso('2026-08-01', '09:55:00'),
+      }),
+    ]
+    const [summary] = buildStaffReport(['s1'], attendance, [], [], AFTER)
+    expect(summary.lateMinutes).toBe(0)
+    expect(summary.late).toBe(0)
+    expect(summary.days[0].lateMinutes).toBe(0)
+  })
+
+  it('sums the same minutes the detail rows show', () => {
+    const attendance = [
+      makeAttendance({ id: 'a1', staff_id: 's1', date: '2026-08-01', status: 'late', late_minutes: 7 }),
+      makeAttendance({ id: 'a2', staff_id: 's1', date: '2026-08-02', status: 'late', late_minutes: 12 }),
+    ]
+    const [summary] = buildStaffReport(['s1'], attendance, [], [], AFTER)
+    expect(summary.lateMinutes).toBe(19)
+    expect(summary.days.reduce((n, d) => n + d.lateMinutes, 0)).toBe(19)
   })
 })
