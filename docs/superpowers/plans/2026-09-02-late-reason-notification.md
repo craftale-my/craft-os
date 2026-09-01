@@ -1114,8 +1114,8 @@ In `DailyRoster`, add the action beside the late-minutes input (:492-500):
     !!me && (me.rank === 'manager' || me.system_role === 'manager' ||
              me.system_role === 'admin' || me.system_role === 'owner')
 
-  // Mirrors the attendance_update_excuse RLS policy exactly. Showing this button
-  // to anyone else would give them a click that the database silently rejects.
+  // Mirrors excuse_lateness()'s own authorisation check exactly. Showing this
+  // button to anyone else would give them a click the database rejects.
   function canExcuse(target: Staff): boolean {
     const me = allStaff.find(s => s.id === managerId)
     return isManagerTier(me) || target.supervisor_id === managerId
@@ -1125,11 +1125,12 @@ In `DailyRoster`, add the action beside the late-minutes input (:492-500):
   // keep that, or the disabled states stop matching.
   async function excuse(staffId: string, attendanceId: string) {
     setSaving(staffId)
-    const outcome = writeOutcome(await supabase.from('attendance').update({
-      late_excused: true,
-      late_excused_by: managerId ?? null,
-      late_excused_at: new Date().toISOString(),
-    }).eq('id', attendanceId).select())
+    // Goes through the excuse_lateness() RPC, not a direct update: RLS is
+    // row-scoped, so a policy permissive enough to allow this would also let a
+    // supervisor rewrite clock_in and late_minutes. The function writes only
+    // the five excuse columns.
+    const { error } = await supabase.rpc('excuse_lateness', { p_attendance_id: attendanceId })
+    const outcome: WriteOutcome = error ? { ok: false, reason: error.message } : { ok: true }
     setSaving(null)
     if (!outcome.ok) setRosterError(`Could not excuse this lateness — ${outcome.reason}`)
     else load()
