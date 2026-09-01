@@ -79,6 +79,47 @@
 --      supervisor-review-scope.sql), instead of inventing a third rule.
 --   5. The staff-facing title was hardcoded "today", which is wrong once
 --      p_date isn't the current date. Now conditional on p_date.
+--
+-- Further review fixes (this session, against the version above; still
+-- never executed against any database, so amended in place):
+--   6. (I2) p_late_minutes, p_reason_code, p_reason and p_date were taken on
+--      faith from the caller and interpolated straight into the notification
+--      a supervisor reads. A staff member could re-call this RPC with a
+--      false p_late_minutes (e.g. 1, after actually being 45 minutes late)
+--      and — because the fan-out is delete-then-insert (finding 1 above) —
+--      overwrite the real notification with a fabricated one; an unbounded
+--      p_reason and an unchecked p_reason_code made it worse; an
+--      unconstrained p_date let the same trick loop over arbitrary dates.
+--      Fixed by reading status, late_minutes, late_reason_code and
+--      late_reason from the attendance row for (p_staff_id, p_date) instead
+--      of the parameters, and returning 0 without writing anything if that
+--      row doesn't exist or its status isn't 'late'. That row-existence
+--      check is also the p_date bound: a date with no matching 'late'
+--      attendance row writes nothing, so p_date can't be looped to spray
+--      notifications across dates. p_late_minutes/p_reason_code/p_reason are
+--      kept as parameters, unused: dropping them would change this
+--      function's signature, and the caller (supabase.rpc('notify_late',
+--      {...}) in src/features/hr/HrAttendance.tsx) passes arguments by name
+--      — a signature change needs a src/ edit this fix must not make.
+--   7. (I5) notify_manager was never read: the branch-manager fallback arm
+--      was gated on notify_supervisor alone, so turning "Manager" on in
+--      Settings did nothing, and turning "Supervisor" off silently disabled
+--      the manager fallback too. The two are now independent gates: the
+--      assigned-supervisor arm fires on notify_supervisor and not v_orphan;
+--      the manager-fallback arm fires on notify_manager and v_orphan. See
+--      the comment above that block for the two edge cases this decides.
+--   8. (M1) The reason label was synthesised with
+--      initcap(replace(code, '_', ' ')) — 'work_errand' became "Work Errand"
+--      (wrong sentence case), 'traffic'/'transport' became "Traffic"/
+--      "Transport" instead of "Traffic jam"/"Transport breakdown" — which
+--      disagreed with src/shared/lib/lateReason.ts's labels for the same
+--      codes, so the roster chip and this notification described the same
+--      event differently. Replaced with an explicit mapping of the six codes
+--      to those exact six labels.
+--   9. (M3) `select ... into v_shift` had no order by / limit. scheduled_
+--      shifts already carries a unique(staff_id, date) constraint
+--      (schema.sql) so two rows can't currently exist for one lookup — this
+--      is belt-and-braces determinism, not a fix for an observed collision.
 -- ============================================================================
 
 create or replace function notify_late(
@@ -93,15 +134,19 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
-  v_settings      notification_settings%rowtype;
-  v_staff         staff%rowtype;
-  v_shift         text;
-  v_reason        text;
-  v_staff_title   text;
-  v_orphan        boolean;
-  v_recipient_ids uuid[];
-  v_count         int := 0;
-  v_rows          int;
+  v_settings        notification_settings%rowtype;
+  v_staff           staff%rowtype;
+  v_shift           text;
+  v_reason          text;
+  v_staff_title     text;
+  v_orphan          boolean;
+  v_recipient_ids   uuid[];
+  v_count           int := 0;
+  v_rows            int;
+  v_att_status      text;
+  v_att_minutes     int;
+  v_att_reason_code text;
+  v_att_reason      text;
 begin
   -- A staff member may only announce their own lateness; managers may do it
   -- for anyone. Fails CLOSED: a null auth.uid() — an unauthenticated or
@@ -125,13 +170,47 @@ begin
   select * into v_staff from staff where id = p_staff_id;
   if v_staff.id is null then return 0; end if;
 
+  -- Finding 6 (I2): the attendance row for (p_staff_id, p_date) is the only
+  -- source of truth for what actually happened — not the parameters above.
+  -- See the header changelog for why: this also doubles as the p_date bound
+  -- (no matching 'late' row, no write), and the parameters are kept but
+  -- unused rather than dropped, to avoid a src/ signature-compatible break.
+  select a.status, a.late_minutes, a.late_reason_code, a.late_reason
+    into v_att_status, v_att_minutes, v_att_reason_code, v_att_reason
+    from attendance a
+    where a.staff_id = p_staff_id and a.date = p_date;
+
+  -- `is distinct from`, not `<>`: attendance.status carries no NOT NULL
+  -- constraint (its CHECK doesn't fire on NULL — Postgres CHECKs pass on
+  -- NULL by design), so a null status must still read as "not late" rather
+  -- than falling through `<>` (which itself evaluates to NULL, and an IF
+  -- treats NULL as not-true — i.e. as if this guard hadn't matched at all).
+  if not found or v_att_status is distinct from 'late' then return 0; end if;
+
+  -- Finding 9 (M3): scheduled_shifts already carries a unique(staff_id,
+  -- date) constraint (schema.sql), so this order by/limit is belt-and-
+  -- braces determinism rather than a fix for an observed collision.
   select to_char(st.start_time, 'HH12:MIam') into v_shift
   from scheduled_shifts ss join shift_types st on st.id = ss.shift_type_id
-  where ss.staff_id = p_staff_id and ss.date = p_date;
+  where ss.staff_id = p_staff_id and ss.date = p_date
+  order by ss.created_at desc
+  limit 1;
 
+  -- Finding 8 (M1): explicit mapping, not initcap(replace(code, '_', ' ')).
+  -- THIS IS THE OTHER HALF OF A PAIR — src/shared/lib/lateReason.ts
+  -- (LATE_REASON_LABELS) owns the same six codes' labels for the roster
+  -- chip. If either list changes, update the other to match.
   v_reason := coalesce(
-    nullif(initcap(replace(p_reason_code, '_', ' ')), ''), 'Not given')
-    || coalesce(' — "' || nullif(btrim(p_reason), '') || '"', '');
+    case v_att_reason_code
+      when 'traffic'     then 'Traffic jam'
+      when 'transport'   then 'Transport breakdown'
+      when 'medical'     then 'Medical'
+      when 'work_errand' then 'Work errand'
+      when 'personal'    then 'Personal emergency'
+      when 'other'       then 'Other'
+    end,
+    'Not given')
+    || coalesce(' — "' || nullif(btrim(v_att_reason), '') || '"', '');
 
   -- Finding 3: a self-referential supervisor_id is data corruption the
   -- sibling migration's CHECK constraint now prevents going forward, but is
@@ -173,7 +252,7 @@ begin
 
     insert into notifications (recipient_id, event_type, title, body, link, subject_staff_id, subject_date)
     values (p_staff_id, 'attendance_late', v_staff_title,
-      'Clocked in ' || p_late_minutes || ' min late for the ' || coalesce(v_shift, 'scheduled') ||
+      'Clocked in ' || v_att_minutes || ' min late for the ' || coalesce(v_shift, 'scheduled') ||
       ' shift. Reason recorded: ' || v_reason || '.',
       '/hr/attendance', p_staff_id, p_date)
     on conflict (recipient_id, event_type, subject_staff_id, subject_date) do nothing;
@@ -183,6 +262,28 @@ begin
 
   -- The supervisor, or — when none is assigned (including a self-referential
   -- supervisor_id, see v_orphan above) — the branch manager tier, told why.
+  --
+  -- Finding 7 (I5): notify_supervisor and notify_manager are now two
+  -- independent gates instead of one — previously the whole block (both the
+  -- assigned-supervisor arm and the orphan/manager-fallback arm) was gated
+  -- on notify_supervisor alone, so notify_manager was never read at all.
+  -- Now: the assigned-supervisor arm fires on notify_supervisor and not
+  -- v_orphan; the manager-fallback arm fires on notify_manager and v_orphan.
+  -- Decided behaviour at the two edges:
+  --   * notify_supervisor on, notify_manager off: a real supervisor still
+  --     gets notified; an orphaned staff member's lateness notifies nobody
+  --     in this tier — read as "don't loop managers into cases with no
+  --     supervisor", a legitimate choice on its own.
+  --   * notify_supervisor off, notify_manager on: an assigned supervisor is
+  --     never notified (the toggle is honoured); an orphaned staff member's
+  --     lateness still reaches the branch manager tier — otherwise turning
+  --     "Supervisor" off would silently strand every orphan case with no
+  --     recipient at all, defeating the point of a manager fallback that is
+  --     supposed to be independently controlled.
+  -- The inner UNION below already returns the supervisor row only `where
+  -- not v_orphan` and the manager-tier rows only `where v_orphan`, so gating
+  -- the whole block on this OR condition is sufficient — whichever half of
+  -- the union is live is already the half the matching toggle allows.
   --
   -- Finding 4: branch match mirrors can_review_staff() (migration-2026-07-10-
   -- supervisor-review-scope.sql) — prefer branch_id when both sides have
@@ -195,7 +296,7 @@ begin
   -- DELETE and the INSERT (see the staff-notification comment above for why
   -- this is DELETE-then-INSERT rather than ON CONFLICT DO UPDATE) so the two
   -- statements can't drift out of sync with each other.
-  if v_settings.notify_supervisor then
+  if (v_settings.notify_supervisor and not v_orphan) or (v_settings.notify_manager and v_orphan) then
     select array_agg(r.id) into v_recipient_ids
     from (
       select v_staff.supervisor_id as id where not v_orphan
@@ -221,7 +322,7 @@ begin
 
       insert into notifications (recipient_id, event_type, title, body, link, subject_staff_id, subject_date)
       select rid, 'attendance_late', 'Late arrival — ' || v_staff.name,
-        'Clocked in ' || p_late_minutes || ' min late for the ' || coalesce(v_shift, 'scheduled') ||
+        'Clocked in ' || v_att_minutes || ' min late for the ' || coalesce(v_shift, 'scheduled') ||
         ' shift. Reason: ' || v_reason || '.' ||
         case when v_orphan then ' No supervisor is assigned to this staff member.' else '' end,
         case when v_orphan then '/staff/' || p_staff_id else '/hr/attendance' end,

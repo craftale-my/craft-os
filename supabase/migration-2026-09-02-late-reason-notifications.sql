@@ -57,6 +57,26 @@
 -- on staff (below) that blocks a change to supervisor_id unless the caller is
 -- manager-tier, using the exact same authority test excuse_lateness() itself
 -- uses, so the two cannot drift apart.
+--
+-- v5 addresses a review finding (C1) against attendance itself: RLS is
+-- row-scoped everywhere on this table, both for attendance_self_update
+-- (schema.sql, `staff_id = auth.uid()`) and for attendance_manage
+-- (schema.sql, `current_rank() in ('supervisor','manager')`, any row in any
+-- branch) — neither can stop an UPDATE that reaches only
+-- late_excused/late_excused_by/late_excused_at, or only late_reason_code/
+-- late_reason. A staff member could run
+--   supabase.from('attendance').update({ late_excused: true }).eq('id', ownRow)
+-- from the browser console and erase their own late_excused = false
+-- deduction (late_count/attendance_score are generated from it) — bypassing
+-- excuse_lateness()'s authority check entirely — or rewrite late_reason_code/
+-- late_reason after a supervisor has already read them. Fixed with a BEFORE
+-- UPDATE trigger on attendance (below) that guards those five columns
+-- specifically, without touching attendance_manage or attendance_self_update
+-- themselves — status and late_minutes must stay freely updatable
+-- (DailyRoster.setStatus, markAllPresent). See the trigger's own comment for
+-- why late_excused/late_excused_by/late_excused_at are gated on
+-- excuse_lateness()'s exact authority test, and why late_reason_code/
+-- late_reason are instead made append-only rather than authority-gated.
 -- ============================================================================
 
 alter table staff add column if not exists supervisor_id uuid references staff(id) on delete set null;
@@ -286,6 +306,92 @@ $$;
 revoke execute on function excuse_lateness(uuid) from public;
 revoke execute on function excuse_lateness(uuid) from anon;
 grant  execute on function excuse_lateness(uuid) to authenticated;
+
+-- ── attendance_guard_late_update ────────────────────────────────────────────
+-- C1 (see v5 note above): closes the column-blindness of attendance_self_
+-- update and attendance_manage for exactly five columns, without touching
+-- either policy and without restricting any other column (status and
+-- late_minutes stay exactly as freely writable as those policies already
+-- allow — DailyRoster.setStatus and markAllPresent depend on that).
+--
+-- late_excused / late_excused_by / late_excused_at: guarded by the identical
+-- authority test excuse_lateness() applies against the row's staff_id,
+-- copied verbatim from that function's own comment so the two definitions of
+-- "who may excuse this row" cannot drift apart. auth.uid() reads the
+-- request.jwt.claims session GUC; SECURITY DEFINER changes only the
+-- executing role, not session-level GUCs, so auth.uid() still resolves to
+-- the real calling user inside excuse_lateness() itself — meaning that
+-- function's own UPDATE reaches this same check and passes it precisely
+-- when excuse_lateness()'s own guard already passed. Nothing legitimate is
+-- newly blocked; nothing illegitimate is newly allowed.
+--
+-- late_reason_code / late_reason: made append-only from the client instead
+-- of authority-gated. The staff member writes their own reason exactly once,
+-- bundled into the same upsert that records the late clock-in itself
+-- (writeClockIn in src/features/hr/HrAttendance.tsx) — legitimate
+-- self-service that must keep working whether it lands as an INSERT
+-- (attendance_self_clock) or as an UPDATE via ON CONFLICT (attendance_self_
+-- update, e.g. when markAllPresent or a manual status change already created
+-- the day's row first). No flow in this app edits an already-recorded
+-- reason, so rather than inventing an authority line for a flow that doesn't
+-- exist, a change is rejected outright once the old value is non-null —
+-- closing the specific rewrite-after-the-fact path the review flagged, for
+-- any caller, not only the row's own staff member.
+--
+-- auth.uid() is null in the migration/SQL-editor context (this file's own
+-- future re-runs, any script-driven backfill) — allowed through
+-- unconditionally, same reasoning as staff_guard_supervisor_update above:
+-- every attendance RLS policy is `to authenticated`, so a null auth.uid()
+-- here cannot be an anonymous PostgREST caller slipping through; it can only
+-- be a migration/service-role context, which bypasses RLS (and this
+-- trigger's purpose, if not its execution) regardless.
+create or replace function attendance_guard_late_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  if auth.uid() is null then
+    return new;
+  end if;
+
+  if old.late_reason_code is not null
+     and new.late_reason_code is distinct from old.late_reason_code then
+    raise exception 'late_reason_code cannot be changed once recorded.'
+      using errcode = '42501';
+  end if;
+
+  if old.late_reason is not null
+     and new.late_reason is distinct from old.late_reason then
+    raise exception 'late_reason cannot be changed once recorded.'
+      using errcode = '42501';
+  end if;
+
+  if new.late_excused is distinct from old.late_excused
+     or new.late_excused_by is distinct from old.late_excused_by
+     or new.late_excused_at is distinct from old.late_excused_at
+  then
+    if not exists (
+      select 1 from staff me
+      where me.id = auth.uid()
+        and (
+          me.system_role in ('manager','admin','owner') or me.rank = 'manager'
+          or exists (select 1 from staff t where t.id = new.staff_id and t.supervisor_id = me.id)
+        )
+    ) then
+      raise exception
+        'late_excused/late_excused_by/late_excused_at can only be changed by someone excuse_lateness() would authorise for this staff member.'
+        using errcode = '42501';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists attendance_guard_late_update_trg on attendance;
+create trigger attendance_guard_late_update_trg
+  before update on attendance
+  for each row execute function attendance_guard_late_update();
 
 insert into notification_settings (event_type, label, notify_staff, notify_supervisor, notify_manager)
 values ('attendance_late', 'Late Arrival', true, true, false)
