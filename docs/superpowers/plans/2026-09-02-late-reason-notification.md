@@ -108,7 +108,7 @@ insert into notification_settings (event_type, label, notify_staff, notify_super
 values ('attendance_late', 'Late Arrival', true, true, false)
 on conflict (event_type) do nothing;
 
-insert into app_settings (key, value, label, description) values
+insert into system_rules (key, value, label, description) values
   ('late_reason_written_threshold', '15', 'Late reason: written explanation above (min)',
    'Lateness above this many minutes requires a typed explanation, not just a reason code')
 on conflict (key) do nothing;
@@ -120,7 +120,7 @@ exception when duplicate_object then null; end $$;
 
 - [ ] **Step 2: Confirm the settings table name before pasting**
 
-The seed above assumes the key/value settings table is `app_settings`. Verify and correct if it differs:
+The key/value settings table is `system_rules` (confirmed in Task 1). Verify and correct if it differs:
 
 Run: `grep -n "late_deduction" supabase/schema.sql`
 Expected: the `insert into <table> (key, value, label, description)` block that seeds `late_deduction`. Use that exact table name in Step 1's second `insert`.
@@ -752,7 +752,7 @@ Task 1 seeds `late_reason_written_threshold` so HR can tune it, so read it rathe
   const [threshold, setThreshold] = useState(DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES)
 
   useEffect(() => {
-    supabase.from('app_settings').select('value').eq('key', 'late_reason_written_threshold')
+    supabase.from('system_rules').select('value').eq('key', 'late_reason_written_threshold')
       .maybeSingle()
       .then(({ data }) => {
         const n = Number((data as { value?: string } | null)?.value)
@@ -1367,6 +1367,6 @@ git commit -m "feat(staff): assign a supervisor from the profile page"
 - A staff member clocking in at 09:30:40 sees no change at all from today's behaviour.
 - Both they and their supervisor have a notification; a staff member with no supervisor sends it to the branch managers *with* the "No supervisor is assigned" sentence.
 - The supervisor can excuse it; the row still reads `late`, and that month's `late_count` drops by one.
-- Changing `late_reason_written_threshold` in the settings table changes when the typed explanation is demanded, with no code change.
+- Changing `late_reason_written_threshold` in `system_rules` changes when the typed explanation is demanded, with no code change.
 - A staff member with no supervisor can be given one from their profile page.
 - `npx vitest run` and `npx tsc --noEmit -p tsconfig.app.json` are both clean.
