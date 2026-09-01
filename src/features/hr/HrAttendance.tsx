@@ -599,10 +599,24 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       )
       return   // keep the step open; the typed reason is not thrown away
     }
+    // The attendance row is already saved at this point — the staff member is
+    // standing at the door and must be clocked in regardless of what happens
+    // next. So this is fire-and-forget from the UI's perspective: judged on
+    // `error` alone (there is no row to lose to RLS the way writeOutcome()
+    // guards against), and a failure is reported, never allowed to undo or
+    // block the clock-in above.
+    const notified = await supabase.rpc('notify_late', {
+      p_staff_id: staff.id,
+      p_date: attDate,
+      p_late_minutes: lateness.lateMinutes,
+      p_reason_code: code,
+      p_reason: note,
+    })
     setPendingLate(null)
     setLateError(null)
     setSuccessMsg(
-      `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️`
+      `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️` +
+      (notified.error ? ' Your supervisor could not be notified.' : '')
     )
     load()
     setTimeout(() => setSuccessMsg(null), 5000)

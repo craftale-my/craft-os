@@ -197,3 +197,50 @@ describe('迟到必须说明原因', () => {
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 })
+
+describe('通知发送', () => {
+  it('tells notify_late after the attendance row lands', async () => {
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    // From here the upsert's .select() hands back the row it created — same
+    // seeding pattern as "closes and confirms once the write lands" above.
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+    await waitFor(() => expect(h.rpcs).toHaveLength(1))
+    expect(h.rpcs[0].fn).toBe('notify_late')
+    expect(h.rpcs[0].args).toMatchObject({
+      p_staff_id: 'staff-1', p_date: '2026-09-02', p_late_minutes: 12, p_reason_code: 'traffic',
+    })
+  })
+
+  it('still counts the clock-in as successful when the notification fails', async () => {
+    const { supabase } = await import('../../shared/lib/supabase')
+    vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({ data: null, error: { message: 'boom' } } as never)
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+    // The success banner still shows — a failed notification never undoes or
+    // blocks the clock-in — but it now also names the failure. Matched on the
+    // full sentence: the card's own "Clocked in at" badge also renders below
+    // it, so a bare /Clocked in at/i match is ambiguous (see "closes and
+    // confirms once the write lands" above for the same disambiguation).
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*late by 12 min/i)).toBeTruthy())
+    expect(screen.getByText(/supervisor could not be notified/i)).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
