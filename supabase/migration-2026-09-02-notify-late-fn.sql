@@ -42,6 +42,43 @@
 -- this one consumes: without it, a caller able to create objects earlier in
 -- an unpinned search_path could shadow staff/notifications/etc. and run
 -- arbitrary code with this function's elevated privileges.
+--
+-- Review fixes (against the version at commit a048365, never executed
+-- against any database, so amended in place rather than layered with a new
+-- migration):
+--   1. ON CONFLICT DO UPDATE went through notifications' BEFORE UPDATE
+--      guard trigger (added in the sibling migration), which raises unless
+--      read_at is the only column changed — so the second call to
+--      notify_late() for the same (recipient_id, event_type,
+--      subject_staff_id, subject_date) raised and rolled back everything the
+--      call had already inserted. Replaced with an explicit DELETE of the
+--      matching rows followed by a plain INSERT (ON CONFLICT DO NOTHING kept
+--      as a concurrency belt). DELETE/INSERT never fire a BEFORE UPDATE
+--      trigger, so the guard keeps protecting the recipient-facing UPDATE
+--      path unconditionally — no session-flag exemption needed. See the
+--      comment above the staff-notification block below for what this means
+--      for the recipient.
+--   2. The auth guard failed OPEN: `if auth.uid() is not null and ...`
+--      skipped the check entirely for a null auth.uid(), i.e. an
+--      unauthenticated/anon caller — and Postgres grants EXECUTE on new
+--      functions to PUBLIC by default, with nothing in this repo revoking
+--      it. Restructured to fail CLOSED (null auth.uid() is rejected
+--      outright), and added explicit REVOKE/GRANT statements below so PUBLIC
+--      access is also closed at the privilege level, not just at runtime.
+--   3. A self-referential staff.supervisor_id (= id) made v_orphan false, so
+--      the manager-fallback arm never activated, and the only other arm (the
+--      staff member's own id) was then filtered out by `r.id <> p_staff_id`
+--      — nobody got notified, silently. v_orphan now also treats
+--      supervisor_id = id as orphan; see the sibling migration for the
+--      CHECK constraint that stops the row existing going forward.
+--   4. The manager-fallback arm matched `s.branch_id is not distinct from
+--      v_staff.branch_id`, so two managers/staff who both happen to have a
+--      null branch_id matched each other regardless of actual branch.
+--      Replaced with the same branch_id-preferred / branch-text-fallback
+--      logic can_review_staff() already uses (migration-2026-07-10-
+--      supervisor-review-scope.sql), instead of inventing a third rule.
+--   5. The staff-facing title was hardcoded "today", which is wrong once
+--      p_date isn't the current date. Now conditional on p_date.
 -- ============================================================================
 
 create or replace function notify_late(
@@ -56,22 +93,30 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
-  v_settings  notification_settings%rowtype;
-  v_staff     staff%rowtype;
-  v_shift     text;
-  v_reason    text;
-  v_orphan    boolean;
-  v_count     int := 0;
-  v_rows      int;
+  v_settings      notification_settings%rowtype;
+  v_staff         staff%rowtype;
+  v_shift         text;
+  v_reason        text;
+  v_staff_title   text;
+  v_orphan        boolean;
+  v_recipient_ids uuid[];
+  v_count         int := 0;
+  v_rows          int;
 begin
-  -- A staff member may only announce their own lateness; managers may do it for anyone.
-  if auth.uid() is not null and auth.uid() <> p_staff_id then
-    if not exists (
+  -- A staff member may only announce their own lateness; managers may do it
+  -- for anyone. Fails CLOSED: a null auth.uid() — an unauthenticated or
+  -- anon-role call — is rejected up front rather than silently skipping the
+  -- check. (Finding 2: Postgres grants EXECUTE on new functions to PUBLIC by
+  -- default; the REVOKE/GRANT statements after this function close that off
+  -- too, so this check isn't the only thing standing between an anonymous
+  -- caller and this function.)
+  if auth.uid() is null or (
+    auth.uid() <> p_staff_id and not exists (
       select 1 from staff where id = auth.uid()
         and (system_role in ('manager','admin','owner') or rank = 'manager')
-    ) then
-      raise exception 'notify_late: not allowed';
-    end if;
+    )
+  ) then
+    raise exception 'notify_late: not allowed' using errcode = '42501';
   end if;
 
   select * into v_settings from notification_settings where event_type = 'attendance_late';
@@ -88,47 +133,119 @@ begin
     nullif(initcap(replace(p_reason_code, '_', ' ')), ''), 'Not given')
     || coalesce(' — "' || nullif(btrim(p_reason), '') || '"', '');
 
-  v_orphan := v_staff.supervisor_id is null;
+  -- Finding 3: a self-referential supervisor_id is data corruption the
+  -- sibling migration's CHECK constraint now prevents going forward, but is
+  -- treated exactly like a null one here too, so the manager fallback fires
+  -- (and the "No supervisor is assigned" sentence shows) instead of nobody
+  -- being notified.
+  v_orphan := v_staff.supervisor_id is null or v_staff.supervisor_id = v_staff.id;
+
+  -- Finding 5: p_date need not be today (a late reason can be filed for an
+  -- earlier date), so the staff-facing title has to say so.
+  v_staff_title := 'You were marked late ' || case
+    when p_date = (now() at time zone 'Asia/Kuala_Lumpur')::date then 'today'
+    else 'on ' || to_char(p_date, 'FMDD Mon YYYY')
+  end;
 
   -- The staff member themselves.
+  --
+  -- Finding 1 / re-notification behaviour: refreshing an existing
+  -- notification is DELETE-then-INSERT, not ON CONFLICT DO UPDATE, because
+  -- notifications' BEFORE UPDATE guard trigger (notifications_guard_
+  -- recipient_update_trg, sibling migration) raises unless read_at is the
+  -- only column that changed, and ON CONFLICT DO UPDATE runs through that
+  -- same UPDATE path. DELETE/INSERT never fire a BEFORE UPDATE trigger, so
+  -- the guard stays intact with no exemption needed. ON CONFLICT DO NOTHING
+  -- is kept as a concurrency belt for a second session racing the same
+  -- insert. Net effect for the recipient: re-notifying for the same (staff,
+  -- date) always comes back unread (read_at reset to null, even if they'd
+  -- already read the stale row) under a new notification id. That's the
+  -- intended behaviour, not an accepted side effect — a refreshed body (a
+  -- corrected reason, updated minutes-late) is new information the recipient
+  -- has not seen, so it should reappear as unread. Nothing in this repo
+  -- reads or persists a notification's id across calls (the app and RLS key
+  -- off recipient_id/event_type/subject_staff_id/subject_date), so the id
+  -- changing is unobservable to callers.
   if v_settings.notify_staff then
+    delete from notifications
+     where recipient_id = p_staff_id and event_type = 'attendance_late'
+       and subject_staff_id = p_staff_id and subject_date = p_date;
+
     insert into notifications (recipient_id, event_type, title, body, link, subject_staff_id, subject_date)
-    values (p_staff_id, 'attendance_late', 'You were marked late today',
+    values (p_staff_id, 'attendance_late', v_staff_title,
       'Clocked in ' || p_late_minutes || ' min late for the ' || coalesce(v_shift, 'scheduled') ||
       ' shift. Reason recorded: ' || v_reason || '.',
       '/hr/attendance', p_staff_id, p_date)
-    on conflict (recipient_id, event_type, subject_staff_id, subject_date)
-      do update set title = excluded.title, body = excluded.body, created_at = now(), read_at = null;
+    on conflict (recipient_id, event_type, subject_staff_id, subject_date) do nothing;
     get diagnostics v_rows = row_count;
     v_count := v_count + v_rows;
   end if;
 
-  -- The supervisor, or — when none is assigned — the branch manager tier, told why.
+  -- The supervisor, or — when none is assigned (including a self-referential
+  -- supervisor_id, see v_orphan above) — the branch manager tier, told why.
+  --
+  -- Finding 4: branch match mirrors can_review_staff() (migration-2026-07-10-
+  -- supervisor-review-scope.sql) — prefer branch_id when both sides have
+  -- one, falling back to the legacy text `branch` column only when at least
+  -- one side's branch_id is null. `is not distinct from` would otherwise
+  -- match a manager with a null branch_id to a staff member with a null
+  -- branch_id regardless of which branch either is actually at.
+  --
+  -- The recipient set is computed once into an array and reused for both the
+  -- DELETE and the INSERT (see the staff-notification comment above for why
+  -- this is DELETE-then-INSERT rather than ON CONFLICT DO UPDATE) so the two
+  -- statements can't drift out of sync with each other.
   if v_settings.notify_supervisor then
-    insert into notifications (recipient_id, event_type, title, body, link, subject_staff_id, subject_date)
-    select r.id, 'attendance_late', 'Late arrival — ' || v_staff.name,
-      'Clocked in ' || p_late_minutes || ' min late for the ' || coalesce(v_shift, 'scheduled') ||
-      ' shift. Reason: ' || v_reason || '.' ||
-      case when v_orphan then ' No supervisor is assigned to this staff member.' else '' end,
-      case when v_orphan then '/staff/' || p_staff_id else '/hr/attendance' end,
-      p_staff_id, p_date
+    select array_agg(r.id) into v_recipient_ids
     from (
       select v_staff.supervisor_id as id where not v_orphan
       union
       select s.id from staff s
       where v_orphan and s.status = 'active'
         and (s.system_role in ('manager','admin','owner') or s.rank = 'manager')
-        and (s.branch_id is not distinct from v_staff.branch_id)
+        and (
+          (s.branch_id is not null and v_staff.branch_id is not null and s.branch_id = v_staff.branch_id)
+          or (
+            (s.branch_id is null or v_staff.branch_id is null)
+            and s.branch is not null and s.branch = v_staff.branch
+          )
+        )
     ) r
-    where r.id is not null and r.id <> p_staff_id
-    on conflict (recipient_id, event_type, subject_staff_id, subject_date)
-      do update set title = excluded.title, body = excluded.body, created_at = now(), read_at = null;
-    get diagnostics v_rows = row_count;
-    v_count := v_count + v_rows;
+    where r.id is not null and r.id <> p_staff_id;
+
+    if v_recipient_ids is not null then
+      delete from notifications
+       where event_type = 'attendance_late'
+         and subject_staff_id = p_staff_id and subject_date = p_date
+         and recipient_id = any(v_recipient_ids);
+
+      insert into notifications (recipient_id, event_type, title, body, link, subject_staff_id, subject_date)
+      select rid, 'attendance_late', 'Late arrival — ' || v_staff.name,
+        'Clocked in ' || p_late_minutes || ' min late for the ' || coalesce(v_shift, 'scheduled') ||
+        ' shift. Reason: ' || v_reason || '.' ||
+        case when v_orphan then ' No supervisor is assigned to this staff member.' else '' end,
+        case when v_orphan then '/staff/' || p_staff_id else '/hr/attendance' end,
+        p_staff_id, p_date
+      from unnest(v_recipient_ids) as rid
+      on conflict (recipient_id, event_type, subject_staff_id, subject_date) do nothing;
+      get diagnostics v_rows = row_count;
+      v_count := v_count + v_rows;
+    end if;
   end if;
 
   return v_count;
 end $$;
+
+-- Finding 2: EXECUTE on new functions is granted to PUBLIC by default, which
+-- includes the anon role — nothing in this repo revoked that for notify_late.
+-- notify_late is called via supabase.rpc() by any authenticated staff member
+-- reporting their own lateness, so 'authenticated' is the only role it needs.
+-- Both REVOKE and GRANT are idempotent — safe to re-run — and CREATE OR
+-- REPLACE FUNCTION above does not reset a function's privileges, so this only
+-- has to take effect once; it's restated here for anyone re-running this file.
+revoke execute on function notify_late(uuid, date, int, text, text) from public;
+revoke execute on function notify_late(uuid, date, int, text, text) from anon;
+grant  execute on function notify_late(uuid, date, int, text, text) to authenticated;
 
 -- ── supervisor_id backfill ──────────────────────────────────────────────────
 -- Two passes, in priority order: (1) the most recent performance-review

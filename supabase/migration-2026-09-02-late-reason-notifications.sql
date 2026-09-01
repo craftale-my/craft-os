@@ -1,5 +1,5 @@
 -- ============================================================================
--- Late reason + notifications, schema only (2026-09-02, v2). Idempotent.
+-- Late reason + notifications, schema only (2026-09-02, v3). Idempotent.
 --
 -- v2 addresses review findings against v1 (never executed against any
 -- database, so amended in place rather than layered with a second file):
@@ -21,9 +21,37 @@
 --      constraints (see staff_department_check, scheduled_shifts_shift_or_leave
 --      in schema.sql) — the swallow form silently keeps the first definition
 --      forever if this file is ever edited and re-run.
+--
+-- v3 addresses further review findings, this time against notify_late()
+-- (migration-2026-09-02-notify-late-fn.sql) but touching this file too:
+--   4. A self-referential staff.supervisor_id (supervisor_id = id) made
+--      notify_late()'s orphan-fallback check pass right by: v_orphan tested
+--      `is null`, so a self-reference wasn't caught there, and the id got
+--      filtered out downstream as "yourself" — nobody was ever notified, with
+--      no error. notify_late() now also treats supervisor_id = id as orphan
+--      (belt-and-braces), and a CHECK constraint here stops the row existing
+--      in the first place. Added with the drop-if-exists-then-add idiom from
+--      finding 3 above. No backfill needed: this column is added fresh by
+--      this same file (see the ADD COLUMN below) and is null for every row
+--      until the backfill in migration-2026-09-02-notify-late-fn.sql runs,
+--      and that backfill already excludes self-reference explicitly
+--      (`r.reviewer_id <> s.id`, `b.pic_staff_id <> s.id`) — so no existing
+--      row can violate this constraint at the moment it is added.
+--   5. excuse_lateness(), like notify_late(), had no explicit privilege
+--      statement — it relied on the runtime auth.uid() check alone to keep
+--      out callers Postgres's default PUBLIC-EXECUTE grant would otherwise
+--      let call it. Added explicit REVOKE/GRANT below, right after its
+--      definition.
 -- ============================================================================
 
 alter table staff add column if not exists supervisor_id uuid references staff(id) on delete set null;
+
+-- A supervisor can't supervise themselves — see v3 note #4 above. Idempotent
+-- drop-then-add, matching this repo's convention for named CHECK constraints
+-- (staff_department_check, scheduled_shifts_shift_or_leave in schema.sql).
+alter table staff drop constraint if exists staff_supervisor_not_self_check;
+alter table staff add constraint staff_supervisor_not_self_check
+  check (supervisor_id is null or supervisor_id <> id);
 
 alter table attendance add column if not exists late_reason_code text;
 alter table attendance add column if not exists late_reason      text;
@@ -175,6 +203,17 @@ begin
   return true;
 end;
 $$;
+
+-- excuse_lateness is called via supabase.rpc() by a caller the function's own
+-- auth.uid() check authorises (rank/system_role or being the target's
+-- supervisor). Postgres grants EXECUTE on new functions to PUBLIC by default;
+-- REVOKE here closes that off explicitly rather than relying on the runtime
+-- check alone to keep unauthenticated/anon callers out. REVOKE and GRANT are
+-- both idempotent — safe to re-run, and CREATE OR REPLACE FUNCTION above does
+-- not reset a function's privileges, so this only has to take effect once.
+revoke execute on function excuse_lateness(uuid) from public;
+revoke execute on function excuse_lateness(uuid) from anon;
+grant  execute on function excuse_lateness(uuid) to authenticated;
 
 insert into notification_settings (event_type, label, notify_staff, notify_supervisor, notify_manager)
 values ('attendance_late', 'Late Arrival', true, true, false)
