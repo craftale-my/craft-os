@@ -11,7 +11,7 @@ Date: 2026-07-08
 
 ## 决定(用户已确认)
 
-- **迟到严格判定,无宽限期**:打卡时间 > 班次 `start_time` 即 late,哪怕 1 秒。
+- **迟到按整分钟判定,无宽限期**(2026-09-02 修订,原为「晚 1 秒即迟到」):排班开始的那一分钟仍算准时,下一个整分钟起才算迟到 —— 9:30 上班 → 9:31 才迟到;5:00 上班 → 5:01 才迟到。打卡的秒数不影响判定。
 - **两处可见**:考勤页显示当天班次 + 开放员工访问 My Schedule(未来 4 周)。
 
 ## 改动
@@ -24,8 +24,8 @@ export function calcLateness(clockInIso: string, dateStr: string, startTime: str
 ```
 
 - 基准 = `new Date(`${dateStr}T${startTime}`)`(本地时区,与全 app 的 todayStr/fmtTime 一致)。
-- `diffMs = clockIn - 基准`;`isLate = diffMs > 0`;`lateMinutes = isLate ? Math.ceil(diffMs / 60000) : 0`(晚 30 秒 → 1 分钟,不出现 "Late 却 0 分钟")。
-- Vitest:准点(不迟到)、晚 30 秒(1)、晚 12 分(12)、早到(0)、跨午夜不考虑(班次不跨天,现状约束)。
+- 两侧都向下取整到分钟:`lateMinutes = floor(clockIn / 60000) - floor(基准 / 60000)`;`isLate = lateMinutes > 0`(晚 30 秒 → 0 分钟,不算迟到;既然只数整分钟,也就不会出现 "Late 却 0 分钟")。
+- Vitest:准点(不迟到)、开始那一分钟内 09:30:59(不迟到)、09:31:00(1)、整点班 05:00:45(不迟到)/05:01:00(1)、晚 12 分 09:42:59(12,不是 13)、早到(0)、`HH:MM` 无秒的 start_time、跨午夜不考虑(班次不跨天,现状约束)。
 
 ### 2. 考勤页(`HrAttendance.tsx` — `MyAttendance`)
 
@@ -52,7 +52,7 @@ export function calcLateness(clockInIso: string, dateStr: string, startTime: str
 
 ## 测试要点
 
-`calcLateness` 全边界(上述);构建 0 错;手动:排班 9:30 的账号 9:31 打卡 → TODAY 卡片红 chip + 经理日视图 `Late · 1m`;无排班账号打卡 → present;员工侧边栏出现 My Schedule 且能看四周排班,经理侧边栏无重复项。
+`calcLateness` 全边界(上述);构建 0 错;手动:排班 9:30 的账号 9:30:40 打卡 → present(不迟到),9:31 打卡 → TODAY 卡片红 chip + 经理日视图 `Late · 1m`;无排班账号打卡 → present;员工侧边栏出现 My Schedule 且能看四周排班,经理侧边栏无重复项。
 
 ## 范围
 

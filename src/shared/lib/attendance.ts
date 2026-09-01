@@ -86,17 +86,22 @@ export function resolveAttendanceDate({
   return now.getTime() <= deadline ? prevDateStr(today) : today
 }
 
-/** Strict lateness vs the scheduled shift start (no grace period).
+/** Lateness vs the scheduled shift start, counted in whole minutes.
  *  Baseline is device-local `${dateStr}T${startTime}`, matching how the app
- *  builds todayStr()/times everywhere. Sub-minute lateness rounds UP so a
- *  `late` status never shows "0 minutes". */
+ *  builds todayStr()/times everywhere.
+ *
+ *  The scheduled minute itself is still on time: a 09:30 shift is late from
+ *  09:31, a 05:00 shift from 05:01. Both sides are floored to the minute, so
+ *  the seconds on the clock-in never turn a punctual arrival into `late`, and
+ *  a `late` status never shows "0 minutes". */
 export function calcLateness(
   clockInIso: string,
   dateStr: string,
   startTime: string,
 ): { isLate: boolean; lateMinutes: number } {
-  const start = new Date(`${dateStr}T${startTime}`)
-  const diffMs = new Date(clockInIso).getTime() - start.getTime()
-  if (diffMs <= 0) return { isLate: false, lateMinutes: 0 }
-  return { isLate: true, lateMinutes: Math.ceil(diffMs / 60000) }
+  const startMin = Math.floor(new Date(`${dateStr}T${startTime}`).getTime() / 60000)
+  const clockInMin = Math.floor(new Date(clockInIso).getTime() / 60000)
+  const lateMinutes = clockInMin - startMin
+  if (lateMinutes <= 0) return { isLate: false, lateMinutes: 0 }
+  return { isLate: true, lateMinutes }
 }
