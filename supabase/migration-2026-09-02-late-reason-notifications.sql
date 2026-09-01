@@ -4,13 +4,14 @@
 -- v2 addresses review findings against v1 (never executed against any
 -- database, so amended in place rather than layered with a second file):
 --   1. Dropped the attendance_update_excuse UPDATE policy. RLS is row-scoped,
---      not column-scoped: a USING-only policy keyed on "am I this person's
---      supervisor" let that supervisor rewrite clock_in/clock_out/status/
---      late_minutes/notes too, not just the excuse columns — and it ORed
---      with the pre-existing attendance_manage / attendance_self_update
---      policies in schema.sql. Replaced with the excuse_lateness() security
---      definer function below, which authorises the caller itself and can
---      write only the three excuse columns.
+--      not column-scoped: the policy would have let callers rewrite any column.
+--      Replaced with the excuse_lateness() security definer function below,
+--      which authorises the caller itself (by staff.rank or by being named as
+--      someone's supervisor_id) and can write only the three excuse columns.
+--      Note: the pre-existing attendance_manage policy (schema.sql:505-506)
+--      remains unchanged and grants any rank-supervisor/manager blanket write
+--      access to any column independently; tightening that is out of scope
+--      because DailyRoster's status editing depends on it.
 --   2. notifications_update_own_read's comment claimed only read_at was
 --      user-writable, but the policy let the recipient rewrite title/body/
 --      link/event_type/subject columns too. Added a BEFORE UPDATE trigger
@@ -168,7 +169,8 @@ begin
      set late_excused    = true,
          late_excused_by = auth.uid(),
          late_excused_at = now()
-   where id = p_attendance_id;
+   where id = p_attendance_id
+     and late_excused = false;
 
   return true;
 end;
