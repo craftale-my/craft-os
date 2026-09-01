@@ -7,9 +7,11 @@ import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABE
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
 import { writeOutcome, type WriteOutcome } from '../../shared/lib/db-write'
+import { DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES, type LateReasonCode } from '../../shared/lib/lateReason'
 import { Avatar } from '../../shared/components/Avatar'
 import { MapPin, CheckCircle, X, AlertTriangle, ZoomIn, Coffee } from 'lucide-react'
 import { ClockModal, type ClockResult } from './ClockModal'
+import { LateReasonStep } from './LateReasonStep'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -385,6 +387,33 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   // The attendance day this card is acting on. Usually the wall-clock date, but
   // a night shift that ran past midnight holds it on the day the shift STARTED.
   const [attDate, setAttDate] = useState(todayStr())
+  // A late clock-in that has been photographed and located but NOT yet written:
+  // it is held here until the staff member says why, then written in one upsert
+  // carrying the reason, so a late row can never exist without one. `at` is the
+  // arrival — the instant the selfie and GPS check passed — held so that time
+  // spent choosing a reason cannot rewrite clock_in out of step with
+  // late_minutes, which is already fixed at that same instant.
+  const [pendingLate, setPendingLate] = useState<
+    { result: ClockResult; at: Date; lateMinutes: number; shiftStart: string } | null
+  >(null)
+  const [savingLate, setSavingLate] = useState(false)
+  // A failed late write is reported inside the step, not in the card behind it:
+  // the step covers the screen, so the card's banner would be under the dimmer.
+  const [lateError, setLateError] = useState<string | null>(null)
+  // How many minutes of lateness force a written explanation on top of the
+  // tapped code. HR tunes it; the constant is the fallback for a missing or
+  // malformed row, because a bad settings value must never make the step
+  // unanswerable.
+  const [threshold, setThreshold] = useState(DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES)
+
+  useEffect(() => {
+    supabase.from('system_rules').select('value').eq('key', 'late_reason_written_threshold')
+      .maybeSingle()
+      .then(({ data }) => {
+        const n = Number((data as { value?: string } | null)?.value)
+        if (Number.isFinite(n) && n >= 0) setThreshold(n)
+      })
+  }, [])
 
   // Loads the month's records, resolves which attendance day is active, and
   // pulls that day's shift + break allowances. One pass, because the shift
@@ -524,6 +553,56 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     setTimeout(() => setSuccessMsg(null), 6000)
   }
 
+  // The one and only clock-in write, shared by the punctual and the late path so
+  // the two can never drift. `.select()` is not optional: without it a row
+  // rejected by RLS is indistinguishable from a successful write — writeOutcome().
+  async function writeClockIn(
+    now: Date,
+    result: ClockResult,
+    lateness: { isLate: boolean; lateMinutes: number },
+    reasonCode: LateReasonCode | null,
+    reasonNote: string,
+  ): Promise<WriteOutcome> {
+    return writeOutcome(await supabase.from('attendance').upsert({
+      staff_id: staff.id,
+      date: attDate,
+      clock_in: now.toISOString(),
+      status: lateness.isLate ? 'late' : 'present',
+      late_minutes: lateness.lateMinutes,
+      late_reason_code: reasonCode,
+      late_reason: reasonNote || null,
+      clock_in_photo_url: result.photoUrl,
+      clock_in_lat: result.lat,
+      clock_in_lng: result.lng,
+      clock_in_distance_m: result.distanceM,
+    }, { onConflict: 'staff_id,date' }).select())
+  }
+
+  // Writes the held-back late clock-in, reason and all, in that single upsert.
+  async function handleLateReason({ code, note }: { code: LateReasonCode; note: string }) {
+    if (!pendingLate) return
+    const now = pendingLate.at
+    setLateError(null)
+    setSavingLate(true)
+    const lateness = { isLate: true, lateMinutes: pendingLate.lateMinutes }
+    const outcome = await writeClockIn(now, pendingLate.result, lateness, code, note)
+    setSavingLate(false)
+    if (!outcome.ok) {
+      setLateError(
+        `Clock in FAILED — ${outcome.reason} Nothing was saved. Please try again, ` +
+        `and tell your manager if it keeps failing.`
+      )
+      return   // keep the step open; the typed reason is not thrown away
+    }
+    setPendingLate(null)
+    setLateError(null)
+    setSuccessMsg(
+      `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️`
+    )
+    load()
+    setTimeout(() => setSuccessMsg(null), 5000)
+  }
+
   // Every write below ends in `.select()` on purpose: without it a row rejected
   // by RLS is indistinguishable from a successful write. See writeOutcome().
   async function handleClockDone(type: 'in' | 'out', result: ClockResult) {
@@ -534,24 +613,20 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       const lateness = todayShift
         ? calcLateness(now.toISOString(), attDate, todayShift.start_time)
         : { isLate: false, lateMinutes: 0 }
-      outcome = writeOutcome(await supabase.from('attendance').upsert({
-        staff_id: staff.id,
-        date: attDate,
-        clock_in: now.toISOString(),
-        status: lateness.isLate ? 'late' : 'present',
-        late_minutes: lateness.lateMinutes,
-        clock_in_photo_url: result.photoUrl,
-        clock_in_lat: result.lat,
-        clock_in_lng: result.lng,
-        clock_in_distance_m: result.distanceM,
-      }, { onConflict: 'staff_id,date' }).select())
-      if (outcome.ok) {
-        setSuccessMsg(
-          lateness.isLate
-            ? `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️`
-            : `Clocked in at ${fmtTime(now.toISOString())} ✓`
-        )
+      // A late arrival is held, not written: it goes to the database only once
+      // the reason is in hand, in the same upsert.
+      if (lateness.isLate && todayShift) {
+        setPendingLate({
+          result,
+          at: now,
+          lateMinutes: lateness.lateMinutes,
+          shiftStart: fmtTime2(todayShift.start_time),
+        })
+        setClockModal(null)
+        return
       }
+      outcome = await writeClockIn(now, result, { isLate: false, lateMinutes: 0 }, null, '')
+      if (outcome.ok) setSuccessMsg(`Clocked in at ${fmtTime(now.toISOString())} ✓`)
     } else if (!today) {
       // Previously this returned silently, leaving the modal open with no
       // explanation after the staff member had taken the selfie.
@@ -618,6 +693,16 @@ export function MyAttendance({ staff }: { staff: Staff }) {
           staffId={staff.id}
           onDone={result => handleClockDone(clockModal, result)}
           onCancel={() => setClockModal(null)}
+        />
+      )}
+      {pendingLate && (
+        <LateReasonStep
+          lateMinutes={pendingLate.lateMinutes}
+          shiftStart={pendingLate.shiftStart}
+          thresholdMinutes={threshold}
+          saving={savingLate}
+          error={lateError}
+          onSubmit={handleLateReason}
         />
       )}
       {viewPhoto && <PhotoViewer url={viewPhoto} onClose={() => setViewPhoto(null)} />}
