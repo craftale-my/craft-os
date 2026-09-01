@@ -686,9 +686,36 @@ const RANGE_PRESETS: { key: Exclude<RangePreset, 'custom'>; label: string }[] = 
   { key: 'last_month', label: 'Last month' },
 ]
 
-/** PostgREST's default page size. Hitting it means the range was too wide and
- *  the tables below are showing a truncated slice. */
-const REPORT_ROW_LIMIT = 1000
+/** PostgREST answers at most this many rows per request. */
+const PAGE_SIZE = 1000
+
+/** Ceiling on a single report's reads, so a runaway filter cannot page forever.
+ *  50 staff over a year is ~18k attendance rows, so no real range reaches it. */
+const REPORT_MAX_ROWS = 20000
+
+/** Reads every page of a range instead of accepting PostgREST's first one.
+ *
+ *  Taking the capped slice silently was worse than an under-count: attendance
+ *  came back ordered by date, so its cut fell at a date boundary, while
+ *  scheduled_shifts came back unordered, so its cut fell anywhere. A scheduled
+ *  day whose attendance row had been dropped then looked like a missed
+ *  clock-in that never happened — on a full roster the untouched "Last 30 days"
+ *  default invented dated absences for staff who clocked in every day, and both
+ *  CSV exports carried them. Paging needs a total order to be stable, so every
+ *  caller sorts on a unique tiebreaker. */
+async function fetchAllRows<T>(
+  page: (lo: number, hi: number) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+): Promise<{ rows: T[]; truncated: boolean; error: { message: string } | null }> {
+  const rows: T[] = []
+  for (let lo = 0; lo < REPORT_MAX_ROWS; lo += PAGE_SIZE) {
+    const { data, error } = await page(lo, lo + PAGE_SIZE - 1)
+    if (error) return { rows, truncated: false, error }
+    const batch = (data as T[] | null) ?? []
+    rows.push(...batch)
+    if (batch.length < PAGE_SIZE) return { rows, truncated: false, error: null }
+  }
+  return { rows, truncated: true, error: null }
+}
 
 /** `dateStr` shifted by whole calendar days — prevDateStr, generalised. */
 function addDays(dateStr: string, days: number): string {
@@ -836,20 +863,22 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
     setLoading(true)
     setError(null)
 
-    const { data: attData, error: attErr } = await supabase
+    const att = await fetchAllRows<Attendance>((lo, hi) => supabase
       .from('attendance')
       .select('*')
       .in('staff_id', staffIds)
       .gte('date', from)
       .lte('date', to)
       .order('date')
-    if (attErr) { clear(); setError(`Could not load attendance — ${attErr.message}`); setLoading(false); return }
-    const attRows = (attData as Attendance[] | null) ?? []
-    // Every one of the three queries is capped at the same server-side row
-    // limit. The breaks query blows it first (up to 2 rows per attendance day),
-    // and a silently truncated breaks set inflates Worked minutes and hides
-    // break overtime — so the banner must reflect ALL three, not just this one.
-    let hitLimit = attRows.length >= REPORT_ROW_LIMIT
+      .order('id')
+      .range(lo, hi))
+    if (att.error) { clear(); setError(`Could not load attendance — ${att.error.message}`); setLoading(false); return }
+    const attRows = att.rows
+    // All three reads page to the same ceiling, and all three matter: a dropped
+    // break inflates Worked minutes and hides break overtime, a dropped shift
+    // loses the Shift column, a dropped attendance row fabricates a missed
+    // clock-in. The banner reflects whichever ran out.
+    let hitLimit = att.truncated
 
     // Breaks are filtered through the parent row's own date/staff predicates
     // rather than by listing the attendance ids we just read. supabase-js puts
@@ -860,30 +889,35 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
     // range. `!inner` makes the embedded filters restrict the breaks themselves.
     let brkRows: AttendanceBreak[] = []
     if (attRows.length > 0) {
-      const { data: brkData, error: brkErr } = await supabase
+      const brk = await fetchAllRows<AttendanceBreak & { attendance?: unknown }>((lo, hi) => supabase
         .from('attendance_breaks')
         .select('*, attendance!inner(staff_id, date)')
         .in('attendance.staff_id', staffIds)
         .gte('attendance.date', from)
         .lte('attendance.date', to)
-      if (brkErr) { clear(); setError(`Could not load breaks — ${brkErr.message}`); setLoading(false); return }
+        .order('attendance_id')
+        .order('break_number')
+        .range(lo, hi))
+      if (brk.error) { clear(); setError(`Could not load breaks — ${brk.error.message}`); setLoading(false); return }
       // Drop the embedded parent — buildStaffReport groups on attendance_id,
       // which every row still carries.
-      brkRows = ((brkData as (AttendanceBreak & { attendance?: unknown })[] | null) ?? [])
-        .map(({ attendance: _parent, ...b }) => b as AttendanceBreak)
-      if (brkRows.length >= REPORT_ROW_LIMIT) hitLimit = true
+      brkRows = brk.rows.map(({ attendance: _parent, ...b }) => b as AttendanceBreak)
+      if (brk.truncated) hitLimit = true
     }
 
     // Shifts drive the "missed clock-in" count and the detail table's shift column.
-    const { data: shiftData, error: shiftErr } = await supabase
+    const shift = await fetchAllRows<ReportShift>((lo, hi) => supabase
       .from('scheduled_shifts')
       .select('*, shift_type:shift_types(name,start_time,end_time)')
       .in('staff_id', staffIds)
       .gte('date', from)
       .lte('date', to)
-    if (shiftErr) { clear(); setError(`Could not load shifts — ${shiftErr.message}`); setLoading(false); return }
-    const shiftRows = (shiftData as unknown as ReportShift[] | null) ?? []
-    if (shiftRows.length >= REPORT_ROW_LIMIT) hitLimit = true
+      .order('date')
+      .order('id')
+      .range(lo, hi))
+    if (shift.error) { clear(); setError(`Could not load shifts — ${shift.error.message}`); setLoading(false); return }
+    const shiftRows = shift.rows
+    if (shift.truncated) hitLimit = true
 
     setAttendance(attRows)
     setBreaks(brkRows)
@@ -1009,7 +1043,7 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
 
       {truncated && (
         <p className="text-xs text-[#9E4A30] bg-[#FDF3F0] rounded-lg px-3 py-2">
-          This range hit the {REPORT_ROW_LIMIT}-record limit, so some attendance, break or shift rows were left out and the totals below are incomplete — narrow the date range or pick one staff member.
+          This range passed the {REPORT_MAX_ROWS.toLocaleString()}-record ceiling, so some rows were left out. Totals below can be understated <em>and</em> the missed clock-in count overstated, because a day whose attendance row was dropped still counts against its scheduled shift — narrow the date range or pick one staff member before acting on these numbers.
         </p>
       )}
 

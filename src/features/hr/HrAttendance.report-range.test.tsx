@@ -22,16 +22,23 @@ const h = vi.hoisted(() => {
   const makeQuery = (table: string) => {
     const record: RecordedCall = { table, select: '', filters: [] }
     calls.push(record)
+    let range: [number, number] | null = null
     const q: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'gte', 'lte', 'in', 'order', 'limit']) {
+    for (const m of ['select', 'eq', 'gte', 'lte', 'in', 'order', 'limit', 'range']) {
       q[m] = (...args: unknown[]) => {
         if (m === 'select') record.select = String(args[0] ?? '')
         else record.filters.push({ method: m, args })
+        if (m === 'range') range = [args[0] as number, args[1] as number]
         return q
       }
     }
-    q.then = (onOk: (v: unknown) => unknown) =>
-      Promise.resolve({ data: tables[table] ?? [], error: null }).then(onOk)
+    // Honour .range() so the caller's paging terminates the way it does against
+    // the real server; filters are recorded rather than applied.
+    q.then = (onOk: (v: unknown) => unknown) => {
+      const all = tables[table] ?? []
+      const data = range ? all.slice(range[0], range[1] + 1) : all
+      return Promise.resolve({ data, error: null }).then(onOk)
+    }
     return q
   }
   return { tables, calls, makeQuery }
