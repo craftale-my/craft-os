@@ -152,4 +152,27 @@ describe('迟到原因显示在经理的名单上', () => {
     await waitFor(() => expect(screen.getByText(/Traffic jam/)).toBeTruthy())
     expect(screen.getByText(/Accident on the LDP/)).toBeTruthy()
   })
+
+  // DailyRoster.setStatus (the manager's manual Present/Late/Absent/etc.
+  // buttons above) writes status='late' without touching late_reason_code at
+  // all, so a null code here is reachable today, not a hypothetical bad cast.
+  // LATE_REASON_LABELS[null as LateReasonCode] would render as blank chrome
+  // — nothing before the (missing) free-text note — instead of anything a
+  // manager could act on.
+  it('shows a visible fallback instead of blank chrome when a late record has no reason code', async () => {
+    h.tables.staff = [{ id: 'staff-1', name: 'Ali', supervisor_id: 'sup-1', rank: 'junior' }]
+    h.tables.attendance = [{ id: 'a1', staff_id: 'staff-1', date: '2026-09-02', status: 'late', late_minutes: 12, late_reason_code: null, late_excused: false }]
+    render(<DailyRoster allStaff={h.tables.staff as never} managerId="sup-1" />)
+    await waitFor(() => expect(screen.getByText('No reason given')).toBeTruthy())
+  })
+
+  // The DB CHECK constraint should make this unreachable, but the `as
+  // LateReasonCode` cast at the render site bypasses TypeScript's own check
+  // too — defend the UI either way rather than trust the cast.
+  it('falls back to the raw code when it is not one of the six known ones', async () => {
+    h.tables.staff = [{ id: 'staff-1', name: 'Ali', supervisor_id: 'sup-1', rank: 'junior' }]
+    h.tables.attendance = [{ id: 'a1', staff_id: 'staff-1', date: '2026-09-02', status: 'late', late_minutes: 12, late_reason_code: 'weird_code', late_excused: false }]
+    render(<DailyRoster allStaff={h.tables.staff as never} managerId="sup-1" />)
+    await waitFor(() => expect(screen.getByText(/weird_code/)).toBeTruthy())
+  })
 })

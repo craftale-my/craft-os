@@ -233,9 +233,21 @@ export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; manage
                       placeholder="mins"
                     />
                   )}
-                  {rec?.status === 'late' && rec.late_reason_code && (
+                  {rec?.status === 'late' && (
                     <span className="px-2 py-1 rounded-lg text-xs bg-[#F5EDE0] text-brown-muted">
-                      {LATE_REASON_LABELS[rec.late_reason_code as LateReasonCode]}
+                      {/* A late record can reach here with no reason code at
+                          all — DailyRoster.setStatus (below) writes
+                          status='late' without one when a manager sets it by
+                          hand — and, defensively, with a code outside the
+                          six LATE_REASON_LABELS knows (the DB CHECK
+                          constraint should prevent this, but the cast on the
+                          next line bypasses TypeScript's own check). Either
+                          way this must render something visible, never the
+                          blank chrome an unguarded index into
+                          LATE_REASON_LABELS would produce. */}
+                      {rec.late_reason_code
+                        ? (LATE_REASON_LABELS[rec.late_reason_code as LateReasonCode] ?? rec.late_reason_code)
+                        : 'No reason given'}
                       {rec.late_reason ? ` — ${rec.late_reason}` : ''}
                     </span>
                   )}
@@ -660,10 +672,14 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     }
     // The attendance row is already saved at this point — the staff member is
     // standing at the door and must be clocked in regardless of what happens
-    // next. So this is fire-and-forget from the UI's perspective: judged on
-    // `error` alone (there is no row to lose to RLS the way writeOutcome()
-    // guards against), and a failure is reported, never allowed to undo or
-    // block the clock-in above.
+    // next. So this is fire-and-forget from the UI's perspective — a failure
+    // is reported, never allowed to undo or block the clock-in above — but
+    // "failure" has to include a clean RPC call that wrote nothing.
+    // notify_late() returns the number of notification rows it wrote, not
+    // just ok/error: 0 means notifications are disabled or the row it looked
+    // for wasn't there, and reading `.error` alone treats that silently
+    // as success, the same "swallowed failure" shape writeOutcome() exists
+    // to catch on the write side.
     const notified = await supabase.rpc('notify_late', {
       p_staff_id: staff.id,
       p_date: attDate,
@@ -671,11 +687,12 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       p_reason_code: code,
       p_reason: note,
     })
+    const notifyFailed = !!notified.error || (notified.data ?? 0) === 0
     setPendingLate(null)
     setLateError(null)
     setSuccessMsg(
       `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️` +
-      (notified.error ? ' Your supervisor could not be notified.' : '')
+      (notifyFailed ? ' Your supervisor could not be notified.' : '')
     )
     load()
     setTimeout(() => setSuccessMsg(null), 5000)
@@ -732,7 +749,15 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   }
 
   const present = monthRecords.filter(r => r.status === 'present').length
-  const late = monthRecords.filter(r => r.status === 'late').length
+  // M5: this must agree with Reviews.countLateDays, which excludes an
+  // excused lateness from the score — otherwise a staff member sees "Late: 3"
+  // here while their review reads late_count: 1, the exact month-end
+  // mismatch this whole late-reason/excuse feature exists to prevent. The
+  // prominent number is the one that actually drives the score (non-excused);
+  // excusedLate keeps the excused days visible rather than dropping them —
+  // shown as a small note under the tile below, and per-day in the list.
+  const late = monthRecords.filter(r => r.status === 'late' && !r.late_excused).length
+  const excusedLate = monthRecords.filter(r => r.status === 'late' && r.late_excused).length
   const absent = monthRecords.filter(r => r.status === 'absent').length
 
   const canClockIn = !today?.clock_in
@@ -997,6 +1022,12 @@ export function MyAttendance({ staff }: { staff: Staff }) {
         <div className="bg-white rounded-xl p-4 border border-[#E8DDD0] text-center">
           <p className="text-2xl font-bold text-[#C4813A]">{late}</p>
           <p className="text-xs text-brown-faint mt-0.5">Late</p>
+          {/* Excused days aren't folded into the count above (it must match
+              what Reviews.countLateDays feeds into the score), but they
+              aren't hidden either — surfaced here, and per-day below. */}
+          {excusedLate > 0 && (
+            <p className="text-[10px] font-medium text-[#3D7A50] mt-1">+{excusedLate} excused</p>
+          )}
         </div>
         <div className="bg-white rounded-xl p-4 border border-[#E8DDD0] text-center">
           <p className="text-2xl font-bold text-[#9E4A30]">{absent}</p>
@@ -1020,6 +1051,11 @@ export function MyAttendance({ staff }: { staff: Staff }) {
                 >
                   {ATTENDANCE_STATUS_LABELS[r.status]}{r.status === 'late' && r.late_minutes ? ` (${r.late_minutes}m)` : ''}
                 </span>
+                {r.status === 'late' && r.late_excused && (
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#EEF5EE] text-[#3D7A50] flex-shrink-0">
+                    Excused
+                  </span>
+                )}
                 <div className="flex items-center gap-2 ml-auto">
                   {r.clock_in_distance_m != null && (
                     <span className="text-[10px] text-brown-faint flex items-center gap-0.5">

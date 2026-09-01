@@ -6,10 +6,15 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
-// NotificationBell (mounted in the header row) reads through this same
-// client via useNotifications — it needs a chainable query that resolves,
-// plus channel()/removeChannel() for its realtime subscription, or mounting
-// the sidebar throws "supabase.from(...).select is not a function".
+// SidebarContent itself doesn't touch supabase (NotificationBell is mounted
+// once at the <Sidebar> level now, not inside SidebarContent — see the
+// comment there), but this file's module graph still pulls it in statically
+// (Sidebar.tsx imports NotificationBell.tsx, which imports useNotifications,
+// which imports supabase at module scope). vitest loads .env.local, so an
+// unmocked import would build a real client against the PRODUCTION database.
+// This mock needs a chainable query that resolves, plus channel()/
+// removeChannel() for the realtime subscription, or importing this module
+// throws "supabase.from(...).select is not a function".
 vi.mock('../lib/supabase', () => {
   const query: Record<string, unknown> = {}
   for (const m of ['select', 'eq', 'is', 'order', 'limit', 'update']) query[m] = () => query

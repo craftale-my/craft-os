@@ -86,14 +86,13 @@ export function SidebarContent({ onNavigate, onClose }: {
           <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
           <span className="font-display text-xl font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
         </Link>
-        <div className="flex items-center gap-1">
-          <NotificationBell />
-          {onClose && (
-            <button onClick={onClose} className="text-[#D4C4B0] hover:text-[#F5F0E8] p-1">
-              <X size={20} />
-            </button>
-          )}
-        </div>
+        {/* No bell here — see the comment on <Sidebar> for why it lives
+            there instead, mounted exactly once. */}
+        {onClose && (
+          <button onClick={onClose} className="text-[#D4C4B0] hover:text-[#F5F0E8] p-1">
+            <X size={20} />
+          </button>
+        )}
       </div>
 
       {/* User info */}
@@ -181,6 +180,28 @@ export function Sidebar() {
 
   return (
     <>
+      {/* The single notification bell for the whole sidebar.
+          I6: NotificationBell used to live inside SidebarContent, which is
+          NOT a stable one-instance-per-viewport thing — the desktop <aside>
+          below stays mounted at all times (only hidden by CSS, "hidden
+          sm:block"), so opening the mobile drawer mounts a SECOND
+          SidebarContent alongside it. A bell inside SidebarContent would
+          then run two useNotifications() hooks, fire two initial fetches,
+          and open two `notifications:<staffId>` realtime channel
+          subscriptions on the same topic at once.
+          Mounting it once here — outside both SidebarContent instances —
+          fixes that, and fixed positioning (not flow inside the header or
+          aside) lets this one instance sit correctly in either chrome:
+          docked in the mobile top bar, where it's visible at rest (this is
+          a phone-first app — clock-in is camera + GPS — so a badge whose
+          whole purpose is passive awareness has to be visible without
+          opening the drawer), and in the desktop sidebar's logo row.
+          z-[60] keeps it above the mobile drawer/overlay (z-50/z-40) so it
+          stays visible and clickable regardless of drawer state too. */}
+      <div className="fixed z-[60] top-0 h-14 right-4 flex items-center sm:h-auto sm:top-6 sm:right-auto sm:left-[12.25rem]">
+        <NotificationBell />
+      </div>
+
       {/* Desktop fixed sidebar */}
       <aside className="hidden sm:block fixed left-0 top-0 h-full w-60 z-30 bg-[#4A2E1A]">
         <SidebarContent onNavigate={() => {}} />

@@ -4,7 +4,7 @@
 // src/features/tasks/useBoardTasks.realtime.test.tsx so both describe
 // realtime the same way: subscribe unfiltered, let RLS scope the rows.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { renderHook, waitFor, cleanup } from '@testing-library/react'
+import { renderHook, waitFor, cleanup, act } from '@testing-library/react'
 
 const h = vi.hoisted(() => {
   const rows: unknown[] = []
@@ -15,7 +15,17 @@ const h = vi.hoisted(() => {
   // an added server-side filter or a deleted cleanup block broke nothing.
   const filters: Record<string, unknown>[] = []
   const removed: unknown[] = []
-  const state = { selectCalls: 0, gate: null as Promise<void> | null }
+  const state = {
+    selectCalls: 0,
+    gate: null as Promise<void> | null,
+    // markRead() now goes through .update().eq().select() (see
+    // useNotifications.ts — writeOutcome() needs the row back to tell a
+    // real write from an RLS-silenced one), so this is what THAT call
+    // resolves to specifically. Defaults to "the row came back", i.e. a
+    // clean success, so tests that don't care about markRead's outcome
+    // don't have to know this exists.
+    updateResponse: { data: [{}], error: null } as { data: unknown[] | null; error: { message: string } | null },
+  }
   const channel = {
     on: (_e: string, filter: Record<string, unknown>, cb: (p: unknown) => void) => {
       filters.push(filter)
@@ -26,11 +36,13 @@ const h = vi.hoisted(() => {
   }
   const makeQuery = () => {
     const q: Record<string, unknown> = {}
+    let isUpdate = false
     for (const m of ['eq', 'is', 'order', 'limit']) q[m] = () => q
-    // load() is the only caller that ever hits .select() — markRead() goes
-    // straight to .update().eq(), so this counts refreshes specifically.
-    q.select = () => { state.selectCalls++; return q }
-    q.update = (patch: unknown) => { updateCalls.push(patch); return q }
+    // load() is the only caller that ever hits .select() on a plain read —
+    // markRead()'s .select() (after .update()) is counted separately below,
+    // via state.updateResponse, so this still counts refreshes specifically.
+    q.select = () => { if (!isUpdate) state.selectCalls++; return q }
+    q.update = (patch: unknown) => { updateCalls.push(patch); isUpdate = true; return q }
     // A fresh copy every call, not the live `rows` reference — a real
     // Postgrest response is always a new array. Aliasing the same mutable
     // array across two setItems() calls makes React's Object.is bail out
@@ -38,7 +50,8 @@ const h = vi.hoisted(() => {
     // changed), so the component never re-renders and the update is lost.
     q.then = (ok: (v: unknown) => unknown) => {
       const gate = state.gate ?? Promise.resolve()
-      return gate.then(() => ({ data: [...rows], error: null })).then(ok)
+      const resolved = isUpdate ? state.updateResponse : { data: [...rows], error: null }
+      return gate.then(() => resolved).then(ok)
     }
     return q
   }
@@ -63,6 +76,7 @@ beforeEach(() => {
   h.removed.length = 0
   h.state.selectCalls = 0
   h.state.gate = null
+  h.state.updateResponse = { data: [{}], error: null }
 })
 afterEach(() => cleanup())
 
@@ -95,6 +109,39 @@ describe('useNotifications', () => {
     expect(h.updateCalls).toHaveLength(1)
     expect(Object.keys(h.updateCalls[0] as object)).toEqual(['read_at'])
     await waitFor(() => expect(result.current.unread).toBe(0))
+  })
+
+  // The BEFORE UPDATE guard trigger raises rather than silently ignoring a
+  // bad update, and RLS can reject the row outright — markRead() used to
+  // apply the "read" state locally no matter what the write actually did,
+  // telling the staff member/supervisor a notification was handled when it
+  // wasn't. Same bug class writeOutcome() (db-write.ts) exists to catch.
+  it('does not mark it read locally when the update errors', async () => {
+    h.rows.push({ id: 'n1', title: 'Late arrival — Ali', read_at: null })
+    const { result } = renderHook(() => useNotifications('sup-1'))
+    await waitFor(() => expect(result.current.items).toHaveLength(1))
+
+    h.state.updateResponse = { data: null, error: { message: 'guard trigger rejected the update' } }
+    // act(), not a bare await: markRead's setItems (or lack of it) is
+    // committed asynchronously, and reading result.current immediately after
+    // a plain `await markRead(...)` can race that commit — passing either
+    // way regardless of whether the fix is actually in place.
+    await act(async () => { await result.current.markRead('n1') })
+
+    expect(result.current.unread).toBe(1)
+    expect(result.current.items.find(n => n.id === 'n1')?.read_at).toBeNull()
+  })
+
+  it('does not mark it read locally when RLS silently drops the update (no error, no row)', async () => {
+    h.rows.push({ id: 'n1', title: 'Late arrival — Ali', read_at: null })
+    const { result } = renderHook(() => useNotifications('sup-1'))
+    await waitFor(() => expect(result.current.items).toHaveLength(1))
+
+    h.state.updateResponse = { data: [], error: null }
+    await act(async () => { await result.current.markRead('n1') })
+
+    expect(result.current.unread).toBe(1)
+    expect(result.current.items.find(n => n.id === 'n1')?.read_at).toBeNull()
   })
 
   it('does nothing when there is no signed-in staff id', async () => {

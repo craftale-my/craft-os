@@ -243,4 +243,27 @@ describe('通知发送', () => {
     expect(screen.getByText(/supervisor could not be notified/i)).toBeTruthy()
     expect(screen.queryByRole('dialog')).toBeNull()
   })
+
+  // M2: notify_late() returns *how many* notification rows it wrote, not a
+  // plain ok/error — 0 means the call succeeded but nothing went out
+  // (notifications disabled, or the attendance row it looked up wasn't
+  // found). Judging on `.error` alone reads that as a successful
+  // notification, which it wasn't.
+  it('names the failure honestly when notify_late reports 0 rows written, not just when it errors', async () => {
+    const { supabase } = await import('../../shared/lib/supabase')
+    vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({ data: 0, error: null } as never)
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*late by 12 min/i)).toBeTruthy())
+    expect(screen.getByText(/supervisor could not be notified/i)).toBeTruthy()
+  })
 })

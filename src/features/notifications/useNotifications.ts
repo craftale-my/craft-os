@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../../shared/lib/supabase'
+import { writeOutcome } from '../../shared/lib/db-write'
 import type { AppNotification } from '../../shared/types'
 
 export interface UseNotifications {
@@ -64,8 +65,19 @@ export function useNotifications(staffId: string | undefined): UseNotifications 
   const markRead = useCallback(async (id: string) => {
     // Only read_at — a BEFORE UPDATE trigger on the table rejects any update
     // that touches another column, so this must never grow a second field.
+    // (The trigger raises rather than silently ignoring the extra column, so
+    // this is the same doctrine as writeOutcome() elsewhere: `error` must be
+    // checked, not discarded.)
     const read_at = new Date().toISOString()
-    await supabase.from('notifications').update({ read_at }).eq('id', id)
+    // `.select()` is required, not optional: an RLS-rejected update comes
+    // back with no error and no row, indistinguishable from success unless
+    // the response is inspected — see writeOutcome()'s doc comment.
+    const outcome = writeOutcome(
+      await supabase.from('notifications').update({ read_at }).eq('id', id).select(),
+    )
+    // A failed write must not be shown as read — that would tell the staff
+    // member/supervisor a notification was handled when it wasn't.
+    if (!outcome.ok) return
     if (!liveRef.current) return
     setItems(prev => prev.map(n => (n.id === id ? { ...n, read_at } : n)))
   }, [])
