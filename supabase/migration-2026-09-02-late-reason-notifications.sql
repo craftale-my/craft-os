@@ -77,6 +77,34 @@
 -- why late_excused/late_excused_by/late_excused_at are gated on
 -- excuse_lateness()'s exact authority test, and why late_reason_code/
 -- late_reason are instead made append-only rather than authority-gated.
+--
+-- v6 addresses a further review finding against v5 itself: v5 left status
+-- and late_minutes ungated on the reasoning that DailyRoster.setStatus and
+-- markAllPresent depend on writing them — but those are the MANAGER path,
+-- covered by attendance_manage (schema.sql:505-506). The staff member's OWN
+-- path is attendance_self_update (schema.sql:509-510), which is just as
+-- row-scoped and column-blind, with no `with check` at all:
+--   create policy "attendance_self_update" on attendance for update to
+--     authenticated using (staff_id = auth.uid());
+-- So the row's own owner could run
+--   supabase.from('attendance').update({ status: 'present' }).eq('id', myRow)
+-- from the browser console. countLateDays() counts status = 'late' and
+-- late_excused = false rows, so flipping status reaches the exact same
+-- outcome the v5 late_excused guard was built to prevent — the late day and
+-- its ten-point deduction both disappear — by a shorter route that bypasses
+-- v5's guard entirely (it never looks at status). Fixed by extending
+-- attendance_guard_late_update() (not a second trigger) to also reject a
+-- change to status/late_minutes when the caller is acting on their OWN row
+-- and is not manager-tier — reusing the exact manager-tier expression
+-- already used twice in this file (the late_excused branch below, and
+-- staff_guard_supervisor_update() above) so the three cannot drift apart.
+-- The one legitimate self-write is clocking in: writeClockIn (src/features/
+-- hr/HrAttendance.tsx) sets status and late_minutes in the same upsert that
+-- first sets clock_in, identified by `old.clock_in is null and new.clock_in
+-- is not null` and let through regardless of caller. A caller acting on
+-- someone ELSE's row is untouched — attendance_self_update never lets a
+-- caller reach a row that isn't their own, so that case can only be reached
+-- via attendance_manage, which is left exactly as permissive as before.
 -- ============================================================================
 
 alter table staff add column if not exists supervisor_id uuid references staff(id) on delete set null;
@@ -309,10 +337,14 @@ grant  execute on function excuse_lateness(uuid) to authenticated;
 
 -- ── attendance_guard_late_update ────────────────────────────────────────────
 -- C1 (see v5 note above): closes the column-blindness of attendance_self_
--- update and attendance_manage for exactly five columns, without touching
--- either policy and without restricting any other column (status and
--- late_minutes stay exactly as freely writable as those policies already
--- allow — DailyRoster.setStatus and markAllPresent depend on that).
+-- update and attendance_manage for late_excused/late_excused_by/
+-- late_excused_at and late_reason_code/late_reason, without touching either
+-- policy. v6 (see note above) extends the same trigger to status/
+-- late_minutes, but only for a caller acting on their OWN row who is not
+-- manager-tier — anyone acting on someone else's row, and a manager-tier
+-- caller acting on any row including their own, keeps exactly the freedom
+-- attendance_manage already grants (DailyRoster.setStatus and
+-- markAllPresent are unaffected for them). No other column is touched.
 --
 -- late_excused / late_excused_by / late_excused_at: guarded by the identical
 -- authority test excuse_lateness() applies against the row's staff_id,
@@ -337,6 +369,24 @@ grant  execute on function excuse_lateness(uuid) to authenticated;
 -- exist, a change is rejected outright once the old value is non-null —
 -- closing the specific rewrite-after-the-fact path the review flagged, for
 -- any caller, not only the row's own staff member.
+--
+-- status / late_minutes (added in v6): guarded only when new.staff_id =
+-- auth.uid() — the caller is acting on their OWN row. attendance_self_update
+-- can never reach any other row, so that is also the only case that needs
+-- guarding here; a caller changing someone else's row already went through
+-- attendance_manage to get this far, and that policy is untouched. Manager-
+-- tier is the identical expression used just above for late_excused and in
+-- staff_guard_supervisor_update() above — reused, not reinvented, so a
+-- manager acting on their OWN row (their name can appear in DailyRoster's
+-- own roster same as anyone else's) keeps exactly the same authority as one
+-- acting on anyone else's. The one carve-out for a non-manager-tier caller
+-- is clocking in: old.clock_in is null and new.clock_in is not null
+-- identifies that exact transition (writeClockIn in src/features/hr/
+-- HrAttendance.tsx always sets clock_in in the same upsert that sets status/
+-- late_minutes) and is let through unconditionally. Everything else a non-
+-- manager-tier caller might try against their own status/late_minutes —
+-- re-clocking in, or a raw supabase.from('attendance').update({ status:
+-- 'present' }) from the console — is rejected.
 --
 -- auth.uid() is null in the migration/SQL-editor context (this file's own
 -- future re-runs, any script-driven backfill) — allowed through
@@ -380,6 +430,29 @@ begin
     ) then
       raise exception
         'late_excused/late_excused_by/late_excused_at can only be changed by someone excuse_lateness() would authorise for this staff member.'
+        using errcode = '42501';
+    end if;
+  end if;
+
+  -- v6: status/late_minutes, but only when the caller is acting on their OWN
+  -- row (new.staff_id = auth.uid()) — attendance_self_update can never reach
+  -- any other row, so this is the only case that needs guarding; someone
+  -- else's row is reached only via attendance_manage, untouched here. The
+  -- clock-in transition is always allowed (writeClockIn legitimately sets
+  -- both columns there); everything else on the caller's own row requires
+  -- manager-tier.
+  if new.staff_id = auth.uid()
+     and (new.status is distinct from old.status
+          or new.late_minutes is distinct from old.late_minutes)
+     and not (old.clock_in is null and new.clock_in is not null)
+  then
+    if not exists (
+      select 1 from staff me
+      where me.id = auth.uid()
+        and (me.system_role in ('manager','admin','owner') or me.rank = 'manager')
+    ) then
+      raise exception
+        'status/late_minutes on your own attendance row can only be changed by clocking in, or by a manager.'
         using errcode = '42501';
     end if;
   end if;
