@@ -355,6 +355,23 @@ function PromotionReviewModal({
 
 // ─── SupervisorReviewCard (inline review form) ────────────────────────────────
 
+/** Late days that count against a monthly review. An excused lateness stays on
+ *  the record as `late` but must not cost attendance score. */
+export async function countLateDays(staffId: string, year: number, month: number): Promise<number> {
+  const start = `${year}-${String(month).padStart(2, '0')}-01`
+  const lastDay = new Date(year, month, 0).getDate()
+  const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  const { count } = await supabase
+    .from('attendance')
+    .select('id', { count: 'exact', head: true })
+    .eq('staff_id', staffId)
+    .eq('status', 'late')
+    .eq('late_excused', false)
+    .gte('date', start)
+    .lte('date', end)
+  return count ?? 0
+}
+
 type RatingKey = 'attitude' | 'efficiency' | 'coffee_skill' | 'service'
 
 function SupervisorReviewCard({
@@ -382,20 +399,10 @@ function SupervisorReviewCard({
 
   useEffect(() => {
     if (!expanded || autoLateCount != null) return
-    const start = `${review.year}-${String(review.month).padStart(2, '0')}-01`
-    const lastDay = new Date(review.year, review.month, 0).getDate()
-    const end = `${review.year}-${String(review.month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
-    supabase
-      .from('attendance')
-      .select('id', { count: 'exact', head: true })
-      .eq('staff_id', review.staff_id)
-      .eq('status', 'late')
-      .gte('date', start)
-      .lte('date', end)
-      .then(({ count }) => {
-        setAutoLateCount(count ?? 0)
-        if (!lateOverridden) setLateCount(count ?? 0)
-      })
+    countLateDays(review.staff_id, review.year, review.month).then(count => {
+      setAutoLateCount(count)
+      if (!lateOverridden) setLateCount(count)
+    })
   }, [expanded])
 
   const allRated = Object.values(ratings).every(v => v > 0)
