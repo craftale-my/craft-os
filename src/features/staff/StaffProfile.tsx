@@ -1191,14 +1191,20 @@ export function PersonalInfoTab({
 
   // All staff for the Supervisor dropdown — fetched unfiltered (not just
   // `status=active`) so supervisorOptions() can still resolve the name of an
-  // inactive current supervisor rather than rendering their id.
+  // inactive current supervisor rather than rendering their id. Also fetched
+  // for isSelf (not just isManager): a staff member's own read-only
+  // Supervisor row (below) resolves the supervisor's name from this same
+  // list, and without it here the row would render "Unknown" even when
+  // supervisor_id is set. staff_select's RLS ("using (true)") already lets
+  // any authenticated caller read id/name/status for every staff row, so this
+  // exposes nothing the self-viewer couldn't already query directly.
   const [allStaff, setAllStaff] = useState<SupervisorCandidate[]>([])
   useEffect(() => {
-    if (!isManager) return
+    if (!isManager && !isSelf) return
     supabase.from('staff').select('id, name, status').order('name').then(({ data }) => {
       if (data) setAllStaff(data as SupervisorCandidate[])
     })
-  }, [isManager])
+  }, [isManager, isSelf])
 
   function update(field: keyof PersonalFormData, value: string) {
     setForm(prev => ({ ...prev, [field]: value }))
@@ -1324,7 +1330,12 @@ export function PersonalInfoTab({
           <div className="space-y-2">
             <InfoRow label="Branch"     value={staff.branch ?? '—'} />
             <InfoRow label="Department" value={deptDisplay || '—'} />
-            {isManager && !isSelf && (
+            {/* Read-only display is gated on isManager || isSelf: seeing who your
+                own supervisor is isn't sensitive, and a staff member is the person
+                most affected by the value being wrong or missing. The *editable*
+                control above stays gated on isManager && !isSelf, unchanged — this
+                only widens the display, never who can edit. */}
+            {(isManager || isSelf) && (
               <InfoRow label="Supervisor" value={allStaff.find(s => s.id === staff.supervisor_id)?.name ?? (staff.supervisor_id ? 'Unknown' : 'None — falls back to branch managers')} />
             )}
             <InfoRow label="Employment" value={staff.employment_type ?? '—'} />

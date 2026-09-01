@@ -42,6 +42,21 @@
 --      out callers Postgres's default PUBLIC-EXECUTE grant would otherwise
 --      let call it. Added explicit REVOKE/GRANT below, right after its
 --      definition.
+--
+-- v4 addresses a review finding against excuse_lateness() itself: it
+-- authorises a caller who is named as the target's supervisor_id
+-- (`t.supervisor_id = me.id`), but the pre-existing staff_update RLS policy
+-- (schema.sql) is row-scoped, not column-scoped — `using (id = auth.uid() or
+-- current_rank() in ('supervisor','manager'))` lets ANY authenticated staff
+-- member update their OWN row, including supervisor_id, since id = auth.uid()
+-- satisfies the USING clause regardless of which columns the UPDATE touches.
+-- So any staff member could run
+--   supabase.from('staff').update({ supervisor_id: '<friend>' }).eq('id', auth.uid())
+-- and then have that friend excuse every one of their own late arrivals — a
+-- self-dealing path this feature opened. Fixed with a BEFORE UPDATE trigger
+-- on staff (below) that blocks a change to supervisor_id unless the caller is
+-- manager-tier, using the exact same authority test excuse_lateness() itself
+-- uses, so the two cannot drift apart.
 -- ============================================================================
 
 alter table staff add column if not exists supervisor_id uuid references staff(id) on delete set null;
@@ -52,6 +67,63 @@ alter table staff add column if not exists supervisor_id uuid references staff(i
 alter table staff drop constraint if exists staff_supervisor_not_self_check;
 alter table staff add constraint staff_supervisor_not_self_check
   check (supervisor_id is null or supervisor_id <> id);
+
+-- ── staff_guard_supervisor_update ──────────────────────────────────────────
+-- v4 finding (see note above): staff_update's RLS policy (schema.sql) is
+-- row-scoped (`id = auth.uid() or current_rank() in ('supervisor','manager')`)
+-- so it can't stop a staff member changing their OWN row's supervisor_id to
+-- point at a friend, who could then use excuse_lateness()'s
+-- `t.supervisor_id = me.id` authorisation to forgive that staff member's own
+-- lateness. This trigger closes that specific column, without turning into a
+-- second, broader gate: every other column on staff stays exactly as
+-- updatable as staff_update already allows.
+--
+-- The authority check is copied verbatim from excuse_lateness()'s own
+-- authorisation comment ("me.system_role in ('manager','admin','owner') or
+-- me.rank = 'manager'") — deliberately, not independently reinvented — so the
+-- set of people who can move a supervisor_id and the set of people
+-- excuse_lateness() lets act as a supervisor share the same definition and
+-- cannot silently drift apart.
+--
+-- auth.uid() is null in the migration/SQL-editor context, including this
+-- file's own future re-runs and any script-driven backfill — that context is
+-- allowed through unconditionally. This is safe: unlike an RPC such as
+-- notify_late() (where a null auth.uid() means an anonymous PostgREST caller
+-- that must be rejected explicitly), the staff table has no anonymous access
+-- path at all — staff_update's own USING clause requires either
+-- `id = auth.uid()` or a current_rank() lookup keyed on auth.uid(), and both
+-- evaluate to null (not true) for the anon role, so RLS already fails closed
+-- before this trigger would ever see such an UPDATE.
+create or replace function staff_guard_supervisor_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.supervisor_id is not distinct from old.supervisor_id then
+    return new;
+  end if;
+
+  if auth.uid() is null then
+    return new;
+  end if;
+
+  if not exists (
+    select 1 from staff me
+    where me.id = auth.uid()
+      and (me.system_role in ('manager','admin','owner') or me.rank = 'manager')
+  ) then
+    raise exception 'Only a manager can change a staff member''s supervisor.'
+      using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists staff_guard_supervisor_update_trg on staff;
+create trigger staff_guard_supervisor_update_trg
+  before update on staff
+  for each row execute function staff_guard_supervisor_update();
 
 alter table attendance add column if not exists late_reason_code text;
 alter table attendance add column if not exists late_reason      text;

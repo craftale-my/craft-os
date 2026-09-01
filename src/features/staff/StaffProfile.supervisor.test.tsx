@@ -142,3 +142,40 @@ describe('Supervisor picker in the profile page', () => {
     expect(h.writes[0].payload).toMatchObject({ supervisor_id: null })
   })
 })
+
+describe('Supervisor read-only row on a staff member\'s own profile', () => {
+  // The editable Supervisor control is rightly hidden from a staff member —
+  // only a manager may reassign it. But hiding the read-only *display* too
+  // meant a staff member could never see who their own supervisor was, even
+  // though nothing about that value is sensitive and they're the person most
+  // affected by it being wrong or missing. This pins: the display shows for
+  // isSelf even when isManager is false, and the editable control stays
+  // hidden — widening who can *see* the value must not widen who can edit it.
+  const staffWithSupervisor = { ...TARGET, supervisor_id: 'sup-1' } as unknown as Staff
+
+  it('shows the read-only Supervisor row to a staff member viewing their own profile', async () => {
+    render(
+      <LookupsProvider>
+        <PersonalInfoTab staff={staffWithSupervisor} isSelf={true} isManager={false}
+          email="ali@x.com" authEmail="ali@x.com" onSaved={() => {}} />
+      </LookupsProvider>
+    )
+    await waitFor(() => expect(screen.getByText('Supervisor')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Manager Mei')).toBeTruthy())
+  })
+
+  it('does not offer the editable Supervisor control to a staff member viewing their own profile', async () => {
+    render(
+      <LookupsProvider>
+        <PersonalInfoTab staff={staffWithSupervisor} isSelf={true} isManager={false}
+          email="ali@x.com" authEmail="ali@x.com" onSaved={() => {}} />
+      </LookupsProvider>
+    )
+    await waitFor(() => expect(screen.getByText('Supervisor')).toBeTruthy())
+    // Own profile is still editable (isSelf), but the Supervisor field itself
+    // must stay read-only — no combobox should render for it even in edit mode.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Save Changes/i })).toBeTruthy())
+    expect(screen.queryByText('Supervisor', { selector: 'label' })).toBeNull()
+  })
+})
