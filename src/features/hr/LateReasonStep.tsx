@@ -28,10 +28,10 @@ export function LateReasonStep({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-4">
-      <div role="dialog" aria-modal="true" className="bg-white rounded-2xl w-full max-w-md p-5 space-y-4">
+      <div role="dialog" aria-modal="true" aria-labelledby="late-reason-heading" className="bg-white rounded-2xl w-full max-w-md p-5 space-y-4">
         <div>
-          <p className="font-semibold text-brown-dark">
-            You are {lateMinutes} minutes late for your {shiftStart} shift
+          <p id="late-reason-heading" className="font-semibold text-brown-dark">
+            You are {lateMinutes} {lateMinutes === 1 ? 'minute' : 'minutes'} late for your {shiftStart} shift
           </p>
           <p className="text-sm text-brown-faint mt-1">
             Please tell your supervisor why. This will be recorded.
