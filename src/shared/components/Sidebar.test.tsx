@@ -6,7 +6,26 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
-vi.mock('../lib/supabase', () => ({ supabase: { from: () => ({}) } }))
+// NotificationBell (mounted in the header row) reads through this same
+// client via useNotifications — it needs a chainable query that resolves,
+// plus channel()/removeChannel() for its realtime subscription, or mounting
+// the sidebar throws "supabase.from(...).select is not a function".
+vi.mock('../lib/supabase', () => {
+  const query: Record<string, unknown> = {}
+  for (const m of ['select', 'eq', 'is', 'order', 'limit', 'update']) query[m] = () => query
+  query.then = (ok: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(ok)
+  const channel = {
+    on: () => channel,
+    subscribe: (cb?: (s: string) => void) => { cb?.('SUBSCRIBED'); return channel },
+  }
+  return {
+    supabase: {
+      from: () => query,
+      channel: () => channel,
+      removeChannel: vi.fn(),
+    },
+  }
+})
 vi.mock('../../features/auth/AuthContext', () => ({
   useAuth: () => ({ staff: { id: 's1', name: 'Yong', rank: 'manager', avatar: null }, signOut: vi.fn() }),
 }))

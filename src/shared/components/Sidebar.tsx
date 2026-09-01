@@ -13,6 +13,7 @@ import type { NavLeaf, NavGroup } from '../lib/nav'
 import { AddToHomeScreenLogo } from './AddToHomeScreen'
 import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
+import { NotificationBell } from '../../features/notifications/NotificationBell'
 
 // 叶子项与大类共用一张表:大类标题也要出图标,否则它的文字会顶到
 // 图标的位置,和下面子项的标签对不齐。
@@ -85,11 +86,14 @@ export function SidebarContent({ onNavigate, onClose }: {
           <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
           <span className="font-display text-xl font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
         </Link>
-        {onClose && (
-          <button onClick={onClose} className="text-[#D4C4B0] hover:text-[#F5F0E8] p-1">
-            <X size={20} />
-          </button>
-        )}
+        <div className="flex items-center gap-1">
+          <NotificationBell />
+          {onClose && (
+            <button onClick={onClose} className="text-[#D4C4B0] hover:text-[#F5F0E8] p-1">
+              <X size={20} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* User info */}
