@@ -792,7 +792,9 @@ function CountCell({ value, warnColor }: { value: number; warnColor?: string }) 
   )
 }
 
-function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
+// Exported for tests — the range/query behaviour is pinned in
+// HrAttendance.report-range.test.tsx.
+export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
   const [preset, setPreset] = useState<RangePreset>('last30')
   const [from, setFrom] = useState(() => presetRange('last30').from)
   const [to, setTo] = useState(() => presetRange('last30').to)
@@ -849,17 +851,26 @@ function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
     // break overtime — so the banner must reflect ALL three, not just this one.
     let hitLimit = attRows.length >= REPORT_ROW_LIMIT
 
-    // Breaks hang off the attendance rows we just read (same fetch shape as the
-    // daily roster).
-    const attIds = attRows.map(r => r.id)
+    // Breaks are filtered through the parent row's own date/staff predicates
+    // rather than by listing the attendance ids we just read. supabase-js puts
+    // an `.in()` list in the query string, so an id-per-row filter grew the URL
+    // by ~39 bytes per attendance day: a full roster crossed the API gateway's
+    // ~25KB ceiling at around 17 days and the request came back a bare
+    // `400 Bad Request`. Joined this way the URL tracks the roster, not the
+    // range. `!inner` makes the embedded filters restrict the breaks themselves.
     let brkRows: AttendanceBreak[] = []
-    if (attIds.length > 0) {
+    if (attRows.length > 0) {
       const { data: brkData, error: brkErr } = await supabase
         .from('attendance_breaks')
-        .select('*')
-        .in('attendance_id', attIds)
+        .select('*, attendance!inner(staff_id, date)')
+        .in('attendance.staff_id', staffIds)
+        .gte('attendance.date', from)
+        .lte('attendance.date', to)
       if (brkErr) { clear(); setError(`Could not load breaks — ${brkErr.message}`); setLoading(false); return }
-      brkRows = (brkData as AttendanceBreak[] | null) ?? []
+      // Drop the embedded parent — buildStaffReport groups on attendance_id,
+      // which every row still carries.
+      brkRows = ((brkData as (AttendanceBreak & { attendance?: unknown })[] | null) ?? [])
+        .map(({ attendance: _parent, ...b }) => b as AttendanceBreak)
       if (brkRows.length >= REPORT_ROW_LIMIT) hitLimit = true
     }
 
