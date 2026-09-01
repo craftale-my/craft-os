@@ -410,7 +410,12 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     supabase.from('system_rules').select('value').eq('key', 'late_reason_written_threshold')
       .maybeSingle()
       .then(({ data }) => {
-        const n = Number((data as { value?: string } | null)?.value)
+        // `system_rules.value` is `text not null`, so a blank string is
+        // reachable — and Number('') is 0, a valid-looking lateness threshold
+        // that would demand written prose for every late minute. Blank counts
+        // as missing, same as anything else that doesn't parse.
+        const raw = (data as { value?: string } | null)?.value
+        const n = raw != null && raw.trim() !== '' ? Number(raw) : NaN
         if (Number.isFinite(n) && n >= 0) setThreshold(n)
       })
   }, [])

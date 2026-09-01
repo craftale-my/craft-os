@@ -182,4 +182,18 @@ describe('迟到必须说明原因', () => {
       late_reason_code: 'traffic', late_reason: 'Accident on the LDP',
     })
   })
+
+  it('does not let a blank threshold value force written prose on every late minute', async () => {
+    // system_rules.value is `text not null`, so a blank string is reachable —
+    // and Number('') is 0, which would demand a written explanation for a
+    // 1-minute lateness. The constant (15) must apply instead.
+    h.tables.system_rules = [{ key: 'late_reason_written_threshold', value: '' }]
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    expect(screen.getByRole('button', { name: /Submit/i }).hasAttribute('disabled')).toBe(false)
+    expect(screen.queryByRole('textbox')).toBeNull()
+  })
 })
