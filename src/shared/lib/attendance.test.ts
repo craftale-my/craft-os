@@ -25,9 +25,28 @@ describe('calcLateness', () => {
     expect(r).toEqual({ isLate: false, lateMinutes: 0 })
   })
 
-  it('rounds a 30-second lateness up to 1 minute', () => {
-    const r = calcLateness(localIso('2026-07-08', '09:30:30'), '2026-07-08', '09:30:00')
+  it('is not late anywhere inside the scheduled start minute', () => {
+    const r = calcLateness(localIso('2026-07-08', '09:30:59'), '2026-07-08', '09:30:00')
+    expect(r).toEqual({ isLate: false, lateMinutes: 0 })
+  })
+
+  it('is late from the very next minute', () => {
+    const r = calcLateness(localIso('2026-07-08', '09:31:00'), '2026-07-08', '09:30:00')
     expect(r).toEqual({ isLate: true, lateMinutes: 1 })
+  })
+
+  it('applies the same rule to an on-the-hour start (05:00 late from 05:01)', () => {
+    expect(calcLateness(localIso('2026-07-08', '05:00:00'), '2026-07-08', '05:00:00'))
+      .toEqual({ isLate: false, lateMinutes: 0 })
+    expect(calcLateness(localIso('2026-07-08', '05:00:45'), '2026-07-08', '05:00:00'))
+      .toEqual({ isLate: false, lateMinutes: 0 })
+    expect(calcLateness(localIso('2026-07-08', '05:01:00'), '2026-07-08', '05:00:00'))
+      .toEqual({ isLate: true, lateMinutes: 1 })
+  })
+
+  it('ignores the seconds on a later clock-in (09:42:59 is 12 minutes, not 13)', () => {
+    const r = calcLateness(localIso('2026-07-08', '09:42:59'), '2026-07-08', '09:30:00')
+    expect(r).toEqual({ isLate: true, lateMinutes: 12 })
   })
 
   it('reports 12 minutes when 12 minutes late', () => {
