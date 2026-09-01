@@ -44,7 +44,7 @@
 - Create: `supabase/migration-2026-09-02-late-reason-notifications.sql`
 
 **Interfaces:**
-- Produces: `staff.supervisor_id`; `attendance.late_reason_code|late_reason|late_excused|late_excused_by|late_excused_at`; table `notifications`; `notification_settings` row `attendance_late`; `app_settings` row `late_reason_written_threshold`.
+- Produces: `staff.supervisor_id`; `attendance.late_reason_code|late_reason|late_excused|late_excused_by|late_excused_at`; table `notifications`; `notification_settings` row `attendance_late`; `system_rules` row `late_reason_written_threshold`.
 
 - [ ] **Step 1: Write the migration**
 
@@ -373,7 +373,7 @@ export const LATE_REASON_LABELS: Record<LateReasonCode, string> = {
   other: 'Other',
 }
 
-/** Fallback for the app_settings key `late_reason_written_threshold`. */
+/** Fallback for the system_rules key `late_reason_written_threshold`. */
 export const DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES = 15
 
 /** Tapping a code is enough for a small overrun; past the threshold the staff
