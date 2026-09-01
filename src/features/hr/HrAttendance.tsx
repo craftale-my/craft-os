@@ -7,7 +7,7 @@ import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABE
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
 import { writeOutcome, type WriteOutcome } from '../../shared/lib/db-write'
-import { DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES, type LateReasonCode } from '../../shared/lib/lateReason'
+import { DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES, LATE_REASON_LABELS, type LateReasonCode } from '../../shared/lib/lateReason'
 import { Avatar } from '../../shared/components/Avatar'
 import { MapPin, CheckCircle, X, AlertTriangle, ZoomIn, Coffee } from 'lucide-react'
 import { ClockModal, type ClockResult } from './ClockModal'
@@ -59,7 +59,7 @@ function PhotoViewer({ url, onClose }: { url: string; onClose: () => void }) {
 
 const STATUS_OPTIONS: AttendanceStatus[] = ['present', 'late', 'absent', 'half_day', 'on_leave']
 
-function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: string | undefined }) {
+export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: string | undefined }) {
   const [date, setDate] = useState(todayStr())
   const [records, setRecords] = useState<Record<string, Attendance>>({})
   const [breaksByAtt, setBreaksByAtt] = useState<Record<string, AttendanceBreak[]>>({})
@@ -67,6 +67,9 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
   const [filterDept, setFilterDept] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
   const [viewPhoto, setViewPhoto] = useState<string | null>(null)
+  // A rejected excuse must be visible, not silent — surfaced above the list
+  // rather than per-row, since the row itself may re-render away on reload.
+  const [rosterError, setRosterError] = useState<string | null>(null)
 
   async function load() {
     // Fallback trigger for the hourly cron: opening/refreshing the roster
@@ -118,6 +121,36 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
     load()
   }
 
+  const isManagerTier = (me: Staff | undefined) =>
+    !!me && (me.rank === 'manager' || me.system_role === 'manager' ||
+             me.system_role === 'admin' || me.system_role === 'owner')
+
+  // Mirrors excuse_lateness()'s own authorisation check exactly (see
+  // supabase/migration-2026-09-02-late-reason-notifications.sql). manage_hr
+  // — the capability that gates access to this whole page — is branch-wide,
+  // so it is broader than this predicate: a supervisor can see a colleague's
+  // row here without being allowed to excuse it. Showing this button to
+  // anyone else would give them a click the database rejects.
+  function canExcuse(target: Staff): boolean {
+    const me = allStaff.find(s => s.id === managerId)
+    return isManagerTier(me) || target.supervisor_id === managerId
+  }
+
+  // `saving` holds a STAFF id everywhere else in this component
+  // (`saving === s.id`); keep that, or the disabled states stop matching.
+  async function excuse(staffId: string, attendanceId: string) {
+    setSaving(staffId)
+    // Goes through the excuse_lateness() RPC, not a direct update: RLS is
+    // row-scoped, so a policy permissive enough to allow this would also let
+    // a supervisor rewrite clock_in and late_minutes. The function writes
+    // only the excuse columns.
+    const { error } = await supabase.rpc('excuse_lateness', { p_attendance_id: attendanceId })
+    const outcome: WriteOutcome = error ? { ok: false, reason: error.message } : { ok: true }
+    setSaving(null)
+    if (!outcome.ok) setRosterError(`Could not excuse this lateness — ${outcome.reason}`)
+    else { setRosterError(null); load() }
+  }
+
   const visibleStaff = allStaff.filter(s => {
     if (filterBranch && s.branch !== filterBranch) return false
     if (filterDept && s.department !== filterDept) return false
@@ -129,6 +162,12 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
   return (
     <div className="space-y-4">
       {viewPhoto && <PhotoViewer url={viewPhoto} onClose={() => setViewPhoto(null)} />}
+
+      {rosterError && (
+        <div role="alert" className="px-4 py-2.5 rounded-xl bg-[#FDF3F0] border border-[#E8B8A8] text-sm text-[#9E4A30]">
+          {rosterError}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <input type="date" value={date} onChange={e => setDate(e.target.value)} className={selectCls} />
@@ -193,6 +232,26 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
                       className="w-16 px-2 py-1 rounded-lg border border-[#D4C5B0] text-xs text-brown-dark"
                       placeholder="mins"
                     />
+                  )}
+                  {rec?.status === 'late' && rec.late_reason_code && (
+                    <span className="px-2 py-1 rounded-lg text-xs bg-[#F5EDE0] text-brown-muted">
+                      {LATE_REASON_LABELS[rec.late_reason_code as LateReasonCode]}
+                      {rec.late_reason ? ` — ${rec.late_reason}` : ''}
+                    </span>
+                  )}
+                  {rec?.status === 'late' && !rec.late_excused && canExcuse(s) && (
+                    <button
+                      disabled={saving === s.id}
+                      onClick={() => excuse(s.id, rec.id)}
+                      className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#EEF5EF] text-[#3D7A50] border border-[#A8C5AE] disabled:opacity-50"
+                    >
+                      Excuse
+                    </button>
+                  )}
+                  {rec?.late_excused && (
+                    <span className="px-2 py-1 rounded-lg text-xs font-semibold bg-[#EEF5EF] text-[#3D7A50]">
+                      Excused
+                    </span>
                   )}
                 </div>
               </div>
