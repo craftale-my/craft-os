@@ -12,11 +12,24 @@ const h = vi.hoisted(() => {
   const tables: Record<string, unknown[]> = {}
   const writes: Record<string, unknown>[] = []
   const rpcs: { fn: string; args: unknown }[] = []
-  const makeQuery = (rows: unknown[]) => {
+  const makeQuery = (table: string, rows: unknown[]) => {
     const q: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'gte', 'lte', 'in', 'order', 'limit', 'update']) q[m] = () => q
+    // `system_rules` is looked up by `.eq('key', ...)`; pin that filter so a
+    // typo in the key string falls through to "no row" instead of matching by
+    // table alone (which would silently return whatever the fixture holds).
+    let keyFilter: string | undefined
+    for (const m of ['select', 'gte', 'lte', 'in', 'order', 'limit', 'update']) q[m] = () => q
+    q.eq = (field: string, value: unknown) => {
+      if (table === 'system_rules' && field === 'key') keyFilter = value as string
+      return q
+    }
     q.upsert = (row: Record<string, unknown>) => { writes.push(row); return q }
-    q.maybeSingle = () => Promise.resolve({ data: rows[0] ?? null, error: null })
+    q.maybeSingle = () => {
+      const matched = keyFilter === undefined
+        ? rows
+        : rows.filter(r => (r as Record<string, unknown>).key === keyFilter)
+      return Promise.resolve({ data: matched[0] ?? null, error: null })
+    }
     q.single = q.maybeSingle
     q.then = (onOk: (v: unknown) => unknown) => Promise.resolve({ data: rows, error: null }).then(onOk)
     return q
@@ -26,7 +39,7 @@ const h = vi.hoisted(() => {
 
 vi.mock('../../shared/lib/supabase', () => ({
   supabase: {
-    from: (table: string) => h.makeQuery(h.tables[table] ?? []),
+    from: (table: string) => h.makeQuery(table, h.tables[table] ?? []),
     rpc: (fn: string, args: unknown) => { h.rpcs.push({ fn, args }); return Promise.resolve({ data: 1, error: null }) },
   },
 }))
@@ -151,7 +164,7 @@ describe('迟到必须说明原因', () => {
 
   it('demands a written explanation past the threshold HR configured', async () => {
     // system_rules.late_reason_written_threshold = 5, so 12 minutes needs words.
-    h.tables.system_rules = [{ value: '5' }]
+    h.tables.system_rules = [{ key: 'late_reason_written_threshold', value: '5' }]
     render(<MyAttendance staff={STAFF} />)
     await waitFor(() => clockInBtn())
     fireEvent.click(clockInBtn())
