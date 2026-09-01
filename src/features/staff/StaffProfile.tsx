@@ -13,6 +13,7 @@ import {
   REVIEW_CATEGORIES, MONTHS_FULL, calcFinalScore, getScoreConfig,
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
+import type { Option } from '../../shared/lib/lookups'
 import { canReviewStaff } from '../../shared/lib/permissions'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
@@ -1124,10 +1125,40 @@ interface PersonalFormData {
   fullName: string; nickname: string; gender: string; contactNumber: string
   address: string; branch: string; department: string; employmentType: string
   workingExperience: string; education: string; rank: string; level: string
-  jobTitleId: string; confirmationDate: string
+  jobTitleId: string; confirmationDate: string; supervisorId: string
 }
 
-function PersonalInfoTab({
+type SupervisorCandidate = Pick<Staff, 'id' | 'name' | 'status'>
+
+/**
+ * Options for the Supervisor picker.
+ *
+ * - Never offers the staff member themselves: the DB has a CHECK constraint
+ *   forbidding `supervisor_id = id`, so an unfiltered list would offer a
+ *   choice guaranteed to fail on save.
+ * - Only offers active staff — but if the staff member's *current*
+ *   supervisor isn't active (they resigned; `supervisor_id` is a real FK
+ *   with `on delete set null`, so it can never point at a deleted row, only
+ *   an inactive one), that person is still pinned at the top labelled
+ *   "(inactive)". This mirrors `useLookups().departmentOptions()`, which
+ *   keeps a stale-but-current slug visible instead of silently dropping it —
+ *   without it, opening Edit on a staff member whose supervisor left would
+ *   make the picker default to blank and could unassign a real supervisor
+ *   simply by clicking Save without touching the field.
+ */
+export function supervisorOptions(allStaff: SupervisorCandidate[], staff: Pick<Staff, 'id' | 'supervisor_id'>): Option[] {
+  const opts = allStaff
+    .filter(s => s.id !== staff.id && s.status === 'active')
+    .map(s => ({ slug: s.id, name: s.name }))
+  const currentId = staff.supervisor_id
+  if (currentId && !opts.some(o => o.slug === currentId)) {
+    const current = allStaff.find(s => s.id === currentId)
+    if (current) opts.unshift({ slug: current.id, name: `${current.name} (inactive)` })
+  }
+  return opts
+}
+
+export function PersonalInfoTab({
   staff, isSelf, isManager, email, authEmail, onSaved,
 }: {
   staff: Staff; isSelf: boolean; isManager: boolean; email: string; authEmail: string; onSaved: () => void
@@ -1146,6 +1177,7 @@ function PersonalInfoTab({
     employmentType: staff.employment_type ?? '', workingExperience: staff.working_experience ?? '',
     education: staff.education ?? '', rank: staff.rank, level: String(staff.level),
     jobTitleId: staff.job_title_id ?? '', confirmationDate: staff.confirmation_date ?? '',
+    supervisorId: staff.supervisor_id ?? '',
   })
 
   // Job titles for the manager's assignment dropdown (drives the career path).
@@ -1154,6 +1186,17 @@ function PersonalInfoTab({
     if (!isManager) return
     supabase.from('roles').select('*').eq('is_active', true).order('name').then(({ data }) => {
       if (data) setJobTitles(data as Role[])
+    })
+  }, [isManager])
+
+  // All staff for the Supervisor dropdown — fetched unfiltered (not just
+  // `status=active`) so supervisorOptions() can still resolve the name of an
+  // inactive current supervisor rather than rendering their id.
+  const [allStaff, setAllStaff] = useState<SupervisorCandidate[]>([])
+  useEffect(() => {
+    if (!isManager) return
+    supabase.from('staff').select('id, name, status').order('name').then(({ data }) => {
+      if (data) setAllStaff(data as SupervisorCandidate[])
     })
   }, [isManager])
 
@@ -1177,6 +1220,7 @@ function PersonalInfoTab({
         payload.level = parseInt(form.level) || 1
         payload.job_title_id = form.jobTitleId || null
         payload.confirmation_date = form.confirmationDate || null
+        payload.supervisor_id = form.supervisorId || null
       }
       const { error } = await supabase.from('staff').update(payload).eq('id', staff.id)
       if (error) throw error
@@ -1196,7 +1240,7 @@ function PersonalInfoTab({
       department: staff.department ?? '', employmentType: staff.employment_type ?? '',
       workingExperience: staff.working_experience ?? '', education: staff.education ?? '',
       rank: staff.rank, level: String(staff.level), jobTitleId: staff.job_title_id ?? '',
-      confirmationDate: staff.confirmation_date ?? '' })
+      confirmationDate: staff.confirmation_date ?? '', supervisorId: staff.supervisor_id ?? '' })
     setSaveError(''); setEditing(false)
   }
 
@@ -1266,12 +1310,23 @@ function PersonalInfoTab({
           <div className="space-y-4">
             <PISelectRow label="Branch"          value={form.branch}         options={BRANCHES}         onChange={v => update('branch', v)} />
             <PISelectRowKV label="Department"    value={form.department}     options={departmentOptions(staff.department)} onChange={v => update('department', v)} />
+            {isManager && !isSelf && (
+              <PISelectRowKV
+                label="Supervisor"
+                value={form.supervisorId}
+                options={supervisorOptions(allStaff, staff)}
+                onChange={v => update('supervisorId', v)}
+              />
+            )}
             <PISelectRow label="Employment Type" value={form.employmentType} options={employmentTypeOptions(staff.employment_type)} onChange={v => update('employmentType', v)} />
           </div>
         ) : (
           <div className="space-y-2">
             <InfoRow label="Branch"     value={staff.branch ?? '—'} />
             <InfoRow label="Department" value={deptDisplay || '—'} />
+            {isManager && !isSelf && (
+              <InfoRow label="Supervisor" value={allStaff.find(s => s.id === staff.supervisor_id)?.name ?? (staff.supervisor_id ? 'Unknown' : 'None — falls back to branch managers')} />
+            )}
             <InfoRow label="Employment" value={staff.employment_type ?? '—'} />
           </div>
         )}
