@@ -1,5 +1,5 @@
 -- ============================================================================
--- Late reason + notifications, schema only (2026-09-02, v10). Idempotent.
+-- Late reason + notifications, schema only (2026-09-02, v11). Idempotent.
 --
 -- v2 addresses review findings against v1 (never executed against any
 -- database, so amended in place rather than layered with a second file):
@@ -64,6 +64,21 @@
 -- on staff (below) that blocks a change to supervisor_id unless the caller is
 -- manager-tier, using the exact same authority test excuse_lateness() itself
 -- uses, so the two cannot drift apart.
+--   CORRECTION (v11): the quote above — `using (id = auth.uid() or
+--   current_rank() in ('supervisor','manager'))` — is STALE, cited from
+--   schema.sql, and is this branch's fourth instance of the same citation
+--   error (see the v9 note further down, PROJECT_NOTES.md section 4, and the
+--   header rule above this changelog). The live policy is
+--   migration-2026-07-08-rls-system-role.sql:232-233:
+--     create policy "staff_update" on staff for update
+--       using (id = auth.uid() or (current_rank() in ('supervisor','manager')
+--               or current_system_role() in ('hr','supervisor','manager',
+--               'admin','owner')));
+--   No functional consequence: staff_guard_supervisor_update()'s own
+--   authority test (below) is independent of this quote — it re-derives
+--   manager-tier itself rather than reading it off the policy — and the extra
+--   system_role disjunct the live policy grants does not change what that
+--   trigger permits. Fixing the quote and the citation only.
 --
 -- v5 addresses a review finding (C1) against attendance itself: RLS is
 -- row-scoped everywhere on this table, both for attendance_self_update
@@ -549,6 +564,117 @@
 --   the v2 note near the top of this changelog). Re-running the whole file
 --   remains a no-op on an up-to-date database.
 -- ─────────────────────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────────────────
+-- v11. A SUBJECT COULD DENY THEIR OWN REVIEW AND FREEZE THE SCORE AT 100.
+-- PLUS TWO MINOR FIXES AND FOUR STALE-OR-OVERSTATED CLAIMS, CORRECTED IN PLACE.
+--
+--   (C1) THE BUG. monthly_reviews_guard_subject_update()'s whitelist
+--   (v_writable_keys, added in v9 for finding I4) includes `status` with no
+--   constraint on what it may become — SelfEvalForm.submit needs to move it
+--   from 'pending' to 'self_done', so it had to be writable, but nothing
+--   stopped it moving anywhere else. The comment above that function dismissed
+--   this ("it does not move a score") on the grounds that calcFinalScore
+--   (src/shared/types/index.ts) returns null unless all four sup_* ratings are
+--   present, and those, along with late_count, are guarded by that same
+--   whitelist. That reasoning checks calcFinalScore, not attendance_score —
+--   the column this table actually generates:
+--     attendance_score int generated always as (greatest(0, 100 - late_count * 10))
+--   late_count defaults to 0, and this trigger's whitelist never constrained
+--   `status` becoming 'completed' outright. Grepped against every caller of
+--   the two supervisor-side review forms, not assumed:
+--     src/features/team/Reviews.tsx:610 —
+--       reviews.filter(r => r.status === 'self_done' && canReviewStaff(...))
+--       is the ONLY feed for SupervisorReviewCard.
+--     src/features/staff/StaffProfile.tsx:476 —
+--       if (review.status === 'self_done' && isSupervisor)
+--       is the ONLY feed for SupervisorReviewForm.
+--   Both are gated on status = 'self_done' and nothing else. So
+--     update monthly_reviews set status = 'completed' where id = <own row>
+--       and staff_id = auth.uid();
+--   run by the review's own subject removes the row from both entry points
+--   permanently — late_count is never written by anyone else, attendance_score
+--   generates a perfect 100 from the untouched default, and StaffProfile even
+--   reports "All reviews completed for this month!". The same lever also
+--   reverts a completed review back to 'pending' and reopens self-evaluation
+--   after a supervisor already scored it — nothing constrained the REVERSE
+--   direction either.
+--
+--   THE FIX. Constrain the transition instead of leaving `status` open.
+--   old.status = 'pending' -> new.status = 'self_done' is the one and only
+--   self-initiated status change this table's real callers ever perform —
+--   SelfEvalForm.submit itself is reachable only when review.status ===
+--   'pending' (StaffProfile.tsx:460). A same-value write (new.status not
+--   distinct from old.status) is also let through, so an idempotent retry of
+--   an already-applied self-evaluation does not raise. Every other
+--   self-initiated change to `status` — completed, reverted, jumped straight
+--   to self_done from anywhere but pending, or anything this enum grows in
+--   future — is refused. The check runs in
+--   monthly_reviews_guard_subject_update() before the general whitelist diff,
+--   using the same errcode as the rest of this file's guards.
+--
+--   THE PARAGRAPH THAT REASONED THIS AWAY IS REWRITTEN IN PLACE, not merely
+--   annotated, because the old text was wrong about which score `status`
+--   reaches and would mislead the next reader who trusted it. See the comment
+--   above monthly_reviews_guard_subject_update() below for the corrected text.
+--
+--   (M1) NULL SLIPPED THROUGH THE ERASURE CLAMP IN attendance_guard_late_
+--   update(). v_status_write_erases_verdict's test — `new.status in
+--   ('present', 'late')` — is NULL, not false, when new.status is NULL, so
+--   `not (... and NULL)` is NULL, and plpgsql's IF treats NULL as not-true —
+--   so the clamp would silently NOT fire for a NULL new.status on a clock-in
+--   transition from the 'present' baseline, contradicting this function's own
+--   comment ("Every other combination is refused and reset to OLD").
+--   writeClockIn (the only caller of this transition) never sends a NULL
+--   status, so this was not reachable in practice — but the comment should be
+--   true regardless of what today's one caller happens to send. Fixed with an
+--   explicit `new.status is not null` test folded into the same expression.
+--
+--   (M2) THE INSERT-ARM DEFAULTS MAP IS AN ENUMERATIVE LIST INSIDE A
+--   DELIBERATELY SUBTRACTIVE DESIGN. attendance_guard_self_insert()'s
+--   v_defaults names break_late, break_overrun_minutes and late_excused by
+--   hand — the three non-whitelisted columns whose DEFAULT is a non-null
+--   literal at the time this was written. That is a deliberate, bounded
+--   exception to the "guarded automatically" design the rest of that function
+--   documents: a nullable column added later is guarded with nothing to
+--   update, but a NON-NULL-default column is not, and needs v_defaults updated
+--   by hand or every self clock-in starts raising. Nothing connected that fact
+--   to the one place a future column actually gets added — the `alter table
+--   attendance add column` block near the top of this file. A `-- KEEP IN
+--   SYNC WITH v_defaults` marker is added there now, naming the function, so
+--   the two are found together.
+--
+--   FOUR STALE OR OVERSTATED CLAIMS, CORRECTED IN PLACE:
+--     * the v4 note's quote of staff_update, cited to schema.sql — STALE, and
+--       this branch's fourth citation error of this exact kind. Corrected with
+--       the LIVE text from migration-2026-07-08-rls-system-role.sql:232-233.
+--       No functional consequence: staff_guard_supervisor_update()'s own
+--       authority test is independent of this quote and was already correct.
+--     * the "clock_in must be set" bullet under attendance_guard_self_insert's
+--       THE RULE, which read as though requiring clock_in stops pre-emption of
+--       the auto-absent job. It stops the BARE status row variant only — a
+--       fabricated clock_in for today, or any of the last 7 days, still
+--       inserts, still pre-empts mark_absent_for_missed_shifts()'s `on
+--       conflict do nothing`, and nothing here authenticates clock_in against
+--       a real clocking event. The worked example immediately above it, which
+--       used a future date, is annotated so it no longer reads as though the
+--       date-window fix alone closed the case.
+--     * the C1 paragraph above monthly_reviews_guard_subject_update() — see
+--       (C1) above; rewritten in place.
+--     * the "Every other combination is refused and reset to OLD" claim in
+--       attendance_guard_late_update()'s own comment — see (M1) above; the
+--       comment text is unchanged (it is now true) and the CODE was fixed to
+--       match it, rather than the reverse.
+--
+--   IDEMPOTENCY. v11 edits monthly_reviews_guard_subject_update() and
+--   attendance_guard_late_update() via `create or replace function` only, and
+--   adds one comment line above the `alter table attendance add column`
+--   block. No column, constraint, index, grant, trigger definition or seed
+--   changes, and no new statement of any kind that could behave differently
+--   on a second run. This file has still never been executed against any
+--   database (every version from v1 has been amended in place before first
+--   deployment — see the v2 note near the top of this changelog). Re-running
+--   the whole file remains a no-op on an up-to-date database.
+-- ─────────────────────────────────────────────────────────────────────────
 -- ============================================================================
 
 alter table staff add column if not exists supervisor_id uuid references staff(id) on delete set null;
@@ -617,6 +743,13 @@ create trigger staff_guard_supervisor_update_trg
   before update on staff
   for each row execute function staff_guard_supervisor_update();
 
+-- KEEP IN SYNC WITH v_defaults IN attendance_guard_self_insert() (below, v11
+-- M2): that function's INSERT whitelist treats every non-whitelisted column
+-- as required to be at its column default, and can only tell "default" from
+-- "value" for a NULL-default column by checking for NULL. A column added here
+-- (or to `attendance` by any future migration) with a non-null DEFAULT must
+-- be added to v_defaults too, or every self clock-in starts raising the day
+-- that column exists — a nullable column needs no such update.
 alter table attendance add column if not exists late_reason_code text;
 alter table attendance add column if not exists late_reason      text;
 alter table attendance add column if not exists late_excused     boolean not null default false;
@@ -1164,11 +1297,23 @@ begin
       -- up clocked in with the pre-existing verdict left standing for a
       -- manager to correct, never refused outright. See the matrix in this
       -- file's v10 header note for every old.status worked through by name.
+      -- (v11, M1) `new.status is not null` is explicit here, not implied.
+      -- Without it, `new.status in ('present','late')` is NULL (not false)
+      -- whenever new.status is NULL, which makes the whole `not (...)`
+      -- expression NULL, and plpgsql's IF treats NULL as not-true — so the
+      -- erasure clamp below would silently NOT fire for a NULL new.status on
+      -- a clock-in transition from the 'present' baseline, contradicting this
+      -- function's own comment ("Every other combination is refused and reset
+      -- to OLD"). writeClockIn (the only caller of this transition) never
+      -- sends a NULL status, so this was not reachable in practice — but the
+      -- comment should be true regardless of what today's one caller happens
+      -- to send.
       v_status_write_erases_verdict :=
         v_clock_in_transition
         and new.status is distinct from old.status
         and not (
           coalesce(old.status, 'present') = 'present'
+          and new.status is not null
           and new.status in ('present', 'late')
         );
 
@@ -1257,6 +1402,14 @@ create trigger attendance_guard_late_update_trg
 -- nothing`, so the auto-absent job skips a day that already has a row; and
 -- the roster reads "present". No UPDATE, so no trigger, so no whitelist.
 --
+-- NOTE (v11): the worked example above uses a FUTURE date only because that
+-- was the simplest illustration of "any date that had none yet" pre-fix. Do
+-- not read the date-window rule below as having closed this example: swap
+-- '<tomorrow>' for today (or any of the last 7 days) and the identical
+-- statement — clock_in and all — still inserts and still pre-empts the
+-- auto-absent job. See the CORRECTION under "clock_in must be set" below for
+-- what the fixes actually do and do not stop.
+--
 -- THE RULE. Same shape as the UPDATE guard, deliberately, so the two read
 -- alike. When auth.uid() is not null, the row being inserted is the caller's
 -- own (new.staff_id = auth.uid()) and the caller does NOT satisfy
@@ -1278,8 +1431,25 @@ create trigger attendance_guard_late_update_trg
 --
 --   * `clock_in` must be set. The only self-insert path in the whole app is
 --     writeClockIn, which always sets it. Requiring it stops a staff member
---     creating a bare status row — 'present' or 'on_leave' with no clock-in —
---     purely to pre-empt the auto-absent job on a day they did not work.
+--     creating a BARE status row — 'present' or 'on_leave' with no clock-in at
+--     all — purely to pre-empt the auto-absent job on a day they did not work.
+--
+--     CORRECTION (v11): an earlier draft stopped there, which reads as though
+--     requiring clock_in stops pre-emption of the auto-absent job outright. It
+--     does not — nothing here (or anywhere in this file) authenticates
+--     clock_in against a real clocking event, so
+--       insert into attendance (staff_id, date, status, clock_in)
+--       values (auth.uid(), '<today, or up to 7 days back>', 'present', now());
+--     still inserts: `clock_in` is set, and `date` sits inside the window
+--     below. mark_absent_for_missed_shifts()'s `on conflict (staff_id, date)
+--     do nothing` still skips that day, exactly as it would for a genuine
+--     clock-in, for a shift the staff member may never have worked. What this
+--     rule actually closes is narrower than "pre-emption": a status row with
+--     NO clock-in evidence whatsoever (this bullet), and — separately, via the
+--     date-window rule above — one dated outside the last 7 days. Closing the
+--     fabricated-clock_in variant would mean authenticating clock_in itself
+--     (GPS/photo verification against a real event); that is out of scope for
+--     a column-whitelist trigger and is not attempted here.
 --
 --   * only these columns may carry a value at all:
 --       staff_id, date
@@ -1510,15 +1680,47 @@ create trigger attendance_guard_self_insert_trg
 --                           subject self-evaluation look like a change and
 --                           raise. It is the one name in v_ignored_keys.
 --
---   DELIBERATELY LEFT WRITABLE, with its risk stated: `status`. The subject
---   sets it to 'self_done' at the end of their self-evaluation, so it has to
---   be on the whitelist. That does mean a subject can set it to 'completed'
---   and make their review LOOK finished. It does not move a score: calcFinalScore
---   (src/shared/types/index.ts) returns null unless all four sup_* ratings are
---   present, and those are guarded, as is late_count. Constraining the value
---   as well as the column would need a state machine this table does not have
---   anywhere else, so it is left as a known, bounded gap rather than guessed
---   at here.
+--   `status` — WRITABLE, BUT ONLY FOR ONE TRANSITION (v11, C1; this paragraph
+--   is a rewrite in place, not a note appended alongside — the previous
+--   version reasoned this away incorrectly and should not be trusted). The
+--   subject sets it to 'self_done' at the end of their self-evaluation
+--   (SelfEvalForm.submit, src/features/staff/StaffProfile.tsx:517-525), so it
+--   has to be on the whitelist above — but the whitelist only decides WHICH
+--   columns may change, not what they may become. The previous version of
+--   this comment argued that leaving the VALUE unconstrained was safe because
+--   "it does not move a score": calcFinalScore (src/shared/types/index.ts)
+--   does return null unless all four sup_* ratings are present, and those,
+--   along with late_count, are guarded elsewhere in this function. That is
+--   true and answers the wrong question — it is about calcFinalScore, not
+--   about attendance_score, the column this table actually generates:
+--     attendance_score int generated always as (greatest(0, 100 - late_count * 10))
+--   late_count defaults to 0, and is written ONLY by the two supervisor-side
+--   forms, both fed exclusively by status = 'self_done' — grepped against
+--   every caller, not assumed:
+--     src/features/team/Reviews.tsx:610 —
+--       reviews.filter(r => r.status === 'self_done' && canReviewStaff(...))
+--       is the ONLY feed for SupervisorReviewCard.
+--     src/features/staff/StaffProfile.tsx:476 —
+--       if (review.status === 'self_done' && isSupervisor)
+--       is the ONLY feed for SupervisorReviewForm.
+--   So a subject running
+--     update monthly_reviews set status = 'completed' where id = <own row>;
+--   removes their own row from both supervisor entry points for good:
+--   late_count is never written by anyone, attendance_score generates a
+--   perfect 100 from the untouched default, and the page reports the review
+--   complete ("All reviews completed for this month!"). The same open door
+--   reverts a completed review back to 'pending' and reopens self-evaluation
+--   after it was already scored — nothing constrained the reverse direction
+--   either.
+--
+--   FIXED below: the trigger permits exactly old.status = 'pending' ->
+--   new.status = 'self_done' (the one transition SelfEvalForm.submit
+--   performs — it is reachable only when review.status === 'pending',
+--   StaffProfile.tsx:460), plus a same-value write so a retry of an
+--   already-applied submission does not raise. Every other self-initiated
+--   change to this column is refused. This is the one place in this table
+--   that DOES need something like a state machine, and it now has the minimal
+--   one the real call sites require — nothing more elaborate than that.
 --
 -- THE EXEMPTION mirrors reviews_update_sup, this table's own manager-side
 -- policy. Grepped: schema.sql:247-248, then migration-2026-07-08-rls-system-
@@ -1566,6 +1768,23 @@ begin
   -- reviews_update_sup's live USING clause, via the function it calls.
   if can_review_staff(old.staff_id) or can_review_staff(new.staff_id) then
     return new;
+  end if;
+
+  -- (v11, C1) `status` sits in v_writable_keys below because
+  -- SelfEvalForm.submit must be able to write it, but the whitelist alone
+  -- does not constrain what it may become. Permit exactly the transition the
+  -- real caller performs — pending -> self_done — plus a same-value write so
+  -- an idempotent retry of an already-applied submission does not raise.
+  -- Every other self-initiated change, including 'completed' (which would
+  -- freeze attendance_score at a perfect 100 with late_count never written —
+  -- see the comment above this function) and any reversion, is refused.
+  -- status is `not null default 'pending'` (schema.sql:227-228), so neither
+  -- side is ever NULL here.
+  if new.status is distinct from old.status
+     and not (old.status = 'pending' and new.status = 'self_done') then
+    raise exception
+      'A monthly review''s status can only move from pending to self_done, and only by submitting a self-evaluation.'
+      using errcode = '42501';
   end if;
 
   if ((to_jsonb(new) - v_writable_keys) - v_ignored_keys)
