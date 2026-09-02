@@ -64,9 +64,14 @@ where tgrelid in ('attendance'::regclass, 'staff'::regclass,
                   'monthly_reviews'::regclass, 'notifications'::regclass)
   and not tgisinternal
 order by tgrelid::regclass::text, tgname;
--- Expect 5: attendance_guard_late_update_trg (x2: insert + update),
--- staff_guard_supervisor_update_trg, staff_guard_role_update_trg,
--- monthly_reviews_guard_subject_update_trg, notifications_guard_recipient_update_trg
+-- Expect exactly these 6:
+--   attendance_guard_late_update_trg          (BEFORE UPDATE on attendance)
+--   attendance_guard_self_insert_trg          (BEFORE INSERT on attendance)
+--   staff_guard_supervisor_update_trg         (BEFORE UPDATE on staff)
+--   staff_guard_authority_update_trg          (BEFORE UPDATE on staff)
+--   monthly_reviews_guard_subject_update_trg  (BEFORE UPDATE on monthly_reviews)
+--   notifications_guard_recipient_update_trg  (BEFORE UPDATE on notifications)
+-- A missing one means that guard did not install. Do not proceed past this.
 
 
 -- ─── STEP 2 · Columns present in prod but unknown to the migration ─────────
@@ -138,6 +143,15 @@ begin;
 
   -- G · promote yourself (this one succeeded before 2026-09-02)
   update staff set system_role = 'admin' where id = '<STAFF_UUID>';
+rollback;
+
+begin;
+  set local role authenticated;
+  set local request.jwt.claims = '{"sub":"<RESIGNED_STAFF_UUID>"}';
+
+  -- G2 · un-resign yourself. Note "resigned" is a UI lockout only — no RLS
+  -- policy reads staff.status — so before 2026-09-02 this restored full access.
+  update staff set status = 'active' where id = '<RESIGNED_STAFF_UUID>';
 rollback;
 
 begin;

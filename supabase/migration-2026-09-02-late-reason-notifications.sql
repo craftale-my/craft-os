@@ -729,8 +729,14 @@ alter table staff add constraint staff_supervisor_not_self_check
   check (supervisor_id is null or supervisor_id <> id);
 
 -- ── staff_guard_supervisor_update ──────────────────────────────────────────
--- v4 finding (see note above): staff_update's RLS policy (schema.sql) is
--- row-scoped (`id = auth.uid() or current_rank() in ('supervisor','manager')`)
+-- v4 finding (see note above): staff_update's RLS policy is row-scoped. Its
+-- LIVE text is in migration-2026-07-08-rls-system-role.sql:232-233 —
+--   using (id = auth.uid()
+--          or current_rank() in ('supervisor','manager')
+--          or current_system_role() in ('hr','supervisor','manager','admin','owner'))
+-- NOT the shorter form still printed in schema.sql, which is stale. (This
+-- comment carried that stale quote through four revisions of this file; it is
+-- the exact error the v9 note warns about, which is why it is spelled out here.)
 -- so it can't stop a staff member changing their OWN row's supervisor_id to
 -- point at a friend, who could then use excuse_lateness()'s
 -- `t.supervisor_id = me.id` authorisation to forgive that staff member's own
