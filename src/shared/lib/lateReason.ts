@@ -18,6 +18,11 @@ export const LATE_REASON_LABELS: Record<LateReasonCode, string> = {
 /** Fallback for the system_rules key `late_reason_written_threshold`. */
 export const DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES = 15
 
+/** Mirrors the CHECK constraint attendance_late_reason_length_check:
+ *  `char_length(late_reason) <= 500`. Keep both in step — this is the only
+ *  thing standing between a staff member and a raw database error on submit. */
+export const LATE_REASON_MAX_LENGTH = 500
+
 /** Tapping a code is enough for a small overrun; past the threshold the staff
  *  member has to say what actually happened. The threshold minute itself is
  *  still "small" — same inclusive spirit as the lateness rule. */
@@ -34,6 +39,7 @@ export function isLateReasonComplete({
   thresholdMinutes: number
 }): boolean {
   if (!code) return false
+  if (note.length > LATE_REASON_MAX_LENGTH) return false
   if (requiresWrittenExplanation(lateMinutes, thresholdMinutes)) return note.trim().length > 0
   return true
 }

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
-  LATE_REASON_CODES, LATE_REASON_LABELS, isLateReasonComplete, requiresWrittenExplanation,
+  LATE_REASON_CODES, LATE_REASON_LABELS, LATE_REASON_MAX_LENGTH,
+  isLateReasonComplete, requiresWrittenExplanation,
   type LateReasonCode,
 } from '../../shared/lib/lateReason'
 import { AlertTriangle } from 'lucide-react'
@@ -54,13 +55,22 @@ export function LateReasonStep({
         </div>
 
         {mustWrite && (
-          <textarea
-            value={note}
-            onChange={e => setNote(e.target.value)}
-            rows={3}
-            placeholder={`Explain what happened (required for lateness over ${thresholdMinutes} min)`}
-            className="w-full px-3 py-2 rounded-xl border border-[#D4C5B0] text-sm text-brown-dark"
-          />
+          <div>
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value.slice(0, LATE_REASON_MAX_LENGTH))}
+              rows={3}
+              maxLength={LATE_REASON_MAX_LENGTH}
+              placeholder={`Explain what happened (required for lateness over ${thresholdMinutes} min)`}
+              className="w-full px-3 py-2 rounded-xl border border-[#D4C5B0] text-sm text-brown-dark"
+            />
+            <p
+              className="text-xs mt-1 text-right"
+              style={{ color: note.length >= LATE_REASON_MAX_LENGTH ? '#9E4A30' : '#8B7355' }}
+            >
+              {note.length}/{LATE_REASON_MAX_LENGTH}
+            </p>
+          </div>
         )}
 
         {error && (

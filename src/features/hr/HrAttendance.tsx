@@ -713,8 +713,16 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       // was reached.
       notifyNote = ' Your supervisor could not be notified.'
     } else {
-      const result = notified.data as { enabled: boolean; staff: number; supervisor: number }
-      if (result.enabled && result.supervisor === 0) {
+      // No `.error`, but the jsonb payload itself might still be missing or
+      // the wrong shape (e.g. notify_late returning NULL). A raw destructure
+      // here used to throw AFTER the attendance row was already saved, which
+      // left this whole dialog stuck open forever with no error and no way
+      // forward — worse than any of the branches below, because the clock-in
+      // had actually succeeded. Narrow before reading instead of casting.
+      const result = notified.data as { enabled?: unknown; supervisor?: unknown } | null
+      if (typeof result?.enabled !== 'boolean' || typeof result.supervisor !== 'number') {
+        notifyNote = ' Your supervisor may not have been notified — tell your manager directly.'
+      } else if (result.enabled && result.supervisor === 0) {
         notifyNote =
           ' No supervisor was notified — either none is assigned to you ' +
           '(with no branch manager fallback), or supervisor notifications ' +

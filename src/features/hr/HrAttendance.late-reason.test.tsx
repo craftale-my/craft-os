@@ -328,4 +328,49 @@ describe('通知发送', () => {
     expect(screen.queryByText(/notif/i)).toBeNull()
     expect(screen.queryByText(/supervisor/i)).toBeNull()
   })
+
+  it('still closes the dialog and confirms the clock-in when notify_late returns a null payload', async () => {
+    // notified.error is null (the RPC call itself did not fail) but the jsonb
+    // payload is missing — reachable if notify_late ever returns NULL. A raw
+    // destructure of `.data` here used to throw AFTER the attendance row was
+    // already saved, leaving the dialog stuck open forever with no error.
+    const { supabase } = await import('../../shared/lib/supabase')
+    vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({ data: null, error: null } as never)
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+    // The clock-in genuinely succeeded — the dialog must close and say so,
+    // not sit open with no error and no way forward.
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*late by 12 min/i)).toBeTruthy())
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('still closes the dialog and confirms the clock-in when notify_late returns a malformed payload', async () => {
+    // Same failure mode, different shape: the fields are there but not the
+    // expected types, so a naive `result.enabled` read wouldn't throw but
+    // would silently do the wrong thing instead.
+    const { supabase } = await import('../../shared/lib/supabase')
+    vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({ data: { unexpected: true }, error: null } as never)
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*late by 12 min/i)).toBeTruthy())
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
 })
