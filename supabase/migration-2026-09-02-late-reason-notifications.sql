@@ -1,5 +1,5 @@
 -- ============================================================================
--- Late reason + notifications, schema only (2026-09-02, v9). Idempotent.
+-- Late reason + notifications, schema only (2026-09-02, v10). Idempotent.
 --
 -- v2 addresses review findings against v1 (never executed against any
 -- database, so amended in place rather than layered with a second file):
@@ -392,6 +392,163 @@
 --   adds no column, constraint, index, grant or seed. Re-running the whole
 --   file is a no-op on an up-to-date database.
 -- ─────────────────────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────────────────
+-- v10. (I1) ITSELF OVER-CORRECTED. STOP ERASING THE VERDICT, NOT THE CLOCK-IN.
+--
+--   THE BUG. (I1) closed the erasure by refusing the WHOLE clock-in
+--   transition outright whenever old.status = 'late':
+--     if old.clock_in is null and new.clock_in is not null
+--        and old.status = 'late' then
+--       raise exception '... Ask a manager to correct the day instead.';
+--   canClockIn (src/features/hr/HrAttendance.tsx) is `!today?.clock_in`,
+--   which is STILL true on a row a manager marked late by hand — setStatus
+--   writes status/late_minutes and never touches clock_in — so the app kept
+--   offering the clock-in button on exactly the row this raise refuses. The
+--   realistic sequence: someone forgets to clock in, a manager marks them
+--   late by hand, they remember and try to clock in — take the selfie, wait
+--   for GPS — and hit a raw database error. They cannot clock in AT ALL that
+--   day; a manager has to intervene just to unblock the button, on top of
+--   whatever correction the day needed anyway. The goal was only ever to stop
+--   the verdict being erased, not to stop the clock-in.
+--
+--   THE FIX. The rule changes from "may they write this column" to "may they
+--   make the record LESS SEVERE". The clock-in evidence group (clock_in,
+--   clock_in_photo_url, clock_in_lat, clock_in_lng, clock_in_distance_m) and
+--   the late reason columns are now unconditionally writable on the genuine
+--   clock-in transition (old.clock_in is null and new.clock_in is not null)
+--   regardless of old.status — nothing about recording that a clock-in
+--   happened erases anything by itself. status/late_minutes are handled
+--   separately: if the caller's proposed new.status would erase a verdict
+--   already standing on the row, NEW.status/NEW.late_minutes are silently
+--   reset back to OLD before the whitelist diff runs, instead of raising — so
+--   the clock-in columns above still go through in the same statement. The
+--   row ends up clocked in with the ORIGINAL status still standing, waiting
+--   for a manager to correct it, instead of not clocked in at all.
+--
+--   THE MATRIX, WORKED THROUGH AGAINST EVERY STATE THIS TABLE ACTUALLY
+--   REACHES WITH clock_in IS NULL (grepped against src/, not assumed —
+--   writeClockIn, src/features/hr/HrAttendance.tsx, is the only place that
+--   writes status/late_minutes on this transition, and it only ever proposes
+--   'present' or 'late', computed from calcLateness against the real
+--   clock-in time):
+--
+--     old.status IS NULL (no row exists yet)
+--       Not reachable here — a nonexistent row is an INSERT, handled by
+--       attendance_guard_self_insert() below, not this UPDATE trigger. Listed
+--       for completeness only. (Also treated as permissive — same as
+--       'present' below — if a row somehow has an explicit NULL status; the
+--       column defaults to 'present' and nothing in src/ writes NULL.)
+--
+--     old.status = 'present' (DailyRoster.markAllPresent — every visible row,
+--     recorded_by stamped with the manager's id, clock_in left untouched)
+--       ALLOWED to become 'present' OR 'late', whichever writeClockIn's own
+--       lateness computation produces. 'present' is not a verdict against the
+--       staff member — it is the lenient default a bulk mark stamps before
+--       anyone has actually clocked in — so nothing is erased by replacing it
+--       with the real outcome, even when that outcome is worse ('late').
+--       recorded_by being non-null here is exactly why it cannot be used as
+--       the "hand-marked" test (see (I1)'s own note above) — this is the one
+--       non-null-recorded_by state that must stay freely upgradeable.
+--
+--     old.status = 'late' (DailyRoster.setStatus — a manager's deliberate
+--     hand mark; writes status/late_minutes, never clock_in)
+--       ALLOWED only if the transition's proposed new.status is ALSO 'late'
+--       — the one value writeClockIn can produce that does not erase the
+--       mark. late_minutes moves freely to whatever writeClockIn computes
+--       from the real clock-in time (more accurate than the manager's typed
+--       number, and late_count/attendance_score are driven by status, not by
+--       the minute count — see countLateDays(), src/features/team/
+--       Reviews.tsx — so a smaller real number does not soften the day's
+--       scoring). If writeClockIn's own computation says the real arrival was
+--       on time, new.status = 'present' is REFUSED — status/late_minutes are
+--       reset to OLD, and the clock-in evidence is recorded on top of the
+--       untouched 'late' verdict. That is the exact erasure (I1) exists to
+--       close, and it is now closed without also closing the clock-in button.
+--
+--     old.status = 'absent' (mark_absent_for_missed_shifts(), migration-2026-
+--     07-09-auto-absent.sql — an hourly sweep, marked_by = 'system', for a
+--     scheduled shift whose end time has already passed with no attendance
+--     row of any kind yet)
+--       ALWAYS REFUSED — status/late_minutes reset to OLD ('absent' stands).
+--       'absent' is the most severe status this table carries, and
+--       writeClockIn can only ever propose 'present' or 'late', both less
+--       severe — there is no value it could send that would not be an
+--       erasure. This is a SYSTEM mark, not a manager's, but the brief for
+--       this fix is explicit that both are protected ("erase something a
+--       manager OR THE SYSTEM already recorded"), and the practical reason
+--       matches: the resolveAttendanceDate/attDate the self-clock-in UI
+--       operates on can still be the SAME calendar day the hourly sweep just
+--       marked absent (the sweep fires once the shift's end time passes, not
+--       once the calendar day rolls over), so this state is genuinely
+--       reachable by a real same-day clock-in attempt, not just by a stale
+--       row from a week ago. The staff member still gets clocked in — the
+--       evidence group is unconditionally writable — but 'absent' needs a
+--       manager's eyes, same as a hand-marked 'late' does.
+--
+--     old.status = 'on_leave' (leave approval, or Schedule's leave sync;
+--     mark_absent_for_missed_shifts() also writes it, belt-and-braces, when
+--     an approved leave already covers the missed-shift day)
+--       ALWAYS REFUSED, same mechanism. on_leave is not a point on the
+--       present/late/absent severity scale at all — it is a sanctioned
+--       category HR/the leave workflow already approved for this day — and
+--       letting a bare clock-in silently convert it to 'present'/'late' would
+--       let the client overwrite an HR leave record with no leave-specific
+--       authority check at all. Left for a manager to resolve, same as above.
+--
+--     old.status = 'half_day' / 'public_holiday' (reachable only via a
+--     manager's own setStatus/direct write — 'public_holiday' is not even in
+--     DailyRoster's STATUS_OPTIONS, but the CHECK constraint allows it, and
+--     nothing stops a future UI path from setting either) and any future
+--     status value this enum ever grows
+--       Generalises the same way, without needing its own line: the code
+--       below accepts a proposed new.status only when it exactly reaffirms
+--       old.status, OR when old.status is the 'present' baseline (or an
+--       unreached NULL, coalesced to 'present') and new.status is 'present'
+--       or 'late' — the only two values writeClockIn ever sends. 'present'
+--       is never treated as licence to accept an ARBITRARY new.status, only
+--       those two. Every other combination is refused and reset to OLD, so a
+--       new status value this enum grows in future is protected the day it
+--       starts being written, with nothing here to update.
+--
+--   WHY A SILENT RESET, NOT A FRIENDLIER RAISE. A BEFORE UPDATE trigger
+--   returns exactly one NEW row — it cannot accept the clock-in columns and
+--   reject status/late_minutes from the same incoming row by raising, since a
+--   raise aborts the whole statement, columns and all. Resetting NEW back to
+--   OLD for just those two columns, then letting the (now-consistent) rest of
+--   the row through the whitelist, is the only way to get both outcomes from
+--   one UPDATE. This file stays inside supabase/, so no user-facing message
+--   can be added here to explain the silent clamp to the person clocking in;
+--   that is a UI-layer follow-up, out of scope for a supabase/-only fix, and
+--   today nothing in DailyRoster/HrAttendance surfaces a status mismatch
+--   after a successful clock-in write.
+--
+--   WHAT DIDN'T CHANGE. v_clock_in_transition itself is simpler now — just
+--   `old.clock_in is null and new.clock_in is not null`, with no old.status
+--   condition folded in, because the transition is never refused any more,
+--   only the two columns inside it are conditionally reset. Check 1 (append-
+--   only late reason), check 2 (the excuse columns, narrow test) and the
+--   clock-OUT group (I2) are untouched. v_attendance_manage_authority is
+--   unchanged and still gates the whole block — a caller attendance_manage
+--   authorises never reaches any of this, exactly as before.
+--
+--   ALSO IN v10, NOT ABOUT THIS FUNCTION: migration-2026-07-09-auto-absent.sql
+--   had the identical stale-boundary bug — mark_absent_for_missed_shifts()
+--   guarded itself with `rank in ('supervisor','manager')` alone — fixed
+--   there in that file's own v2 to the same broad test used here. Fixing it
+--   there left a stale quote of the OLD guard sitting in THIS file, in
+--   attendance_guard_self_insert()'s NOT AFFECTED note below (it used to cite
+--   "`rank in ('supervisor','manager')`" as that RPC's guard) — corrected in
+--   place in the same pass, specifically so this file does not become the
+--   next place a future edit copies a superseded boundary from.
+--
+--   IDEMPOTENCY. v10 edits only attendance_guard_late_update() via `create or
+--   replace function`, plus the comment correction just above (no executable
+--   change) — no column, constraint, index, grant, trigger definition or seed
+--   changes. This file has never been executed against any database (every
+--   version from v1 has been amended in place before first deployment — see
+--   the v2 note near the top of this changelog). Re-running the whole file
+--   remains a no-op on an up-to-date database.
+-- ─────────────────────────────────────────────────────────────────────────
 -- ============================================================================
 
 alter table staff add column if not exists supervisor_id uuid references staff(id) on delete set null;
@@ -639,7 +796,8 @@ grant  execute on function excuse_lateness(uuid) to authenticated;
 
 -- ── attendance_guard_late_update ────────────────────────────────────────────
 -- A WHITELIST over a row-wide UPDATE policy (v8), with v9's corrections to
--- the authority test and to two of the three exits. v5-v7 grew this as a
+-- the authority test and to two of the three exits, and v10's correction to
+-- HOW the clock-in exit protects a standing verdict. v5-v7 grew this as a
 -- BLACKLIST — it named the columns it protected and left everything else to
 -- attendance_self_update — and a blacklist cannot work here. See the v8 note
 -- in this file's header changelog for the two paths that defeated it (moving
@@ -647,7 +805,10 @@ grant  execute on function excuse_lateness(uuid) to authenticated;
 -- clock-in carve-out) and for why the shape, not the coverage, was the bug.
 -- See the v9 note for the three things v8 still got wrong: a broad test
 -- copied from a STALE policy quote, a clock-in carve-out that erased a
--- hand-marked late day, and a clock-out group that was writable forever.
+-- hand-marked late day, and a clock-out group that was writable forever. See
+-- the v10 note for why v9's own fix for the carve-out over-corrected — it
+-- blocked the clock-in itself, not just the erasure — and the full matrix of
+-- what a self clock-in may and may not do to status/late_minutes now.
 --
 -- WHY A TRIGGER AT ALL. RLS on `attendance` is row-scoped, never
 -- column-scoped. attendance_self_update (schema.sql:509-510 — grepped
@@ -673,12 +834,21 @@ grant  execute on function excuse_lateness(uuid) to authenticated;
 --     break_overrun_minutes                             (the break group)
 --
 --   AND, ONLY on the genuine clock-IN transition — old.clock_in is null and
---   new.clock_in is not null AND old.status is distinct from 'late', which
---   can only be reached once because `clock_in` is itself outside the
---   whitelist and so cannot be nulled back:
+--   new.clock_in is not null, which can only be reached once because
+--   `clock_in` is itself outside the whitelist and so cannot be nulled back:
 --     clock_in, clock_in_photo_url, clock_in_lat, clock_in_lng,
 --     clock_in_distance_m                               (the clock-in group)
 --     status, late_minutes, late_reason_code, late_reason
+--   The clock-in group and the reason columns are writable UNCONDITIONALLY on
+--   this transition, for any old.status — recording that a clock-in happened
+--   never erases anything by itself. status/late_minutes are narrower: NEW is
+--   silently reset back to OLD for those two columns specifically, before
+--   this whitelist check runs, whenever the caller's proposed new.status
+--   would make the record LESS severe than what a manager or the system
+--   already recorded — see (v10, I1) below for the full matrix. That reset
+--   happens earlier in the function, so by the time this whitelist runs,
+--   status/late_minutes always hold a value it is willing to accept; nothing
+--   about the check below changed to make this true.
 --
 --   AND, ONLY on the genuine clock-OUT transition — old.clock_out is null
 --   and new.clock_out is not null, one-way for the same reason:
@@ -690,16 +860,21 @@ grant  execute on function excuse_lateness(uuid) to authenticated;
 -- notifications_guard_recipient_update() uses above, deliberately, so the two
 -- guards on this migration read the same way.
 --
--- WHY THE CLOCK-IN CARVE-OUT ALSO TESTS old.status (v9, finding I1). Before
--- v9 the carve-out was one-way from the ROW'S CURRENT STATE, not one-way per
--- day, and that is not the same thing. DailyRoster.setStatus(id, 'late',
--- mins) (src/features/hr/HrAttendance.tsx) writes status and late_minutes and
--- never writes clock_in, so a row legitimately sits at status = 'late' with
--- clock_in IS NULL — the ordinary case of someone marked late BECAUSE they
--- never clocked in. Its owner could then run ONE statement setting clock_in,
--- status = 'present', late_minutes = 0: the clock-in transition is genuine,
--- every column touched is inside the carve-out's set, and the manager's mark
--- was erased with a single legitimate-looking clock-in.
+-- WHY THE CLOCK-IN TRANSITION ALSO GUARDS old.status (v9, finding I1; fix
+-- reworked in v10 — see the v10 header note for why and how). DailyRoster.
+-- setStatus(id, 'late', mins) (src/features/hr/HrAttendance.tsx) writes
+-- status and late_minutes and never writes clock_in, so a row legitimately
+-- sits at status = 'late' with clock_in IS NULL — the ordinary case of
+-- someone marked late BECAUSE they never clocked in. Its owner could then run
+-- ONE statement setting clock_in, status = 'present', late_minutes = 0: the
+-- clock-in transition is genuine, and without a guard the manager's mark
+-- would be erased by a single legitimate-looking clock-in. [v9 closed this by
+-- REFUSING the whole transition outright whenever old.status = 'late' — which
+-- over-corrected: canClockIn is still `!today?.clock_in` on that exact row,
+-- so the app kept offering the clock-in button on a row the trigger then
+-- raised on, leaving the staff member unable to clock in at all that day.
+-- SUPERSEDED by v10, which resets status/late_minutes back to OLD instead of
+-- refusing the transition, so the clock-in itself always succeeds.]
 --
 --   WHY old.status AND NOT old.recorded_by. The other candidate fix —
 --   refusing the transition when old.recorded_by is not null, i.e. on any
@@ -716,12 +891,13 @@ grant  execute on function excuse_lateness(uuid) to authenticated;
 --   not be able to clear.
 --
 --   The consequence, stated plainly because it is a behaviour change: once a
---   manager has marked you late for a day you never clocked into, you can no
---   longer clock in on that row yourself. A manager has to correct it. That
---   is the intended trade — the alternative is that the mark is self-erasable
---   by design. It is enforced twice on purpose: an explicit, explained RAISE
---   for that exact transition, and the same condition folded into
---   v_clock_in_transition, so removing one still leaves the carve-out shut.
+--   manager has marked you late for a day you never clocked into, clocking in
+--   no longer clears that mark — the row ends up clocked in (evidence and
+--   all) but still shows 'late', and a manager has to correct it if that's
+--   wrong. [v9 said instead that you could "no longer clock in on that row
+--   yourself" — that was the bug v10 fixes; you can always clock in, only the
+--   status write is constrained.] That status staying put is the intended
+--   trade — the alternative is that the mark is self-erasable by design.
 --
 -- WHY THE CLOCK-OUT GROUP IS NO LONGER "ALWAYS" (v9, finding I2). It used to
 -- be permanently writable, so
@@ -894,10 +1070,21 @@ declare
   -- call rather than a hand-rolled staff lookup.
   v_attendance_manage_authority boolean;
   -- The one legitimate self-write of the clock-in group, status, late_minutes
-  -- and the late reason. Unreachable twice over: clock_in is outside the
-  -- whitelist, so a caller who fails the broad test cannot null it back to set
-  -- this up; and a row already hand-marked 'late' is excluded outright.
+  -- and the late reason. Unreachable twice over (v10 note: STILL true — clock_in
+  -- is outside the whitelist, so a caller who fails the broad test cannot null
+  -- it back to set this up a second time; what changed in v10 is that a row
+  -- already hand-marked 'late' is no longer excluded from the TRANSITION
+  -- itself, only from writing a status/late_minutes that would erase the
+  -- mark — see the clamp just above the whitelist build below).
   v_clock_in_transition         boolean;
+  -- v10 (I1, reworked): whether the clock-in transition's proposed
+  -- new.status would ERASE a verdict old.status already carries. True only
+  -- for a genuine change away from a status that is not the 'present'
+  -- baseline, OR a change FROM 'present' to something writeClockIn could
+  -- never itself produce ('present'/'late' are the only two values it ever
+  -- sends — see the matrix in this file's v10 header note). When true,
+  -- status/late_minutes are reset to OLD instead of accepted.
+  v_status_write_erases_verdict boolean;
   -- The mirror-image one-way exit for the clock-out group (v9, I2).
   v_clock_out_transition        boolean;
   -- The whitelist itself, as jsonb keys, built per-statement.
@@ -951,23 +1138,44 @@ begin
       or coalesce(current_system_role() in ('hr','supervisor','manager','admin','owner'), false);
 
     if not v_attendance_manage_authority then
-      -- I1: a day already hand-marked late must not be cleared by its owner
-      -- clocking in on it. Raised explicitly, with its own message, because
-      -- the generic whitelist message below would not tell the staff member
-      -- what to do about it.
-      if old.clock_in is null and new.clock_in is not null
-         and old.status = 'late' then
-        raise exception
-          'This day was already marked late while you had no clock-in, so clocking in on it now would clear that mark. Ask a manager to correct the day instead.'
-          using errcode = '42501';
-      end if;
-
-      -- Same condition again, deliberately: if the explicit raise above is
-      -- ever edited away, the carve-out still stays shut.
-      v_clock_in_transition :=
-        old.clock_in is null and new.clock_in is not null
-        and old.status is distinct from 'late';
+      -- The genuine clock-in transition. v10: no old.status condition here —
+      -- the transition itself is never refused; only status/late_minutes are
+      -- conditionally protected, immediately below.
+      v_clock_in_transition := old.clock_in is null and new.clock_in is not null;
       v_clock_out_transition := old.clock_out is null and new.clock_out is not null;
+
+      -- v10 (I1, reworked): on a genuine clock-in, status/late_minutes may
+      -- only move to a value that does NOT erase a verdict a manager or the
+      -- system already recorded. Two shapes are safe:
+      --   (a) new.status is not actually changing (old.status reaffirmed —
+      --       covers 'late' staying 'late', 'absent' staying 'absent', etc,
+      --       with late_minutes still free to move to the real computed
+      --       number), or
+      --   (b) old.status is the 'present' baseline (markAllPresent's lenient
+      --       default, or an unreached NULL — coalesced the same way) AND
+      --       new.status is one of the only two values writeClockIn
+      --       (src/features/hr/HrAttendance.tsx) can ever actually send,
+      --       'present' or 'late'. Deliberately NOT "any new.status" —
+      --       'present' carries no verdict to erase, but that is not licence
+      --       to accept an arbitrary forged status either.
+      -- Anything else silently resets status/late_minutes to OLD here, BEFORE
+      -- the whitelist below is built, so the clock-in evidence group and the
+      -- reason columns still go through in the same statement — the row ends
+      -- up clocked in with the pre-existing verdict left standing for a
+      -- manager to correct, never refused outright. See the matrix in this
+      -- file's v10 header note for every old.status worked through by name.
+      v_status_write_erases_verdict :=
+        v_clock_in_transition
+        and new.status is distinct from old.status
+        and not (
+          coalesce(old.status, 'present') = 'present'
+          and new.status in ('present', 'late')
+        );
+
+      if v_status_write_erases_verdict then
+        new.status       := coalesce(old.status, 'present');
+        new.late_minutes := old.late_minutes;
+      end if;
 
       -- Always writable: the legacy break columns only (schema.sql:737-741).
       v_writable_keys := array[
@@ -975,9 +1183,15 @@ begin
         'break_overrun_minutes'
       ];
 
-      -- Writable only while actually clocking in. writeClockIn (src/features/
-      -- hr/HrAttendance.tsx) sets exactly these in the same upsert that first
-      -- sets clock_in, on both the punctual and the late path.
+      -- Writable only while actually clocking in — unconditionally on
+      -- old.status, v10. writeClockIn (src/features/hr/HrAttendance.tsx) sets
+      -- exactly these in the same upsert that first sets clock_in, on both
+      -- the punctual and the late path. status/late_minutes are included here
+      -- unconditionally too: by this point they already equal either
+      -- writeClockIn's proposed value (when that didn't erase anything) or
+      -- OLD's own value (clamped above when it would have) — either way NEW
+      -- now holds something this whitelist is willing to accept, so there is
+      -- nothing left for this line to gate.
       if v_clock_in_transition then
         v_writable_keys := v_writable_keys || array[
           'clock_in', 'clock_in_photo_url', 'clock_in_lat', 'clock_in_lng',
@@ -1126,10 +1340,15 @@ create trigger attendance_guard_late_update_trg
 --   * mark_absent_for_missed_shifts() inserts rows with marked_by = 'system',
 --     scheduled_shift_id and notes set, up to 7 days back. From pg_cron
 --     auth.uid() is null and this returns immediately. Called from the app it
---     is reachable only by `rank in ('supervisor','manager')` — its own guard,
---     migration-2026-07-09-auto-absent.sql — which is a strict subset of the
---     broad test here, so every caller that gets past that guard is exempt
---     from this one, including for a row it creates about the caller.
+--     is reachable only by whoever passes its own guard (migration-2026-07-09-
+--     auto-absent.sql, v2: `current_rank() in ('supervisor','manager') or
+--     current_system_role() in ('hr','supervisor','manager','admin','owner')`
+--     — grepped as the LIVE text, not assumed; that file's own v1 checked rank
+--     alone, which is exactly the stale-boundary mistake this note used to
+--     repeat before v2 fixed it there too) — which is now the SAME boundary as
+--     the broad test here, not merely a subset of it, so every caller that
+--     gets past that guard is still exempt from this one, including for a row
+--     it creates about the caller.
 --   * This file's own re-runs and any SQL-editor backfill have a null
 --     auth.uid() and return at the first line, same as the UPDATE guard.
 create or replace function attendance_guard_self_insert()
