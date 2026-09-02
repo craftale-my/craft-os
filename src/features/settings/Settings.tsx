@@ -11,6 +11,7 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import { useCan } from '../../shared/lib/permissions'
+import { writeOutcome } from '../../shared/lib/db-write'
 
 const TABS = [
   { id: 'company',        label: 'Company Info',        icon: '🏢' },
@@ -789,11 +790,16 @@ function JobTitlesTab({ roles, onRefresh }: { roles: Role[]; onRefresh: () => vo
 
 // ── System Roles (Owner-only: capability matrix + staff assignment) ──
 
-function SystemRolesTab({ allStaff, onRefresh }: { allStaff: Staff[]; onRefresh: () => void }) {
+// Exported (not just used from RolesTab above) so its own tests can render it
+// directly without dragging in the whole Settings page's loadAll() fetches.
+export function SystemRolesTab({ allStaff, onRefresh }: { allStaff: Staff[]; onRefresh: () => void }) {
   const { roleCaps, refresh: refreshLookups } = useLookups()
   const { toast, show } = useToast()
   const [savingRole, setSavingRole] = useState<SystemRole | null>(null)
   const [savingStaff, setSavingStaff] = useState<string | null>(null)
+  // Keyed to the staff row that failed, so one failed assignment doesn't paint
+  // an error under every other row in the list.
+  const [roleError, setRoleError] = useState<{ staffId: string; message: string } | null>(null)
 
   async function toggleCap(role: SystemRole, cap: Capability) {
     if (role === 'owner') return                 // owner is always fully privileged
@@ -809,10 +815,28 @@ function SystemRolesTab({ allStaff, onRefresh }: { allStaff: Staff[]; onRefresh:
     show('Permissions updated')
   }
 
+  // `.select()` is not optional here: without it a write RLS or
+  // staff_guard_authority_update() (supabase/migration-2026-09-02-late-
+  // reason-notifications.sql) rejects comes back with no error and no
+  // rows — indistinguishable from success unless the returned row is
+  // checked. That guard is exactly what makes this reachable now: an owner
+  // who demotes themselves below manager-tier can no longer pass its
+  // manager-tier check on their own row, so their next attempt to promote
+  // themselves back raises 'Only a manager can change your own rank,
+  // system role, or status.' — a write this call used to report as a
+  // silent, unconditional "System role updated". Same contract as
+  // writeOutcome() everywhere else in the app; see src/shared/lib/db-write.ts.
   async function assignRole(staffId: string, role: SystemRole) {
     setSavingStaff(staffId)
-    await supabase.from('staff').update({ system_role: role }).eq('id', staffId)
+    setRoleError(null)
+    const outcome = writeOutcome(
+      await supabase.from('staff').update({ system_role: role }).eq('id', staffId).select()
+    )
     setSavingStaff(null)
+    if (!outcome.ok) {
+      setRoleError({ staffId, message: outcome.reason })
+      return
+    }
     onRefresh()
     show('System role updated')
   }
@@ -884,6 +908,9 @@ function SystemRolesTab({ allStaff, onRefresh }: { allStaff: Staff[]; onRefresh:
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-brown-dark truncate">{s.name}</p>
                 <p className="text-[11px] text-brown-faint">{RANK_LABELS[s.rank]}</p>
+                {roleError?.staffId === s.id && (
+                  <p className="text-xs text-red-600 mt-0.5">{roleError.message}</p>
+                )}
               </div>
               <select
                 value={s.system_role}

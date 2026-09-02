@@ -641,24 +641,52 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   // transition and the same guard would refuse it). The returned row is the
   // only place that shows what actually landed — compare it against intent
   // and say so, rather than trusting the lateness this component computed.
-  function clockInClampNote(actualStatus: AttendanceStatus, intendedStatus: AttendanceStatus): string {
-    if (actualStatus === intendedStatus) return ''
-    const label = ATTENDANCE_STATUS_LABELS[actualStatus] ?? actualStatus
-    return ` Your attendance today is still recorded as ${label} — you can't change that yourself, so ask your manager to correct it.`
+  //
+  // Three things review caught in the first version of this copy:
+  //   - it read as an error even when nothing was wrong. on_leave and
+  //     public_holiday are the day's own nature, not a mistake anyone needs
+  //     to chase — only absent/half_day/late (a verdict an auto-sweep or a
+  //     manager already recorded) genuinely need the staff member to ask
+  //     someone to look at it.
+  //   - it said "today" unconditionally. resolveAttendanceDate() (shared/lib/
+  //     attendance.ts) can hold attDate at YESTERDAY's date on a night shift
+  //     that's still running past midnight, so the copy has to check attDate
+  //     against the wall-clock date rather than assume it.
+  //   - the clamp resets late_minutes in the same statement as status, but
+  //     the old copy never said so. Only worth naming when the clamped
+  //     status is itself 'late' — that's the one case where the minutes
+  //     figure is part of what the reader needs to know; the other clamped
+  //     statuses carry no late_minutes of their own interest.
+  function clockInClampNote(
+    actual: { status: AttendanceStatus; late_minutes: number },
+    intendedStatus: AttendanceStatus,
+  ): string {
+    if (actual.status === intendedStatus) return ''
+    const label = ATTENDANCE_STATUS_LABELS[actual.status] ?? actual.status
+    const subject = attDate === todayStr() ? 'Your attendance today' : 'Your attendance for that shift'
+    // on_leave/public_holiday are simply what the day already was — clocking
+    // in didn't erase anything and nothing needs correcting, so this must not
+    // read like the absent/half_day/late branch below.
+    if (actual.status === 'on_leave' || actual.status === 'public_holiday') {
+      return ` ${subject} is recorded as ${label} — that's the day's schedule, nothing to fix.`
+    }
+    const minutesNote = actual.status === 'late' ? ` (${actual.late_minutes} min)` : ''
+    return ` ${subject} is still recorded as ${label}${minutesNote} — ask your manager to correct it.`
   }
 
   // The one and only clock-in write, shared by the punctual and the late path so
   // the two can never drift. `.select()` is not optional: without it a row
   // rejected by RLS is indistinguishable from a successful write — writeOutcome().
   // Returns the row the database actually saved (not just proof one landed) —
-  // see clockInClampNote() above for why the caller needs it.
+  // see clockInClampNote() above for why the caller needs both status AND
+  // late_minutes off that row, not just status.
   async function writeClockIn(
     now: Date,
     result: ClockResult,
     lateness: { isLate: boolean; lateMinutes: number },
     reasonCode: LateReasonCode | null,
     reasonNote: string,
-  ): Promise<WriteOutcomeWithRow<{ status: AttendanceStatus }>> {
+  ): Promise<WriteOutcomeWithRow<{ status: AttendanceStatus; late_minutes: number }>> {
     const payload: Record<string, unknown> = {
       staff_id: staff.id,
       date: attDate,
@@ -681,7 +709,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       payload.late_reason_code = reasonCode
       payload.late_reason = reasonNote || null
     }
-    return writeOutcomeWithRow<{ status: AttendanceStatus }>(await supabase.from('attendance').upsert(
+    return writeOutcomeWithRow<{ status: AttendanceStatus; late_minutes: number }>(await supabase.from('attendance').upsert(
       payload,
       { onConflict: 'staff_id,date' }
     ).select())
@@ -753,7 +781,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     setLateError(null)
     setSuccessMsg(
       `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️` +
-      clockInClampNote(outcome.row.status, 'late') +
+      clockInClampNote(outcome.row, 'late') +
       notifyNote
     )
     load()
@@ -787,7 +815,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       if (clockInOutcome.ok) {
         setSuccessMsg(
           `Clocked in at ${fmtTime(now.toISOString())} ✓` +
-          clockInClampNote(clockInOutcome.row.status, 'present')
+          clockInClampNote(clockInOutcome.row, 'present')
         )
       }
     } else if (!today) {

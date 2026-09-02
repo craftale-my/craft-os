@@ -315,6 +315,97 @@ describe('数据库把写入钳制回原状态时,必须如实告知——不能
     expect(screen.queryByText(/still recorded as/i)).toBeNull()
     expect(screen.queryByText(/ask your manager/i)).toBeNull()
   })
+
+  // The four cases below pin the wording SPLIT review demanded: absent/
+  // half_day/late are a verdict someone needs to act on ("still recorded
+  // as… ask your manager"); on_leave/public_holiday are just the day's own
+  // nature and must not read as an error at all.
+  it('tells a punctual staff member to ask their manager when the row is clamped to Half Day', async () => {
+    // Same punctual instant as the Absent case above — treated the same way
+    // (arguably, per review) because a half-day mark while the intent was a
+    // full clock-in is still someone's verdict, not the day's own nature.
+    vi.setSystemTime(new Date(2026, 8, 2, 9, 30, 40))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'half_day',
+      late_minutes: 0, clock_in: null, clock_out: null,
+    }]
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*✓/i)).toBeTruthy())
+    expect(screen.getByText(/still recorded as Half Day/i)).toBeTruthy()
+    expect(screen.getByText(/ask your manager/i)).toBeTruthy()
+  })
+
+  it('names the clamped late_minutes when the clamp leaves the row marked Late', async () => {
+    // Punctual attempt (intends 'present'), but the row already carries a
+    // hand-marked 'late' verdict with its own minute count — old.status
+    // isn't the 'present' baseline, so the guard clamps status AND
+    // late_minutes back to OLD. The old copy named only the status; the
+    // minutes are part of what actually landed and belong in the message.
+    vi.setSystemTime(new Date(2026, 8, 2, 9, 30, 40))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      late_minutes: 20, clock_in: null, clock_out: null,
+    }]
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*✓/i)).toBeTruthy())
+    expect(screen.getByText(/still recorded as Late \(20 min\)/i)).toBeTruthy()
+    expect(screen.getByText(/ask your manager/i)).toBeTruthy()
+  })
+
+  it('does not tell a staff member to ask their manager when the clamp lands on On Leave — nothing is wrong', async () => {
+    vi.setSystemTime(new Date(2026, 8, 2, 9, 30, 40))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'on_leave',
+      late_minutes: 0, clock_in: null, clock_out: null,
+    }]
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*✓/i)).toBeTruthy())
+    expect(screen.getByText(/recorded as On Leave/i)).toBeTruthy()
+    // Not the actionable branch's wording — an approved leave day isn't a
+    // mistake, so it must not say "still" or ask anyone to fix anything.
+    expect(screen.queryByText(/still recorded as/i)).toBeNull()
+    expect(screen.queryByText(/ask your manager/i)).toBeNull()
+    expect(screen.getByText(/nothing to fix/i)).toBeTruthy()
+  })
+
+  it('does not tell a staff member to ask their manager when the clamp lands on Public Holiday — nothing is wrong', async () => {
+    vi.setSystemTime(new Date(2026, 8, 2, 9, 30, 40))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'public_holiday',
+      late_minutes: 0, clock_in: null, clock_out: null,
+    }]
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*✓/i)).toBeTruthy())
+    expect(screen.getByText(/recorded as Public Holiday/i)).toBeTruthy()
+    expect(screen.queryByText(/still recorded as/i)).toBeNull()
+    expect(screen.queryByText(/ask your manager/i)).toBeNull()
+    expect(screen.getByText(/nothing to fix/i)).toBeTruthy()
+  })
+
+  // NOTE on the "today" wording: clockInClampNote also stopped hardcoding
+  // "today" — it now checks attDate against the wall-clock date instead (see
+  // its comment in HrAttendance.tsx). That branch is NOT pinned by a test
+  // here: resolveAttendanceDate() (shared/lib/attendance.ts) only ever holds
+  // attDate at yesterday's date when yesterday's session is still OPEN
+  // (clocked in, not out) within the overnight grace window — and an open
+  // session means `today.clock_in` is already set, which disables the Clock
+  // In button entirely (see HrAttendance.night-shift.test.tsx: "Clock Out
+  // live, Clock In locked"). So the clock-IN path this note lives on cannot
+  // be reached on a carryover day through the real component — there is no
+  // way to drive a passing (or failing) UI-level test through that branch
+  // without reaching into private state, so it is not counted as covered.
 })
 
 describe('通知发送', () => {
