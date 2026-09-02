@@ -675,6 +675,48 @@
 --   deployment — see the v2 note near the top of this changelog). Re-running
 --   the whole file remains a no-op on an up-to-date database.
 -- ─────────────────────────────────────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────────────────
+-- v12. CLOSES A PRE-EXISTING, APP-WIDE PRIVILEGE-ESCALATION HOLE. This is NOT
+-- a bug this feature introduced — it predates this branch entirely — but it
+-- is fixed here because every authority check this branch has added is void
+-- without it: the broad manager-tier test the attendance guards use, the
+-- monthly_reviews subject guard's exemption, excuse_lateness() itself, and
+-- staff_guard_supervisor_update() above ALL authorise their caller by reading
+-- staff.rank / staff.system_role off that caller's own row. staff_update's
+-- live RLS policy is row-scoped, not column-scoped
+-- (migration-2026-07-08-rls-system-role.sql:232-233 — grepped, not assumed;
+-- see the v9 rule above about citing this file's policies):
+--   create policy "staff_update" on staff for update
+--     using (id = auth.uid() or (current_rank() in ('supervisor','manager')
+--             or current_system_role() in ('hr','supervisor','manager',
+--             'admin','owner')));
+-- `id = auth.uid()` alone satisfies that USING clause regardless of which
+-- columns the UPDATE touches, so any authenticated staff member can run
+--   update staff set system_role = 'admin' where id = auth.uid();
+-- and, from that moment on, pass every one of the authority tests listed
+-- above. Nothing on `staff` has ever guarded rank or system_role the way
+-- staff_guard_supervisor_update guards supervisor_id — until now.
+--
+-- THE FIX: a new trigger, staff_guard_authority_update() (below, right after
+-- staff_guard_supervisor_update), in the same shape — a caller who is not
+-- manager-tier may not change rank, system_role, or status on their OWN row.
+-- Someone else's row is untouched (already gated by staff_update's RLS at
+-- manager-tier); a manager-tier caller changing their OWN row is untouched
+-- (they already hold that authority); auth.uid() is null (migrations / SQL
+-- editor) is allowed through unconditionally, for the same reason
+-- staff_guard_supervisor_update's null branch is safe: staff has no anonymous
+-- access path, so RLS already fails closed before this trigger would see such
+-- an UPDATE from anon. Full reasoning, the STATUS inclusion (and why
+-- is_active is deliberately NOT guarded), and the bootstrap analysis are in
+-- the comment directly above the function.
+--
+-- IDEMPOTENCY. v12 adds one function (`create or replace function`) and one
+-- trigger via this file's existing drop-if-exists-then-create idiom
+-- (staff_guard_supervisor_update_trg's own pattern, immediately above). No
+-- other statement changes. Re-running the whole file remains a no-op on an
+-- up-to-date database — this file has still never been executed against any
+-- database (see the v2 note near the top of this changelog).
+-- ─────────────────────────────────────────────────────────────────────────
 -- ============================================================================
 
 alter table staff add column if not exists supervisor_id uuid references staff(id) on delete set null;
@@ -742,6 +784,140 @@ drop trigger if exists staff_guard_supervisor_update_trg on staff;
 create trigger staff_guard_supervisor_update_trg
   before update on staff
   for each row execute function staff_guard_supervisor_update();
+
+-- ── staff_guard_authority_update (v12) ──────────────────────────────────────
+-- Closes a PRE-EXISTING, APP-WIDE privilege-escalation hole — not something
+-- this branch introduced. See the v12 changelog entry above for the full
+-- picture; summary: staff_update's live RLS policy (migration-2026-07-08-rls-
+-- system-role.sql:232-233, quoted above and in the changelog) is row-scoped
+-- only —
+--   using (id = auth.uid() or (current_rank() in ('supervisor','manager')
+--           or current_system_role() in ('hr','supervisor','manager','admin',
+--           'owner')))
+-- — so `id = auth.uid()` alone lets any authenticated staff member run
+--   update staff set system_role = 'admin' where id = auth.uid();
+-- and pass every authority test this branch relies on from that point on
+-- (they all read staff.rank / staff.system_role off the caller's own row).
+-- staff_guard_supervisor_update above already guards supervisor_id on this
+-- same table for the same class of reason; this trigger is its sibling for
+-- rank, system_role, and status.
+--
+-- THE RULE: a caller who is not manager-tier may not change rank,
+-- system_role, or status on their OWN row.
+--   * Someone else's row (old.id <> auth.uid()) is untouched by this trigger.
+--     An owner or admin editing ANOTHER person's role in Settings' System
+--     Roles tab (src/features/settings/Settings.tsx, assignRole/814 — gated
+--     `isOwner` client-side, and by staff_update's RLS server-side) is
+--     changing a row that is not their own: the self-rule below never fires,
+--     and that write stays governed by staff_update's RLS exactly as before.
+--   * A manager-tier caller changing their OWN rank/system_role/status is
+--     allowed — they already hold that authority. Concretely,
+--     Settings.tsx's SystemRolesTab lists every active staff member,
+--     including the signed-in owner, in the same assignRole() picker with no
+--     self-exclusion, so an owner reassigning their OWN system_role through
+--     that exact UI must keep working, and does: old.system_role = 'owner'
+--     satisfies the check below before the change is even evaluated.
+--     (StaffProfile.tsx's rank editor is narrower than this trigger requires
+--     — its payload only ever includes `rank` `if (isManager && !isSelf)`,
+--     src/features/staff/StaffProfile.tsx:1224 — so today's app never
+--     exercises a manager's own-row rank change; this trigger permits it
+--     anyway, matching the RULE stated above rather than today's UI's
+--     narrower habits.)
+--   * auth.uid() is null in the migration/SQL-editor context — including this
+--     file's own future re-runs, and the one-off `update staff set
+--     system_role = ...` backfills in migration-2026-07-06-rbac.sql:78-87 —
+--     and is allowed through unconditionally, same reasoning as
+--     staff_guard_supervisor_update above: staff has no anonymous access
+--     path, so RLS already fails closed before this trigger would ever see
+--     such an UPDATE from anon.
+--
+-- The authority check is the exact manager-tier test staff_guard_supervisor_
+-- update and excuse_lateness() already use ("system_role in ('manager',
+-- 'admin','owner') or rank = 'manager'") — deliberately, not reinvented — so
+-- the set of people who can promote/demote/reinstate a staff member and the
+-- set excuse_lateness() lets act as a supervisor cannot silently drift apart.
+-- Because the rule only ever fires on the caller's own row (old.id =
+-- auth.uid()), OLD already IS the caller's row at the moment of the UPDATE,
+-- so the caller's current rank/system_role can be read straight off OLD
+-- instead of re-querying staff for `me` the way staff_guard_supervisor_update
+-- has to (that trigger's authority check applies to every row, not just the
+-- caller's own, so it cannot assume OLD is the caller).
+--
+-- STATUS is guarded alongside rank/system_role because it is evidence-backed
+-- as just as authority-bearing: `status = 'resigned'` is the ONLY thing that
+-- blocks a resigned staff member from using the app —
+--   src/App.tsx:80 — if (user && staff?.status === 'resigned') return
+--   <DeactivatedScreen />
+-- — and that is a client-side check only, evaluated AFTER Supabase Auth has
+-- already issued the session; nothing revokes the underlying auth.users
+-- account or its ability to call the database directly. Before this trigger,
+-- nothing stopped a resigned staff member from running
+--   update staff set status = 'active' where id = auth.uid();
+-- to reactivate themselves — the same class of hole as the system_role
+-- example above, just aimed at a different column.
+--
+-- is_active was also considered and is DELIBERATELY NOT guarded here: it is
+-- set false on probation elimination (src/features/reviews/
+-- ProbationReview.tsx:505) but gates no login, route, or RLS check anywhere
+-- in this codebase — App.tsx checks only `status`, never `is_active`. Grepped
+-- across schema.sql and every migration, its only readers are eligibility
+-- filters inside automated jobs and notification routing: leave accrual
+-- (migration-2026-07-08-leave-accrual.sql:109 / migration-2026-07-08-rls-
+-- system-role.sql:276, `status = 'active' and is_active`), auto-absent
+-- marking (migration-2026-07-09-auto-absent.sql:106, "skip eliminated
+-- probation hires"), and notify_late()'s reviewer/PIC fallback
+-- (migration-2026-09-02-notify-late-fn.sql:521/534). None of those is an
+-- access-control gate, so treating is_active as authority-bearing here would
+-- be guessing at a meaning the code does not give it, not enforcing one that
+-- exists. If a future change makes is_active gate access the way `status`
+-- does today, it should be added to this trigger's column list at that time.
+--
+-- BOOTSTRAP: this trigger does NOT stop a manager-tier caller — including the
+-- last owner — from demoting themselves below manager-tier in one statement.
+-- The check reads OLD (the caller's rank/system_role going INTO the change),
+-- so a self-demotion from owner to staff still passes it. If that happens,
+-- nobody remains who can pass this trigger's manager-tier check through the
+-- app, and the only way back is the auth.uid() is null branch above: an
+-- operator running `update staff set system_role = 'owner' where id =
+-- '<id>';` directly against the database (migration file or SQL editor),
+-- bypassing auth.uid() entirely. That IS the intended escape hatch — the same
+-- one staff_guard_supervisor_update already relies on for its own recovery —
+-- not a gap this trigger introduces: the pre-existing staff_update RLS policy
+-- has always allowed a manager-tier self-demotion with no recovery path of
+-- its own either, so this trigger leaves that pre-existing exposure exactly
+-- as reachable as before, neither wider nor narrower.
+create or replace function staff_guard_authority_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.rank is not distinct from old.rank
+     and new.system_role is not distinct from old.system_role
+     and new.status is not distinct from old.status then
+    return new;
+  end if;
+
+  if auth.uid() is null then
+    return new;
+  end if;
+
+  if old.id <> auth.uid() then
+    return new;
+  end if;
+
+  if not (old.system_role in ('manager','admin','owner') or old.rank = 'manager') then
+    raise exception 'Only a manager can change your own rank, system role, or status.'
+      using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists staff_guard_authority_update_trg on staff;
+create trigger staff_guard_authority_update_trg
+  before update on staff
+  for each row execute function staff_guard_authority_update();
 
 -- KEEP IN SYNC WITH v_defaults IN attendance_guard_self_insert() (below, v11
 -- M2): that function's INSERT whitelist treats every non-whitelisted column
