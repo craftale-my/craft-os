@@ -1,5 +1,5 @@
 -- ============================================================================
--- Late reason + notifications, schema only (2026-09-02, v3). Idempotent.
+-- Late reason + notifications, schema only (2026-09-02, v8). Idempotent.
 --
 -- v2 addresses review findings against v1 (never executed against any
 -- database, so amended in place rather than layered with a second file):
@@ -73,7 +73,10 @@
 -- UPDATE trigger on attendance (below) that guards those five columns
 -- specifically, without touching attendance_manage or attendance_self_update
 -- themselves — status and late_minutes must stay freely updatable
--- (DailyRoster.setStatus, markAllPresent). See the trigger's own comment for
+-- (DailyRoster.setStatus, markAllPresent). [SUPERSEDED by v6/v7, which gate
+-- status/late_minutes on the caller's own row, and then wholly by v8, which
+-- replaces this blacklist with a whitelist — no column is "freely updatable"
+-- on a staff member's own row any more.] See the trigger's own comment for
 -- why late_excused/late_excused_by/late_excused_at are gated on
 -- excuse_lateness()'s exact authority test, and why late_reason_code/
 -- late_reason are instead made append-only rather than authority-gated.
@@ -83,9 +86,21 @@
 -- markAllPresent depend on writing them — but those are the MANAGER path,
 -- covered by attendance_manage (schema.sql:505-506). The staff member's OWN
 -- path is attendance_self_update (schema.sql:509-510), which is just as
--- row-scoped and column-blind, with no `with check` at all:
+-- row-scoped and column-blind:
 --   create policy "attendance_self_update" on attendance for update to
 --     authenticated using (staff_id = auth.uid());
+-- CORRECTION (v8): an earlier draft of this note read that policy as having
+-- "no `with check` at all", and inferred from that that staff_id itself was
+-- re-targetable. That inference was wrong. Postgres reuses an UPDATE policy's
+-- USING expression as its WITH CHECK when WITH CHECK is omitted, so the NEW
+-- row must satisfy `staff_id = auth.uid()` too — staff_id IS pinned by this
+-- policy, and a staff member cannot move their row onto someone else. What
+-- the policy genuinely does not pin is every OTHER column on the row: the
+-- holes the v5/v6/v7 blacklist left open were above all `date` (move a late
+-- day out of the review month and countLateDays never counts it) and
+-- `clock_in` on its own (null it, then re-set it, and the clock-in carve-out
+-- below can be manufactured at will) — plus notes, marked_by, recorded_by,
+-- scheduled_shift_id and the whole GPS/photo evidence group. See v8 below.
 -- So the row's own owner could run
 --   supabase.from('attendance').update({ status: 'present' }).eq('id', myRow)
 -- from the browser console. countLateDays() counts status = 'late' and
@@ -149,6 +164,70 @@
 -- with the boundary it mirrors, specifically so a future edit doesn't
 -- "tidy" them into one shared check — they encode two different boundaries
 -- on purpose, not the same boundary written twice.
+--
+-- v8 replaces the whole shape of attendance_guard_late_update(). v5-v7 grew
+-- it as a BLACKLIST: it named the columns it protected (late_excused*,
+-- late_reason*, status, late_minutes) and left every other column on the row
+-- to attendance_self_update, which is row-scoped, not column-scoped. Since
+-- `authenticated` also holds the default table-wide UPDATE grant, the row's
+-- owner still owned every column the trigger did not name. Two of them
+-- defeated the guard outright:
+--
+--   * PATH A — one statement, no guarded column touched at all. Reviews.tsx's
+--     countLateDays() scopes its count with `.gte('date', start).lte('date',
+--     end)`. So
+--       update attendance set date = '2020-01-01' where id = <own row>;
+--     moves the late day clean out of the review month and takes the ten-point
+--     attendance_score deduction with it. The v5-v7 trigger never looked at
+--     `date`, so this never even reached a check.
+--
+--   * PATH B — two statements, manufacturing the v6/v7 clock-in carve-out.
+--     `clock_in` was unguarded, so the carve-out `old.clock_in is null and
+--     new.clock_in is not null` could simply be created on demand:
+--       update attendance set clock_in = null where id = <own row>;
+--         -- changes no blacklisted column, so v7 allows it
+--       update attendance set clock_in = now(), status = 'present',
+--              late_minutes = 0 where id = <own row>;
+--         -- now matches the carve-out, so v7 skips the status/late_minutes
+--         -- check entirely
+--     The legitimate clock-in exit is exactly what made the forgery legal.
+--
+--   Other columns the blacklist left reachable and worth protecting on their
+--   own account: clock_in_distance_m (the GPS evidence — settable to 0 after
+--   clocking in from home), clock_in_photo_url and the rest of the photo/lat/
+--   lng group, marked_by and recorded_by (forging provenance), notes (where
+--   migration-2026-09-02-rejudge-boundary-late.sql writes its audit trail),
+--   clock_out and scheduled_shift_id.
+--
+-- A blacklist over a row-wide UPDATE policy is structurally wrong, not merely
+-- incomplete: every column added to `attendance` from now on would default to
+-- unguarded, and each one would have to be noticed and named here. v8 inverts
+-- it into a WHITELIST, using the same to_jsonb(new)/to_jsonb(old) diff idiom
+-- notifications_guard_recipient_update() already uses in this file, so the two
+-- guards read the same way. The rule and its rationale are stated in full
+-- above the function itself; what it buys is that `date`, `staff_id`,
+-- `clock_in` on its own, notes, marked_by, recorded_by, scheduled_shift_id
+-- and every column added to this table in future are guarded without ever
+-- being named.
+--
+-- Deliberately kept unchanged from v7: the auth.uid() is null allow-branch;
+-- the attendance_manage-matching authority test (a rank in ('supervisor',
+-- 'manager') caller already has unrestricted write over everyone's attendance
+-- through attendance_manage, so guarding their own row adds no safety and
+-- would silently abort markAllPresent's bulk upsert — see the v7 note above);
+-- and the separate, narrower excuse_lateness()-matching test for the
+-- late_excused* columns, still enforced for EVERY caller including managers,
+-- because that is what makes excuse_lateness() the only route to an excuse.
+-- The append-only rule on late_reason_code/late_reason is also kept for every
+-- caller, for the same reason: the whitelist below only ever constrains a
+-- non-manager acting on their own row, so without it a supervisor could still
+-- rewrite a reason a manager had already read.
+--
+-- v8 also adds attendance_late_reason_length_check (500 chars). late_reason
+-- is free text typed by the staff member and is concatenated straight into
+-- the body of the notification their supervisor reads (notify_late(), sibling
+-- migration); it had no length limit at any layer — not in the textarea, not
+-- in PostgREST, not in the column type.
 -- ============================================================================
 
 alter table staff add column if not exists supervisor_id uuid references staff(id) on delete set null;
@@ -227,6 +306,21 @@ alter table attendance drop constraint if exists attendance_late_reason_code_che
 alter table attendance add constraint attendance_late_reason_code_check
   check (late_reason_code is null or late_reason_code in
     ('traffic','transport','medical','work_errand','personal','other'));
+
+-- v8: late_reason is the only free-text field in this feature, it is typed by
+-- the staff member, and notify_late() concatenates it verbatim into the body
+-- of the notification their supervisor reads. Nothing bounded it at any layer
+-- — `text` is unbounded, the textarea has no maxLength, and PostgREST passes
+-- whatever arrives. 500 characters is generous for "why I was late" (several
+-- sentences) while keeping a notification body readable in the inbox list and
+-- keeping a single row from being used to bloat the notifications table.
+-- Same drop-then-add idiom as the code check above, so re-running this file
+-- after an edit replaces the constraint rather than silently keeping the first
+-- definition forever. No backfill concern: late_reason is added by this same
+-- file (above) and is null for every existing row at the moment this runs.
+alter table attendance drop constraint if exists attendance_late_reason_length_check;
+alter table attendance add constraint attendance_late_reason_length_check
+  check (late_reason is null or char_length(late_reason) <= 500);
 
 create table if not exists notifications (
   id               uuid primary key default gen_random_uuid(),
@@ -380,109 +474,161 @@ revoke execute on function excuse_lateness(uuid) from anon;
 grant  execute on function excuse_lateness(uuid) to authenticated;
 
 -- ── attendance_guard_late_update ────────────────────────────────────────────
--- C1 (see v5 note above): closes the column-blindness of attendance_self_
--- update and attendance_manage for late_excused/late_excused_by/
--- late_excused_at and late_reason_code/late_reason, without touching either
--- policy. v6/v7 (see notes above) extend the same trigger to status/
--- late_minutes, but only for a caller acting on their OWN row — anyone
--- acting on someone else's row keeps exactly the freedom attendance_manage
--- already grants (DailyRoster.setStatus and markAllPresent are unaffected
--- for them). No other column is touched.
+-- A WHITELIST over a row-wide UPDATE policy (v8). v5-v7 grew this as a
+-- BLACKLIST — it named the columns it protected and left everything else to
+-- attendance_self_update — and a blacklist cannot work here. See the v8 note
+-- in this file's header changelog for the two paths that defeated it (moving
+-- `date` out of the review month; nulling `clock_in` to manufacture the
+-- clock-in carve-out) and for why the shape, not the coverage, was the bug.
 --
--- This function now enforces TWO deliberately different authority tests,
--- each named as its own variable below so neither reads as a copy of the
--- other by accident:
---   * v_excuse_lateness_authority — the NARROW test, copied verbatim from
---     excuse_lateness()'s own comment: manager-tier by system_role/rank, or
---     being the target's named supervisor_id. Guards late_excused/
---     late_excused_by/late_excused_at only.
---   * v_attendance_manage_authority — the BROAD test, copied verbatim from
---     attendance_manage's own USING clause (schema.sql:505-506): rank in
---     ('supervisor','manager'), full stop. Guards status/late_minutes only.
--- They differ because they answer different questions. The excuse columns
--- ask "would excuse_lateness() let this specific caller excuse THIS
--- specific staff member" — a per-target check that intentionally excludes a
--- plain rank = 'supervisor' account unless they are named as that person's
--- supervisor_id. The status/late_minutes columns ask "does RLS already let
--- this caller write ANY row on this table unconditionally" — and the answer
--- to that is attendance_manage's rank in ('supervisor','manager') test, no
--- narrower. Do not merge these into one shared check: doing so would either
--- re-break the markAllPresent bug v7 fixes (if the merged check used the
--- narrow test) or loosen who can excuse a specific person's lateness (if it
--- used the broad test).
+-- WHY A TRIGGER AT ALL. RLS on `attendance` is row-scoped, never
+-- column-scoped. attendance_self_update (schema.sql:509-510) is
+--   create policy "attendance_self_update" on attendance for update to
+--     authenticated using (staff_id = auth.uid());
+-- Postgres reuses that USING expression as the policy's WITH CHECK, since no
+-- WITH CHECK is given — so staff_id itself IS pinned and a staff member
+-- cannot re-target their row onto someone else. Every OTHER column is
+-- unpinned, and `authenticated` also holds the default table-wide UPDATE
+-- grant, so the row's owner can set any of them to any value straight from
+-- the browser console. No policy can narrow that. Only a trigger can.
 --
--- late_excused / late_excused_by / late_excused_at: guarded by
--- v_excuse_lateness_authority, the identical authority test excuse_lateness()
--- applies against the row's staff_id, copied verbatim from that function's
--- own comment so the two definitions of "who may excuse this row" cannot
--- drift apart. auth.uid() reads the request.jwt.claims session GUC;
--- SECURITY DEFINER changes only the executing role, not session-level GUCs,
--- so auth.uid() still resolves to the real calling user inside
--- excuse_lateness() itself — meaning that function's own UPDATE reaches this
--- same check and passes it precisely when excuse_lateness()'s own guard
--- already passed. Nothing legitimate is newly blocked; nothing illegitimate
--- is newly allowed.
+-- THE RULE. When all three of these hold —
+--   (a) auth.uid() is not null (see the last paragraph for why null is let
+--       through),
+--   (b) the row belongs to the caller — checked on OLD *and* NEW, see below,
+--   (c) the caller does NOT satisfy v_attendance_manage_authority
+-- — then the only columns that caller may change are:
 --
--- late_reason_code / late_reason: made append-only from the client instead
--- of authority-gated. The staff member writes their own reason exactly once,
--- bundled into the same upsert that records the late clock-in itself
--- (writeClockIn in src/features/hr/HrAttendance.tsx) — legitimate
--- self-service that must keep working whether it lands as an INSERT
--- (attendance_self_clock) or as an UPDATE via ON CONFLICT (attendance_self_
--- update, e.g. when markAllPresent or a manual status change already created
--- the day's row first). No flow in this app edits an already-recorded
--- reason, so rather than inventing an authority line for a flow that doesn't
--- exist, a change is rejected outright once the old value is non-null —
--- closing the specific rewrite-after-the-fact path the review flagged, for
--- any caller, not only the row's own staff member.
+--   ALWAYS
+--     clock_out, clock_out_photo_url, clock_out_lat, clock_out_lng,
+--     clock_out_distance_m                              (the clock-out group)
+--     break_start, break_end, break_minutes, break_late,
+--     break_overrun_minutes                             (the break group)
 --
--- status / late_minutes (added in v6, widened in v7): guarded only when
--- new.staff_id = auth.uid() — the caller is acting on their OWN row.
--- attendance_self_update can never reach any other row, so that is also the
--- only case that needs guarding here; a caller changing someone else's row
--- already went through attendance_manage to get this far, and that policy is
--- untouched. v_attendance_manage_authority is attendance_manage's own
--- boundary (rank in ('supervisor','manager')), so a supervisor or manager
--- acting on their OWN row (their name can appear in DailyRoster's own roster
--- same as anyone else's) keeps exactly the same authority as one acting on
--- anyone else's — see the v7 changelog note above for why this must be the
--- broad test, not excuse_lateness()'s narrow one. The one carve-out for a
--- caller who fails that test is clocking in: old.clock_in is null and
--- new.clock_in is not null identifies that exact transition (writeClockIn in
--- src/features/hr/HrAttendance.tsx always sets clock_in in the same upsert
--- that sets status/late_minutes) and is let through unconditionally.
--- Everything else such a caller might try against their own status/
--- late_minutes — re-clocking in, or a raw supabase.from('attendance').update
--- ({ status: 'present' }) from the console — is rejected.
+--   AND, ONLY on the genuine clock-in transition — old.clock_in is null and
+--   new.clock_in is not null, which can now only be reached once because
+--   `clock_in` is itself outside the whitelist and so cannot be nulled back:
+--     clock_in, clock_in_photo_url, clock_in_lat, clock_in_lng,
+--     clock_in_distance_m                               (the clock-in group)
+--     status, late_minutes, late_reason_code, late_reason
+--
+-- Anything else that differs raises. The diff is taken with
+-- to_jsonb(new)/to_jsonb(old) minus the writable keys — the same idiom
+-- notifications_guard_recipient_update() uses above, deliberately, so the two
+-- guards on this migration read the same way.
+--
+-- WHAT THIS BUYS WITHOUT NAMING IT. `date` (Path A: countLateDays() in
+-- src/features/team/Reviews.tsx counts with `.gte('date', start).lte('date',
+-- end)`, so moving the day moves the ten-point deduction with it), `staff_id`,
+-- `clock_in` on its own (Path B), `notes` (where migration-2026-09-02-rejudge-
+-- boundary-late.sql writes its audit trail), `marked_by` and `recorded_by`
+-- (provenance), `scheduled_shift_id`, `created_at`, `id` — and every column
+-- added to this table in future, which is the real point: a new column is
+-- guarded the day it is added, with nothing here to remember to update.
+--
+-- THE THREE CHECKS, AND WHY THEY ARE NOT ONE. This function enforces three
+-- deliberately different rules, in this order:
+--
+--   1. late_reason_code / late_reason are APPEND-ONLY, for every caller.
+--      Kept from v5 unchanged. The whitelist below only ever constrains a
+--      non-manager acting on their own row, so without this a supervisor or
+--      manager could still rewrite a reason after it had been read. The staff
+--      member writes their own reason exactly once, in the same upsert that
+--      records the late clock-in (writeClockIn, src/features/hr/
+--      HrAttendance.tsx); no flow in this app edits an already-recorded
+--      reason, so a change is rejected outright once the old value is
+--      non-null.
+--
+--   2. late_excused / late_excused_by / late_excused_at are gated on
+--      v_excuse_lateness_authority — the NARROW test, copied verbatim from
+--      excuse_lateness()'s own authorisation comment (manager-tier by
+--      system_role/rank, or being the target's named supervisor_id) — for
+--      EVERY caller, managers included. This is what makes excuse_lateness()
+--      the only route to an excuse, so it must not be folded into the
+--      whitelist. auth.uid() reads the request.jwt.claims session GUC, and
+--      SECURITY DEFINER changes only the executing role, not session GUCs, so
+--      excuse_lateness()'s own UPDATE reaches this check and passes it exactly
+--      when that function's own guard already passed.
+--
+--   3. The whitelist, gated on v_attendance_manage_authority — the BROAD test,
+--      copied verbatim from attendance_manage's own USING clause
+--      (schema.sql:505-506, `current_rank() in ('supervisor','manager')`).
+--      Do NOT merge check 3's test into check 2's or vice versa. They answer
+--      different questions. Check 2 asks "would excuse_lateness() let THIS
+--      caller excuse THIS staff member" — a per-target question that
+--      intentionally excludes a plain rank = 'supervisor' account unless they
+--      are named as that person's supervisor_id. Check 3 asks "does RLS
+--      already let this caller write ANY row on this table unconditionally" —
+--      and that answer is attendance_manage's rank test, no narrower. Using
+--      the narrow test in check 3 would re-break the markAllPresent bug v7
+--      fixed: DailyRoster upserts every visible row (including the acting
+--      supervisor's own) in one statement and does not check the outcome, so
+--      an exception on their own row silently aborts the whole team's write.
+--      Using the broad test in check 2 would widen who can excuse a specific
+--      person's lateness. Both expressions are named as their own variable
+--      below so neither reads as a copy of the other by accident.
+--
+-- WHY THE EXCUSE COLUMNS ARE ALSO IN THE WRITABLE SET IN CHECK 3. They are
+-- appended to v_writable_keys unconditionally, which is NOT a hole: check 2
+-- runs first and has already raised for any caller not authorised to touch
+-- them, so the only callers that reach check 3 with those columns changed are
+-- ones check 2 authorised. Leaving them in the diff instead would double-gate
+-- them with the BROAD test and break the one real case where the two tests
+-- disagree — a system_role in ('manager','admin','owner') account whose rank
+-- is not 'supervisor'/'manager' calling excuse_lateness() on their OWN row:
+-- authorised by check 2, refused by check 3, for no security gain.
+--
+-- WHY THE OWNERSHIP TEST READS BOTH OLD AND NEW. `old.staff_id = auth.uid()
+-- or new.staff_id = auth.uid()`, not new alone. attendance_self_update's
+-- inherited WITH CHECK already stops the row being re-targeted, so new alone
+-- is sufficient today — but the whole point of v8 is not to depend on a
+-- policy staying exactly as it is. Reading OLD too means that if that policy
+-- ever gains an explicit `with check (true)`, a caller still cannot hand
+-- their own row away by changing staff_id in the same statement that would
+-- otherwise take it outside this branch.
 --
 -- auth.uid() is null in the migration/SQL-editor context (this file's own
 -- future re-runs, any script-driven backfill) — allowed through
 -- unconditionally, same reasoning as staff_guard_supervisor_update above:
 -- every attendance RLS policy is `to authenticated`, so a null auth.uid()
 -- here cannot be an anonymous PostgREST caller slipping through; it can only
--- be a migration/service-role context, which bypasses RLS (and this
--- trigger's purpose, if not its execution) regardless.
+-- be a migration/service-role context, which bypasses RLS (and this trigger's
+-- purpose, if not its execution) regardless.
+--
+-- NOT AFFECTED. mark_absent_for_missed_shifts() (migration-2026-07-09-auto-
+-- absent.sql) is `insert into attendance ... on conflict (staff_id, date) do
+-- nothing`, and a BEFORE UPDATE trigger never fires for either arm of that —
+-- DO NOTHING performs no UPDATE at all. The staff member's own break writes
+-- go to the separate `attendance_breaks` table, which this trigger is not on;
+-- the break group is whitelisted here for the legacy columns of the same name
+-- on `attendance` itself (schema.sql:737-741), which nothing in src/ currently
+-- writes.
 create or replace function attendance_guard_late_update()
 returns trigger
 language plpgsql
 as $$
 declare
-  -- NARROW test: mirrors excuse_lateness()'s own authorisation check
-  -- (system_role/rank manager-tier, or being the target's named
-  -- supervisor_id), word for word. Guards late_excused/late_excused_by/
-  -- late_excused_at only — see the function comment above for why.
-  v_excuse_lateness_authority boolean;
-  -- BROAD test: mirrors attendance_manage's own USING clause
+  -- NARROW test — check 2. Mirrors excuse_lateness()'s own authorisation
+  -- check (manager-tier by system_role/rank, or being the target's named
+  -- supervisor_id), word for word. Guards the three excuse columns only.
+  v_excuse_lateness_authority   boolean;
+  -- BROAD test — check 3. Mirrors attendance_manage's own USING clause
   -- (schema.sql:505-506, `current_rank() in ('supervisor','manager')`), word
-  -- for word. Guards status/late_minutes only — see the function comment
-  -- above, and the v7 changelog note, for why this one must stay broader
-  -- than v_excuse_lateness_authority rather than reusing it.
+  -- for word. Gates the whitelist only. See the function comment above for
+  -- why this one must stay broader rather than reusing the narrow test.
   v_attendance_manage_authority boolean;
+  -- The one legitimate self-write of the clock-in group, status, late_minutes
+  -- and the late reason. Unreachable twice: clock_in is outside the whitelist,
+  -- so a caller who fails the broad test cannot null it back to set this up.
+  v_clock_in_transition         boolean;
+  -- The whitelist itself, as jsonb keys, built per-statement.
+  v_writable_keys               text[];
 begin
   if auth.uid() is null then
     return new;
   end if;
 
+  -- Check 1 — append-only late reason, every caller.
   if old.late_reason_code is not null
      and new.late_reason_code is distinct from old.late_reason_code then
     raise exception 'late_reason_code cannot be changed once recorded.'
@@ -495,6 +641,7 @@ begin
       using errcode = '42501';
   end if;
 
+  -- Check 2 — the excuse columns, every caller, narrow test.
   if new.late_excused is distinct from old.late_excused
      or new.late_excused_by is distinct from old.late_excused_by
      or new.late_excused_at is distinct from old.late_excused_at
@@ -515,23 +662,8 @@ begin
     end if;
   end if;
 
-  -- v6/v7: status/late_minutes, but only when the caller is acting on their
-  -- OWN row (new.staff_id = auth.uid()) — attendance_self_update can never
-  -- reach any other row, so this is the only case that needs guarding here;
-  -- someone else's row is reached only via attendance_manage, untouched
-  -- below. The clock-in transition is always allowed (writeClockIn
-  -- legitimately sets both columns there); everything else on the caller's
-  -- own row requires v_attendance_manage_authority — the BROAD test, not
-  -- v_excuse_lateness_authority — so a rank = 'supervisor' caller (who
-  -- already has unrestricted write over every row via attendance_manage) is
-  -- not tripped by this trigger on their own row. See the v7 changelog note
-  -- above: that mismatch is exactly what let a supervisor's own row abort
-  -- markAllPresent's whole-team upsert.
-  if new.staff_id = auth.uid()
-     and (new.status is distinct from old.status
-          or new.late_minutes is distinct from old.late_minutes)
-     and not (old.clock_in is null and new.clock_in is not null)
-  then
+  -- Check 3 — the whitelist, on the caller's own row, broad test.
+  if old.staff_id = auth.uid() or new.staff_id = auth.uid() then
     select exists (
       select 1 from staff me
       where me.id = auth.uid()
@@ -539,9 +671,40 @@ begin
     ) into v_attendance_manage_authority;
 
     if not v_attendance_manage_authority then
-      raise exception
-        'status/late_minutes on your own attendance row can only be changed by clocking in, or by someone attendance_manage already trusts with blanket attendance write (rank supervisor or manager).'
-        using errcode = '42501';
+      v_clock_in_transition := old.clock_in is null and new.clock_in is not null;
+
+      -- Always writable: clocking out, and the legacy break columns.
+      v_writable_keys := array[
+        'clock_out', 'clock_out_photo_url', 'clock_out_lat', 'clock_out_lng',
+        'clock_out_distance_m',
+        'break_start', 'break_end', 'break_minutes', 'break_late',
+        'break_overrun_minutes'
+      ];
+
+      -- Writable only while actually clocking in. writeClockIn (src/features/
+      -- hr/HrAttendance.tsx) sets exactly these in the same upsert that first
+      -- sets clock_in, on both the punctual and the late path.
+      if v_clock_in_transition then
+        v_writable_keys := v_writable_keys || array[
+          'clock_in', 'clock_in_photo_url', 'clock_in_lat', 'clock_in_lng',
+          'clock_in_distance_m',
+          'status', 'late_minutes', 'late_reason_code', 'late_reason'
+        ];
+      end if;
+
+      -- Already fully decided by check 2 above, which raises for anyone not
+      -- authorised — see the function comment for why excluding them here
+      -- would double-gate them with the broad test instead. Nothing reaches
+      -- this line with those columns changed unless check 2 allowed it.
+      v_writable_keys := v_writable_keys || array[
+        'late_excused', 'late_excused_by', 'late_excused_at'
+      ];
+
+      if (to_jsonb(new) - v_writable_keys) is distinct from (to_jsonb(old) - v_writable_keys) then
+        raise exception
+          'On your own attendance row you may only change the clock-out and break columns — and the clock-in columns, status, late_minutes and the late reason only as part of an actual clock-in. Everything else (date, notes, provenance, and the clock-in photo/GPS evidence) is fixed once recorded.'
+          using errcode = '42501';
+      end if;
     end if;
   end if;
 
@@ -554,8 +717,29 @@ create trigger attendance_guard_late_update_trg
   before update on attendance
   for each row execute function attendance_guard_late_update();
 
+-- notify_manager defaults to TRUE for this event, unlike most rows in
+-- notification_settings (schema.sql:437-445, where it is off for everything
+-- except level_up/review_due/probation_due/registration_request/
+-- onboarding_completed).
+--
+-- v8: it was seeded false, and that was a real regression rather than a
+-- preference. notify_late() (sibling migration) originally gated its whole
+-- supervisor-tier block on notify_supervisor alone, so the branch-manager
+-- fallback for a staff member with no supervisor rode along on that same
+-- toggle. Finding 7 correctly made notify_manager an independent gate — but
+-- with this seed at false, and `on conflict do nothing` meaning the seed IS
+-- the shipped default, the orphan arm was then off out of the box. A staff
+-- member with no supervisor_id reached NOBODY: notify_late() still returned 1
+-- (their own row), so the client read it as success and said nothing. Before
+-- finding 7 they at least reached the branch managers.
+--
+-- True is the only default that keeps the fallback doing its job: the whole
+-- point of the orphan arm is that lateness with no assigned supervisor must
+-- still reach a human. An admin who genuinely does not want managers looped
+-- in can turn it off in Settings — and `on conflict (event_type) do nothing`
+-- means re-running this file never overrides that choice.
 insert into notification_settings (event_type, label, notify_staff, notify_supervisor, notify_manager)
-values ('attendance_late', 'Late Arrival', true, true, false)
+values ('attendance_late', 'Late Arrival', true, true, true)
 on conflict (event_type) do nothing;
 
 insert into system_rules (key, value, label, description) values

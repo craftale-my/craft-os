@@ -8,8 +8,10 @@
 -- for everyone). notify_late() is the RPC the app calls once a late clock-in
 -- has a reason attached; it writes one notification to the staff member and
 -- one to their supervisor (or, when none is assigned, to the branch's
--- manager tier), then returns how many rows it wrote so the caller can
--- confirm the fan-out actually happened.
+-- manager tier), then returns a jsonb summary — { enabled, staff, supervisor }
+-- — so the caller can tell apart "the supervisor was told", "only the staff
+-- member's own copy was written" and "an admin has this event switched off".
+-- See finding 10 below for the exact contract.
 --
 -- Two deliberate departures from a straight transcription of the task brief:
 --
@@ -92,11 +94,17 @@
 --      unconstrained p_date let the same trick loop over arbitrary dates.
 --      Fixed by reading status, late_minutes, late_reason_code and
 --      late_reason from the attendance row for (p_staff_id, p_date) instead
---      of the parameters, and returning 0 without writing anything if that
---      row doesn't exist or its status isn't 'late'. That row-existence
---      check is also the p_date bound: a date with no matching 'late'
---      attendance row writes nothing, so p_date can't be looped to spray
---      notifications across dates. p_late_minutes/p_reason_code/p_reason are
+--      of the parameters, and returning zero-counts without writing anything
+--      if that row doesn't exist or its status isn't 'late'.
+--      CORRECTION (finding 12 below): this note used to claim that the
+--      row-existence check was ALSO the p_date bound. It is not. A staff
+--      member can create their own 'late' attendance rows on arbitrary dates
+--      — attendance_self_clock (schema.sql:507-508) is
+--      `for insert to authenticated with check (staff_id = auth.uid())`, with
+--      no constraint on `date` or `status` — and then call this RPC once per
+--      row. The row-existence check only ties the notification's CONTENT to a
+--      real row; it bounds nothing. An explicit p_date window does that, and
+--      is added in finding 12. p_late_minutes/p_reason_code/p_reason are
 --      kept as parameters, unused: dropping them would change this
 --      function's signature, and the caller (supabase.rpc('notify_late',
 --      {...}) in src/features/hr/HrAttendance.tsx) passes arguments by name
@@ -120,7 +128,73 @@
 --      shifts already carries a unique(staff_id, date) constraint
 --      (schema.sql) so two rows can't currently exist for one lookup — this
 --      is belt-and-braces determinism, not a fix for an observed collision.
+--
+-- Final review pass (still never executed against any database, so still
+-- amended in place):
+--  10. Return type changed from `int` to `jsonb`, with exactly three keys:
+--        { "enabled": true, "staff": 1, "supervisor": 2 }
+--      A bare count could not distinguish the three outcomes the caller has
+--      to tell apart: "the supervisor tier was notified", "only the staff
+--      member's own row was written" and "an admin has turned this event
+--      off". All three came back as a number the caller could only compare
+--      against 0, and 1 was ambiguous between the second and third. The
+--      client (src/features/hr/HrAttendance.tsx) consequently showed "Your
+--      supervisor could not be notified." for a disabled event, which is
+--      simply untrue — nothing failed; the feature is off. Now:
+--        enabled    — false when the event is disabled OR the settings row is
+--                     missing entirely (both counts 0 in that case); true
+--                     otherwise, including when the counts are 0 for another
+--                     reason (no such staff member, no 'late' attendance row
+--                     for the date, p_date outside the window in finding 12).
+--        staff      — rows written for the staff member themselves.
+--        supervisor — rows written for the supervisor tier, INCLUDING the
+--                     branch-manager fallback. One number, not two, because
+--                     the two arms are alternatives (v_orphan decides which
+--                     one runs) and the caller's question is "did anyone
+--                     above this person hear about it".
+--      Changing the return type means CREATE OR REPLACE cannot be used
+--      (Postgres refuses to change a function's return type in place), so
+--      the function is dropped first — see the DROP below, and the note above
+--      the REVOKE/GRANT block, which a DROP makes load-bearing on every run.
+--  11. The 'attendance_late' notification_settings seed had notify_manager
+--      false, which — once finding 7 made notify_manager an independent gate
+--      — left the orphan fallback OFF on shipped defaults, so a staff member
+--      with no supervisor reached nobody while this function still returned 1
+--      (their own row) and the client reported success. Fixed in the sibling
+--      migration (migration-2026-09-02-late-reason-notifications.sql), where
+--      that seed lives; see the comment above it.
+--  12. p_date is now explicitly bounded to a recent window (not in the
+--      future, not more than 7 days before today in Asia/Kuala_Lumpur).
+--      Finding 6's claim that the row-existence check bounded p_date was
+--      wrong: attendance_self_clock (schema.sql:507-508) lets a staff member
+--      INSERT their own attendance rows with any `date` and any `status`,
+--      including 'late', so they could manufacture a row per date and call
+--      this RPC on each — delete-then-insert fan-out and all. Seven days is
+--      the window this schema already treats as "recent" for attendance:
+--      mark_absent_for_missed_shifts() (migration-2026-07-09-auto-absent.sql)
+--      uses exactly the same 7-day lookback. It comfortably covers the real
+--      cases — same-day filing, a night shift whose attendance day is
+--      yesterday (resolveAttendanceDate in src/features/hr/HrAttendance.tsx),
+--      and a reason filed after a weekend — while making a mass back-dated
+--      spray impossible. Out-of-window returns enabled/0/0 rather than
+--      raising, matching how every other "nothing to do" case here behaves,
+--      because the client treats this call as fire-and-forget after the
+--      clock-in has already been saved.
+--  13. Attendance/notification counts are now accumulated into two separate
+--      variables (v_staff_rows, v_supervisor_rows) rather than one v_count,
+--      to feed the two keys in finding 10. The GET DIAGNOSTICS discipline
+--      from finding 1 is unchanged: each statement's row_count is read into
+--      its own variable immediately after that statement and added, never
+--      assigned across branches.
 -- ============================================================================
+
+-- Finding 10: the return type changes from int to jsonb, and Postgres will
+-- not let CREATE OR REPLACE change a function's return type in place ("cannot
+-- change return type of existing function"). DROP IF EXISTS names the full
+-- argument list so it targets exactly this overload and nothing else, and is
+-- a no-op on a database that has never seen the function — so this file stays
+-- safe to run twice, and safe to run for the first time.
+drop function if exists notify_late(uuid, date, int, text, text);
 
 create or replace function notify_late(
   p_staff_id     uuid,
@@ -128,7 +202,7 @@ create or replace function notify_late(
   p_late_minutes int,
   p_reason_code  text,
   p_reason       text
-) returns int
+) returns jsonb
 language plpgsql
 security definer
 set search_path = public, pg_temp
@@ -141,12 +215,23 @@ declare
   v_staff_title     text;
   v_orphan          boolean;
   v_recipient_ids   uuid[];
-  v_count           int := 0;
+  -- Finding 13: two counters, not one — they feed the two count keys of the
+  -- jsonb contract. v_rows stays the scratch variable that GET DIAGNOSTICS
+  -- writes into immediately after each statement (finding 1).
+  v_staff_rows      int := 0;
+  v_supervisor_rows int := 0;
   v_rows            int;
   v_att_status      text;
   v_att_minutes     int;
   v_att_reason_code text;
   v_att_reason      text;
+  -- Today in the branch's own timezone. Used both for the p_date window
+  -- (finding 12) and for the staff-facing title's "today" wording (finding 5),
+  -- so the two can never disagree about which day "today" is.
+  v_today_myt       date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
+  -- How far back a late reason may be filed. See finding 12: same 7-day
+  -- lookback mark_absent_for_missed_shifts() already uses for attendance.
+  v_max_backdate_days constant int := 7;
 begin
   -- A staff member may only announce their own lateness; managers may do it
   -- for anyone. Fails CLOSED: a null auth.uid() — an unauthenticated or
@@ -164,17 +249,44 @@ begin
     raise exception 'notify_late: not allowed' using errcode = '42501';
   end if;
 
+  -- Finding 10: "the admin turned this off" and "the settings row is missing"
+  -- are the only two cases that report enabled = false. They are grouped
+  -- together deliberately: from the caller's side both mean "this feature is
+  -- not switched on", and neither is a failure the staff member can act on.
   select * into v_settings from notification_settings where event_type = 'attendance_late';
-  if v_settings.event_type is null or not v_settings.enabled then return 0; end if;
+  if v_settings.event_type is null or not v_settings.enabled then
+    return jsonb_build_object('enabled', false, 'staff', 0, 'supervisor', 0);
+  end if;
+
+  -- Finding 12: the p_date window. attendance_self_clock (schema.sql:507-508)
+  -- lets a staff member INSERT their own attendance rows on any date with any
+  -- status, so without this a caller could manufacture a 'late' row per date
+  -- and call this RPC on each, spraying notifications across the supervisor's
+  -- inbox. The row-existence check further down does NOT bound this (see the
+  -- correction to finding 6 in the header). Future dates are refused outright;
+  -- the past is capped at v_max_backdate_days. Returns enabled/0/0 rather than
+  -- raising, like every other "nothing to do" branch here — the client calls
+  -- this after the clock-in has already been written and must never have the
+  -- clock-in undone by a notification problem.
+  if p_date > v_today_myt or p_date < v_today_myt - v_max_backdate_days then
+    return jsonb_build_object('enabled', true, 'staff', 0, 'supervisor', 0);
+  end if;
 
   select * into v_staff from staff where id = p_staff_id;
-  if v_staff.id is null then return 0; end if;
+  if v_staff.id is null then
+    return jsonb_build_object('enabled', true, 'staff', 0, 'supervisor', 0);
+  end if;
 
   -- Finding 6 (I2): the attendance row for (p_staff_id, p_date) is the only
-  -- source of truth for what actually happened — not the parameters above.
-  -- See the header changelog for why: this also doubles as the p_date bound
-  -- (no matching 'late' row, no write), and the parameters are kept but
-  -- unused rather than dropped, to avoid a src/ signature-compatible break.
+  -- source of truth for what actually happened — not the parameters above,
+  -- which the caller controls. This check ties the notification's CONTENT to
+  -- a real row; it does NOT bound p_date (an earlier draft of this comment
+  -- claimed it did — see the correction to finding 6 in the header, and the
+  -- explicit window check further up, which is what actually bounds it).
+  -- p_late_minutes/p_reason_code/p_reason are kept as parameters, unused: the
+  -- caller passes arguments by name, and this file's return-type change
+  -- (finding 10) is already a coordinated src/ change — narrowing the
+  -- argument list too would be a second, unrelated break.
   select a.status, a.late_minutes, a.late_reason_code, a.late_reason
     into v_att_status, v_att_minutes, v_att_reason_code, v_att_reason
     from attendance a
@@ -185,7 +297,9 @@ begin
   -- NULL by design), so a null status must still read as "not late" rather
   -- than falling through `<>` (which itself evaluates to NULL, and an IF
   -- treats NULL as not-true — i.e. as if this guard hadn't matched at all).
-  if not found or v_att_status is distinct from 'late' then return 0; end if;
+  if not found or v_att_status is distinct from 'late' then
+    return jsonb_build_object('enabled', true, 'staff', 0, 'supervisor', 0);
+  end if;
 
   -- Finding 9 (M3): scheduled_shifts already carries a unique(staff_id,
   -- date) constraint (schema.sql), so this order by/limit is belt-and-
@@ -222,7 +336,7 @@ begin
   -- Finding 5: p_date need not be today (a late reason can be filed for an
   -- earlier date), so the staff-facing title has to say so.
   v_staff_title := 'You were marked late ' || case
-    when p_date = (now() at time zone 'Asia/Kuala_Lumpur')::date then 'today'
+    when p_date = v_today_myt then 'today'
     else 'on ' || to_char(p_date, 'FMDD Mon YYYY')
   end;
 
@@ -257,7 +371,7 @@ begin
       '/hr/attendance', p_staff_id, p_date)
     on conflict (recipient_id, event_type, subject_staff_id, subject_date) do nothing;
     get diagnostics v_rows = row_count;
-    v_count := v_count + v_rows;
+    v_staff_rows := v_staff_rows + v_rows;
   end if;
 
   -- The supervisor, or — when none is assigned (including a self-referential
@@ -330,20 +444,35 @@ begin
       from unnest(v_recipient_ids) as rid
       on conflict (recipient_id, event_type, subject_staff_id, subject_date) do nothing;
       get diagnostics v_rows = row_count;
-      v_count := v_count + v_rows;
+      v_supervisor_rows := v_supervisor_rows + v_rows;
     end if;
   end if;
 
-  return v_count;
+  -- Finding 10: exactly these three keys, in this shape. The TypeScript caller
+  -- (src/features/hr/HrAttendance.tsx) reads them by name — do not rename,
+  -- nest or add to them without changing that caller in the same commit.
+  -- 'supervisor' deliberately covers BOTH arms above (assigned supervisor and
+  -- branch-manager fallback): they are alternatives, never both, and the
+  -- caller's question is whether anyone above this staff member heard.
+  return jsonb_build_object(
+    'enabled',    true,
+    'staff',      v_staff_rows,
+    'supervisor', v_supervisor_rows
+  );
 end $$;
 
 -- Finding 2: EXECUTE on new functions is granted to PUBLIC by default, which
 -- includes the anon role — nothing in this repo revoked that for notify_late.
 -- notify_late is called via supabase.rpc() by any authenticated staff member
 -- reporting their own lateness, so 'authenticated' is the only role it needs.
--- Both REVOKE and GRANT are idempotent — safe to re-run — and CREATE OR
--- REPLACE FUNCTION above does not reset a function's privileges, so this only
--- has to take effect once; it's restated here for anyone re-running this file.
+-- Both REVOKE and GRANT are idempotent — safe to re-run.
+--
+-- Finding 10 made these LOAD-BEARING ON EVERY RUN, not just the first. CREATE
+-- OR REPLACE FUNCTION does not reset a function's privileges, but the DROP
+-- FUNCTION above does: the recreated function starts again with Postgres's
+-- default PUBLIC EXECUTE grant. These three lines are what take it away, so
+-- they must stay immediately after the definition and must not be moved into
+-- a "first run only" branch.
 revoke execute on function notify_late(uuid, date, int, text, text) from public;
 revoke execute on function notify_late(uuid, date, int, text, text) from anon;
 grant  execute on function notify_late(uuid, date, int, text, text) to authenticated;
