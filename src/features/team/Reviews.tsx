@@ -385,7 +385,7 @@ export async function countLateDays(staffId: string, year: number, month: number
 
 type RatingKey = 'attitude' | 'efficiency' | 'coffee_skill' | 'service'
 
-function SupervisorReviewCard({
+export function SupervisorReviewCard({
   review,
   reviewerId,
   onComplete,

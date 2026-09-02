@@ -40,7 +40,13 @@ const h = vi.hoisted(() => {
 vi.mock('../../shared/lib/supabase', () => ({
   supabase: {
     from: (table: string) => h.makeQuery(table, h.tables[table] ?? []),
-    rpc: (fn: string, args: unknown) => { h.rpcs.push({ fn, args }); return Promise.resolve({ data: 1, error: null }) },
+    rpc: (fn: string, args: unknown) => {
+      h.rpcs.push({ fn, args })
+      // Default: notify_late's happy path — enabled, and someone in every
+      // tier was reached. Individual tests override via vi.spyOn to drive
+      // the other branches (error, disabled, no supervisor reached).
+      return Promise.resolve({ data: { enabled: true, staff: 1, supervisor: 1 }, error: null })
+    },
   },
 }))
 
@@ -97,6 +103,14 @@ describe('迟到必须说明原因', () => {
     fireEvent.click(clockInBtn())
     await waitFor(() => expect(h.writes).toHaveLength(1))
     expect(h.writes[0]).toMatchObject({ status: 'present', late_minutes: 0 })
+    // late_reason_code/late_reason are append-only in the database: a punctual
+    // write must omit the keys outright rather than send explicit nulls, so a
+    // future re-upsert of this same row is never read as "changing" a reason
+    // that was never there. Sending `null` here is unreachable today, but the
+    // regression it protects against is a hard clock-in failure the moment it
+    // becomes reachable — so it's pinned at the key level, not just the value.
+    expect(h.writes[0]).not.toHaveProperty('late_reason_code')
+    expect(h.writes[0]).not.toHaveProperty('late_reason')
     // The month-stats card always renders a "Late" tally, so this asserts the
     // absence of the step itself rather than of the word.
     expect(screen.queryByText(/minutes late for your/i)).toBeNull()
@@ -244,14 +258,14 @@ describe('通知发送', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  // M2: notify_late() returns *how many* notification rows it wrote, not a
-  // plain ok/error — 0 means the call succeeded but nothing went out
-  // (notifications disabled, or the attendance row it looked up wasn't
-  // found). Judging on `.error` alone reads that as a successful
-  // notification, which it wasn't.
-  it('names the failure honestly when notify_late reports 0 rows written, not just when it errors', async () => {
+  // M2/M3: notify_late() now returns jsonb — { enabled, staff, supervisor } —
+  // not a plain ok/error or a bare count. Each shape tells a different story
+  // and the caller has to read `.data` instead of just `.error`.
+  it('says nothing about a failure when notifications are turned off by configuration', async () => {
     const { supabase } = await import('../../shared/lib/supabase')
-    vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({ data: 0, error: null } as never)
+    vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({
+      data: { enabled: false, staff: 0, supervisor: 0 }, error: null,
+    } as never)
     render(<MyAttendance staff={STAFF} />)
     await waitFor(() => clockInBtn())
     fireEvent.click(clockInBtn())
@@ -263,7 +277,55 @@ describe('通知发送', () => {
       late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
     }]
     fireEvent.click(screen.getByText(/Submit/i))
+    // The clock-in still succeeded — an admin deliberately turned
+    // notifications off, nothing is broken, so no failure text at all.
+    await waitFor(() => expect(screen.getByText(/^Clocked in at .*late by 12 min ⚠️$/)).toBeTruthy())
+    expect(screen.queryByText(/notif/i)).toBeNull()
+    expect(screen.queryByText(/supervisor/i)).toBeNull()
+  })
+
+  it('says nobody in the supervisor tier was reached when notifications are enabled but supervisor is 0', async () => {
+    const { supabase } = await import('../../shared/lib/supabase')
+    vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({
+      data: { enabled: true, staff: 1, supervisor: 0 }, error: null,
+    } as never)
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+    // The staff-tier row landed (this is not the RPC-error case), but nobody
+    // upstream did — this is the previously-invisible case, so it must be
+    // named distinctly from "could not be notified" (which implies the call
+    // itself failed).
     await waitFor(() => expect(screen.getByText(/Clocked in at .*late by 12 min/i)).toBeTruthy())
-    expect(screen.getByText(/supervisor could not be notified/i)).toBeTruthy()
+    expect(screen.getByText(/no supervisor was notified/i)).toBeTruthy()
+  })
+
+  it('reports plain success once the notification reaches at least one supervisor', async () => {
+    const { supabase } = await import('../../shared/lib/supabase')
+    vi.spyOn(supabase, 'rpc').mockResolvedValueOnce({
+      data: { enabled: true, staff: 1, supervisor: 2 }, error: null,
+    } as never)
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+    await waitFor(() => expect(screen.getByText(/^Clocked in at .*late by 12 min ⚠️$/)).toBeTruthy())
+    expect(screen.queryByText(/notif/i)).toBeNull()
+    expect(screen.queryByText(/supervisor/i)).toBeNull()
   })
 })

@@ -639,19 +639,32 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     reasonCode: LateReasonCode | null,
     reasonNote: string,
   ): Promise<WriteOutcome> {
-    return writeOutcome(await supabase.from('attendance').upsert({
+    const payload: Record<string, unknown> = {
       staff_id: staff.id,
       date: attDate,
       clock_in: now.toISOString(),
       status: lateness.isLate ? 'late' : 'present',
       late_minutes: lateness.lateMinutes,
-      late_reason_code: reasonCode,
-      late_reason: reasonNote || null,
       clock_in_photo_url: result.photoUrl,
       clock_in_lat: result.lat,
       clock_in_lng: result.lng,
       clock_in_distance_m: result.distanceM,
-    }, { onConflict: 'staff_id,date' }).select())
+    }
+    // late_reason_code/late_reason are append-only in the database now —
+    // changing a recorded reason raises. Sending explicit nulls here is
+    // harmless today because canClockIn only ever lets this run as an
+    // INSERT, but a future UI path that re-upserts an existing row would
+    // turn a punctual clock-in into a hard "changed the reason to null"
+    // failure. Omit the keys outright when there's no reason to record,
+    // rather than nulling them.
+    if (reasonCode !== null) {
+      payload.late_reason_code = reasonCode
+      payload.late_reason = reasonNote || null
+    }
+    return writeOutcome(await supabase.from('attendance').upsert(
+      payload,
+      { onConflict: 'staff_id,date' }
+    ).select())
   }
 
   // Writes the held-back late clock-in, reason and all, in that single upsert.
@@ -673,13 +686,20 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     // The attendance row is already saved at this point — the staff member is
     // standing at the door and must be clocked in regardless of what happens
     // next. So this is fire-and-forget from the UI's perspective — a failure
-    // is reported, never allowed to undo or block the clock-in above — but
-    // "failure" has to include a clean RPC call that wrote nothing.
-    // notify_late() returns the number of notification rows it wrote, not
-    // just ok/error: 0 means notifications are disabled or the row it looked
-    // for wasn't there, and reading `.error` alone treats that silently
-    // as success, the same "swallowed failure" shape writeOutcome() exists
-    // to catch on the write side.
+    // is reported, never allowed to undo or block the clock-in above.
+    //
+    // notify_late() returns jsonb — { enabled, staff, supervisor } — not a
+    // plain ok/error, so a clean RPC call still has three different stories
+    // to tell:
+    //   - enabled: false  → an admin turned attendance_late notifications
+    //     off (or the settings row is missing). Nothing is broken; say
+    //     nothing about a failure.
+    //   - enabled: true, supervisor: 0 → the staff-tier row landed but
+    //     nobody in the supervisor tier was reached (no supervisor assigned
+    //     and no branch manager fallback, or the supervisor toggles are
+    //     off). This is the case that used to be invisible — reading
+    //     `.error` alone reported it as a success.
+    //   - supervisor >= 1 → normal success, nothing to say.
     const notified = await supabase.rpc('notify_late', {
       p_staff_id: staff.id,
       p_date: attDate,
@@ -687,12 +707,25 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       p_reason_code: code,
       p_reason: note,
     })
-    const notifyFailed = !!notified.error || (notified.data ?? 0) === 0
+    let notifyNote = ''
+    if (notified.error) {
+      // The RPC call itself failed — we genuinely don't know who, if anyone,
+      // was reached.
+      notifyNote = ' Your supervisor could not be notified.'
+    } else {
+      const result = notified.data as { enabled: boolean; staff: number; supervisor: number }
+      if (result.enabled && result.supervisor === 0) {
+        notifyNote =
+          ' No supervisor was notified — either none is assigned to you ' +
+          '(with no branch manager fallback), or supervisor notifications ' +
+          'are switched off. Tell your manager directly.'
+      }
+    }
     setPendingLate(null)
     setLateError(null)
     setSuccessMsg(
       `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️` +
-      (notifyFailed ? ' Your supervisor could not be notified.' : '')
+      notifyNote
     )
     load()
     setTimeout(() => setSuccessMsg(null), 5000)
