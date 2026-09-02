@@ -129,6 +129,15 @@ begin
     'impersonating staff ' || v_staff || ', attendance row ' || v_row);
 
   perform set_config('request.jwt.claims', json_build_object('sub', v_staff)::text, true);
+  -- Prove the impersonation took. If auth.uid() does not read this claim, every
+  -- guard below returns early and every attack reports 'pass' — a full screen of
+  -- green proving nothing. Refuse to run rather than lie.
+  if auth.uid() is distinct from v_staff then
+    raise exception 'VERIFY ABORTED: auth.uid() returned % but should be %. '
+                    'The impersonation did not take, so nothing below would be '
+                    'meaningful. Check how auth.uid() is defined in this project.',
+                    coalesce(auth.uid()::text, 'null'), v_staff;
+  end if;
 
   -- A · move the row out of the review month
   begin
@@ -266,6 +275,15 @@ begin
   end if;
 
   perform set_config('request.jwt.claims', json_build_object('sub', v_staff)::text, true);
+  -- Prove the impersonation took. If auth.uid() does not read this claim, every
+  -- guard below returns early and every attack reports 'pass' — a full screen of
+  -- green proving nothing. Refuse to run rather than lie.
+  if auth.uid() is distinct from v_staff then
+    raise exception 'VERIFY ABORTED: auth.uid() returned % but should be %. '
+                    'The impersonation did not take, so nothing below would be '
+                    'meaningful. Check how auth.uid() is defined in this project.',
+                    coalesce(auth.uid()::text, 'null'), v_staff;
+  end if;
 
   -- Clock in late, with a reason
   begin
@@ -309,6 +327,9 @@ begin
       'no staff member has an elevated system_role with a low rank — nothing to test');
   else
     perform set_config('request.jwt.claims', json_build_object('sub', v_hr)::text, true);
+    if auth.uid() is distinct from v_hr then
+      raise exception 'VERIFY ABORTED: impersonation of the elevated account did not take';
+    end if;
       begin
       insert into attendance (staff_id, date, status, recorded_by, marked_by)
       select s.id, current_date, 'present', v_hr, v_hr
@@ -353,6 +374,15 @@ begin
   end if;
 
   perform set_config('request.jwt.claims', json_build_object('sub', v_staff)::text, true);
+  -- Prove the impersonation took. If auth.uid() does not read this claim, every
+  -- guard below returns early and every attack reports 'pass' — a full screen of
+  -- green proving nothing. Refuse to run rather than lie.
+  if auth.uid() is distinct from v_staff then
+    raise exception 'VERIFY ABORTED: auth.uid() returned % but should be %. '
+                    'The impersonation did not take, so nothing below would be '
+                    'meaningful. Check how auth.uid() is defined in this project.',
+                    coalesce(auth.uid()::text, 'null'), v_staff;
+  end if;
 
   -- Lie in the parameters: claim 1 minute and a different reason.
   select notify_late(v_staff, (select max(date) from attendance where staff_id = v_staff and status = 'late'),
