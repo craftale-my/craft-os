@@ -6,7 +6,7 @@ import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, L
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
-import { writeOutcome, type WriteOutcome } from '../../shared/lib/db-write'
+import { writeOutcome, writeOutcomeWithRow, type WriteOutcome, type WriteOutcomeWithRow } from '../../shared/lib/db-write'
 import { DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES, LATE_REASON_LABELS, type LateReasonCode } from '../../shared/lib/lateReason'
 import { Avatar } from '../../shared/components/Avatar'
 import { MapPin, CheckCircle, X, AlertTriangle, ZoomIn, Coffee } from 'lucide-react'
@@ -629,16 +629,36 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     setTimeout(() => setSuccessMsg(null), 6000)
   }
 
+  // attendance_guard_late_update() (supabase/migration-2026-09-02-late-reason-
+  // notifications.sql) may silently clamp a clock-in's status/late_minutes
+  // back to whatever the row already carried, rather than let the write erase
+  // a verdict a manager or the system already recorded (an absent sweep, a
+  // hand-marked late, an approved leave). The clock-in still lands either
+  // way — but when the STORED status disagrees with what this clock-in
+  // intended, the staff member is not clean: they were told they clocked in
+  // fine while the record they'll be judged on at month end says otherwise,
+  // and they cannot fix it themselves (a second update has no clock-in
+  // transition and the same guard would refuse it). The returned row is the
+  // only place that shows what actually landed — compare it against intent
+  // and say so, rather than trusting the lateness this component computed.
+  function clockInClampNote(actualStatus: AttendanceStatus, intendedStatus: AttendanceStatus): string {
+    if (actualStatus === intendedStatus) return ''
+    const label = ATTENDANCE_STATUS_LABELS[actualStatus] ?? actualStatus
+    return ` Your attendance today is still recorded as ${label} — you can't change that yourself, so ask your manager to correct it.`
+  }
+
   // The one and only clock-in write, shared by the punctual and the late path so
   // the two can never drift. `.select()` is not optional: without it a row
   // rejected by RLS is indistinguishable from a successful write — writeOutcome().
+  // Returns the row the database actually saved (not just proof one landed) —
+  // see clockInClampNote() above for why the caller needs it.
   async function writeClockIn(
     now: Date,
     result: ClockResult,
     lateness: { isLate: boolean; lateMinutes: number },
     reasonCode: LateReasonCode | null,
     reasonNote: string,
-  ): Promise<WriteOutcome> {
+  ): Promise<WriteOutcomeWithRow<{ status: AttendanceStatus }>> {
     const payload: Record<string, unknown> = {
       staff_id: staff.id,
       date: attDate,
@@ -661,7 +681,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       payload.late_reason_code = reasonCode
       payload.late_reason = reasonNote || null
     }
-    return writeOutcome(await supabase.from('attendance').upsert(
+    return writeOutcomeWithRow<{ status: AttendanceStatus }>(await supabase.from('attendance').upsert(
       payload,
       { onConflict: 'staff_id,date' }
     ).select())
@@ -733,6 +753,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     setLateError(null)
     setSuccessMsg(
       `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️` +
+      clockInClampNote(outcome.row.status, 'late') +
       notifyNote
     )
     load()
@@ -761,8 +782,14 @@ export function MyAttendance({ staff }: { staff: Staff }) {
         setClockModal(null)
         return
       }
-      outcome = await writeClockIn(now, result, { isLate: false, lateMinutes: 0 }, null, '')
-      if (outcome.ok) setSuccessMsg(`Clocked in at ${fmtTime(now.toISOString())} ✓`)
+      const clockInOutcome = await writeClockIn(now, result, { isLate: false, lateMinutes: 0 }, null, '')
+      outcome = clockInOutcome
+      if (clockInOutcome.ok) {
+        setSuccessMsg(
+          `Clocked in at ${fmtTime(now.toISOString())} ✓` +
+          clockInClampNote(clockInOutcome.row.status, 'present')
+        )
+      }
     } else if (!today) {
       // Previously this returned silently, leaving the modal open with no
       // explanation after the staff member had taken the selfie.

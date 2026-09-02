@@ -212,6 +212,111 @@ describe('迟到必须说明原因', () => {
   })
 })
 
+// attendance_guard_late_update() (supabase/migration-2026-09-02-late-reason-
+// notifications.sql) lets the clock-in always land, but silently clamps
+// status/late_minutes back to whatever the row already carried when the
+// proposed write would erase a verdict a manager or the system already
+// recorded (an absent sweep, a hand-marked late, an approved leave). Before
+// this fix, the success message was built from this component's OWN computed
+// lateness, not from what the database actually saved — so a staff member
+// clocked in onto an 'absent' row saw a clean "Clocked in ✓" while the stored
+// row still said absent, with no hint a manager needs to fix it.
+//
+// The mock's upsert never actually mutates h.tables.attendance (see
+// makeQuery above — `q.upsert` only records into `h.writes`); `.select()`
+// always hands back whatever the table currently holds. That is the seam:
+// seeding the table with the PRE-EXISTING (unclamped-by-the-write) row before
+// the write fires models the database returning that same row untouched,
+// exactly as the real trigger's silent reset would.
+describe('数据库把写入钳制回原状态时,必须如实告知——不能只报"打卡成功"', () => {
+  it('tells a punctual staff member their record still shows Absent when the write was clamped', async () => {
+    // Punctual (9:30:40 vs a 9:30:00 shift start — the same instant the
+    // "does not ask a punctual staff member anything" test above uses),
+    // so this component intends status: 'present'. But the row already
+    // carries 'absent' from the hourly auto-absent sweep, and the guard
+    // resets status/late_minutes back to OLD rather than let a bare
+    // clock-in erase that verdict.
+    vi.setSystemTime(new Date(2026, 8, 2, 9, 30, 40))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'absent',
+      late_minutes: 0, clock_in: null, clock_out: null,
+    }]
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+
+    // The clock-in itself still lands and is still reported as successful —
+    // it was. This is an added caveat, not a failure. Matched on the
+    // checkmark, not just "Clocked in at": the card's own status line renders
+    // the same words with no ✓, so a bare match is ambiguous the moment it
+    // also renders (see the disambiguation the notification tests already
+    // need for the same reason).
+    await waitFor(() => expect(h.writes).toHaveLength(1))
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*✓/i)).toBeTruthy())
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText(/still recorded as Absent/i)).toBeTruthy()
+    expect(screen.getByText(/ask your manager/i)).toBeTruthy()
+  })
+
+  it('tells a late staff member their record still shows Absent when the row was already absent', async () => {
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    // The row was already 'absent' before this clock-in — the guard refuses
+    // to move it to 'late' and resets status/late_minutes back to OLD.
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'absent',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 0,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+
+    // Disambiguated the same way the notification tests below have to: the
+    // card's own "Clocked in at" badge also renders alongside the banner.
+    await waitFor(() => expect(screen.getByText(/Clocked in at .*late by 12 min/i)).toBeTruthy())
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText(/still recorded as Absent/i)).toBeTruthy()
+    expect(screen.getByText(/ask your manager/i)).toBeTruthy()
+  })
+
+  it('adds no caveat to a punctual clock-in that was not clamped', async () => {
+    vi.setSystemTime(new Date(2026, 8, 2, 9, 30, 40))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'present',
+      late_minutes: 0, clock_in: null, clock_out: null,
+    }]
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+
+    // Anchored both ends: nothing may be appended after the checkmark.
+    await waitFor(() => expect(screen.getByText(/^Clocked in at .* ✓$/)).toBeTruthy())
+    expect(screen.queryByText(/still recorded as/i)).toBeNull()
+    expect(screen.queryByText(/ask your manager/i)).toBeNull()
+  })
+
+  it('adds no caveat to a late clock-in that was not clamped — the row really is late', async () => {
+    render(<MyAttendance staff={STAFF} />)
+    await waitFor(() => clockInBtn())
+    fireEvent.click(clockInBtn())
+    await waitFor(() => screen.getByText(/12 minutes late/i))
+    fireEvent.click(screen.getByText('Traffic jam'))
+    h.tables.attendance = [{
+      id: 'att-1', staff_id: 'staff-1', date: '2026-09-02', status: 'late',
+      clock_in: new Date(2026, 8, 2, 9, 42, 0).toISOString(), clock_out: null,
+      late_minutes: 12, late_reason_code: 'traffic', late_reason: null,
+    }]
+    fireEvent.click(screen.getByText(/Submit/i))
+
+    // Anchored both ends, same as the notification tests below rely on.
+    await waitFor(() => expect(screen.getByText(/^Clocked in at .*late by 12 min ⚠️$/)).toBeTruthy())
+    expect(screen.queryByText(/still recorded as/i)).toBeNull()
+    expect(screen.queryByText(/ask your manager/i)).toBeNull()
+  })
+})
+
 describe('通知发送', () => {
   it('tells notify_late after the attendance row lands', async () => {
     render(<MyAttendance staff={STAFF} />)
