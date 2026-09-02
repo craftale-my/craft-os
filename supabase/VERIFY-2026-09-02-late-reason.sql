@@ -157,7 +157,12 @@ begin
 
   -- C · excuse yourself
   begin
-    update attendance set late_excused = true where id = v_row;
+    -- Write all three excuse columns, not just the flag: the picked row may
+    -- already be excused, and a no-op write never reaches the guard — it would
+    -- report the guard as broken when it was simply never asked.
+    update attendance
+       set late_excused = true, late_excused_by = v_staff, late_excused_at = now()
+     where id = v_row;
     insert into verify_out values (3, 'C · excuse own lateness', 'FAIL', 'ALLOWED — the 10-point deduction can be self-removed');
   exception when others then
     insert into verify_out values (3, 'C · excuse own lateness', 'pass', sqlerrm);
@@ -173,7 +178,11 @@ begin
 
   -- E · forge the GPS evidence
   begin
-    update attendance set clock_in_distance_m = 0 where id = v_row;
+    -- Same no-op trap: the row's distance may already be 0. Always write a
+    -- value that differs, while still forging toward "compliant".
+    update attendance
+       set clock_in_distance_m = case when coalesce(clock_in_distance_m, -1) = 0 then 1 else 0 end
+     where id = v_row;
     insert into verify_out values (5, 'E · forge own clock-in distance', 'FAIL', 'ALLOWED — the GPS evidence can be rewritten');
   exception when others then
     insert into verify_out values (5, 'E · forge own clock-in distance', 'pass', sqlerrm);
