@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
@@ -6,11 +6,14 @@ import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ScheduledShi
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
-import { writeOutcome, type WriteOutcome } from '../../shared/lib/db-write'
+import { writeOutcome, writeOutcomeWithRow, type WriteOutcome, type WriteOutcomeWithRow } from '../../shared/lib/db-write'
 import { buildStaffReport } from '../../shared/lib/attendance-report'
 import type { DailyDetail } from '../../shared/lib/attendance-report'
+import { DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES, LATE_REASON_LABELS, type LateReasonCode } from '../../shared/lib/lateReason'
 import { Avatar } from '../../shared/components/Avatar'
-import { Camera, MapPin, CheckCircle, X, AlertTriangle, RefreshCw, ZoomIn, Coffee, ChevronDown, ChevronRight } from 'lucide-react'
+import { MapPin, CheckCircle, X, AlertTriangle, ZoomIn, Coffee, ChevronDown, ChevronRight } from 'lucide-react'
+import { ClockModal, type ClockResult } from './ClockModal'
+import { LateReasonStep } from './LateReasonStep'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -22,15 +25,6 @@ function daysInMonth(year: number, month: number): number {
   return new Date(year, month, 0).getDate()
 }
 
-function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371000
-  const toRad = (d: number) => d * Math.PI / 180
-  const dLat = toRad(lat2 - lat1)
-  const dLng = toRad(lng2 - lng1)
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-}
-
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', hour12: true })
 }
@@ -40,42 +34,6 @@ function fmtTime(iso: string): string {
 function fmtTime2(t: string): string {
   const [h, m] = t.split(':').map(Number)
   return `${h % 12 || 12}:${String(m).padStart(2, '0')}${h >= 12 ? 'pm' : 'am'}`
-}
-
-function fmtTimestamp(date: Date): string {
-  return (
-    date.toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' }) +
-    ', ' +
-    date.toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', hour12: true })
-  )
-}
-
-async function addWatermark(file: File): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    const url = URL.createObjectURL(file)
-    img.onload = () => {
-      const canvas = document.createElement('canvas')
-      canvas.width = img.width
-      canvas.height = img.height
-      const ctx = canvas.getContext('2d')!
-      ctx.drawImage(img, 0, 0)
-      const stamp = fmtTimestamp(new Date())
-      const barH = Math.max(40, img.height * 0.075)
-      const fontSize = Math.round(barH * 0.46)
-      ctx.fillStyle = 'rgba(0,0,0,0.58)'
-      ctx.fillRect(0, img.height - barH, img.width, barH)
-      ctx.fillStyle = '#ffffff'
-      ctx.font = `bold ${fontSize}px -apple-system, Arial, sans-serif`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText(stamp, img.width / 2, img.height - barH / 2)
-      URL.revokeObjectURL(url)
-      canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Canvas failed'))), 'image/jpeg', 0.88)
-    }
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')) }
-    img.src = url
-  })
 }
 
 // ─── Photo viewer modal ───────────────────────────────────────────────────────
@@ -99,272 +57,11 @@ function PhotoViewer({ url, onClose }: { url: string; onClose: () => void }) {
   )
 }
 
-// ─── Clock modal ──────────────────────────────────────────────────────────────
-
-type ClockStep = 'locating' | 'camera' | 'preview' | 'uploading' | 'error'
-
-interface ClockResult {
-  photoUrl: string
-  lat: number
-  lng: number
-  distanceM: number
-}
-
-interface ClockModalProps {
-  type: 'in' | 'out'
-  staffBranch: string | null
-  staffId: string
-  onDone: (result: ClockResult) => void
-  onCancel: () => void
-}
-
-function ClockModal({ type, staffBranch, staffId, onDone, onCancel }: ClockModalProps) {
-  const [step, setStep] = useState<ClockStep>('locating')
-  const [errorMsg, setErrorMsg] = useState('')
-  const [locationInfo, setLocationInfo] = useState<{ lat: number; lng: number; distance: number; branchName: string } | null>(null)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [watermarkedBlob, setWatermarkedBlob] = useState<Blob | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-
-  const startLocating = useCallback(async () => {
-    setStep('locating')
-    setErrorMsg('')
-
-    if (!staffBranch) {
-      setStep('error')
-      setErrorMsg('No branch is assigned to your account. Please contact your manager.')
-      return
-    }
-
-    let position: GeolocationPosition
-    try {
-      position = await new Promise<GeolocationPosition>((res, rej) =>
-        navigator.geolocation.getCurrentPosition(res, rej, { timeout: 12000, enableHighAccuracy: true })
-      )
-    } catch {
-      setStep('error')
-      setErrorMsg('Please enable location access to clock in. Check your browser or device location settings and try again.')
-      return
-    }
-
-    const { latitude: myLat, longitude: myLng } = position.coords
-
-    // Match staff branch to branches table (first word match e.g. "Cheras")
-    const keyword = staffBranch.split(' ')[0]
-    const { data: branchRow } = await supabase
-      .from('branches')
-      .select('name, latitude, longitude, radius_meters')
-      .ilike('name', `%${keyword}%`)
-      .limit(1)
-      .maybeSingle()
-
-    if (!branchRow || branchRow.latitude == null || branchRow.longitude == null) {
-      // No coordinates configured — allow through without distance check
-      setLocationInfo({ lat: myLat, lng: myLng, distance: 0, branchName: staffBranch })
-      setStep('camera')
-      return
-    }
-
-    const dist = haversineDistance(myLat, myLng, Number(branchRow.latitude), Number(branchRow.longitude))
-    const radius = branchRow.radius_meters ?? 100
-
-    if (dist > radius) {
-      setStep('error')
-      setErrorMsg(
-        `You are ${Math.round(dist)}m away from ${branchRow.name}. You must be within ${radius}m to clock in.`
-      )
-      return
-    }
-
-    setLocationInfo({ lat: myLat, lng: myLng, distance: dist, branchName: branchRow.name })
-    setStep('camera')
-  }, [staffBranch])
-
-  useEffect(() => {
-    startLocating()
-    return () => { if (previewUrl) URL.revokeObjectURL(previewUrl) }
-  }, [])
-
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    e.target.value = ''
-    try {
-      const blob = await addWatermark(file)
-      if (previewUrl) URL.revokeObjectURL(previewUrl)
-      setPreviewUrl(URL.createObjectURL(blob))
-      setWatermarkedBlob(blob)
-      setStep('preview')
-    } catch {
-      setStep('error')
-      setErrorMsg('Failed to process photo. Please try again.')
-    }
-  }
-
-  function retake() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl)
-    setPreviewUrl(null)
-    setWatermarkedBlob(null)
-    setStep('camera')
-    setTimeout(() => fileInputRef.current?.click(), 80)
-  }
-
-  async function confirm() {
-    if (!watermarkedBlob || !locationInfo) return
-    setStep('uploading')
-    try {
-      const filename = `${staffId}-${type}-${Date.now()}.jpg`
-      const { data, error } = await supabase.storage
-        .from('attendance-selfies')
-        .upload(filename, watermarkedBlob, { contentType: 'image/jpeg', upsert: true })
-      if (error) throw error
-      const { data: { publicUrl } } = supabase.storage.from('attendance-selfies').getPublicUrl(data.path)
-      onDone({
-        photoUrl: publicUrl,
-        lat: locationInfo.lat,
-        lng: locationInfo.lng,
-        distanceM: Math.round(locationInfo.distance),
-      })
-    } catch {
-      setStep('error')
-      setErrorMsg('Failed to upload photo. Please check your connection and try again.')
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60">
-      <div className="w-full sm:max-w-sm bg-white rounded-t-3xl sm:rounded-2xl overflow-hidden shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#F0E8DC]">
-          <h3 className="font-bold text-brown-dark text-base">Clock {type === 'in' ? 'In' : 'Out'}</h3>
-          <button onClick={onCancel} className="p-1 text-brown-faint hover:text-brown-dark transition-colors">
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="px-5 py-6">
-          {step === 'locating' && (
-            <div className="text-center py-8 space-y-4">
-              <div className="w-16 h-16 mx-auto rounded-full bg-[#EBF5EE] flex items-center justify-center">
-                <MapPin size={28} className="text-[#3D7A50] animate-pulse" />
-              </div>
-              <div>
-                <p className="font-semibold text-brown-dark">Checking your location…</p>
-                <p className="text-sm text-brown-faint mt-1">Please allow location access when prompted.</p>
-              </div>
-            </div>
-          )}
-
-          {step === 'camera' && locationInfo && (
-            <div className="space-y-5">
-              <div className="bg-[#EBF5EE] rounded-xl p-3.5 flex items-center gap-3">
-                <CheckCircle size={18} className="text-[#3D7A50] flex-shrink-0" />
-                <div>
-                  <p className="text-sm font-semibold text-[#2E5E3A]">Location verified ✓</p>
-                  <p className="text-xs text-[#3D7A50]">
-                    {locationInfo.distance > 0
-                      ? `${Math.round(locationInfo.distance)}m from ${locationInfo.branchName}`
-                      : `At ${locationInfo.branchName}`}
-                  </p>
-                </div>
-              </div>
-              <div className="text-center space-y-4">
-                <div className="w-16 h-16 mx-auto rounded-full bg-[#FBF0E6] flex items-center justify-center">
-                  <Camera size={28} className="text-[#C4813A]" />
-                </div>
-                <div>
-                  <p className="font-semibold text-brown-dark">Take a selfie</p>
-                  <p className="text-sm text-brown-faint mt-1">
-                    A date &amp; time stamp will be added automatically.
-                  </p>
-                </div>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full py-3 rounded-xl bg-[#C4813A] text-white font-semibold text-sm hover:bg-[#A86C2C] transition-colors active:scale-[0.98]"
-                >
-                  Open Camera
-                </button>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                capture="user"
-                className="hidden"
-                onChange={handleFileChange}
-              />
-            </div>
-          )}
-
-          {step === 'preview' && previewUrl && (
-            <div className="space-y-4">
-              <div className="rounded-xl overflow-hidden border border-[#E8DDD0] bg-black">
-                <img src={previewUrl} alt="Preview" className="w-full max-h-72 object-contain" />
-              </div>
-              <p className="text-xs text-brown-faint text-center">
-                Timestamp has been added to the photo.
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={retake}
-                  className="py-3 rounded-xl border border-[#D4C5B0] text-brown-medium text-sm font-semibold hover:bg-[#F5EDE0] transition-colors"
-                >
-                  Retake
-                </button>
-                <button
-                  onClick={confirm}
-                  className="py-3 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors active:scale-[0.98]"
-                >
-                  Confirm
-                </button>
-              </div>
-            </div>
-          )}
-
-          {step === 'uploading' && (
-            <div className="text-center py-8 space-y-4">
-              <div className="w-16 h-16 mx-auto rounded-full bg-[#FBF0E6] flex items-center justify-center">
-                <RefreshCw size={28} className="text-[#C4813A] animate-spin" />
-              </div>
-              <div>
-                <p className="font-semibold text-brown-dark">Confirming attendance…</p>
-                <p className="text-sm text-brown-faint mt-1">Please wait a moment.</p>
-              </div>
-            </div>
-          )}
-
-          {step === 'error' && (
-            <div className="space-y-4 py-2">
-              <div className="bg-[#FDF3F0] rounded-xl p-4 flex gap-3">
-                <AlertTriangle size={18} className="text-[#9E4A30] flex-shrink-0 mt-0.5" />
-                <p className="text-sm text-[#9E4A30] leading-relaxed">{errorMsg}</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={onCancel}
-                  className="py-3 rounded-xl border border-[#D4C5B0] text-brown-medium text-sm font-semibold hover:bg-[#F5EDE0] transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={startLocating}
-                  className="py-3 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors"
-                >
-                  Try Again
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ─── Manager: daily roster ────────────────────────────────────────────────────
 
 const STATUS_OPTIONS: AttendanceStatus[] = ['present', 'late', 'absent', 'half_day', 'on_leave']
 
-function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: string | undefined }) {
+export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: string | undefined }) {
   const [date, setDate] = useState(todayStr())
   const [records, setRecords] = useState<Record<string, Attendance>>({})
   const [breaksByAtt, setBreaksByAtt] = useState<Record<string, AttendanceBreak[]>>({})
@@ -372,6 +69,9 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
   const [filterDept, setFilterDept] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
   const [viewPhoto, setViewPhoto] = useState<string | null>(null)
+  // A rejected excuse must be visible, not silent — surfaced above the list
+  // rather than per-row, since the row itself may re-render away on reload.
+  const [rosterError, setRosterError] = useState<string | null>(null)
 
   async function load() {
     // Fallback trigger for the hourly cron: opening/refreshing the roster
@@ -423,6 +123,36 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
     load()
   }
 
+  const isManagerTier = (me: Staff | undefined) =>
+    !!me && (me.rank === 'manager' || me.system_role === 'manager' ||
+             me.system_role === 'admin' || me.system_role === 'owner')
+
+  // Mirrors excuse_lateness()'s own authorisation check exactly (see
+  // supabase/migration-2026-09-02-late-reason-notifications.sql). manage_hr
+  // — the capability that gates access to this whole page — is branch-wide,
+  // so it is broader than this predicate: a supervisor can see a colleague's
+  // row here without being allowed to excuse it. Showing this button to
+  // anyone else would give them a click the database rejects.
+  function canExcuse(target: Staff): boolean {
+    const me = allStaff.find(s => s.id === managerId)
+    return isManagerTier(me) || target.supervisor_id === managerId
+  }
+
+  // `saving` holds a STAFF id everywhere else in this component
+  // (`saving === s.id`); keep that, or the disabled states stop matching.
+  async function excuse(staffId: string, attendanceId: string) {
+    setSaving(staffId)
+    // Goes through the excuse_lateness() RPC, not a direct update: RLS is
+    // row-scoped, so a policy permissive enough to allow this would also let
+    // a supervisor rewrite clock_in and late_minutes. The function writes
+    // only the excuse columns.
+    const { error } = await supabase.rpc('excuse_lateness', { p_attendance_id: attendanceId })
+    const outcome: WriteOutcome = error ? { ok: false, reason: error.message } : { ok: true }
+    setSaving(null)
+    if (!outcome.ok) setRosterError(`Could not excuse this lateness — ${outcome.reason}`)
+    else { setRosterError(null); load() }
+  }
+
   const visibleStaff = allStaff.filter(s => {
     if (filterBranch && s.branch !== filterBranch) return false
     if (filterDept && s.department !== filterDept) return false
@@ -434,6 +164,12 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
   return (
     <div className="space-y-4">
       {viewPhoto && <PhotoViewer url={viewPhoto} onClose={() => setViewPhoto(null)} />}
+
+      {rosterError && (
+        <div role="alert" className="px-4 py-2.5 rounded-xl bg-[#FDF3F0] border border-[#E8B8A8] text-sm text-[#9E4A30]">
+          {rosterError}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <input type="date" value={date} onChange={e => setDate(e.target.value)} className={selectCls} />
@@ -498,6 +234,38 @@ function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; managerId: st
                       className="w-16 px-2 py-1 rounded-lg border border-[#D4C5B0] text-xs text-brown-dark"
                       placeholder="mins"
                     />
+                  )}
+                  {rec?.status === 'late' && (
+                    <span className="px-2 py-1 rounded-lg text-xs bg-[#F5EDE0] text-brown-muted">
+                      {/* A late record can reach here with no reason code at
+                          all — DailyRoster.setStatus (below) writes
+                          status='late' without one when a manager sets it by
+                          hand — and, defensively, with a code outside the
+                          six LATE_REASON_LABELS knows (the DB CHECK
+                          constraint should prevent this, but the cast on the
+                          next line bypasses TypeScript's own check). Either
+                          way this must render something visible, never the
+                          blank chrome an unguarded index into
+                          LATE_REASON_LABELS would produce. */}
+                      {rec.late_reason_code
+                        ? (LATE_REASON_LABELS[rec.late_reason_code as LateReasonCode] ?? rec.late_reason_code)
+                        : 'No reason given'}
+                      {rec.late_reason ? ` — ${rec.late_reason}` : ''}
+                    </span>
+                  )}
+                  {rec?.status === 'late' && !rec.late_excused && canExcuse(s) && (
+                    <button
+                      disabled={saving === s.id}
+                      onClick={() => excuse(s.id, rec.id)}
+                      className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-[#EEF5EF] text-[#3D7A50] border border-[#A8C5AE] disabled:opacity-50"
+                    >
+                      Excuse
+                    </button>
+                  )}
+                  {rec?.late_excused && (
+                    <span className="px-2 py-1 rounded-lg text-xs font-semibold bg-[#EEF5EF] text-[#3D7A50]">
+                      Excused
+                    </span>
                   )}
                 </div>
               </div>
@@ -1209,6 +977,38 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   // The attendance day this card is acting on. Usually the wall-clock date, but
   // a night shift that ran past midnight holds it on the day the shift STARTED.
   const [attDate, setAttDate] = useState(todayStr())
+  // A late clock-in that has been photographed and located but NOT yet written:
+  // it is held here until the staff member says why, then written in one upsert
+  // carrying the reason, so a late row can never exist without one. `at` is the
+  // arrival — the instant the selfie and GPS check passed — held so that time
+  // spent choosing a reason cannot rewrite clock_in out of step with
+  // late_minutes, which is already fixed at that same instant.
+  const [pendingLate, setPendingLate] = useState<
+    { result: ClockResult; at: Date; lateMinutes: number; shiftStart: string } | null
+  >(null)
+  const [savingLate, setSavingLate] = useState(false)
+  // A failed late write is reported inside the step, not in the card behind it:
+  // the step covers the screen, so the card's banner would be under the dimmer.
+  const [lateError, setLateError] = useState<string | null>(null)
+  // How many minutes of lateness force a written explanation on top of the
+  // tapped code. HR tunes it; the constant is the fallback for a missing or
+  // malformed row, because a bad settings value must never make the step
+  // unanswerable.
+  const [threshold, setThreshold] = useState(DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES)
+
+  useEffect(() => {
+    supabase.from('system_rules').select('value').eq('key', 'late_reason_written_threshold')
+      .maybeSingle()
+      .then(({ data }) => {
+        // `system_rules.value` is `text not null`, so a blank string is
+        // reachable — and Number('') is 0, a valid-looking lateness threshold
+        // that would demand written prose for every late minute. Blank counts
+        // as missing, same as anything else that doesn't parse.
+        const raw = (data as { value?: string } | null)?.value
+        const n = raw != null && raw.trim() !== '' ? Number(raw) : NaN
+        if (Number.isFinite(n) && n >= 0) setThreshold(n)
+      })
+  }, [])
 
   // Loads the month's records, resolves which attendance day is active, and
   // pulls that day's shift + break allowances. One pass, because the shift
@@ -1348,6 +1148,165 @@ export function MyAttendance({ staff }: { staff: Staff }) {
     setTimeout(() => setSuccessMsg(null), 6000)
   }
 
+  // attendance_guard_late_update() (supabase/migration-2026-09-02-late-reason-
+  // notifications.sql) may silently clamp a clock-in's status/late_minutes
+  // back to whatever the row already carried, rather than let the write erase
+  // a verdict a manager or the system already recorded (an absent sweep, a
+  // hand-marked late, an approved leave). The clock-in still lands either
+  // way — but when the STORED status disagrees with what this clock-in
+  // intended, the staff member is not clean: they were told they clocked in
+  // fine while the record they'll be judged on at month end says otherwise,
+  // and they cannot fix it themselves (a second update has no clock-in
+  // transition and the same guard would refuse it). The returned row is the
+  // only place that shows what actually landed — compare it against intent
+  // and say so, rather than trusting the lateness this component computed.
+  //
+  // Three things review caught in the first version of this copy:
+  //   - it read as an error even when nothing was wrong. on_leave and
+  //     public_holiday are the day's own nature, not a mistake anyone needs
+  //     to chase — only absent/half_day/late (a verdict an auto-sweep or a
+  //     manager already recorded) genuinely need the staff member to ask
+  //     someone to look at it.
+  //   - it said "today" unconditionally. resolveAttendanceDate() (shared/lib/
+  //     attendance.ts) can hold attDate at YESTERDAY's date on a night shift
+  //     that's still running past midnight, so the copy has to check attDate
+  //     against the wall-clock date rather than assume it.
+  //   - the clamp resets late_minutes in the same statement as status, but
+  //     the old copy never said so. Only worth naming when the clamped
+  //     status is itself 'late' — that's the one case where the minutes
+  //     figure is part of what the reader needs to know; the other clamped
+  //     statuses carry no late_minutes of their own interest.
+  function clockInClampNote(
+    actual: { status: AttendanceStatus; late_minutes: number },
+    intendedStatus: AttendanceStatus,
+  ): string {
+    if (actual.status === intendedStatus) return ''
+    const label = ATTENDANCE_STATUS_LABELS[actual.status] ?? actual.status
+    const subject = attDate === todayStr() ? 'Your attendance today' : 'Your attendance for that shift'
+    // on_leave/public_holiday are simply what the day already was — clocking
+    // in didn't erase anything and nothing needs correcting, so this must not
+    // read like the absent/half_day/late branch below.
+    if (actual.status === 'on_leave' || actual.status === 'public_holiday') {
+      return ` ${subject} is recorded as ${label} — that's the day's schedule, nothing to fix.`
+    }
+    const minutesNote = actual.status === 'late' ? ` (${actual.late_minutes} min)` : ''
+    return ` ${subject} is still recorded as ${label}${minutesNote} — ask your manager to correct it.`
+  }
+
+  // The one and only clock-in write, shared by the punctual and the late path so
+  // the two can never drift. `.select()` is not optional: without it a row
+  // rejected by RLS is indistinguishable from a successful write — writeOutcome().
+  // Returns the row the database actually saved (not just proof one landed) —
+  // see clockInClampNote() above for why the caller needs both status AND
+  // late_minutes off that row, not just status.
+  async function writeClockIn(
+    now: Date,
+    result: ClockResult,
+    lateness: { isLate: boolean; lateMinutes: number },
+    reasonCode: LateReasonCode | null,
+    reasonNote: string,
+  ): Promise<WriteOutcomeWithRow<{ status: AttendanceStatus; late_minutes: number }>> {
+    const payload: Record<string, unknown> = {
+      staff_id: staff.id,
+      date: attDate,
+      clock_in: now.toISOString(),
+      status: lateness.isLate ? 'late' : 'present',
+      late_minutes: lateness.lateMinutes,
+      clock_in_photo_url: result.photoUrl,
+      clock_in_lat: result.lat,
+      clock_in_lng: result.lng,
+      clock_in_distance_m: result.distanceM,
+    }
+    // late_reason_code/late_reason are append-only in the database now —
+    // changing a recorded reason raises. Sending explicit nulls here is
+    // harmless today because canClockIn only ever lets this run as an
+    // INSERT, but a future UI path that re-upserts an existing row would
+    // turn a punctual clock-in into a hard "changed the reason to null"
+    // failure. Omit the keys outright when there's no reason to record,
+    // rather than nulling them.
+    if (reasonCode !== null) {
+      payload.late_reason_code = reasonCode
+      payload.late_reason = reasonNote || null
+    }
+    return writeOutcomeWithRow<{ status: AttendanceStatus; late_minutes: number }>(await supabase.from('attendance').upsert(
+      payload,
+      { onConflict: 'staff_id,date' }
+    ).select())
+  }
+
+  // Writes the held-back late clock-in, reason and all, in that single upsert.
+  async function handleLateReason({ code, note }: { code: LateReasonCode; note: string }) {
+    if (!pendingLate) return
+    const now = pendingLate.at
+    setLateError(null)
+    setSavingLate(true)
+    const lateness = { isLate: true, lateMinutes: pendingLate.lateMinutes }
+    const outcome = await writeClockIn(now, pendingLate.result, lateness, code, note)
+    setSavingLate(false)
+    if (!outcome.ok) {
+      setLateError(
+        `Clock in FAILED — ${outcome.reason} Nothing was saved. Please try again, ` +
+        `and tell your manager if it keeps failing.`
+      )
+      return   // keep the step open; the typed reason is not thrown away
+    }
+    // The attendance row is already saved at this point — the staff member is
+    // standing at the door and must be clocked in regardless of what happens
+    // next. So this is fire-and-forget from the UI's perspective — a failure
+    // is reported, never allowed to undo or block the clock-in above.
+    //
+    // notify_late() returns jsonb — { enabled, staff, supervisor } — not a
+    // plain ok/error, so a clean RPC call still has three different stories
+    // to tell:
+    //   - enabled: false  → an admin turned attendance_late notifications
+    //     off (or the settings row is missing). Nothing is broken; say
+    //     nothing about a failure.
+    //   - enabled: true, supervisor: 0 → the staff-tier row landed but
+    //     nobody in the supervisor tier was reached (no supervisor assigned
+    //     and no branch manager fallback, or the supervisor toggles are
+    //     off). This is the case that used to be invisible — reading
+    //     `.error` alone reported it as a success.
+    //   - supervisor >= 1 → normal success, nothing to say.
+    const notified = await supabase.rpc('notify_late', {
+      p_staff_id: staff.id,
+      p_date: attDate,
+      p_late_minutes: lateness.lateMinutes,
+      p_reason_code: code,
+      p_reason: note,
+    })
+    let notifyNote = ''
+    if (notified.error) {
+      // The RPC call itself failed — we genuinely don't know who, if anyone,
+      // was reached.
+      notifyNote = ' Your supervisor could not be notified.'
+    } else {
+      // No `.error`, but the jsonb payload itself might still be missing or
+      // the wrong shape (e.g. notify_late returning NULL). A raw destructure
+      // here used to throw AFTER the attendance row was already saved, which
+      // left this whole dialog stuck open forever with no error and no way
+      // forward — worse than any of the branches below, because the clock-in
+      // had actually succeeded. Narrow before reading instead of casting.
+      const result = notified.data as { enabled?: unknown; supervisor?: unknown } | null
+      if (typeof result?.enabled !== 'boolean' || typeof result.supervisor !== 'number') {
+        notifyNote = ' Your supervisor may not have been notified — tell your manager directly.'
+      } else if (result.enabled && result.supervisor === 0) {
+        notifyNote =
+          ' No supervisor was notified — either none is assigned to you ' +
+          '(with no branch manager fallback), or supervisor notifications ' +
+          'are switched off. Tell your manager directly.'
+      }
+    }
+    setPendingLate(null)
+    setLateError(null)
+    setSuccessMsg(
+      `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️` +
+      clockInClampNote(outcome.row, 'late') +
+      notifyNote
+    )
+    load()
+    setTimeout(() => setSuccessMsg(null), 5000)
+  }
+
   // Every write below ends in `.select()` on purpose: without it a row rejected
   // by RLS is indistinguishable from a successful write. See writeOutcome().
   async function handleClockDone(type: 'in' | 'out', result: ClockResult) {
@@ -1358,22 +1317,24 @@ export function MyAttendance({ staff }: { staff: Staff }) {
       const lateness = todayShift
         ? calcLateness(now.toISOString(), attDate, todayShift.start_time)
         : { isLate: false, lateMinutes: 0 }
-      outcome = writeOutcome(await supabase.from('attendance').upsert({
-        staff_id: staff.id,
-        date: attDate,
-        clock_in: now.toISOString(),
-        status: lateness.isLate ? 'late' : 'present',
-        late_minutes: lateness.lateMinutes,
-        clock_in_photo_url: result.photoUrl,
-        clock_in_lat: result.lat,
-        clock_in_lng: result.lng,
-        clock_in_distance_m: result.distanceM,
-      }, { onConflict: 'staff_id,date' }).select())
-      if (outcome.ok) {
+      // A late arrival is held, not written: it goes to the database only once
+      // the reason is in hand, in the same upsert.
+      if (lateness.isLate && todayShift) {
+        setPendingLate({
+          result,
+          at: now,
+          lateMinutes: lateness.lateMinutes,
+          shiftStart: fmtTime2(todayShift.start_time),
+        })
+        setClockModal(null)
+        return
+      }
+      const clockInOutcome = await writeClockIn(now, result, { isLate: false, lateMinutes: 0 }, null, '')
+      outcome = clockInOutcome
+      if (clockInOutcome.ok) {
         setSuccessMsg(
-          lateness.isLate
-            ? `Clocked in at ${fmtTime(now.toISOString())} — late by ${lateness.lateMinutes} min ⚠️`
-            : `Clocked in at ${fmtTime(now.toISOString())} ✓`
+          `Clocked in at ${fmtTime(now.toISOString())} ✓` +
+          clockInClampNote(clockInOutcome.row, 'present')
         )
       }
     } else if (!today) {
@@ -1403,7 +1364,15 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   }
 
   const present = monthRecords.filter(r => r.status === 'present').length
-  const late = monthRecords.filter(r => r.status === 'late').length
+  // M5: this must agree with Reviews.countLateDays, which excludes an
+  // excused lateness from the score — otherwise a staff member sees "Late: 3"
+  // here while their review reads late_count: 1, the exact month-end
+  // mismatch this whole late-reason/excuse feature exists to prevent. The
+  // prominent number is the one that actually drives the score (non-excused);
+  // excusedLate keeps the excused days visible rather than dropping them —
+  // shown as a small note under the tile below, and per-day in the list.
+  const late = monthRecords.filter(r => r.status === 'late' && !r.late_excused).length
+  const excusedLate = monthRecords.filter(r => r.status === 'late' && r.late_excused).length
   const absent = monthRecords.filter(r => r.status === 'absent').length
 
   const canClockIn = !today?.clock_in
@@ -1442,6 +1411,16 @@ export function MyAttendance({ staff }: { staff: Staff }) {
           staffId={staff.id}
           onDone={result => handleClockDone(clockModal, result)}
           onCancel={() => setClockModal(null)}
+        />
+      )}
+      {pendingLate && (
+        <LateReasonStep
+          lateMinutes={pendingLate.lateMinutes}
+          shiftStart={pendingLate.shiftStart}
+          thresholdMinutes={threshold}
+          saving={savingLate}
+          error={lateError}
+          onSubmit={handleLateReason}
         />
       )}
       {viewPhoto && <PhotoViewer url={viewPhoto} onClose={() => setViewPhoto(null)} />}
@@ -1658,6 +1637,12 @@ export function MyAttendance({ staff }: { staff: Staff }) {
         <div className="bg-white rounded-xl p-4 border border-[#E8DDD0] text-center">
           <p className="text-2xl font-bold text-[#C4813A]">{late}</p>
           <p className="text-xs text-brown-faint mt-0.5">Late</p>
+          {/* Excused days aren't folded into the count above (it must match
+              what Reviews.countLateDays feeds into the score), but they
+              aren't hidden either — surfaced here, and per-day below. */}
+          {excusedLate > 0 && (
+            <p className="text-[10px] font-medium text-[#3D7A50] mt-1">+{excusedLate} excused</p>
+          )}
         </div>
         <div className="bg-white rounded-xl p-4 border border-[#E8DDD0] text-center">
           <p className="text-2xl font-bold text-[#9E4A30]">{absent}</p>
@@ -1681,6 +1666,11 @@ export function MyAttendance({ staff }: { staff: Staff }) {
                 >
                   {ATTENDANCE_STATUS_LABELS[r.status]}{r.status === 'late' && r.late_minutes ? ` (${r.late_minutes}m)` : ''}
                 </span>
+                {r.status === 'late' && r.late_excused && (
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#EEF5EE] text-[#3D7A50] flex-shrink-0">
+                    Excused
+                  </span>
+                )}
                 <div className="flex items-center gap-2 ml-auto">
                   {r.clock_in_distance_m != null && (
                     <span className="text-[10px] text-brown-faint flex items-center gap-0.5">

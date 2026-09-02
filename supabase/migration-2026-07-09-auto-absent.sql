@@ -1,5 +1,5 @@
 -- ============================================================================
--- Auto-mark ABSENT for missed scheduled shifts (2026-07-09)
+-- Auto-mark ABSENT for missed scheduled shifts (2026-07-09, v2)
 -- Run BY HAND in the Supabase SQL editor. Idempotent — safe to re-run.
 -- Prereq: pg_cron already enabled (it is — the 'leave-daily' job uses it).
 --
@@ -9,6 +9,61 @@
 --   marked_by     = 'system'  (manual marks store the acting staff id instead)
 --   scheduled_shift_id links back to the missed shift for appeals/tracing.
 -- Existing attendance rows are never touched (late stays late).
+--
+-- v2 (2026-09-02) fixes the same stale-rank bug the attendance trigger review
+-- just cost a round on: the guard below checked `rank in ('supervisor',
+-- 'manager')` only. That is not the boundary that actually governs this
+-- table. `grep -n "attendance_manage" supabase/schema.sql
+-- supabase/migration-*.sql` and take the LAST definition — it is
+-- migration-2026-07-08-rls-system-role.sql:37-39:
+--   create policy "attendance_manage" on attendance for all to authenticated
+--     using ((current_rank() in ('supervisor','manager')
+--             or current_system_role() in ('hr','supervisor','manager','admin','owner')));
+-- so an account with system_role in ('hr','supervisor','manager','admin',
+-- 'owner') but a trainee/junior/senior RANK — precisely the class
+-- migration-2026-07-08-rls-system-role.sql exists to serve — has full RLS
+-- write access to `attendance` and was refused by this RPC alone. DailyRoster
+-- .load() (src/features/hr/HrAttendance.tsx) calls it as
+-- `supabase.rpc('mark_absent_for_missed_shifts').then(() => {}, () => {})`,
+-- which swallows both the success and the error, so for exactly those
+-- accounts the sweep silently never ran when they opened the roster — no
+-- error shown, no absences ever marked, indistinguishable from everything
+-- being fine. v2 replaces the hand-rolled `select rank into v_rank ...` check
+-- with calls to current_rank()/current_system_role() — the same two
+-- functions attendance_manage's own USING clause calls, and the same pattern
+-- migration-2026-09-02-late-reason-notifications.sql's attendance_guard_
+-- late_update() now uses for its own broad test — so this guard cannot drift
+-- from the policy again without the policy itself being edited. Each half is
+-- wrapped in coalesce(..., false) for the same reason as that trigger: both
+-- functions return NULL for a caller current_rank()/current_system_role()
+-- can't resolve, and `null or null` is NULL, not false — so without the
+-- coalesce an unresolvable caller would fail OPEN instead of closed.
+--
+-- THIS FILE HAS ALREADY BEEN RUN IN PRODUCTION (v1). v2 changes only the
+-- guard inside mark_absent_for_missed_shifts() via `create or replace
+-- function`, which is idempotent and safe to run again — see the re-run
+-- safety check at the end of this comment block. It DOES need to be re-run
+-- for the fix to take effect; the version live in prod today still has the
+-- stale rank-only guard.
+--
+-- RE-RUN SAFETY, CHECKED STATEMENT BY STATEMENT (v2). Every statement in this
+-- file is idempotent on a database that already has v1 applied:
+--   1) `alter table attendance add column if not exists ...` (x2) — no-op if
+--      the columns already exist, which they do in prod.
+--   2) `create or replace function mark_absent_for_missed_shifts()` — replaces
+--      the function body in place; does not reset the EXECUTE grant below.
+--   3) `grant execute on function ... to authenticated` — granting an
+--      already-held privilege is a no-op, not an error.
+--   4) `select cron.schedule('absent-hourly', '10 * * * *', ...)` — pg_cron's
+--      cron.schedule() upserts by job name (since pg_cron 1.4: a second call
+--      with the same name updates that job's schedule/command in place rather
+--      than creating a duplicate), which is what the original header's
+--      "re-running replaces the same-named job" already relied on. v2 does
+--      not change the schedule or the command text, only the function body
+--      the command calls, so this statement is a no-op in substance either way.
+-- No column, constraint, index, or seed data is added or changed. Re-running
+-- the whole file end to end on an up-to-date-except-for-the-guard database is
+-- safe and idempotent.
 -- ============================================================================
 
 -- 1) Columns ------------------------------------------------------------------
@@ -21,15 +76,20 @@ alter table attendance add column if not exists marked_by text;
 create or replace function mark_absent_for_missed_shifts()
 returns int language plpgsql security definer as $$
 declare
-  v_rank    text;
   v_now_myt timestamp;   -- MYT wall-clock; shifts are stored as MYT date + time
   v_count   int;
 begin
-  -- Callable by cron (no auth context) or supervisors/managers only
-  -- (same guard pattern as process_leave_accruals).
+  -- Callable by cron (no auth context) or anyone attendance_manage would let
+  -- write this table — v2: mirrors that policy's LIVE USING clause (grepped;
+  -- see the v2 note above), via the same two functions the policy itself
+  -- calls, instead of a hand-rolled rank-only lookup that had drifted from it.
+  -- coalesce(..., false) on each half so an unresolvable caller fails CLOSED,
+  -- not open — see the v2 note for why the bare `or` would otherwise misfire.
   if auth.uid() is not null then
-    select rank into v_rank from staff where id = auth.uid();
-    if v_rank is null or v_rank not in ('supervisor','manager') then
+    if not (
+      coalesce(current_rank() in ('supervisor','manager'), false)
+      or coalesce(current_system_role() in ('hr','supervisor','manager','admin','owner'), false)
+    ) then
       raise exception 'mark_absent_for_missed_shifts: not allowed';
     end if;
   end if;
