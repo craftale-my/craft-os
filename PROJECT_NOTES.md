@@ -139,6 +139,16 @@ Authentication is **Supabase Auth (email/password)** layered over an application
 
 ## 4. Database
 
+> **`schema.sql` is stale for RLS policies.** Several later migrations `drop policy` and
+> recreate policies that still appear in their original form in `schema.sql`, which was never
+> updated to match. `attendance_manage`, `attendance_select_own` and others were replaced by
+> `migration-2026-07-08-rls-system-role.sql` — the live versions also allow
+> `current_system_role() in ('hr','supervisor','manager','admin','owner')`, which the
+> `schema.sql` text does not mention. Before relying on any policy, run
+> `grep -n "<policy_name>" supabase/schema.sql supabase/migration-*.sql` and take the LAST
+> definition, not the one in `schema.sql`. A guard trigger written against the stale text
+> silently under-permits exactly the accounts the RBAC migration exists to serve.
+
 **Source of truth: [`supabase/schema.sql`](supabase/schema.sql)** for everything except
 the seven Tasks & Projects tables below. Those were added by three dated migration
 files under `supabase/` that have been run against production but not folded back into
