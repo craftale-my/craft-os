@@ -368,11 +368,15 @@ create table if not exists branches (
   created_at timestamptz default now()
 );
 
+-- Coordinates are NOT set here: latitude/longitude/radius_meters are added to
+-- this table further down the file, so they do not exist yet at this point.
+-- Kepong's geofence is filled in right after that ALTER block.
 insert into branches (name, address)
 select v.name, v.address
 from (values
   ('Cheras', 'Taman Connaught, Cheras'),
-  ('Puchong', 'Bandar Puteri, Puchong')
+  ('Puchong', 'Bandar Puteri, Puchong'),
+  ('Kepong', 'B-G, 1, Jln Metro Perdana 1, Taman Usahawan Kepong, 52100 Kuala Lumpur')
 ) as v(name, address)
 where not exists (select 1 from branches);
 
@@ -659,6 +663,14 @@ alter table attendance add column if not exists clock_out_distance_m int;
 alter table branches add column if not exists latitude      double precision;
 alter table branches add column if not exists longitude     double precision;
 alter table branches add column if not exists radius_meters int;
+
+-- Kepong is the one branch whose coordinates we have; the other two keep null
+-- latitude/longitude, which ClockModal.tsx:111 treats as "no distance check".
+update branches
+   set latitude      = coalesce(latitude, 3.2173718),
+       longitude     = coalesce(longitude, 101.6406565),
+       radius_meters = coalesce(radius_meters, 100)
+ where name ilike 'Kepong';
 
 -- =============================================
 -- Shift Scheduling: shift_types + scheduled_shifts
