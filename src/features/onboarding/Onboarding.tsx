@@ -3,14 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useLookups } from '../../shared/lib/lookups'
+import { BRANCHES } from '../../shared/types'
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
-const BRANCHES = [
-  'Cheras (Taman Connaught)',
-  'Puchong (Bandar Puteri)',
-  'Other',
-]
+// Branches come from the shared BRANCHES constant. This file used to keep its
+// own copy with nothing syncing the two, so opening a branch meant editing the
+// list in two places — and the onboarding page was the one that got forgotten.
 
 // Departments and employment types are loaded dynamically via useLookups(); see InfoStep.
 
