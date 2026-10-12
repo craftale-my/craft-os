@@ -10,6 +10,8 @@ import {
   SYSTEM_ROLES, SYSTEM_ROLE_LABELS, SYSTEM_ROLE_DESC, CAPABILITIES,
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
+import { parseBranchGeofence } from '../../shared/lib/geofence'
+import { writeOutcome } from '../../shared/lib/db-write'
 import { useCan } from '../../shared/lib/permissions'
 
 const TABS = [
@@ -197,27 +199,76 @@ function BranchModal({ branch, staffOptions, onClose, onSaved }: {
     address: branch?.address ?? '',
     pic_staff_id: branch?.pic_staff_id ?? '',
     operating_hours: branch?.operating_hours ?? '',
+    // Held as strings all the way to save: a controlled number input that
+    // reparses every keystroke eats the decimal point mid-typing ("3.").
+    latitude: branch?.latitude != null ? String(branch.latitude) : '',
+    longitude: branch?.longitude != null ? String(branch.longitude) : '',
+    radius_meters: branch?.radius_meters != null ? String(branch.radius_meters) : '',
   })
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [locating, setLocating] = useState(false)
 
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }))
 
+  // Not named `use…` — the React hooks lint rule treats that prefix as a hook.
+  function fillCurrentLocation() {
+    setLocating(true)
+    setError('')
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        setForm(f => ({
+          ...f,
+          latitude: pos.coords.latitude.toFixed(7),
+          longitude: pos.coords.longitude.toFixed(7),
+        }))
+        setLocating(false)
+      },
+      () => {
+        setError('Could not read your location. Check your browser or device location settings.')
+        setLocating(false)
+      },
+      { timeout: 12000, enableHighAccuracy: true },
+    )
+  }
+
   async function handleSave() {
     if (!form.name.trim()) return
+
+    const geo = parseBranchGeofence(form.latitude, form.longitude, form.radius_meters)
+    if (!geo.ok) {
+      setError(geo.error)
+      return
+    }
+    setError('')
     setSaving(true)
+
     const payload = {
       name: form.name.trim(),
       address: form.address.trim() || null,
       pic_staff_id: form.pic_staff_id || null,
       operating_hours: form.operating_hours.trim() || null,
+      latitude: geo.latitude,
+      longitude: geo.longitude,
+      radius_meters: geo.radius_meters,
     }
-    if (branch?.id) {
-      await supabase.from('branches').update(payload).eq('id', branch.id)
-    } else {
-      await supabase.from('branches').insert(payload)
-    }
+
+    // `.select()` + writeOutcome: an RLS-filtered write comes back with no
+    // error AND no rows, so the returned row is the only proof it landed.
+    // This modal used to fire and forget, which meant a rejected write still
+    // closed the modal as if the geofence had saved. See shared/lib/db-write.ts.
+    const res = branch?.id
+      ? await supabase.from('branches').update(payload).eq('id', branch.id).select()
+      : await supabase.from('branches').insert(payload).select()
+
+    const outcome = writeOutcome(res)
     setSaving(false)
+    if (!outcome.ok) {
+      setError(`Could not save this branch — ${outcome.reason}`)
+      return
+    }
+
     onSaved()
     onClose()
   }
@@ -251,6 +302,37 @@ function BranchModal({ branch, staffOptions, onClose, onSaved }: {
             <label className={labelCls}>Operating Hours</label>
             <input className={inputCls} value={form.operating_hours} onChange={set('operating_hours')} placeholder="e.g. 8am - 10pm daily" />
           </div>
+          <div className="pt-3 border-t border-[#E8DDD0]">
+            <div className="flex items-center justify-between mb-1">
+              <label className={labelCls}>Clock-In Geofence</label>
+              <button
+                type="button"
+                onClick={fillCurrentLocation}
+                disabled={locating}
+                className="text-xs font-semibold text-[#C4813A] hover:text-[#A86C2C] disabled:opacity-60"
+              >
+                {locating ? 'Locating...' : 'Use my current location'}
+              </button>
+            </div>
+            <p className="text-xs text-brown-faint mb-3">
+              Leave blank to allow clock-in from anywhere. Radius defaults to 100m.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls}>Latitude</label>
+                <input className={inputCls} value={form.latitude} onChange={set('latitude')} placeholder="3.2173718" />
+              </div>
+              <div>
+                <label className={labelCls}>Longitude</label>
+                <input className={inputCls} value={form.longitude} onChange={set('longitude')} placeholder="101.6406565" />
+              </div>
+            </div>
+            <div className="mt-3">
+              <label className={labelCls}>Radius (meters)</label>
+              <input className={inputCls} value={form.radius_meters} onChange={set('radius_meters')} placeholder="100" />
+            </div>
+          </div>
+          {error && <p className="text-xs text-[#9E4A30] font-medium">{error}</p>}
           <div className="flex gap-3 pt-1">
             <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors">
               Cancel
