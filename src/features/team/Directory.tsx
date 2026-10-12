@@ -39,6 +39,7 @@ function shortenBranch(branch: string | null): string {
   if (!branch) return '—'
   if (branch.includes('Connaught')) return 'Cheras'
   if (branch.includes('Puteri')) return 'Puchong'
+  if (branch.includes('Usahawan')) return 'Kepong'
   return branch
 }
 
@@ -739,7 +740,7 @@ export default function DirectoryPage() {
                           <div className="flex flex-wrap gap-2 mt-1">
                             {req.branch && (
                               <span className="text-xs bg-canvas text-brown-muted px-2 py-0.5 rounded-full border border-[#E8DDD0]">
-                                {req.branch.includes('Connaught') ? 'Cheras' : req.branch.includes('Puteri') ? 'Puchong' : req.branch}
+                                {shortenBranch(req.branch)}
                               </span>
                             )}
                             {req.department && (

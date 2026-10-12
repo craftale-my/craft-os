@@ -305,7 +305,12 @@ export function getScoreConfig(score: number) {
 
 // Hardcoded fallbacks — used only when the dynamic tables are unavailable/empty
 // (e.g. before the departments/employment_types migration has been run).
-export const BRANCHES = ['Cheras (Taman Connaught)', 'Puchong (Bandar Puteri)', 'Other']
+export const BRANCHES = [
+  'Cheras (Taman Connaught)',
+  'Puchong (Bandar Puteri)',
+  'Kepong (Taman Usahawan)',
+  'Other',
+]
 export const GENDERS = ['Man', 'Woman']
 export const EMPLOYMENT_TYPES = ['Full Time / Contract', 'Part Time']
 export const DEPARTMENTS = ['Barista (Full Time)', 'Service Crew', 'Bakery', 'Kitchen', 'Other']
