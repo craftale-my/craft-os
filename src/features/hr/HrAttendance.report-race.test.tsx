@@ -14,8 +14,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, act } from '@testing-library/react'
 import type { Staff } from '../../shared/types'
 
-type Deferred = { resolve: (rows: unknown[]) => void; table: string }
-
 const h = vi.hoisted(() => {
   const pending: { table: string; resolve: (v: unknown) => void }[] = []
   const makeQuery = (table: string) => {
