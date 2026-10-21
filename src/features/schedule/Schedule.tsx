@@ -2,11 +2,13 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Staff, ShiftType, ScheduledShift, LeaveType, Attendance } from '../../shared/types'
-import { BRANCHES, DEPT_LABELS, DEPT_SHIFT_COLORS, SCHEDULE_LEAVE_OPTIONS, SCHEDULE_LEAVE_LABELS, shouldClearLeaveAttendance } from '../../shared/types'
+import type { Staff, ShiftType, ScheduledShift, ScheduleLeaveType, Attendance } from '../../shared/types'
+import { BRANCHES, DEPT_LABELS, DEPT_SHIFT_COLORS, SCHEDULE_LEAVE_OPTIONS, SCHEDULE_LEAVE_LABELS, REST_DAY_LABEL, otherRestDayInWeek, shouldClearLeaveAttendance } from '../../shared/types'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { Avatar } from '../../shared/components/Avatar'
 import { localDateStr, shiftDurationHours } from '../../shared/lib/attendance'
+
+const REST_DAY_COLOR = '#3D7A50'
 
 // ─── Date utilities ───────────────────────────────────────────────────────────
 
@@ -70,6 +72,7 @@ function AssignModal({
   date,
   shiftTypes,
   current,
+  restDayTaken,
   onAssign,
   onClose,
 }: {
@@ -77,10 +80,13 @@ function AssignModal({
   date: Date
   shiftTypes: ShiftType[]
   current: ScheduledShift | null
-  onAssign: (a: { shiftTypeId: string | null; leaveType: LeaveType | null }) => void
+  /** Date of the rest day already scheduled elsewhere this week, if any. */
+  restDayTaken: string | null
+  onAssign: (a: { shiftTypeId: string | null; leaveType: ScheduleLeaveType | null }) => void
   onClose: () => void
 }) {
   const active = shiftTypes.filter(st => st.is_active)
+  const isRestDay = current?.leave_type === 'rest_day'
 
   // Group by department
   const grouped: Record<string, ShiftType[]> = {}
@@ -105,6 +111,30 @@ function AssignModal({
         </div>
 
         <div className="px-4 py-4 max-h-[60vh] overflow-y-auto space-y-4">
+          <div>
+            <button
+              onClick={() => onAssign({ shiftTypeId: null, leaveType: 'rest_day' })}
+              disabled={!!restDayTaken}
+              className="w-full text-left px-3 py-2 rounded-xl transition-colors flex items-center justify-between disabled:cursor-not-allowed disabled:opacity-60"
+              style={isRestDay
+                ? { background: `${REST_DAY_COLOR}18`, border: `1px solid ${REST_DAY_COLOR}60` }
+                : { background: '#F9F4EE', border: `1px dashed ${REST_DAY_COLOR}80` }
+              }
+            >
+              <div>
+                <p className="text-sm font-semibold" style={{ color: isRestDay ? REST_DAY_COLOR : '#3D2410' }}>
+                  {REST_DAY_LABEL}
+                </p>
+                <p className="text-xs text-brown-faint">
+                  {restDayTaken
+                    ? `Already has a rest day this week (${new Date(restDayTaken + 'T00:00:00').toLocaleDateString('en-MY', { weekday: 'short', day: 'numeric', month: 'short' })})`
+                    : 'One per week'}
+                </p>
+              </div>
+              {isRestDay && <span className="text-xs font-bold" style={{ color: REST_DAY_COLOR }}>✓</span>}
+            </button>
+          </div>
+
           {Object.entries(grouped).map(([dept, shifts]) => (
             <div key={dept}>
               <p className="text-[10px] font-bold text-brown-faint uppercase tracking-widest px-1 mb-1.5">
@@ -295,6 +325,13 @@ function WeekView({
                       >
                         {st ? (
                           <ShiftBadge shiftType={st} />
+                        ) : leave === 'rest_day' ? (
+                          <div
+                            className="rounded-lg leading-tight px-2 py-1"
+                            style={{ background: `${REST_DAY_COLOR}15`, border: `1px solid ${REST_DAY_COLOR}50`, color: REST_DAY_COLOR }}
+                          >
+                            <p className="font-semibold text-[10px]">{REST_DAY_LABEL}</p>
+                          </div>
                         ) : leave ? (
                           <div
                             className="rounded-lg leading-tight px-2 py-1"
@@ -362,11 +399,14 @@ function DayView({
   // Group staff by shift type for this day
   const grouped: Record<string, Staff[]> = {}
   const unassigned: Staff[] = []
-  const onLeave: { staff: Staff; leave: LeaveType }[] = []
+  const onLeave: { staff: Staff; leave: ScheduleLeaveType }[] = []
+  const resting: Staff[] = []
 
   allStaff.forEach(s => {
     const shift = dayShifts[s.id]?.[ds]
-    if (shift?.leave_type) {
+    if (shift?.leave_type === 'rest_day') {
+      resting.push(s)
+    } else if (shift?.leave_type) {
       onLeave.push({ staff: s, leave: shift.leave_type })
     } else if (shift?.shift_type_id) {
       const key = shift.shift_type_id
@@ -449,6 +489,32 @@ function DayView({
           </div>
         )
       })}
+
+      {/* Rest day */}
+      {resting.length > 0 && (
+        <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-hidden">
+          <div className="px-4 py-3" style={{ background: `${REST_DAY_COLOR}12` }}>
+            <p className="text-sm font-bold" style={{ color: REST_DAY_COLOR }}>{REST_DAY_LABEL} ({resting.length})</p>
+          </div>
+          <div className="divide-y divide-[#F0E8DC]">
+            {resting.map(s => (
+              <div key={s.id} className="flex items-center gap-3 px-4 py-2.5">
+                <Avatar name={s.name} avatar={s.avatar} size="sm" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-brown-dark">{s.name}</p>
+                  <p className="text-xs text-brown-faint">{s.branch?.split(' ')[0]}</p>
+                </div>
+                <button
+                  onClick={() => onCellClick(s, selectedDay)}
+                  className="text-xs text-brown-faint hover:text-brown-dark transition-colors px-2 py-1 rounded"
+                >
+                  Change
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* On leave */}
       {onLeave.length > 0 && (
@@ -685,14 +751,24 @@ export default function SchedulePage() {
     shiftMap[s.staff_id][s.date] = s
   })
 
-  async function assignShift({ shiftTypeId, leaveType }: { shiftTypeId: string | null; leaveType: LeaveType | null }) {
+  function restDayTakenFor(staffId: string, ds: string): string | null {
+    return otherRestDayInWeek(Object.values(shiftMap[staffId] ?? {}), ds)
+  }
+
+  async function assignShift({ shiftTypeId, leaveType }: { shiftTypeId: string | null; leaveType: ScheduleLeaveType | null }) {
     if (!assignTarget || !staff) return
-    setSaving(true)
-    setScheduleError('')
     const staffId = assignTarget.staff.id
     const ds = toDateStr(assignTarget.date)
+    if (leaveType === 'rest_day' && restDayTakenFor(staffId, ds)) {
+      setScheduleError(`${assignTarget.staff.name} already has a rest day this week.`)
+      return
+    }
+    setSaving(true)
+    setScheduleError('')
     const existing = shiftMap[staffId]?.[ds]
-    const wasLeave = !!existing?.leave_type
+    // A rest day is not leave: it never wrote an on_leave attendance row.
+    const wasLeave = !!existing?.leave_type && existing.leave_type !== 'rest_day'
+    const isLeave = leaveType !== null && leaveType !== 'rest_day'
 
     let error: { message: string } | null = null
     if (shiftTypeId === null && leaveType === null) {
@@ -709,12 +785,14 @@ export default function SchedulePage() {
     }
 
     if (error) {
-      setScheduleError(`Couldn't update the schedule: ${error.message}`)
+      setScheduleError((error as { code?: string }).code === '23505' && leaveType === 'rest_day'
+        ? `${assignTarget.staff.name} already has a rest day this week.`
+        : `Couldn't update the schedule: ${error.message}`)
       setSaving(false)
       return
     }
 
-    if (leaveType !== null) {
+    if (isLeave) {
       // Mirror HrLeave approve(): the day's attendance becomes on_leave.
       const { error: attErr } = await supabase.from('attendance').upsert(
         { staff_id: staffId, date: ds, status: 'on_leave' as const, recorded_by: staff.id },
@@ -871,6 +949,7 @@ export default function SchedulePage() {
           date={assignTarget.date}
           shiftTypes={shiftTypes}
           current={shiftMap[assignTarget.staff.id]?.[toDateStr(assignTarget.date)] ?? null}
+          restDayTaken={restDayTakenFor(assignTarget.staff.id, toDateStr(assignTarget.date))}
           onAssign={assignShift}
           onClose={() => setAssignTarget(null)}
         />

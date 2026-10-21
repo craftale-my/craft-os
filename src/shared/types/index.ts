@@ -753,7 +753,7 @@ export interface ScheduledShift {
   id: string
   staff_id: string
   shift_type_id: string | null
-  leave_type: LeaveType | null
+  leave_type: ScheduleLeaveType | null
   branch_id: string | null
   date: string
   status: 'scheduled' | 'confirmed' | 'swapped' | 'cancelled'
@@ -772,8 +772,40 @@ export const SCHEDULE_LEAVE_OPTIONS: { type: LeaveType; label: string }[] = [
   { type: 'public_holiday', label: 'Public Holiday Replacement' },
 ]
 
-export const SCHEDULE_LEAVE_LABELS: Partial<Record<LeaveType, string>> =
-  Object.fromEntries(SCHEDULE_LEAVE_OPTIONS.map(o => [o.type, o.label]))
+/** What a non-shift schedule row can hold: a manager-assigned leave, or the
+ *  staff member's weekly rest day. A rest day is not leave — it writes no
+ *  attendance row and touches no leave balance. */
+export type ScheduleLeaveType = LeaveType | 'rest_day'
+
+export const REST_DAY_LABEL = 'Rest Day'
+
+export const SCHEDULE_LEAVE_LABELS: Partial<Record<ScheduleLeaveType, string>> = {
+  ...Object.fromEntries(SCHEDULE_LEAVE_OPTIONS.map(o => [o.type, o.label])),
+  rest_day: REST_DAY_LABEL,
+}
+
+/** Monday of the Mon–Sun week containing `date` (YYYY-MM-DD), as YYYY-MM-DD.
+ *  Matches Postgres `date_trunc('week', …)`, which the one-rest-day-per-week
+ *  index uses. */
+export function weekStartOf(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  const dow = d.getUTCDay()
+  d.setUTCDate(d.getUTCDate() - (dow === 0 ? 6 : dow - 1))
+  return d.toISOString().slice(0, 10)
+}
+
+/** Each staff member gets at most one rest day per Mon–Sun week. Returns the
+ *  date of a rest day already scheduled in `date`'s week (other than `date`
+ *  itself), or null if a rest day may be placed on `date`. */
+export function otherRestDayInWeek(
+  shifts: Pick<ScheduledShift, 'date' | 'leave_type'>[],
+  date: string,
+): string | null {
+  const week = weekStartOf(date)
+  const hit = shifts.find(s =>
+    s.leave_type === 'rest_day' && s.date !== date && weekStartOf(s.date) === week)
+  return hit?.date ?? null
+}
 
 /** A schedule-assigned leave writes an attendance row (status on_leave).
  *  When the leave marker is replaced, that row may be deleted — but only

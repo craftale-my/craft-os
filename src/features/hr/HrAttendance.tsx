@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ScheduledShift, ShiftType, LeaveType } from '../../shared/types'
+import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ScheduledShift, ShiftType, ScheduleLeaveType } from '../../shared/types'
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
@@ -760,7 +760,7 @@ function weekdayShort(date: string): string {
 
 /** "Morning 9:30am–6:00pm", the leave label on a leave-marker day, else "—". */
 function shiftLabel(d: DailyDetail): string {
-  if (d.leaveType) return SCHEDULE_LEAVE_LABELS[d.leaveType as LeaveType] ?? d.leaveType
+  if (d.leaveType) return SCHEDULE_LEAVE_LABELS[d.leaveType as ScheduleLeaveType] ?? d.leaveType
   if (!d.shiftName) return '—'
   if (!d.shiftStart || !d.shiftEnd) return d.shiftName
   return `${d.shiftName} ${fmtTime2(d.shiftStart)}–${fmtTime2(d.shiftEnd)}`
@@ -1277,7 +1277,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   const [break1Allowed, setBreak1Allowed] = useState(0)
   const [break2Allowed, setBreak2Allowed] = useState(0)
   const [todayShift, setTodayShift] = useState<ShiftType | null>(null)
-  const [todayLeave, setTodayLeave] = useState<LeaveType | null>(null)
+  const [todayLeave, setTodayLeave] = useState<ScheduleLeaveType | null>(null)
   const [breaks, setBreaks] = useState<AttendanceBreak[]>([])
   const [breakBusy, setBreakBusy] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -1309,7 +1309,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
 
     // Yesterday's shift decides whether a night shift is still running;
     // the active day's shift drives the badge and break allowances.
-    type ShiftRow = { date: string; leave_type: LeaveType | null; shift_type: ShiftType | null }
+    type ShiftRow = { date: string; leave_type: ScheduleLeaveType | null; shift_type: ShiftType | null }
     const { data: shiftRows } = await supabase
       .from('scheduled_shifts')
       .select('date, leave_type, shift_type:shift_types(*)')
