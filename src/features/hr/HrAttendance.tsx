@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, LeaveType } from '../../shared/types'
+import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, ScheduleLeaveType } from '../../shared/types'
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
@@ -451,7 +451,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   const [break1Allowed, setBreak1Allowed] = useState(0)
   const [break2Allowed, setBreak2Allowed] = useState(0)
   const [todayShift, setTodayShift] = useState<ShiftType | null>(null)
-  const [todayLeave, setTodayLeave] = useState<LeaveType | null>(null)
+  const [todayLeave, setTodayLeave] = useState<ScheduleLeaveType | null>(null)
   const [breaks, setBreaks] = useState<AttendanceBreak[]>([])
   const [breakBusy, setBreakBusy] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -515,7 +515,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
 
     // Yesterday's shift decides whether a night shift is still running;
     // the active day's shift drives the badge and break allowances.
-    type ShiftRow = { date: string; leave_type: LeaveType | null; shift_type: ShiftType | null }
+    type ShiftRow = { date: string; leave_type: ScheduleLeaveType | null; shift_type: ShiftType | null }
     const { data: shiftRows } = await supabase
       .from('scheduled_shifts')
       .select('date, leave_type, shift_type:shift_types(*)')
