@@ -79,18 +79,20 @@ export default function QrSpike() {
       if (pending.current?.cartKey !== key) {
         pending.current = { id: crypto.randomUUID(), cartKey: key }
       }
+      const startedAt = performance.now()
       const { error } = await supabase.rpc('spike_place_table_order', {
         p_token: token,
         p_items: items,
         p_client_order_id: pending.current.id,
       })
+      const sentInMs = Math.round(performance.now() - startedAt) // the customer's half of the trip
       if (error) {
         setStatus(`Not sent: ${error.message} Tap Place order to try again.`)
         return
       }
       pending.current = null
       setCart({})
-      setStatus(`Order placed at ${new Date().toLocaleTimeString()}`)
+      setStatus(`Order placed at ${new Date().toLocaleTimeString()} (sent in ${sentInMs} ms)`)
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       setStatus(`Not sent: ${message} Tap Place order to try again.`)
