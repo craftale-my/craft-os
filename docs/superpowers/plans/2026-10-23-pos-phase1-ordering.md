@@ -815,7 +815,7 @@ begin
   if (qr_menu(v_table.qr_token)->>'tableLabel') <> 'V1' then raise exception 'FAIL qr_menu: label'; end if;
   if jsonb_array_length((select c->'products'->0->'variants'
                            from jsonb_array_elements(qr_menu(v_table.qr_token)->'categories') c
-                          where c->>'name' = 'VERIFY CAT')) <> 2 then
+                          where c->>'name' = 'VERIFY CAT')) is distinct from 2 then
     raise exception 'FAIL qr_menu: variants';
   end if;
   if (qr_menu(v_table.qr_token)->>'needsPax')::boolean is not true then raise exception 'FAIL qr_menu: needsPax'; end if;
