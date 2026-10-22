@@ -46,16 +46,18 @@ Procedure: iPad shows the POS page. On a phone on the shop Wi-Fi open the QR lin
 
 | # | Table | Latency on POS (ms) | Customer send time (ms) | Bar ticket printed | Kitchen ticket printed |
 |---|---|---|---|---|---|
-| 1 | B5 | | | | |
-| 2 | A1 | | | | |
-| 3 | A2 | | | | |
-| 4 | B5 | | | | |
-| 5 | A1 | | | | |
-| 6 | A2 | | | | |
-| 7 | B5 | | | | |
-| 8 | A1 | | | | |
-| 9 | A2 | | | | |
-| 10 | B5 | | | | |
+| 1 | B5 | 377 (03CFBD) | phone, not recorded | yes (952 ms) | — (order had no kitchen item) |
+| 2 | A1 | 396 (268C9F) | phone, not recorded | yes (920 ms) | — (order had no kitchen item) |
+| 3 | A2 | 255 (151979) | phone, not recorded | — (order had no bar item) | yes (617 ms) |
+| 4 | B5 | 458 (60DAB5) | 515 (Mac, same RPC) | yes | yes |
+| 5 | A1 | 502 (AFF004) | 461 (Mac, same RPC) | **FAILED first time** (ECONNRESET, agent bug fixed in 8a3715d); reprinted once 18:53 | yes |
+| 6 | A2 | 425 (6D11B3) | 340 (Mac, same RPC) | yes | yes |
+| 7 | B5 | 183 (B934D4) | 508 (Mac, same RPC) | yes | yes |
+| 8 | A1 | 249 (4AF627) | 476 (Mac, same RPC) | yes | yes |
+| 9 | A2 | 194 (03B265) | 825 (Mac, same RPC) | yes | yes |
+| 10 | B5 | 103 (204413) | 751 (Mac, same RPC) | yes | yes |
+
+**Round 1 (2026-10-22 18:39–18:46 MYT):** worst POS latency 502 ms (iPad photo); worst latency + send/2 = 502 + 413 = 915 ms. Order → printed_at from the database: min 561, avg 843, max 1171 ms over 16 first-time prints. Orders 1–3 were placed on the user's phone with one item each; orders 4–10 were placed from the Mac on the shop Wi-Fi through the same public RPC the QR page calls (spike_place_table_order). Latency criterion PASS. Ticket criterion NOT met in this round: 17 tickets, 16 printed first time, 1 failed (agent sent two tickets to the same one-connection printer at once) — fixed in 8a3715d; a second round with the fixed agent is needed for the Spike 2 verdict.
 
 Order-to-print time from the database (paste the output):
 
