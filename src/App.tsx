@@ -22,6 +22,7 @@ import ProjectDetailPage from './features/tasks/ProjectDetail'
 import SettingsPage from './features/settings/Settings'
 import MenuPage from './features/pos/menu/MenuPage'
 import MenuImportPage from './features/pos/menu/MenuImportPage'
+import PosPage from './features/pos/order/PosPage'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
@@ -248,6 +249,8 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+
+      <Route path="/pos" element={<ProtectedRoute><PosPage /></ProtectedRoute>} />
 
       <Route
         path="/menu"
