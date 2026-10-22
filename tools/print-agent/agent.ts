@@ -75,11 +75,12 @@ async function main(): Promise<void> {
   }
 
   // Never rejects: it is called from the sweep, a Realtime callback and an interval.
-  const handle = async (job: PrintJob & { created_at?: string }): Promise<void> => {
+  const handle = async (job: PrintJob & { created_at?: string; attempts?: number }): Promise<void> => {
     if (!addressOf.has(job.route)) return
     const id8 = job.id.slice(0, 8)
-    // An old ticket stays pending (the iPad shows it as "Waiting") so staff decide, not a backlog dump.
-    if (job.created_at) {
+    // An old ticket that was never tried stays pending (the iPad shows it as "Waiting") so staff
+    // decide, not a backlog dump. A requeued one (attempts >= 1) is a Reprint someone asked for: print it.
+    if (job.created_at && (job.attempts ?? 0) === 0) {
       const ageMin = (Date.now() - Date.parse(job.created_at)) / 60_000
       if (ageMin > maxAgeMin) {
         console.log(`skipped old ticket ${job.route} ${id8} (${Math.round(ageMin)} min)`)
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
     try {
       const { data, error } = await supabase
         .from('print_jobs')
-        .select('id, route, payload, status, created_at')
+        .select('id, route, payload, status, created_at, attempts')
         .eq('status', 'pending')
         .in('route', [...addressOf.keys()])
         .order('created_at')
@@ -128,7 +129,7 @@ async function main(): Promise<void> {
         console.error('sweep failed:', error.message)
         return
       }
-      for (const job of (data ?? []) as (PrintJob & { created_at?: string })[]) await handle(job)
+      for (const job of (data ?? []) as (PrintJob & { created_at?: string; attempts?: number })[]) await handle(job)
     } catch (e) {
       console.error('sweep failed:', errMessage(e))
     } finally {

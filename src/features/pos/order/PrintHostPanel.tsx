@@ -58,6 +58,16 @@ export default function PrintHostPanel({ branchId }: { branchId: string }) {
     } catch (e) { setNote(`Reprint failed — ${msg(e)}`) }
   }
 
+  // A waiting ticket nobody needs any more (e.g. an old one the agent skipped): close it as
+  // failed with a reason, so it leaves the list and can still be reprinted on purpose.
+  const dismiss = async (job: PrintJobRow) => {
+    try {
+      if (!(await claimJob(job.id))) { setNote(`${job.route}: that ticket is printing right now`); return }
+      await finishJob(job.id, false, 'Marked not needed — not printed')
+      await sweep()
+    } catch (e) { setNote(`Could not clear the ticket — ${msg(e)}`) }
+  }
+
   return (
     <div className="relative">
       <button onClick={() => setOpen((v) => !v)}
@@ -80,7 +90,10 @@ export default function PrintHostPanel({ branchId }: { branchId: string }) {
             <div key={j.id} className="mb-2 rounded bg-red-50 p-2">
               <div className="font-medium">{j.route} · {j.payload.orderNo}{j.payload.tableLabel ? ` · ${j.payload.tableLabel}` : ' · takeaway'}</div>
               {kind === 'waiting' ? (
-                <div className="text-xs text-red-700">Waiting — no printer is picking this up (route {j.route}). Is the print agent running? · {formatAge(ageMs)}</div>
+                <>
+                  <div className="text-xs text-red-700">Waiting — no printer is picking this up (route {j.route}). Is the print agent running? · {formatAge(ageMs)}</div>
+                  <button onClick={() => void dismiss(j)} className="mt-1 rounded border border-border px-2 py-1 text-xs">Not needed</button>
+                </>
               ) : (
                 <>
                   <div className="text-xs text-red-700">{kind === 'stuck' ? 'Stuck while printing — check the printer before reprinting' : j.last_error ?? 'Failed'} · {j.attempts} attempt{j.attempts === 1 ? '' : 's'}</div>
