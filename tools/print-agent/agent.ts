@@ -36,7 +36,7 @@ async function main(): Promise<void> {
 
   const { data: routes, error: routeError } = await supabase
     .from('print_routes')
-    .select('route, address')
+    .select('name, address')
     .eq('kind', 'agent')
   if (routeError) throw routeError
   const addressOf = new Map<string, string>((routes ?? []).map((r: { name: string; address: string }) => [r.name, r.address]))
