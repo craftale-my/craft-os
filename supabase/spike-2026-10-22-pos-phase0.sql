@@ -125,13 +125,13 @@ declare
   v_menu      spike_menu_items;
   v_qty       numeric;
 begin
+  if p_client_order_id is null then
+    raise exception 'Order id is missing';
+  end if;
+
   select id into v_existing from spike_orders where client_order_id = p_client_order_id;
   if v_existing is not null then
     return v_existing;
-  end if;
-
-  if p_client_order_id is null then
-    raise exception 'Order id is missing';
   end if;
 
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
@@ -158,19 +158,21 @@ begin
     end if;
   end loop;
 
-  if p_table_id is null then
-    insert into spike_bills(table_id) values (null) returning id into v_bill_id;
-  else
-    insert into spike_bills(table_id) values (p_table_id)
-      on conflict (table_id) where status = 'open' and table_id is not null do nothing
-      returning id into v_bill_id;
-    if v_bill_id is null then
-      select id into v_bill_id from spike_bills where table_id = p_table_id and status = 'open';
-    end if;
-    select label into v_label from spike_tables where id = p_table_id;
-  end if;
-
+  -- bill and order inserts share one savepoint: if a concurrent resend wins the race
+  -- on client_order_id, both are rolled back, so no orphan bill is left behind
   begin
+    if p_table_id is null then
+      insert into spike_bills(table_id) values (null) returning id into v_bill_id;
+    else
+      insert into spike_bills(table_id) values (p_table_id)
+        on conflict (table_id) where status = 'open' and table_id is not null do nothing
+        returning id into v_bill_id;
+      if v_bill_id is null then
+        select id into v_bill_id from spike_bills where table_id = p_table_id and status = 'open';
+      end if;
+      select label into v_label from spike_tables where id = p_table_id;
+    end if;
+
     insert into spike_orders(bill_id, source, placed_by, client_order_id)
     values (v_bill_id, p_source, p_placed_by, p_client_order_id)
     returning id into v_order_id;

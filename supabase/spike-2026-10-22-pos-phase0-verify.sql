@@ -18,13 +18,20 @@ declare
   v2        uuid;
   v_jobs    integer;
   v_price   integer;
-  v_job     uuid;
   v_job2    uuid;
   v_order   uuid;
   v_status  text;
   r         record;
   l         jsonb;
 begin
+  -- reset fixture state so checks never depend on earlier demoing (all rolled back at the end)
+  update spike_tables set qr_paused = false, is_active = true where label in ('A1','A2','B5');
+  update spike_menu_items set is_available = true;
+  delete from spike_print_jobs;
+  delete from spike_order_items;
+  delete from spike_orders;
+  delete from spike_bills;
+
   select qr_token into v_token from spike_tables where label = 'A1';
   select id into v_bar     from spike_menu_items where route = 'Bar'     order by name limit 1;
   select id into v_kitchen from spike_menu_items where route = 'Kitchen' order by name limit 1;
@@ -188,6 +195,17 @@ begin
                 and cmd <> 'SELECT') then
     raise exception 'FAIL rls: a write policy exists on bills/orders/order_items';
   end if;
+  for r in select t as tbl from unnest(array['spike_bills','spike_orders','spike_order_items']) as t loop
+    if not exists (select 1 from pg_policies
+                    where schemaname = 'public' and tablename = r.tbl
+                      and policyname = 'spike_staff_read' and cmd = 'SELECT') then
+      raise exception 'FAIL rls: % has no spike_staff_read SELECT policy', r.tbl;
+    end if;
+    if not exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+                    where n.nspname = 'public' and c.relname = r.tbl and c.relrowsecurity) then
+      raise exception 'FAIL rls: row level security is off on %', r.tbl;
+    end if;
+  end loop;
 
   raise notice 'VERIFY OK';
 end $$;
