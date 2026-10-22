@@ -7,6 +7,7 @@ import { encodeEscPos } from '../../src/features/pos/print/escpos.ts'
 import { processJob, type PrintHostDeps, type PrintJob } from '../../src/features/pos/print/printHost.ts'
 import { assertDevDatabase } from '../../src/features/pos/spike/guard.ts'
 import { sendRaw } from './sendRaw.ts'
+import { checkPrinter, interpretStatus, PAPER_STATUS, queryStatus } from './printerStatus.ts'
 
 function env(key: string): string {
   const value = process.env[key]
@@ -49,9 +50,20 @@ async function main(): Promise<void> {
   // the first is still open gets ECONNRESET (seen on the ZyWell ZY301, 2026-10-22,
   // when an order's Bar and Kitchen tickets went to the same printer 30 ms apart).
   // So sends to one address are queued; different printers still print in parallel.
+  // The status queries share the queue: they are connections to the same printer.
   const printerQueues = new Map<string, Promise<void>>()
+  const printChecked = async (address: string, bytes: Uint8Array): Promise<void> => {
+    const before = await checkPrinter(address)
+    for (const w of before.warnings) console.warn(`${address}: ${w}`)
+    if (!before.ok) throw new Error(`Not sent: ${before.reason}`)
+    await sendRaw(address, bytes)
+    // A roll that runs out mid-ticket leaves a partial or blank ticket behind:
+    // count it as failed so staff reprint it, rather than as printed.
+    const after = interpretStatus(null, await queryStatus(address, PAPER_STATUS))
+    if (!after.ok) throw new Error(`Paper ran out while printing — check the ticket and reprint (${after.reason})`)
+  }
   const sendInTurn = (address: string, bytes: Uint8Array): Promise<void> => {
-    const turn = (printerQueues.get(address) ?? Promise.resolve()).then(() => sendRaw(address, bytes))
+    const turn = (printerQueues.get(address) ?? Promise.resolve()).then(() => printChecked(address, bytes))
     printerQueues.set(address, turn.catch(() => undefined))
     return turn
   }
