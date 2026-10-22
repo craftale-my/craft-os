@@ -77,15 +77,23 @@ export default function PosPage() {
   const submitFromPad = async (o: QueuedOrder) => {
     const res = await queue.submit(o)
     if (res.rejectedReason) await queue.discard(res.clientOrderId)
+    else if (editingFrom.current) {
+      // the edited copy is now saved on this iPad, so the rejected original can go
+      await queue.discard(editingFrom.current)
+      editingFrom.current = null
+    }
     return res
   }
 
+  // The rejected original stays in the strip until its edited copy is saved; closing the pad
+  // without sending keeps it, so nothing the cashier confirmed is ever silently dropped.
+  const editingFrom = useRef<string | null>(null)
   const editRejected = (o: QueuedOrder) => {
+    editingFrom.current = o.clientOrderId
     setPadLines(o.items)
     setPad(o.tableId ? { orderType: 'dine_in', tableId: o.tableId, needsPax: o.pax != null, initialPax: o.pax ?? undefined } : { orderType: 'takeaway' })
-    void queue.discard(o.clientOrderId) // the pad now owns the lines; sending again makes a fresh order
   }
-  const closePad = () => { setPad(null); setPadLines(undefined) }
+  const closePad = () => { setPad(null); setPadLines(undefined); editingFrom.current = null }
 
   if (!staff) return null
   if (!branchId) {
