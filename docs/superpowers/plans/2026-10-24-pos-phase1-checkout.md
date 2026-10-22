@@ -32,7 +32,7 @@ Each one is built the way the design says; the line after "If not" is the whole 
 8. **Approvers are staff whose own branch is the bill's branch** — an owner based at another branch cannot approve at Demo until their branch is set.
 9. **Receipt layout details:** cash prints the amount handed over, then Change; every item line shows `(unit/ea)`; modifiers print as `+ name` (ASCII, not `•`); "Bill rounding" always prints; the Charges summary prints only when there is a charge.
 10. **Receipt #87846 test fixture:** prices, totals and the payment are the real ones; item names, header numbers, cashier and time are placeholders — send the real names if the test should match the paper word for word.
-11. **Extra columns not in the design:** `payments.branch_id`, `payments.line_no` (receipt order), `refunds.branch_id`, `bills.totals` (jsonb snapshot for the receipt's charges summary and reprints), `bills.void_reason`, `bills.void_approved_by`, `order_items.void_approved_by`.
+11. **Extra columns not in the design:** `payments.branch_id`, `payments.line_no` (receipt order), `refunds.branch_id`, `refunds.slip_queued`, `bills.totals` (jsonb snapshot for the receipt's charges summary and reprints), `bills.receipt_queued`, `bills.void_reason`, `bills.void_approved_by`, `order_items.void_approved_by`.
 12. **`checkout_bill` also returns `billId` and `receiptQueued`;** with no receipt route the bill is still paid and the sheet says "No receipt printer is set".
 13. **Receipt route defaults to none** in the table; the dev seed sets `Bar` (the ZY301). Prod branches must pick one in POS settings.
 14. **Quick-tender buttons show only notes above the amount** (Exact is always there).
@@ -42,7 +42,10 @@ Each one is built the way the design says; the line after "If not" is the whole 
 18. **Address on the receipt is `branches.address`,** the same field the rest of Craft OS shows for the branch.
 19. **Realtime listens to bill INSERT and UPDATE** (`event: '*'`), so a table opened on one iPad shows on the others too.
 20. **pgcrypto must live in schema `extensions`** (Supabase default); the migration stops with a clear message otherwise.
-21. **Not fixed here (from the Sub-plan 2 ledger):** the agent keys routes by name across branches; QR tokens are not rotated on checkout (the `qr_requires_open_bill` switch is the design's mitigation instead).
+21. **Resigned staff:** Craft OS ends access with `staff.status = 'resigned'` (values `active` / `resigned`; `is_active` stays true), so every POS lookup of the caller or approver requires `is_active and status = 'active'`. Sub-plan 2's `place_counter_order` had the same gap and is re-created here on `pos_my_branch()`; Sub-plan 2's `insert_test_print` and the print-job RPCs still check only `is_active` (low risk: test prints and job status) — left for the final review.
+22. **Merge direction:** a takeaway bill may merge into a table's bill (it then loses its packaging fee and picks up the table's service charge, because totals follow the surviving bill's order type); a table's bill may not merge into a takeaway bill — the server refuses and the picker does not offer it.
+23. **Wrong PINs are forgotten after a day** (the counter restarts if the last failure is more than 24 h old).
+24. **Not fixed here (from the Sub-plan 2 ledger):** the agent keys routes by name across branches; QR tokens are not rotated on checkout (the `qr_requires_open_bill` switch is the design's mitigation instead).
 
 ## Spec deltas (decided while planning, 2026-10-24)
 
@@ -53,6 +56,9 @@ Each one is built the way the design says; the line after "If not" is the whole 
 - **`bills.totals`** keeps the totals object fixed at checkout, so a reprint shows the same charges summary even after the rules change.
 - **Approvers RPC.** `pos_approvers()` returns `(staff_id, name, has_pin)` for the caller's branch.
 - **Settings write path.** `branches` receipt columns and `branch_pos_settings` are written only by `save_receipt_settings(p jsonb)` (checks `access_settings`, validates the receipt route), so a manager never hits `branches_manage`'s different role list; rules, methods and reason templates are written directly under `access_settings` policies.
+- **Live staff** = `is_active and status = 'active'` for the caller (`pos_my_branch`, also used by a re-created `place_counter_order`) and the approver (Open point 21).
+- **Merge direction:** `merge_bills` refuses a dine-in bill into a takeaway bill (Open point 22).
+- **Replays answer like the first call:** a known `checkout_id` only for the same bill and branch (`bills.receipt_queued` keeps the first `receiptQueued`); a known `refund_id` with `refunds.slip_queued`.
 - **Void bill without items** needs no approval (Open point 6). **Void item / void bill retries** are safe without a key: an already-voided item or bill answers `ok`.
 - **ASCII on receipts.** `renderReceiptLines` maps `– — ‘ ’ “ ” • nbsp` to ASCII and anything else to `?` (the ZY301 cannot print it anyway).
 
@@ -64,6 +70,8 @@ Each one is built the way the design says; the line after "If not" is the whole 
 - Every `security definer` function pins `set search_path = public, pg_temp`, revokes execute from `public, anon` (internal helpers also from `authenticated`) and grants only what is needed; new `security invoker` functions pin `search_path` too. pgcrypto is called schema-qualified (`extensions.crypt`, `extensions.gen_salt`).
 - PIN hashes live only in `staff_pos_pins`: RLS on, **no policies**, all table privileges revoked from `anon` and `authenticated`. The approver PIN is checked **inside** each protected RPC — never a separate "is this PIN right?" call. 5 wrong PINs lock that approver for 10 minutes.
 - Idempotency keys: `bills.checkout_id` (checkout) and `refunds.id` (refund) are generated on the iPad once per sheet/dialog, so a retry after a lost reply returns the first result. `client_order_id` stays as in Sub-plan 2.
+- A staff member counts as live only when `is_active and status = 'active'` (`status = 'resigned'` is what Craft OS uses to end access).
+- Every step that reads or writes the dev database is marked **(controller)**; implementers run only local commands (`grep`, `tsc`, `vitest`, `node`) and commit.
 - Permission helper is `has_menu_cap(p_cap)` (mirrors `buildRoleCaps`: the Owner's override in `system_role_permissions` wins over the default); `staff_has_cap(staff_id, cap)` is the same rule for any staff member. Any signed-in staff member with a `branch_id` may check out, move, merge, open a table and reprint; voids and refunds need an approver with `pos_supervise`; POS settings need `access_settings`.
 - Every write whose success is shown to a user goes through `writeOutcome` (`src/shared/lib/db-write.ts`) with `.select()`, or is an RPC whose error is thrown (`{ok:false}` replies are thrown by `unwrapAction`).
 - Payloads built in SQL have exactly the TypeScript shapes: `TicketPayload` (`ticket.ts`, now with optional `void: true`), `ReceiptPayload` and `RefundSlipPayload` (`receipt.ts`).
@@ -79,7 +87,7 @@ Each one is built the way the design says; the line after "If not" is the whole 
 | File | Responsibility |
 |---|---|
 | `supabase/migration-2026-10-24-pos-checkout.sql` | Tables `branch_pos_settings`, `service_charge_rules`, `payment_methods`, `reason_templates`, `payments`, `refunds`, `staff_pos_pins`; columns on `branches`, `bills`, `order_items`; RLS; `bills` on Realtime; `has_menu_cap` + `staff_has_cap` with `pos_supervise` (Task 3) |
-| `supabase/migration-2026-10-24-pos-checkout-fn.sql` | `pos_my_branch`, `pos_compute_bill`, `pos_bill_totals`, re-created `pos_insert_order` and `place_table_order`, `pos_receipt_payload`, `pos_queue_receipt`, `pos_checkout_result`, `checkout_bill`, `reprint_receipt`, `save_receipt_settings` |
+| `supabase/migration-2026-10-24-pos-checkout-fn.sql` | `pos_my_branch`, `pos_compute_bill`, `pos_bill_totals`, re-created `pos_insert_order`, `place_counter_order` and `place_table_order`, `pos_receipt_payload`, `pos_queue_receipt`, `pos_checkout_result`, `checkout_bill`, `reprint_receipt`, `save_receipt_settings` |
 | `supabase/migration-2026-10-24-pos-bill-actions-fn.sql` | `pos_approvers`, `pos_pin_attempt`, `set_my_pos_pin`, `clear_pos_pin`, `pos_check_approver`, `pos_check_reason`, `pos_queue_void_tickets`, `void_order_item`, `void_bill`, `move_bill`, `merge_bills`, `pos_refund_slip_payload`, `refund_bill`, `open_table` |
 | `supabase/migration-2026-10-24-pos-checkout-verify.sql` | Self-check of the three files (rolled back), with the shared vectors |
 | `supabase/seed-2026-10-24-pos-checkout-demo.sql` | Dev-only: Demo branch receipt header, receipt route `Bar`, 10 % dine-in rule, four payment methods, reason templates |
@@ -122,8 +130,8 @@ Each one is built the way the design says; the line after "If not" is the whole 
   - `payment_methods(id, branch_id, name, kind 'cash'|'card'|'duitnow'|'ewallet'|'other', needs_reference, sort_order, is_active)` unique `(branch_id, name)`
   - `reason_templates(branch_id, action 'void_item'|'void_bill'|'refund', reasons text[], compulsory, allow_other)` pk `(branch_id, action)`
   - `payments(id, bill_id, branch_id, method_id, method_name, kind, amount_sen, tendered_sen, change_sen, reference, taken_by, taken_at, line_no)`
-  - `refunds(id client-generated, bill_id, branch_id, amount_sen, method_id, method_name, reason, approved_by, created_by, created_at)`
-  - `bills.status` adds `'merged'`; `bills.merged_into, checkout_id (unique), refunded_sen, totals jsonb, void_reason, void_approved_by`
+  - `refunds(id client-generated, bill_id, branch_id, amount_sen, method_id, method_name, reason, approved_by, created_by, created_at, slip_queued)`
+  - `bills.status` adds `'merged'`; `bills.merged_into, checkout_id (unique index `bills_checkout_id_key`), refunded_sen, totals jsonb, receipt_queued boolean, void_reason, void_approved_by` — added as bare columns, constraints added by name only when missing, so a re-run adds nothing twice
   - `order_items.takeaway_fee_sen int not null default 0`, `order_items.void_approved_by`
   - `staff_pos_pins(staff_id pk, pin_hash, failed_attempts, locked_until, updated_at)` — RLS on, no policies, no grants
 
@@ -231,23 +239,45 @@ create table if not exists refunds (
   reason       text,
   approved_by  uuid not null references staff(id),
   created_by   uuid not null references staff(id),
-  created_at   timestamptz not null default now()
+  created_at   timestamptz not null default now(),
+  slip_queued  boolean not null default false                          -- was a refund slip queued (repeated on a replay)
 );
 create index if not exists refunds_bill_idx on refunds(bill_id);
 
 -- ── Bills: merged status, idempotent checkout, refunds, void audit ─────────
+-- Bare columns first, constraints by name afterwards: a re-run adds nothing twice.
 alter table bills drop constraint if exists bills_status_check;
 alter table bills add constraint bills_status_check check (status in ('open', 'paid', 'voided', 'merged'));
-alter table bills add column if not exists merged_into       uuid references bills(id);
-alter table bills add column if not exists checkout_id       uuid unique;
-alter table bills add column if not exists refunded_sen      integer not null default 0 check (refunded_sen >= 0);
-alter table bills add column if not exists totals            jsonb;   -- pos_bill_totals() at checkout: groups for the receipt's charges summary
+alter table bills add column if not exists merged_into       uuid;
+alter table bills add column if not exists checkout_id       uuid;
+alter table bills add column if not exists refunded_sen      integer not null default 0;
+alter table bills add column if not exists totals            jsonb;     -- pos_bill_totals() at checkout: groups for the receipt's charges summary
+alter table bills add column if not exists receipt_queued    boolean;   -- set by checkout_bill: was a receipt job queued
 alter table bills add column if not exists void_reason       text;
-alter table bills add column if not exists void_approved_by  uuid references staff(id);
+alter table bills add column if not exists void_approved_by  uuid;
 
 -- ── Order items: takeaway fee snapshot, void approver ──────────────────────
-alter table order_items add column if not exists takeaway_fee_sen  integer not null default 0 check (takeaway_fee_sen >= 0);
-alter table order_items add column if not exists void_approved_by  uuid references staff(id);
+alter table order_items add column if not exists takeaway_fee_sen  integer not null default 0;
+alter table order_items add column if not exists void_approved_by  uuid;
+
+create unique index if not exists bills_checkout_id_key on bills(checkout_id);
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'bills_merged_into_fkey') then
+    alter table bills add constraint bills_merged_into_fkey foreign key (merged_into) references bills(id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'bills_void_approved_by_fkey') then
+    alter table bills add constraint bills_void_approved_by_fkey foreign key (void_approved_by) references staff(id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'bills_refunded_sen_check') then
+    alter table bills add constraint bills_refunded_sen_check check (refunded_sen >= 0);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'order_items_void_approved_by_fkey') then
+    alter table order_items add constraint order_items_void_approved_by_fkey foreign key (void_approved_by) references staff(id);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'order_items_takeaway_fee_sen_check') then
+    alter table order_items add constraint order_items_takeaway_fee_sen_check check (takeaway_fee_sen >= 0);
+  end if;
+end $$;
 
 -- ── Staff POS PINs: bcrypt hashes nobody can read ──────────────────────────
 create table if not exists staff_pos_pins (
@@ -295,7 +325,7 @@ exception when duplicate_object then null; end $$;
 select 'checkout schema applied' as result;
 ```
 
-- [ ] **Step 2: Local sanity checks (no database).** Run: `grep -c "create table if not exists" supabase/migration-2026-10-24-pos-checkout.sql` — Expected: `7`. Run: `grep -c "add column if not exists" supabase/migration-2026-10-24-pos-checkout.sql` — Expected: `14`. Run: `grep -n "create policy" supabase/migration-2026-10-24-pos-checkout.sql | grep -c staff_pos_pins` — Expected: `0` (PIN hashes have no policy at all).
+- [ ] **Step 2: Local sanity checks (no database).** Run: `grep -c "create table if not exists" supabase/migration-2026-10-24-pos-checkout.sql` — Expected: `7`. Run: `grep -c "add column if not exists" supabase/migration-2026-10-24-pos-checkout.sql` — Expected: `15`. Run: `grep -c "if not exists (select 1 from pg_constraint" supabase/migration-2026-10-24-pos-checkout.sql` — Expected: `5`. Run: `grep -c "add column if not exists.*references" supabase/migration-2026-10-24-pos-checkout.sql` — Expected: `0` (foreign keys are added by name, not inline). Run: `grep -n "create policy" supabase/migration-2026-10-24-pos-checkout.sql | grep -c staff_pos_pins` — Expected: `0` (PIN hashes have no policy at all).
 
 - [ ] **Step 3: Commit**
 
@@ -310,7 +340,7 @@ The migration is applied to dev by the controller in Task 5 together with the fu
 
 ---
 
-### Task 2: Totals, checkout and receipt RPCs (+ `pos_insert_order` / `place_table_order` re-created)
+### Task 2: Totals, checkout and receipt RPCs (+ `pos_insert_order` / `place_counter_order` / `place_table_order` re-created)
 
 **Files:**
 - Create: `supabase/migration-2026-10-24-pos-checkout-fn.sql`
@@ -318,18 +348,19 @@ The migration is applied to dev by the controller in Task 5 together with the fu
 **Interfaces:**
 - Consumes: Task 1 tables; `pos_next_bill_no(uuid)`, `bills`, `orders`, `order_items`, `print_jobs`, `dining_tables`, `menu_*` (Sub-plan 2); `has_menu_cap(text)`.
 - Produces (called by Tasks 4, 5, 8 and the print hosts):
-  - `pos_my_branch() returns uuid` — internal; raises `Sign in required` / `Your account has no branch — ask a manager to set it in Team`
+  - `pos_my_branch() returns uuid` — internal; the caller must be `is_active and status = 'active'` (a resigned person keeps `is_active = true`); raises `Sign in required` / `Your account is not active` / `Your account has no branch — ask a manager to set it in Team`
   - `pos_compute_bill(p_input jsonb) returns jsonb` — pure; staff may call; input/output exactly as `BillInput` / `BillTotals` in `src/features/pos/checkout/bill.ts` (Task 6)
   - `pos_bill_totals(p_bill_id uuid) returns jsonb` — `BillTotals` of a real bill; staff
   - `pos_insert_order(...)` and `place_table_order(text, integer, jsonb, uuid)` — same signatures as Sub-plan 2; changed only as the diff in Step 2 shows
+  - `place_counter_order(uuid, text, integer, jsonb, uuid)` — same signature; now takes the branch from `pos_my_branch()`, so a resigned cashier is refused
   - `pos_receipt_payload(p_bill_id uuid, p_reprint boolean) returns jsonb` — internal; exactly `ReceiptPayload` (`src/features/pos/print/receipt.ts`, Task 7)
   - `pos_queue_receipt(p_bill_id uuid, p_reprint boolean) returns boolean`, `pos_checkout_result(p_bill_id uuid) returns jsonb` — internal
-  - `checkout_bill(p_bill_id uuid, p_payments jsonb, p_checkout_id uuid) returns jsonb` → `{ billId, billNo, totalSen, changeSen, receiptQueued }`; payments `[{ methodId, amountSen, tenderedSen|null, reference|null }]`; staff
+  - `checkout_bill(p_bill_id uuid, p_payments jsonb, p_checkout_id uuid) returns jsonb` → `{ billId, billNo, totalSen, changeSen, receiptQueued }` (`receiptQueued` is stored in `bills.receipt_queued`); payments `[{ methodId, amountSen, tenderedSen|null, reference|null }]`; a known `checkout_id` replays only for the same bill of the caller's branch; staff
   - `reprint_receipt(p_bill_id uuid) returns void` — staff
-  - `save_receipt_settings(p jsonb) returns void` — `access_settings`; keys `receiptTitle, legalName, registrationNo, sstNo, address, phone, email, footer, receiptRoute, sstRegistered, cashRounding, qrRequiresOpenBill`
-  - Error words the UI shows: `Payments (RM x) do not match the total (RM y)`, `Only cash can be tendered above the amount`, `Cash received is less than the amount`, `Enter the reference for <method>`, `Payment method is not available at this branch`, `Invalid payment amount`, `This bill is already paid|voided|merged into another bill`, `This bill has no items to pay for`, `No receipt printer is set — choose one in POS settings`, `Please ask our staff to open your table before ordering.`
+  - `save_receipt_settings(p jsonb) returns void` — `access_settings`; `receiptTitle` required; optional keys `legalName, registrationNo, sstNo, address, phone, email, footer, receiptRoute, sstRegistered, cashRounding, qrRequiresOpenBill` — an absent key leaves its column unchanged
+  - Error words the UI shows: `Your account is not active`, `This checkout id belongs to another bill`, `Payments (RM x) do not match the total (RM y)`, `Only cash can be tendered above the amount`, `Cash received is less than the amount`, `Enter the reference for <method>`, `Payment method is not available at this branch`, `Invalid payment amount`, `This bill is already paid|voided|merged into another bill`, `This bill has no items to pay for`, `No receipt printer is set — choose one in POS settings`, `Please ask our staff to open your table before ordering.`
 
-- [ ] **Step 1: Write the functions.** `pos_insert_order` and `place_table_order` below are the live text of `supabase/migration-2026-10-23-pos-ordering-fn.sql` with only the marked "Sub-plan 3" lines added.
+- [ ] **Step 1: Write the functions.** `pos_insert_order` and `place_table_order` below are the live text of `supabase/migration-2026-10-23-pos-ordering-fn.sql` with only the marked "Sub-plan 3" lines added; `place_counter_order` is shortened to call `pos_my_branch()` (same error words, plus the resigned check)`.
 
 ```sql
 -- ============================================================================
@@ -340,12 +371,17 @@ The migration is applied to dev by the controller in Task 5 together with the fu
 -- ============================================================================
 
 -- ── The caller's branch (every POS RPC works inside it) ─────────────────────
+-- A resigned person keeps is_active = true (see migration-2026-09-02's staff_guard
+-- comment): status = 'resigned' is what really ends access, so both are checked.
 create or replace function pos_my_branch() returns uuid
 language plpgsql stable security definer set search_path = public, pg_temp as $$
-declare v_branch uuid;
+declare
+  v_branch uuid;
+  v_live   boolean;
 begin
   if auth.uid() is null then raise exception 'Sign in required'; end if;
-  select branch_id into v_branch from staff where id = auth.uid() and is_active;
+  select branch_id, (is_active and status = 'active') into v_branch, v_live from staff where id = auth.uid();
+  if not coalesce(v_live, false) then raise exception 'Your account is not active'; end if;
   if v_branch is null then
     raise exception 'Your account has no branch — ask a manager to set it in Team';
   end if;
@@ -403,13 +439,17 @@ language sql immutable security invoker set search_path = public, pg_temp as $$
   b as (
     select t.*, t.subtotal + t.sc_total + t.sst_total + t.fee_total as before_rounding from t
   ),
+  m as (
+    -- remainder normalised to 0..4 so a negative amount rounds like roundingDeltaSen (bill.ts)
+    select b.*, ((b.before_rounding % 5) + 5) % 5 as r5 from b
+  ),
   fin as (
-    select b.*,
+    select m.*,
            case when coalesce(p_input->>'cashRounding', 'nearest_5_sen') <> 'nearest_5_sen' then 0
-                when b.before_rounding % 5 in (1, 2) then -(b.before_rounding % 5)        -- …1, …2 → down
-                when b.before_rounding % 5 in (3, 4) then 5 - b.before_rounding % 5       -- …3, …4 → up
+                when m.r5 in (1, 2) then -m.r5         -- …1, …2 → down
+                when m.r5 in (3, 4) then 5 - m.r5      -- …3, …4 → up
                 else 0 end as rounding
-      from b
+      from m
   )
   select jsonb_build_object(
     'subtotalSen', fin.subtotal, 'serviceChargeSen', fin.sc_total, 'sstSen', fin.sst_total,
@@ -673,6 +713,18 @@ begin
 end $$;
 revoke all on function pos_insert_order(uuid, uuid, text, integer, text, uuid, jsonb, uuid) from public, anon, authenticated;
 
+-- ── place_counter_order, re-created: Sub-plan 2's function with one change — the
+--    caller is checked by pos_my_branch(), so a resigned person can no longer order ─
+create or replace function place_counter_order(
+  p_table_id uuid, p_order_type text, p_pax integer, p_items jsonb, p_client_order_id uuid
+) returns uuid
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  return pos_insert_order(pos_my_branch(), p_table_id, p_order_type, p_pax, 'counter', auth.uid(), p_items, p_client_order_id);
+end $$;
+revoke all on function place_counter_order(uuid, text, integer, jsonb, uuid) from public, anon;
+grant execute on function place_counter_order(uuid, text, integer, jsonb, uuid) to authenticated;
+
 -- ── place_table_order, re-created: Sub-plan 2's function with one change — the
 --    branch switch qr_requires_open_bill refuses a table that staff have not opened ─
 create or replace function place_table_order(p_token text, p_pax integer, p_items jsonb, p_client_order_id uuid)
@@ -780,9 +832,7 @@ language sql stable security definer set search_path = public, pg_temp as $$
   select jsonb_build_object(
     'billId', b.id, 'billNo', b.bill_no, 'totalSen', b.total_sen,
     'changeSen', (select coalesce(sum(p.change_sen), 0) from payments p where p.bill_id = b.id),
-    'receiptQueued', exists (select 1 from print_jobs j
-                              where j.branch_id = b.branch_id and j.kind = 'receipt'
-                                and j.payload->>'kind' = 'receipt' and j.payload->>'billNo' = b.bill_no))
+    'receiptQueued', coalesce(b.receipt_queued, false))
   from bills b where b.id = p_bill_id
 $$;
 revoke all on function pos_checkout_result(uuid) from public, anon, authenticated;
@@ -802,11 +852,18 @@ declare
   v_amount    integer;
   v_tendered  integer;
   v_n         integer := 0;
+  v_queued    boolean;
 begin
   if p_checkout_id is null then raise exception 'Checkout id is missing'; end if;
-  -- a resend of a checkout that already went through gets the first answer
+  -- a resend of a checkout that already went through gets the first answer —
+  -- but only for the same bill of the caller's branch
   select * into v_bill from bills where checkout_id = p_checkout_id;
-  if found then return pos_checkout_result(v_bill.id); end if;
+  if found then
+    if v_bill.id <> p_bill_id or v_bill.branch_id <> v_branch then
+      raise exception 'This checkout id belongs to another bill';
+    end if;
+    return pos_checkout_result(v_bill.id);
+  end if;
 
   select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
   if not found then raise exception 'Bill not found'; end if;
@@ -888,7 +945,8 @@ begin
          rounding_sen       = (v_totals->>'roundingSen')::integer,
          total_sen          = v_total
    where id = v_bill.id;
-  perform pos_queue_receipt(v_bill.id, false);
+  v_queued := pos_queue_receipt(v_bill.id, false);
+  update bills set receipt_queued = v_queued where id = v_bill.id;
   return pos_checkout_result(v_bill.id);
 end $$;
 revoke all on function checkout_bill(uuid, jsonb, uuid) from public, anon;
@@ -920,6 +978,7 @@ declare
   v_branch uuid := pos_my_branch();
   v_route  text;
   v_round  text;
+  v_footer constant text := 'This is an official receipt. Thank you for visiting us.';
 begin
   if not has_menu_cap('access_settings') then
     raise exception 'Only a manager can change the receipt settings';
@@ -932,27 +991,25 @@ begin
   if v_route is not null and not exists (select 1 from print_routes where branch_id = v_branch and name = v_route) then
     raise exception 'No printer is set for route %', v_route;
   end if;
+  -- a key that is absent leaves its column as it is (branches.address is shown all over Craft OS)
   update branches
      set receipt_title   = trim(p->>'receiptTitle'),
-         legal_name      = nullif(trim(p->>'legalName'), ''),
-         registration_no = nullif(trim(p->>'registrationNo'), ''),
-         sst_no          = nullif(trim(p->>'sstNo'), ''),
-         address         = nullif(trim(p->>'address'), ''),
-         phone           = nullif(trim(p->>'phone'), ''),
-         email           = nullif(trim(p->>'email'), '')
+         legal_name      = case when p ? 'legalName'      then nullif(trim(p->>'legalName'), '')      else legal_name end,
+         registration_no = case when p ? 'registrationNo' then nullif(trim(p->>'registrationNo'), '') else registration_no end,
+         sst_no          = case when p ? 'sstNo'          then nullif(trim(p->>'sstNo'), '')          else sst_no end,
+         address         = case when p ? 'address'        then nullif(trim(p->>'address'), '')        else address end,
+         phone           = case when p ? 'phone'          then nullif(trim(p->>'phone'), '')          else phone end,
+         email           = case when p ? 'email'          then nullif(trim(p->>'email'), '')          else email end
    where id = v_branch;
-  insert into branch_pos_settings(branch_id, sst_registered, cash_rounding, receipt_route, receipt_footer,
-                                  qr_requires_open_bill, updated_at)
-  values (v_branch, coalesce((p->>'sstRegistered')::boolean, true), v_round, v_route,
-          coalesce(nullif(trim(left(p->>'footer', 300)), ''), 'This is an official receipt. Thank you for visiting us.'),
-          coalesce((p->>'qrRequiresOpenBill')::boolean, false), now())
-  on conflict (branch_id) do update
-     set sst_registered        = excluded.sst_registered,
-         cash_rounding         = excluded.cash_rounding,
-         receipt_route         = excluded.receipt_route,
-         receipt_footer        = excluded.receipt_footer,
-         qr_requires_open_bill = excluded.qr_requires_open_bill,
-         updated_at            = now();
+  insert into branch_pos_settings(branch_id) values (v_branch) on conflict (branch_id) do nothing;
+  update branch_pos_settings
+     set sst_registered        = case when p ? 'sstRegistered' then coalesce((p->>'sstRegistered')::boolean, sst_registered) else sst_registered end,
+         cash_rounding         = case when p ? 'cashRounding' then v_round else cash_rounding end,
+         receipt_route         = case when p ? 'receiptRoute' then v_route else receipt_route end,
+         receipt_footer        = case when p ? 'footer' then coalesce(nullif(trim(left(p->>'footer', 300)), ''), v_footer) else receipt_footer end,
+         qr_requires_open_bill = case when p ? 'qrRequiresOpenBill' then coalesce((p->>'qrRequiresOpenBill')::boolean, qr_requires_open_bill) else qr_requires_open_bill end,
+         updated_at            = now()
+   where branch_id = v_branch;
 end $$;
 revoke all on function save_receipt_settings(jsonb) from public, anon;
 grant execute on function save_receipt_settings(jsonb) to authenticated;
@@ -960,7 +1017,7 @@ grant execute on function save_receipt_settings(jsonb) to authenticated;
 select 'checkout functions applied' as result;
 ```
 
-- [ ] **Step 2: Local sanity checks.** Run: `grep -c "create or replace function" supabase/migration-2026-10-24-pos-checkout-fn.sql` — Expected: `11`. Run: `grep -c "set search_path = public, pg_temp" supabase/migration-2026-10-24-pos-checkout-fn.sql` — Expected: `11`. Run: `grep -n "grant execute" supabase/migration-2026-10-24-pos-checkout-fn.sql | grep -c anon` — Expected: `1` (only `place_table_order`). Then prove the two re-created functions changed only where intended:
+- [ ] **Step 2: Local sanity checks.** Run: `grep -c "create or replace function" supabase/migration-2026-10-24-pos-checkout-fn.sql` — Expected: `12`. Run: `grep -c "set search_path = public, pg_temp" supabase/migration-2026-10-24-pos-checkout-fn.sql` — Expected: `12`. Run: `grep -c "status = 'active'" supabase/migration-2026-10-24-pos-checkout-fn.sql` — Expected: `1` (in `pos_my_branch`, which every RPC of this file uses). Run: `grep -n "grant execute" supabase/migration-2026-10-24-pos-checkout-fn.sql | grep -c anon` — Expected: `1` (only `place_table_order`). Then prove the two re-created functions changed only where intended:
 
 ```bash
 diff <(sed -n '/^create or replace function pos_insert_order/,/^revoke all on function pos_insert_order/p' supabase/migration-2026-10-23-pos-ordering-fn.sql) \
@@ -1243,14 +1300,15 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Produces (called by Tasks 5 and 8):
   - `pos_approvers() returns table (staff_id uuid, name text, has_pin boolean)` — staff
   - `set_my_pos_pin(p_new_pin text, p_current_pin text) returns jsonb` — `{ok}` / `{ok:false, error:'Current PIN: …'}`; raises `The PIN must be 4 to 6 digits`
-  - `clear_pos_pin(p_staff_id uuid) returns void` — `access_settings`
+  - `clear_pos_pin(p_staff_id uuid) returns void` — `access_settings`, staff of the caller's branch only
   - `void_order_item(p_item_id uuid, p_reason text, p_approver_id uuid, p_pin text) returns jsonb`
   - `void_bill(p_bill_id uuid, p_reason text, p_approver_id uuid, p_pin text) returns jsonb`
-  - `move_bill(p_bill_id uuid, p_table_id uuid) returns void`, `merge_bills(p_from_bill uuid, p_into_bill uuid) returns void`
-  - `refund_bill(p_refund_id uuid, p_bill_id uuid, p_amount_sen integer, p_method_id uuid, p_reason text, p_approver_id uuid, p_pin text) returns jsonb` → `{ok, refundedSen, slipQueued}`
+  - `move_bill(p_bill_id uuid, p_table_id uuid) returns void`, `merge_bills(p_from_bill uuid, p_into_bill uuid) returns void` (a dine-in bill never merges into a takeaway bill)
+  - approvers and the caller count only when `is_active and status = 'active'`; wrong PINs older than a day are forgotten (`updated_at` is stamped on every failure)
+  - `refund_bill(p_refund_id uuid, p_bill_id uuid, p_amount_sen integer, p_method_id uuid, p_reason text, p_approver_id uuid, p_pin text) returns jsonb` → `{ok, refundedSen, slipQueued}` — a replay of the same `refund_id` answers the same shape (`slipQueued` from `refunds.slip_queued`)
   - `open_table(p_table_id uuid, p_pax integer) returns uuid` (the open bill's id)
   - internal: `pos_pin_attempt(uuid, text) returns text`, `pos_check_approver(uuid, uuid, text) returns text`, `pos_check_reason(uuid, text, text) returns text`, `pos_queue_void_tickets(uuid[]) returns void`, `pos_refund_slip_payload(uuid) returns jsonb` (exactly `RefundSlipPayload`)
-  - Words the UI shows: `Wrong PIN — N tries left`, `Wrong PIN — locked for 10 minutes after 5 wrong tries`, `Too many wrong PINs — locked until HH:MI`, `No POS PIN is set for this person yet — they set one under My PIN`, `Choose who approves`, `The approver is not active staff of this branch`, `This person cannot approve voids or refunds`, `Choose a reason`, `Choose one of the listed reasons`, `Reason is too long`, `Only items on an open bill can be voided — refund a paid bill instead`, `This bill is paid — refund it instead`, `Table X already has an open bill — merge instead`, `Only a dine-in bill can move to another table`, `Only open bills can be merged`, `Only a paid bill can be refunded`, `Refund is more than what is left on this bill (RM x)`
+  - Words the UI shows: `Wrong PIN — N tries left`, `Wrong PIN — locked for 10 minutes after 5 wrong tries`, `Too many wrong PINs — locked until HH:MI`, `No POS PIN is set for this person yet — they set one under My PIN`, `Choose who approves`, `The approver is not active staff of this branch`, `This person cannot approve voids or refunds`, `Choose a reason`, `Choose one of the listed reasons`, `Reason is too long`, `Only items on an open bill can be voided — refund a paid bill instead`, `This bill is paid — refund it instead`, `Table X already has an open bill — merge instead`, `Only a dine-in bill can move to another table`, `Only open bills can be merged`, `Merge the takeaway bill into the table's bill, not the other way round`, `This person is not staff of your branch`, `Your account is not active`, `Only a paid bill can be refunded`, `Refund is more than what is left on this bill (RM x)`
 
 - [ ] **Step 1: Write the functions**
 
@@ -1270,13 +1328,14 @@ create or replace function pos_approvers() returns table (staff_id uuid, name te
 language sql stable security definer set search_path = public, pg_temp as $$
   select s.id, s.name, exists (select 1 from staff_pos_pins p where p.staff_id = s.id)
     from staff s
-   where s.is_active and s.branch_id = pos_my_branch() and staff_has_cap(s.id, 'pos_supervise')
+   where s.is_active and s.status = 'active' and s.branch_id = pos_my_branch() and staff_has_cap(s.id, 'pos_supervise')
    order by s.name
 $$;
 revoke all on function pos_approvers() from public, anon;
 grant execute on function pos_approvers() to authenticated;
 
 -- ── One PIN attempt: null = right; otherwise the words to show ──────────────
+-- Wrong tries older than a day are forgotten (updated_at is stamped on every failure).
 create or replace function pos_pin_attempt(p_staff_id uuid, p_pin text) returns text
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -1294,12 +1353,13 @@ begin
     update staff_pos_pins set failed_attempts = 0, locked_until = null where staff_id = p_staff_id;
     return null;
   end if;
-  v_n := v_pin.failed_attempts + 1;
+  v_n := case when v_pin.updated_at < now() - interval '1 day' then 0 else v_pin.failed_attempts end + 1;
   if v_n >= 5 then
-    update staff_pos_pins set failed_attempts = 0, locked_until = now() + interval '10 minutes' where staff_id = p_staff_id;
+    update staff_pos_pins set failed_attempts = 0, locked_until = now() + interval '10 minutes', updated_at = now()
+     where staff_id = p_staff_id;
     return 'Wrong PIN — locked for 10 minutes after 5 wrong tries';
   end if;
-  update staff_pos_pins set failed_attempts = v_n where staff_id = p_staff_id;
+  update staff_pos_pins set failed_attempts = v_n, updated_at = now() where staff_id = p_staff_id;
   return format('Wrong PIN — %s %s left', 5 - v_n, case when 5 - v_n = 1 then 'try' else 'tries' end);
 end $$;
 revoke all on function pos_pin_attempt(uuid, text) from public, anon, authenticated;
@@ -1310,7 +1370,9 @@ language plpgsql security definer set search_path = public, pg_temp as $$
 declare v_err text;
 begin
   if auth.uid() is null then raise exception 'Sign in required'; end if;
-  if not exists (select 1 from staff where id = auth.uid() and is_active) then raise exception 'Sign in required'; end if;
+  if not exists (select 1 from staff where id = auth.uid() and is_active and status = 'active') then
+    raise exception 'Your account is not active';
+  end if;
   if p_new_pin is null or p_new_pin !~ '^\d{4,6}$' then raise exception 'The PIN must be 4 to 6 digits'; end if;
   if exists (select 1 from staff_pos_pins where staff_id = auth.uid()) then
     v_err := pos_pin_attempt(auth.uid(), p_current_pin);
@@ -1325,11 +1387,14 @@ end $$;
 revoke all on function set_my_pos_pin(text, text) from public, anon;
 grant execute on function set_my_pos_pin(text, text) to authenticated;
 
--- a forgotten PIN: a settings holder clears it and the person sets a new one
+-- a forgotten PIN: a settings holder of the same branch clears it and the person sets a new one
 create or replace function clear_pos_pin(p_staff_id uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   if not has_menu_cap('access_settings') then raise exception 'Only a manager can clear a PIN'; end if;
+  if not exists (select 1 from staff where id = p_staff_id and branch_id = pos_my_branch()) then
+    raise exception 'This person is not staff of your branch';
+  end if;
   delete from staff_pos_pins where staff_id = p_staff_id;
 end $$;
 revoke all on function clear_pos_pin(uuid) from public, anon;
@@ -1341,7 +1406,8 @@ create or replace function pos_check_approver(p_branch_id uuid, p_approver_id uu
 language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   if p_approver_id is null then raise exception 'Choose who approves'; end if;
-  if not exists (select 1 from staff s where s.id = p_approver_id and s.is_active and s.branch_id = p_branch_id) then
+  if not exists (select 1 from staff s where s.id = p_approver_id and s.is_active and s.status = 'active'
+                   and s.branch_id = p_branch_id) then
     raise exception 'The approver is not active staff of this branch';
   end if;
   if not staff_has_cap(p_approver_id, 'pos_supervise') then
@@ -1519,6 +1585,9 @@ begin
   select * into v_into from bills where id = p_into_bill and branch_id = v_branch;
   if v_from.id is null or v_into.id is null then raise exception 'Bill not found'; end if;
   if v_from.status <> 'open' or v_into.status <> 'open' then raise exception 'Only open bills can be merged'; end if;
+  if v_from.order_type = 'dine_in' and v_into.order_type = 'takeaway' then
+    raise exception 'Merge the takeaway bill into the table''s bill, not the other way round';
+  end if;
   update orders set bill_id = v_into.id where bill_id = v_from.id;
   update order_items set bill_id = v_into.id where bill_id = v_from.id;
   update bills
@@ -1568,15 +1637,20 @@ declare
   v_route    text;
 begin
   if p_refund_id is null then raise exception 'Refund id is missing'; end if;
+  -- a resend of a refund that already went through gets the same reply as the first time
   select * into v_existing from refunds where id = p_refund_id;
   if found then
-    if v_existing.bill_id <> p_bill_id then raise exception 'This refund id belongs to another bill'; end if;
-    return jsonb_build_object('ok', true, 'refundedSen', (select refunded_sen from bills where id = p_bill_id));
+    if v_existing.bill_id <> p_bill_id or v_existing.branch_id <> v_branch then
+      raise exception 'This refund id belongs to another bill';
+    end if;
+    return jsonb_build_object('ok', true, 'refundedSen', (select refunded_sen from bills where id = p_bill_id),
+                              'slipQueued', v_existing.slip_queued);
   end if;
   select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
   if not found then raise exception 'Bill not found'; end if;
-  if exists (select 1 from refunds where id = p_refund_id) then        -- the same refund won while we waited
-    return jsonb_build_object('ok', true, 'refundedSen', v_bill.refunded_sen);
+  select * into v_existing from refunds where id = p_refund_id;        -- the same refund won while we waited
+  if found then
+    return jsonb_build_object('ok', true, 'refundedSen', v_bill.refunded_sen, 'slipQueued', v_existing.slip_queued);
   end if;
   if v_bill.status <> 'paid' then raise exception 'Only a paid bill can be refunded'; end if;
   if p_amount_sen is null or p_amount_sen <= 0 then raise exception 'Invalid refund amount'; end if;
@@ -1596,6 +1670,7 @@ begin
   if v_route is not null then
     insert into print_jobs(branch_id, route, kind, payload)
     values (v_branch, v_route, 'receipt', pos_refund_slip_payload(p_refund_id));
+    update refunds set slip_queued = true where id = p_refund_id;
   end if;
   return jsonb_build_object('ok', true, 'refundedSen', v_bill.refunded_sen + p_amount_sen, 'slipQueued', v_route is not null);
 end $$;
@@ -1633,7 +1708,7 @@ grant execute on function open_table(uuid, integer) to authenticated;
 select 'bill action functions applied' as result;
 ```
 
-- [ ] **Step 2: Local sanity checks.** Run: `grep -c "create or replace function" supabase/migration-2026-10-24-pos-bill-actions-fn.sql` — Expected: `14`. Run: `grep -c "set search_path = public, pg_temp" supabase/migration-2026-10-24-pos-bill-actions-fn.sql` — Expected: `14`. Run: `grep -n "grant execute" supabase/migration-2026-10-24-pos-bill-actions-fn.sql | grep -c anon` — Expected: `0`. Run: `grep -c "pos_check_approver(v_branch" supabase/migration-2026-10-24-pos-bill-actions-fn.sql` — Expected: `3` (void item, void bill, refund: the PIN is checked inside each).
+- [ ] **Step 2: Local sanity checks.** Run: `grep -c "create or replace function" supabase/migration-2026-10-24-pos-bill-actions-fn.sql` — Expected: `14`. Run: `grep -c "set search_path = public, pg_temp" supabase/migration-2026-10-24-pos-bill-actions-fn.sql` — Expected: `14`. Run: `grep -n "grant execute" supabase/migration-2026-10-24-pos-bill-actions-fn.sql | grep -c anon` — Expected: `0`. Run: `grep -c "pos_check_approver(v_branch" supabase/migration-2026-10-24-pos-bill-actions-fn.sql` — Expected: `3` (void item, void bill, refund: the PIN is checked inside each). Run: `grep -c "status = 'active'" supabase/migration-2026-10-24-pos-bill-actions-fn.sql` — Expected: `3` (`pos_approvers`, `set_my_pos_pin`, `pos_check_approver`).
 
 - [ ] **Step 3: Commit**
 
@@ -1792,7 +1867,7 @@ begin
   -- every function of this sub-plan pins its search_path
   for r in select p.proname from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
             where ns.nspname = 'public' and p.proname = any (array[
-              'pos_my_branch','pos_compute_bill','pos_bill_totals','pos_insert_order','place_table_order',
+              'pos_my_branch','pos_compute_bill','pos_bill_totals','pos_insert_order','place_table_order','place_counter_order',
               'pos_receipt_payload','pos_queue_receipt','pos_checkout_result','checkout_bill','reprint_receipt',
               'save_receipt_settings','has_menu_cap','staff_has_cap','pos_approvers','pos_pin_attempt','set_my_pos_pin',
               'clear_pos_pin','pos_check_approver','pos_check_reason','pos_queue_void_tickets','void_order_item',
@@ -1940,7 +2015,7 @@ begin
   select * into v_bill from bills where id = v_bill.id;
   if v_bill.status <> 'paid' or v_bill.closed_by <> v_staff or v_bill.closed_at is null or v_bill.total_sen <> 9280
      or v_bill.subtotal_sen <> 8000 or v_bill.service_charge_sen <> 800 or v_bill.sst_sen <> 480 or v_bill.rounding_sen <> 0
-     or v_bill.totals->'sstGroups'->0->>'baseSen' <> '8000' then
+     or v_bill.totals->'sstGroups'->0->>'baseSen' <> '8000' or not v_bill.receipt_queued then
     raise exception 'FAIL paid bill: %', row_to_json(v_bill);
   end if;
   if (select string_agg(method_name || ':' || amount_sen || ':' || coalesce(tendered_sen, -1) || ':' || change_sen, ',' order by line_no)
@@ -1962,8 +2037,11 @@ begin
   -- the same checkout again: the first answer, nothing new
   if checkout_bill(v_bill.id, '[]'::jsonb, v_checkout) <> v_res then raise exception 'FAIL checkout replay'; end if;
   select count(*) into n from payments where bill_id = v_bill.id; if n <> 2 then raise exception 'FAIL replay wrote payments'; end if;
-  select count(*) into n from print_jobs where kind = 'receipt' and payload->>'billNo' = v_bill.bill_no;
+  select count(*) into n from print_jobs where branch_id = v_branch and kind = 'receipt' and payload->>'billNo' = v_bill.bill_no;
   if n <> 1 then raise exception 'FAIL replay queued % receipts', n; end if;
+  -- a checkout id is only ever replayed for its own bill
+  begin perform checkout_bill(v_bill2.id, '[]'::jsonb, v_checkout); raise exception 'FAIL: checkout id reused on another bill';
+  exception when raise_exception then if sqlerrm <> 'This checkout id belongs to another bill' then raise; end if; end;
   begin perform checkout_bill(v_bill.id, jsonb_build_array(jsonb_build_object('methodId', v_tng, 'amountSen', 9280)), gen_random_uuid());
     raise exception 'FAIL: paid twice';
   exception when raise_exception then if sqlerrm <> 'This bill is already paid' then raise; end if; end;
@@ -1977,7 +2055,8 @@ begin
   exception when raise_exception then if sqlerrm not like 'Only items on an open bill can be voided%' then raise; end if; end;
   -- reprint
   perform reprint_receipt(v_bill.id);
-  select count(*) into n from print_jobs where kind = 'receipt' and payload->>'billNo' = v_bill.bill_no and (payload->>'reprint')::boolean;
+  select count(*) into n from print_jobs where branch_id = v_branch and kind = 'receipt' and payload->>'billNo' = v_bill.bill_no
+     and (payload->>'reprint')::boolean;
   if n <> 1 then raise exception 'FAIL reprint'; end if;
   update branch_pos_settings set receipt_route = null where branch_id = v_branch;
   begin perform reprint_receipt(v_bill.id); raise exception 'FAIL: reprint without a printer';
@@ -1999,6 +2078,21 @@ begin
   exception when raise_exception then if sqlerrm <> 'This person cannot approve voids or refunds' then raise; end if; end;
   begin perform void_order_item(v_item, 'Wrong item keyed', v_far, '9999'); raise exception 'FAIL: other branch approved';
   exception when raise_exception then if sqlerrm <> 'The approver is not active staff of this branch' then raise; end if; end;
+  -- a resigned person keeps is_active = true; status = 'resigned' must end their authority
+  update staff set status = 'resigned' where id = v_sup;
+  begin perform void_order_item(v_item, 'Wrong item keyed', v_sup, '1234'); raise exception 'FAIL: resigned approver approved';
+  exception when raise_exception then if sqlerrm <> 'The approver is not active staff of this branch' then raise; end if; end;
+  update staff set status = 'active' where id = v_sup;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  update staff set status = 'resigned' where id = v_staff;                     -- the owner changes it (staff_guard)
+  perform set_config('request.jwt.claims', json_build_object('sub', v_staff, 'role', 'authenticated')::text, true);
+  begin perform place_counter_order(v_t2.id, 'dine_in', 1,
+          jsonb_build_array(jsonb_build_object('productId', v_plate, 'variantId', v_plate_var)), gen_random_uuid());
+    raise exception 'FAIL: resigned cashier ordered';
+  exception when raise_exception then if sqlerrm <> 'Your account is not active' then raise; end if; end;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  update staff set status = 'active' where id = v_staff;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_staff, 'role', 'authenticated')::text, true);
   v_res := void_order_item(v_item, 'Wrong item keyed', v_owner, '1234');
   if (v_res->>'ok')::boolean or v_res->>'error' not like 'No POS PIN is set%' then raise exception 'FAIL: approver without a PIN: %', v_res; end if;
   v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '0000');
@@ -2029,6 +2123,10 @@ begin
   v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '1234');
   if (v_res->>'ok')::boolean or v_res->>'error' not like 'Too many wrong PINs — locked until %' then raise exception 'FAIL locked: %', v_res; end if;
   update staff_pos_pins set locked_until = now() - interval '1 second' where staff_id = v_sup;
+  -- wrong tries older than a day are forgotten: 4 old failures + 1 new = "4 tries left", not a lock
+  update staff_pos_pins set failed_attempts = 4, updated_at = now() - interval '2 days' where staff_id = v_sup;
+  v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '0000');
+  if v_res->>'error' <> 'Wrong PIN — 4 tries left' then raise exception 'FAIL: old failures still counted: %', v_res; end if;
   -- the supervisor may approve their own action
   perform set_config('request.jwt.claims', json_build_object('sub', v_sup, 'role', 'authenticated')::text, true);
   if not (void_order_item(v_item, 'Customer changed mind', v_sup, '1234')->>'ok')::boolean then raise exception 'FAIL self-approval'; end if;
@@ -2064,6 +2162,10 @@ begin
   select b.* into v_bill from bills b join orders o on o.bill_id = b.id where o.id = v_order;       -- a takeaway bill
   begin perform move_bill(v_bill.id, v_t4.id); raise exception 'FAIL: takeaway moved';
   exception when raise_exception then if sqlerrm <> 'Only a dine-in bill can move to another table' then raise; end if; end;
+  begin perform merge_bills(v_bill3.id, v_bill.id); raise exception 'FAIL: table bill merged into a takeaway';
+  exception when raise_exception then
+    if sqlerrm <> 'Merge the takeaway bill into the table''s bill, not the other way round' then raise; end if;
+  end;
   -- merge V2's bill (pax 2) into V3's bill (pax 2): V3 gets every order and item, pax 4, V2 is free
   select count(*) into n from order_items where bill_id in (v_bill2.id, v_bill3.id);
   perform merge_bills(v_bill2.id, v_bill3.id);
@@ -2098,14 +2200,15 @@ begin
                    and approved_by = v_sup and created_by = v_staff and reason = 'Item not served') then
     raise exception 'FAIL refund row';
   end if;
-  if not exists (select 1 from print_jobs where kind = 'receipt' and payload->>'kind' = 'refund'
+  if not exists (select 1 from print_jobs where branch_id = v_branch and kind = 'receipt' and payload->>'kind' = 'refund'
                    and payload->>'billNo' = v_bill.bill_no and (payload->>'amountSen')::int = 1300
                    and payload->>'approvedBy' = 'Verify Supervisor') then
     raise exception 'FAIL refund slip';
   end if;
-  if (refund_bill(v_refund, v_bill.id, 1300, v_cash, 'Item not served', v_sup, '1234')->>'refundedSen')::int <> 1300
-     or (select refunded_sen from bills where id = v_bill.id) <> 1300 then
-    raise exception 'FAIL refund replay';
+  if refund_bill(v_refund, v_bill.id, 1300, v_cash, 'Item not served', v_sup, '1234') <> v_res
+     or (select refunded_sen from bills where id = v_bill.id) <> 1300
+     or (select count(*) from refunds where bill_id = v_bill.id) <> 1 then
+    raise exception 'FAIL refund replay: the reply must equal the first one';
   end if;
   begin perform refund_bill(gen_random_uuid(), v_bill.id, 8000, v_cash, 'x', v_sup, '1234'); raise exception 'FAIL: refund cap';
   exception when raise_exception then if sqlerrm <> 'Refund is more than what is left on this bill (RM 79.80)' then raise; end if; end;
@@ -2133,11 +2236,15 @@ begin
   begin perform save_receipt_settings('{"receiptTitle": "Nope"}'::jsonb); raise exception 'FAIL: cashier saved settings';
   exception when raise_exception then if sqlerrm <> 'Only a manager can change the receipt settings' then raise; end if; end;
   perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  begin perform clear_pos_pin(v_far); raise exception 'FAIL: cleared a PIN of another branch';
+  exception when raise_exception then if sqlerrm <> 'This person is not staff of your branch' then raise; end if; end;
   begin perform save_receipt_settings('{"receiptTitle": "Verify Cafe", "receiptRoute": "Nowhere"}'::jsonb); raise exception 'FAIL: unknown route';
   exception when raise_exception then if sqlerrm <> 'No printer is set for route Nowhere' then raise; end if; end;
   perform save_receipt_settings('{"receiptTitle": " Verify Cafe 2 ", "legalName": "", "phone": "03-1234", "footer": "Thanks!",
                                   "receiptRoute": "Bar", "sstRegistered": false, "cashRounding": "none", "qrRequiresOpenBill": true}'::jsonb);
-  if (select receipt_title || '|' || coalesce(legal_name, 'null') || '|' || phone from branches where id = v_branch) <> 'Verify Cafe 2|null|03-1234'
+  -- legalName "" clears it; address is absent from the payload, so it stays as it was
+  if (select receipt_title || '|' || coalesce(legal_name, 'null') || '|' || phone || '|' || address from branches where id = v_branch)
+       <> 'Verify Cafe 2|null|03-1234|verify street'
      or not exists (select 1 from branch_pos_settings where branch_id = v_branch and not sst_registered and cash_rounding = 'none'
                       and receipt_footer = 'Thanks!' and qr_requires_open_bill) then
     raise exception 'FAIL save_receipt_settings';
@@ -4288,9 +4395,11 @@ import { fetchBillingConfig, type BillingConfig } from '../checkout/checkoutApi'
       )}
 ```
 
-- [ ] **Step 4: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run src/features/pos` — Expected: PASS. Browser (dev server `pos-menu-dev`, `http://localhost:5174/pos`, test login, after Task 5): `T1` → **New order** → any 4 items → Send. The panel shows Subtotal, `Service charge (10%)`, `SST (6%)` and Total. **Checkout** → the sheet's Total equals the panel's → **Touch 'n Go** → amount `50.00` → **Add Touch 'n Go** → **Cash** → `RM 50` quick button (or Exact) → Left to pay `RM 0.00`, Change shown → **Pay** → the change screen with "Receipt printing…" → **Done** → `T1` is Empty. In a second browser tab on `/pos`, `T1` turns Empty within 2 s (Realtime on `bills`). In the dev DB: `select status, total_sen, checkout_id is not null from bills where bill_no = '<bill no>'` → `paid | <total> | t`; `select method_name, amount_sen, tendered_sen, change_sen from payments where bill_id = …` → two rows; `select route, status, payload->>'kind' from print_jobs where kind = 'receipt' order by created_at desc limit 1` → `Bar | pending | receipt` (it prints in Task 13).
+- [ ] **Step 4: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run src/features/pos` — Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5 (controller, craft-os-dev — browser and SQL; the implementer does not touch the database):** Browser (dev server `pos-menu-dev`, `http://localhost:5174/pos`, test login, after Task 5): `T1` → **New order** → any 4 items → Send. The panel shows Subtotal, `Service charge (10%)`, `SST (6%)` and Total. **Checkout** → the sheet's Total equals the panel's → **Touch 'n Go** → amount `50.00` → **Add Touch 'n Go** → **Cash** → `RM 50` quick button (or Exact) → Left to pay `RM 0.00`, Change shown → **Pay** → the change screen with "Receipt printing…" → **Done** → `T1` is Empty. In a second browser tab on `/pos`, `T1` turns Empty within 2 s (Realtime on `bills`). In the dev DB: `select status, total_sen, checkout_id is not null from bills where bill_no = '<bill no>'` → `paid | <total> | t`; `select method_name, amount_sen, tendered_sen, change_sen from payments where bill_id = …` → two rows; `select route, status, payload->>'kind' from print_jobs where kind = 'receipt' order by created_at desc limit 1` → `Bar | pending | receipt` (it prints in Task 13).
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/features/pos/checkout/CheckoutSheet.tsx src/features/pos/order/BillPanel.tsx src/features/pos/order/PosPage.tsx
@@ -4667,7 +4776,9 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
 ```tsx
           <BillPanel branchId={branchId} table={selectedTable} bill={selectedBill} refreshKey={refreshKey} billing={billing}
             moveTargets={cards.filter((c) => c.state === 'empty').map((c) => ({ id: c.id, label: c.label }))}
-            mergeSources={bills.filter((b) => b.id !== selectedBill?.id).map((b) => ({
+            // a takeaway bill only takes in other takeaways; a table's bill takes in anything (merge_bills refuses the rest)
+            mergeSources={bills.filter((b) => b.id !== selectedBill?.id
+              && !(selectedBill?.order_type === 'takeaway' && b.order_type === 'dine_in')).map((b) => ({
               id: b.id,
               label: b.table_id ? `Table ${tables.find((t) => t.id === b.table_id)?.label ?? '?'}` : 'Takeaway',
               detail: `Bill ${b.bill_no}`,
@@ -4677,9 +4788,11 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
             onCheckout={() => { if (selectedBill) { loadBilling(); setCheckout(selectedBill) } }}
 ```
 
-- [ ] **Step 5: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run src/features/pos` — Expected: PASS. Browser (dev, test login): `T2` → order 2 items → the panel shows **Void** on each item and **Move table** · **Merge with…** · **Void bill**. **Move table** → pick `T5` → the bill shows under `T5`, `T2` is Empty. Start a takeaway order; on `T5` **Merge with…** → pick the takeaway → confirm → its items join `T5`'s bill and the takeaway button disappears. **Void** on an item opens the dialog with the Demo reasons ("Customer changed mind", …) and the approver list (the test login shows `(no PIN)` until it sets one — the PIN checks run in Task 11 Step 6). Open table: on dev run `update branch_pos_settings set qr_requires_open_bill = true where branch_id = (select id from branches where name = 'Demo')`, reload `/pos`, tap an empty table → **Open table for QR ordering** → guests `2` → the table shows a bill with **Close empty bill** → tap it → confirm → the table is Empty again (no approval for an empty bill); then set the switch back to `false`.
+- [ ] **Step 5: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run src/features/pos` — Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6 (controller, craft-os-dev — browser and SQL; the implementer does not touch the database):** Browser (dev, test login): `T2` → order 2 items → the panel shows **Void** on each item and **Move table** · **Merge with…** · **Void bill**. **Move table** → pick `T5` → the bill shows under `T5`, `T2` is Empty. Start a takeaway order; on the takeaway, **Merge with…** lists only other takeaways (a table's bill never merges into a takeaway); on `T5` **Merge with…** → pick the takeaway → confirm → its items join `T5`'s bill and the takeaway button disappears. **Void** on an item opens the dialog with the Demo reasons ("Customer changed mind", …) and the approver list (the test login shows `(no PIN)` until it sets one — the PIN checks run in Task 11 Step 7). Open table: on dev run `update branch_pos_settings set qr_requires_open_bill = true where branch_id = (select id from branches where name = 'Demo')`, reload `/pos`, tap an empty table → **Open table for QR ordering** → guests `2` → the table shows a bill with **Close empty bill** → tap it → confirm → the table is Empty again (no approval for an empty bill); then set the switch back to `false`.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/features/pos/checkout/ApprovalDialog.tsx src/features/pos/checkout/BillPickers.tsx src/features/pos/order/BillPanel.tsx src/features/pos/order/PosPage.tsx
@@ -4980,9 +5093,11 @@ import MyPinDialog from '../checkout/MyPinDialog'
         <CheckoutSheet
 ```
 
-- [ ] **Step 6: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run src/features/pos` — Expected: PASS. Browser (dev, test login): **My PIN** → leave current empty, new `1234` twice → "PIN saved". Again with current `0000` → "Current PIN: Wrong PIN — 4 tries left"; with current `1234` → saved. Approval checks deferred from Task 10: on an open bill **Void** an item → reason "Wrong item keyed" → approver = the test login → PIN `0000` → "Wrong PIN — 4 tries left" (the successful PIN change reset the counter) and the item stays; PIN `1234` → the item is struck through; `select payload->>'void', route from print_jobs order by created_at desc limit 1` → `true | <the item's route>` (items with no route print nothing — set routes on /menu first, Task 13). **Void bill** on another bill → the table is Empty. **Today's bills** → the paid bill from Task 9 is listed `Paid`; **Reprint receipt** → "Receipt … sent to the printer" and a `receipt` job with `payload->>'reprint' = 'true'`; **Refund** → amount `5.00`, Paid back by Cash, reason "Item not served", approver PIN `1234` → "Refunded RM 5.00 on …", the row shows `refunded RM 5.00`; a second refund of more than what is left → "Refund is more than what is left on this bill (RM …)". The voided bill is listed `Voided`, a merged one `Merged`.
+- [ ] **Step 6: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run src/features/pos` — Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7 (controller, craft-os-dev — browser and SQL; the implementer does not touch the database):** Browser (dev, test login): **My PIN** → leave current empty, new `1234` twice → "PIN saved". Again with current `0000` → "Current PIN: Wrong PIN — 4 tries left"; with current `1234` → saved. Approval checks deferred from Task 10: on an open bill **Void** an item → reason "Wrong item keyed" → approver = the test login → PIN `0000` → "Wrong PIN — 4 tries left" (the successful PIN change reset the counter) and the item stays; PIN `1234` → the item is struck through; `select payload->>'void', route from print_jobs order by created_at desc limit 1` → `true | <the item's route>` (items with no route print nothing — set routes on /menu first, Task 13). **Void bill** on another bill → the table is Empty. **Today's bills** → the paid bill from Task 9 is listed `Paid`; **Reprint receipt** → "Receipt … sent to the printer" and a `receipt` job with `payload->>'reprint' = 'true'`; **Refund** → amount `5.00`, Paid back by Cash, reason "Item not served", approver PIN `1234` → "Refunded RM 5.00 on …", the row shows `refunded RM 5.00`; a second refund of more than what is left → "Refund is more than what is left on this bill (RM …)". The voided bill is listed `Voided`, a merged one `Merged`.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/features/pos/checkout/todayBills.ts src/features/pos/checkout/todayBills.test.ts src/features/pos/checkout/TodayBillsDrawer.tsx src/features/pos/checkout/MyPinDialog.tsx src/features/pos/order/PosPage.tsx
@@ -5506,9 +5621,11 @@ No printers set — see POS settings.
 — set them in POS settings.
 ```
 
-- [ ] **Step 7: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run` — Expected: all pass (670 tests at the time of writing; `nav.test.ts` checks ids, not labels). Run: `grep -rn "Tables & [Pp]rinters" src` — Expected: no output. Browser `/pos/settings` (dev, test login): **Receipt** shows the seeded title `Craft Cafe - Demo` and route `Bar`; change the phone and **Save receipt settings** → "Receipt settings saved" and `select phone from branches where name = 'Demo'` shows it; choose route "No receipt printer" → save → a checkout says "No receipt printer is set…"; set `Bar` back. **Service charge** lists `10% · Dine-in · All tables · All products`; **Add rule** 5 %, Takeaway, Only these products → search `latte` → tick one → **Save rule** → a takeaway bill with that product shows `Service charge (5%)` in the bill panel and in checkout; remove the rule. **Payment methods**: add `Grab` (other) → **Save** → it appears in the checkout sheet; untick Active → gone. **Reasons**: untick "Allow Other" for Void item → **Save** → the void dialog has no Other box and the server refuses a typed reason. **Approvers** lists the test login with "PIN set"; **Clear PIN** → "no PIN yet" (set it again under My PIN). Sign in as a non-manager staff login (if one exists on dev) → `/pos/settings` is not reachable (route guard), and a direct `save_receipt_settings` call is refused with "Only a manager can change the receipt settings" (verified in Task 5's script).
+- [ ] **Step 7: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run` — Expected: all pass (670 tests at the time of writing; `nav.test.ts` checks ids, not labels). Run: `grep -rn "Tables & [Pp]rinters" src` — Expected: no output.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 8 (controller, craft-os-dev — browser and SQL; the implementer does not touch the database):** Browser `/pos/settings` (dev, test login): **Receipt** shows the seeded title `Craft Cafe - Demo` and route `Bar`; change the phone and **Save receipt settings** → "Receipt settings saved" and `select phone from branches where name = 'Demo'` shows it; choose route "No receipt printer" → save → a checkout says "No receipt printer is set…"; set `Bar` back. **Service charge** lists `10% · Dine-in · All tables · All products`; **Add rule** 5 %, Takeaway, Only these products → search `latte` → tick one → **Save rule** → a takeaway bill with that product shows `Service charge (5%)` in the bill panel and in checkout; remove the rule. **Payment methods**: add `Grab` (other) → **Save** → it appears in the checkout sheet; untick Active → gone. **Reasons**: untick "Allow Other" for Void item → **Save** → the void dialog has no Other box and the server refuses a typed reason. **Approvers** lists the test login with "PIN set"; **Clear PIN** → "no PIN yet" (set it again under My PIN). Sign in as a non-manager staff login (if one exists on dev) → `/pos/settings` is not reachable (route guard), and a direct `save_receipt_settings` call is refused with "Only a manager can change the receipt settings" (verified in Task 5's script).
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/features/pos/checkout/settingsForm.ts src/features/pos/checkout/settingsForm.test.ts src/features/pos/checkout/CheckoutSettings.tsx src/features/pos/order/PosSettingsPage.tsx src/shared/lib/nav.ts src/features/pos/order/PosPage.tsx src/features/pos/order/PrintHostPanel.tsx
@@ -5538,6 +5655,7 @@ No code. Extends Sub-plan 2's Task 13 (do that one first if it has not run: tick
 ## Execution notes for the controller
 
 - Tasks 1–4 are SQL only (local grep checks); they land on dev together in Task 5 Step 6. Task 3 is the one task that touches both SQL and TypeScript (the capability rule). Tasks 6–12 each end with `npx tsc -b` and the relevant `vitest` run; Tasks 9–12 also have a browser check on dev. Task 13 needs the printer and the owner.
-- Approval checks of Task 10 run in Task 11 Step 6, once a PIN can be set from the POS (a PIN cannot be set from the SQL editor: `set_my_pos_pin` needs a signed-in staff JWT).
+- Every step that reads or writes craft-os-dev (Task 5 Step 6, Task 9 Step 5, Task 10 Step 6, Task 11 Step 7, Task 12 Step 8, Task 13) is the controller's; implementers stop at `tsc` / `vitest` / commit.
+- Approval checks of Task 10 run in Task 11 Step 7, once a PIN can be set from the POS (a PIN cannot be set from the SQL editor: `set_my_pos_pin` needs a signed-in staff JWT).
 - When this sub-plan closes, the merge prerequisite grows again: on prod, in order, `migration-2026-10-24-pos-checkout.sql`, `-checkout-fn.sql`, `-bill-actions-fn.sql` (after Sub-plan 1 and 2's migrations), before the first deploy from main that carries checkout. The seeds (2026-10-23 and 2026-10-24) and both verify scripts are dev-only. On prod each branch then needs, from POS settings: receipt header and receipt printer, service-charge rules, payment methods, reasons, and approvers' PINs.
 - Minor findings carried over from Sub-plan 2's ledger (agent route keying across branches, print RPCs without `search_path`, QR tokens never rotate) stay deferred; the final whole-branch review of this sub-plan triages them with its own.
