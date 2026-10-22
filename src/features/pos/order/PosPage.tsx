@@ -8,6 +8,7 @@ import { usePosRealtime, type OrderInsert } from './usePosRealtime'
 import TablesGrid from './TablesGrid'
 import BillPanel from './BillPanel'
 import OrderPad from './OrderPad'
+import PrintHostPanel from './PrintHostPanel'
 import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
 
@@ -77,6 +78,7 @@ export default function PosPage() {
       <header className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
         <div className="font-semibold">Craft POS · {staff.branch ?? 'Branch'}</div>
         <div className="flex items-center gap-3 text-xs text-brown-muted">
+          <PrintHostPanel branchId={branchId} />
           <span>Live: {rtStatus}</span>
           {can('access_settings') && <Link to="/pos/settings" className="underline">Tables & printers</Link>}
           <Link to="/profile" className="underline">Exit</Link>
