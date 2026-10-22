@@ -40,6 +40,87 @@ begin
   raise notice 'VERIFY OK';
 end $$;
 
+do $$
+declare
+  v_owner uuid := '76cbcf9f-905e-450d-9f5e-1c9e72a9373d';
+  v_payload jsonb := $j${
+    "categories": [{"name": "VERIFY COFFEE", "sortOrder": 0}, {"name": "ADDON", "sortOrder": 1}],
+    "products": [
+      {"feedmeId": "verify-latte", "name": "Verify Latte", "internalName": null, "description": null,
+       "category": "VERIFY COFFEE", "availability": "all", "isAddon": false, "takeawayFeeSen": 100, "sortOrder": 0,
+       "variants": [{"key": "v/hot", "name": "HOT", "priceSen": 1200, "sortOrder": 0},
+                    {"key": "v/cold", "name": "COLD", "priceSen": 1300, "sortOrder": 1}]},
+      {"feedmeId": "verify-oat", "name": "Oat milk", "internalName": null, "description": null,
+       "category": "ADDON", "availability": "all", "isAddon": true, "takeawayFeeSen": 0, "sortOrder": 1,
+       "variants": [{"key": "", "name": "Regular", "priceSen": 200, "sortOrder": 0}]}
+    ],
+    "groups": [{"feedmeId": "verify-milk", "name": "Milk", "min": 0, "max": 1, "stackable": false, "sortOrder": 0,
+                "options": [{"productFeedmeId": "verify-oat", "variantKey": "", "name": "Oat milk", "priceSen": 200,
+                             "isDefault": false, "availability": "all", "sortOrder": 0}]}],
+    "links": [{"productFeedmeId": "verify-latte", "groupFeedmeId": "verify-milk", "sortOrder": 0}]
+  }$j$;
+  v_counts jsonb;
+  v_latte uuid;
+  n int;
+begin
+  -- B1. refused without access_settings
+  perform set_config('request.jwt.claims', json_build_object('sub', gen_random_uuid(), 'role', 'authenticated')::text, true);
+  begin
+    perform menu_import(v_payload);
+    raise exception 'FAIL import: allowed without access_settings';
+  exception when raise_exception then
+    if sqlerrm not like 'Not allowed%' then raise; end if;
+  end;
+
+  -- B2. first import as owner
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  v_counts := menu_import(v_payload);
+  if (v_counts->>'products')::int <> 2 or (v_counts->>'variants')::int <> 3
+     or (v_counts->>'options')::int <> 1 or (v_counts->>'links')::int <> 1 then
+    raise exception 'FAIL import counts: %', v_counts;
+  end if;
+  select id into v_latte from menu_products where feedme_product_id = 'verify-latte';
+
+  -- B3. manager settings survive a re-import; price changes land; dropped variant is switched off
+  update menu_products set sst_rate_bp = 0, print_route = 'Bar' where id = v_latte;
+  v_payload := jsonb_set(v_payload, '{products,0,variants}',
+                 '[{"key": "v/hot", "name": "HOT", "priceSen": 1250, "sortOrder": 0}]'::jsonb);
+  perform menu_import(v_payload);
+  if (select sst_rate_bp from menu_products where id = v_latte) <> 0
+     or (select print_route from menu_products where id = v_latte) is distinct from 'Bar' then
+    raise exception 'FAIL re-import: overwrote sst_rate_bp or print_route';
+  end if;
+  if (select price_sen from menu_variants where product_id = v_latte and feedme_variant_key = 'v/hot') <> 1250 then
+    raise exception 'FAIL re-import: price not updated';
+  end if;
+  if (select is_active from menu_variants where product_id = v_latte and feedme_variant_key = 'v/cold') then
+    raise exception 'FAIL re-import: removed variant still active';
+  end if;
+
+  -- B4. idempotent: same payload again → same row counts in the tables
+  perform menu_import(v_payload);
+  select count(*) into n from menu_products where feedme_product_id like 'verify-%';
+  if n <> 2 then raise exception 'FAIL idempotent: % verify products', n; end if;
+  select count(*) into n from modifier_options mo join modifier_groups mg on mg.id = mo.group_id where mg.feedme_group_id = 'verify-milk';
+  if n <> 1 then raise exception 'FAIL idempotent: % options', n; end if;
+
+  -- B5. option points at the add-on product
+  if not exists (select 1 from modifier_options mo join menu_products mp on mp.id = mo.product_id
+                  where mp.feedme_product_id = 'verify-oat') then
+    raise exception 'FAIL options: option not linked to its add-on product';
+  end if;
+
+  -- B6. malformed payload
+  begin
+    perform menu_import('{"products": "nope"}'::jsonb);
+    raise exception 'FAIL import: malformed payload accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'Invalid import file%' then raise; end if;
+  end;
+
+  raise notice 'VERIFY OK (import)';
+end $$;
+
 select 'VERIFY OK' as result;
 
 rollback;
