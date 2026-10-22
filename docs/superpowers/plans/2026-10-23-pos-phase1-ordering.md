@@ -35,7 +35,7 @@
 - Ticket payloads built in SQL must have exactly the shape of `TicketPayload` in `src/features/pos/print/ticket.ts` (Task 5 extends it with `mods`).
 - Realtime subscriptions use a unique channel name per subscription (`crypto.randomUUID()`), filter by `branch_id`, and re-sweep on `SUBSCRIBED` and every 15 s (Phase 0 lesson).
 - The repo has no ESLint config (pre-existing) — lint steps are skipped; `npx tsc -b` and `npx vitest run` are the gates. `tools/` is not type-checked by `tsc -b`; the agent is checked by running it.
-- Every commit ends with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- Every commit ends with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Work in the worktree `/Users/USER/Desktop/Craft_OS/.claude/worktrees/pos-demo`, branch `feature/pos-demo`.
 
 ## File Structure
@@ -245,7 +245,7 @@ exception when duplicate_object then null; end $$;
 git add supabase/migration-2026-10-23-pos-ordering.sql
 git commit -m "feat(pos-order): dining tables, bills, orders, items, print jobs and routes with RLS
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 The migration is applied to dev by the controller in Task 3 together with the functions.
@@ -674,7 +674,7 @@ grant execute on function claim_print_job(uuid), finish_print_job(uuid, boolean,
 git add supabase/migration-2026-10-23-pos-ordering-fn.sql
 git commit -m "feat(pos-order): order RPCs price every line on the server and queue one ticket per route
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -905,7 +905,7 @@ select b.name, (select count(*) from dining_tables t where t.branch_id = b.id) a
 git add supabase/migration-2026-10-23-pos-ordering-verify.sql supabase/seed-2026-10-23-pos-demo-branch.sql
 git commit -m "test(pos-order): verify script for ordering RPCs; dev seed for the Demo branch
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 - [ ] **Step 4 (controller, dashboard of craft-os-dev):** confirm the top bar reads **craft-os-dev** (`egznnbjmicebbhwasloy`), then run in order, each with `cmd+Return` after loading it into the editor via `window.monaco.editor.getModels()[0].setValue(...)`: (1) `migration-2026-10-23-pos-ordering.sql` → "Success. No rows returned"; (2) `migration-2026-10-23-pos-ordering-fn.sql` → same (accept the "Potential issue" dialog: it contains `revoke`); (3) `seed-2026-10-23-pos-demo-branch.sql` → one row `Demo | 10 | 2`; (4) `migration-2026-10-23-pos-ordering-verify.sql` → result row `VERIFY OK`. If (4) fails, fix the function file, re-run (2), re-run (4). Record the outcome in the ledger.
@@ -1291,7 +1291,7 @@ export function formatSen(sen: number): string {
 git add src/features/pos/order/cart.ts src/features/pos/order/cart.test.ts
 git commit -m "feat(pos-order): pure order model — menu shaping, line pricing preview and the server's validation words
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1357,7 +1357,7 @@ and the body in `renderTicketLines`:
 git add src/features/pos/print/ticket.ts src/features/pos/print/ticket.test.ts
 git commit -m "feat(pos-print): tickets list modifiers under the item
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1633,7 +1633,7 @@ export async function insertTestPrint(route: string): Promise<void> {
 git add src/features/pos/offline src/features/pos/order/posApi.ts src/features/pos/spike/CounterOrder.tsx src/features/pos/spike/spikeApi.ts
 git commit -m "feat(pos-order): offline queue carries real order lines; POS data layer
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1986,7 +1986,7 @@ export default function PosPage() {
 git add src/features/pos/order/tableStatus.ts src/features/pos/order/tableStatus.test.ts src/features/pos/order/usePosRealtime.ts src/features/pos/order/TablesGrid.tsx src/features/pos/order/BillPanel.tsx src/features/pos/order/PosPage.tsx src/App.tsx
 git commit -m "feat(pos): /pos shell — tables grid, open-bill panel, branch-filtered Realtime
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -2353,7 +2353,7 @@ Replace the two inert props and add the pad:
 git add src/features/pos/order/LineSheet.tsx src/features/pos/order/OrderPad.tsx src/features/pos/order/useOrderQueue.ts src/features/pos/order/PosPage.tsx
 git commit -m "feat(pos): order pad with variants and modifiers, sent through the offline queue
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -2467,7 +2467,7 @@ import PrintHostPanel from './PrintHostPanel'
 git add src/features/pos/order/PrintHostPanel.tsx src/features/pos/order/PosPage.tsx
 git commit -m "feat(pos): print host panel — browser routes, failed and stuck tickets with reprint, test print
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -2690,7 +2690,7 @@ export default function PosSettingsPage() {
 git add package.json package-lock.json src/features/pos/order/qrLink.ts src/features/pos/order/qrLink.test.ts src/features/pos/order/PosSettingsPage.tsx src/App.tsx
 git commit -m "feat(pos): tables & printers settings with QR cards
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -2994,7 +2994,7 @@ export default defineConfig({
 git add qr/index.html src/qr vite.config.ts vercel.json tailwind.config.js
 git commit -m "feat(qr): customer ordering page at /t/<token> — anonymous client, server-priced orders
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -3031,7 +3031,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 git add -A tools/print-agent src/features/pos src/shared/lib/nav.ts src/shared/lib/nav.test.ts src/shared/components/Sidebar.tsx spike
 git commit -m "feat(pos): print agent on the real print_jobs; remove the Phase 0 spike; POS in the sidebar
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
