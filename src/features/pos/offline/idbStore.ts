@@ -42,7 +42,7 @@ export async function runTransaction<T>(
   })
 }
 
-export function createIdbStore(dbName = 'craft-pos'): QueueStore {
+export function createIdbStore(dbName = 'craft-pos-v2'): QueueStore {
   return {
     put: async (o) => {
       await runTransaction(dbName, 'readwrite', (s) => s.put(o))

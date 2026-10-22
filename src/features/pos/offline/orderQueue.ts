@@ -3,16 +3,16 @@
  *  tab or a dead battery. The server dedupes on clientOrderId, which makes
  *  resending always safe — including after a send whose reply was lost. */
 
-export interface CartLine {
-  menuItemId: string
-  qty: number
-  note: string | null
-}
+import type { OrderLine } from '../order/cart'
+
+export type OrderType = 'dine_in' | 'takeaway'
 
 export interface QueuedOrder {
   clientOrderId: string
+  orderType: OrderType
   tableId: string | null // null = takeaway
-  items: CartLine[]
+  pax: number | null
+  items: OrderLine[]
   queuedAt: number
   failedReason: string | null // set when the server rejected it; never resent automatically
 }
@@ -35,12 +35,18 @@ export interface FlushReport {
 }
 
 export function newQueuedOrder(
+  orderType: OrderType,
   tableId: string | null,
-  items: CartLine[],
+  pax: number | null,
+  items: OrderLine[],
   now: number = Date.now(),
   id: string = crypto.randomUUID(),
 ): QueuedOrder {
-  return { clientOrderId: id, tableId, items: items.map((l) => ({ ...l })), queuedAt: now, failedReason: null }
+  return {
+    clientOrderId: id, orderType, tableId, pax,
+    items: items.map((l) => ({ ...l, optionIds: [...l.optionIds] })),
+    queuedAt: now, failedReason: null,
+  }
 }
 
 export async function enqueue(store: QueueStore, order: QueuedOrder): Promise<void> {

@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createIdbStore } from '../offline/idbStore'
-import { enqueue, flushQueue, newQueuedOrder, type CartLine, type FlushReport } from '../offline/orderQueue'
+import { enqueue, flushQueue, newQueuedOrder, type FlushReport } from '../offline/orderQueue'
 import {
   countOrdersWithClientId, fetchMenu, fetchTables, sendCounterOrder,
   type SpikeMenuItem, type SpikeTable,
 } from './spikeApi'
+
+type CartLine = { menuItemId: string; qty: number; note: string | null }
+const toLines = (ls: CartLine[]) =>
+  ls.map((l) => ({ productId: l.menuItemId, variantId: l.menuItemId, qty: l.qty, note: l.note, optionIds: [] as string[] }))
 
 const store = createIdbStore()
 
@@ -109,7 +113,7 @@ export default function CounterOrder() {
     setSaving(true)
     setSaveError(null)
     try {
-      await enqueue(store, newQueuedOrder(tableId || null, cart)) // on disk before anything else
+      await enqueue(store, newQueuedOrder('takeaway', tableId || null, null, toLines(cart))) // on disk before anything else
     } catch (e) {
       // not on disk: keep the cart so the order can be retried, and say so loudly
       setSaveError(`Order NOT saved on this iPad: ${e instanceof Error ? e.message : String(e)}`)
@@ -123,7 +127,7 @@ export default function CounterOrder() {
 
   const duplicateTest = async () => {
     try {
-      const order = newQueuedOrder(tableId || null, [{ menuItemId: menu[0].id, qty: 1, note: 'duplicate test' }])
+      const order = newQueuedOrder('takeaway', tableId || null, null, toLines([{ menuItemId: menu[0].id, qty: 1, note: 'duplicate test' }]))
       const first = await sendCounterOrder(order)
       const second = await sendCounterOrder(order) // simulates a resend after a lost reply
       const rows = await countOrdersWithClientId(order.clientOrderId)

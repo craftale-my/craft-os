@@ -63,7 +63,7 @@ export async function sendCounterOrder(o: QueuedOrder): Promise<SendResult> {
   try {
     const { error } = await supabase.rpc('spike_place_counter_order', {
       p_table_id: o.tableId,
-      p_items: o.items,
+      p_items: o.items.map((l) => ({ menuItemId: l.productId, qty: l.qty, note: l.note })),
       p_client_order_id: o.clientOrderId,
     }).abortSignal(AbortSignal.timeout(SEND_TIMEOUT_MS)) // a hung request becomes a retryable failure
     return toSendResult(error) // keeps the Postgres code, so only real rejections are final
