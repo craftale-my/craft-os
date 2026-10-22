@@ -90,11 +90,11 @@ begin
      or (select print_route from menu_products where id = v_latte) is distinct from 'Bar' then
     raise exception 'FAIL re-import: overwrote sst_rate_bp or print_route';
   end if;
-  if (select price_sen from menu_variants where product_id = v_latte and feedme_variant_key = 'v/hot') <> 1250 then
+  if (select price_sen from menu_variants where product_id = v_latte and feedme_variant_key = 'v/hot') is distinct from 1250 then
     raise exception 'FAIL re-import: price not updated';
   end if;
-  if (select is_active from menu_variants where product_id = v_latte and feedme_variant_key = 'v/cold') then
-    raise exception 'FAIL re-import: removed variant still active';
+  if (select is_active from menu_variants where product_id = v_latte and feedme_variant_key = 'v/cold') is distinct from false then
+    raise exception 'FAIL re-import: removed variant should be kept but inactive';
   end if;
 
   -- B4. idempotent: same payload again → same row counts in the tables
@@ -116,6 +116,39 @@ begin
     raise exception 'FAIL import: malformed payload accepted';
   exception when raise_exception then
     if sqlerrm not like 'Invalid import file%' then raise; end if;
+  end;
+
+  -- B7. grants: anon cannot call it, authenticated can (the cap check is the second gate)
+  if has_function_privilege('anon', 'menu_import(jsonb)', 'execute') then
+    raise exception 'FAIL grants: anon can execute menu_import';
+  end if;
+  if not has_function_privilege('authenticated', 'menu_import(jsonb)', 'execute') then
+    raise exception 'FAIL grants: authenticated cannot execute menu_import';
+  end if;
+
+  -- B8. atomic: a bad group (max 0) aborts the whole call, leaving no new category behind
+  begin
+    perform menu_import(jsonb_build_object(
+      'categories', jsonb_build_array(jsonb_build_object('name', 'VERIFY ATOMIC', 'sortOrder', 9)),
+      'products', '[]'::jsonb, 'links', '[]'::jsonb,
+      'groups', jsonb_build_array(jsonb_build_object('feedmeId', 'verify-bad', 'name', 'Bad', 'min', 0, 'max', 0,
+                                                      'stackable', false, 'sortOrder', 0, 'options', '[]'::jsonb))));
+    raise exception 'FAIL atomic: max 0 group was accepted';
+  exception when check_violation then
+    null;
+  end;
+  if exists (select 1 from menu_categories where name = 'VERIFY ATOMIC') then
+    raise exception 'FAIL atomic: category survived a failed import';
+  end if;
+
+  -- B9. blank Feedme id is refused before any write
+  begin
+    perform menu_import(jsonb_build_object('categories', '[]'::jsonb, 'groups', '[]'::jsonb, 'links', '[]'::jsonb,
+      'products', jsonb_build_array(jsonb_build_object('feedmeId', '', 'name', 'No id', 'category', 'ADDON',
+        'availability', 'all', 'isAddon', false, 'takeawayFeeSen', 0, 'sortOrder', 0, 'variants', '[]'::jsonb))));
+    raise exception 'FAIL blank id: accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'Invalid import file: an item has no Feedme id%' then raise; end if;
   end;
 
   raise notice 'VERIFY OK (import)';

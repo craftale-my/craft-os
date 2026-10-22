@@ -4,7 +4,7 @@
 -- One transaction: the whole Feedme import lands or none of it does.
 -- ============================================================================
 create or replace function menu_import(p_payload jsonb) returns jsonb
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   n_cat int; n_prod int; n_var int; n_grp int; n_opt int; n_link int;
 begin
@@ -17,6 +17,12 @@ begin
      or jsonb_typeof(p_payload->'groups')     is distinct from 'array'
      or jsonb_typeof(p_payload->'links')      is distinct from 'array' then
     raise exception 'Invalid import file';
+  end if;
+  -- a NULL/blank Feedme id never conflicts, so it would create a fresh row on every import
+  if exists (select 1 from jsonb_array_elements(p_payload->'products') p where coalesce(p->>'feedmeId', '') = '')
+     or exists (select 1 from jsonb_array_elements(p_payload->'groups') g where coalesce(g->>'feedmeId', '') = '')
+     or exists (select 1 from jsonb_array_elements(p_payload->'categories') c where coalesce(c->>'name', '') = '') then
+    raise exception 'Invalid import file: an item has no Feedme id';
   end if;
 
   -- categories
