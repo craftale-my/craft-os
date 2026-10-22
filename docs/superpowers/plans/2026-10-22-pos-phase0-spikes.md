@@ -1896,6 +1896,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Modify: `package.json` (devDependency `@vitejs/plugin-basic-ssl`)
 - Create: `spike/qr.html`
 - Create: `src/features/pos/spike/qr-main.tsx`
+- Create: `src/features/pos/spike/qrCart.ts`
+- Create: `src/features/pos/spike/qrCart.test.ts`
 - Create: `src/features/pos/spike/QrSpike.tsx`
 
 **Interfaces:**
@@ -1965,11 +1967,59 @@ createRoot(document.getElementById('root')!).render(
 )
 ```
 
-- [ ] **Step 5: Create `src/features/pos/spike/QrSpike.tsx`**
+- [ ] **Step 5: Write `qrCart.ts` test-first**
+
+Create `src/features/pos/spike/qrCart.test.ts`, run `npx vitest run src/features/pos/spike/qrCart.test.ts` and confirm it fails (module not found), then create `qrCart.ts` and confirm it passes.
+
+```ts
+import { describe, expect, it } from 'vitest'
+import { cartItems, cartKey } from './qrCart'
+
+describe('qrCart', () => {
+  it('drops zero quantities', () => {
+    expect(cartItems({ a: 1, b: 0, c: 2 })).toEqual([
+      { menuItemId: 'a', qty: 1, note: null },
+      { menuItemId: 'c', qty: 2, note: null },
+    ])
+  })
+
+  it('key is independent of insertion order', () => {
+    expect(cartKey({ a: 1, b: 2 })).toBe(cartKey({ b: 2, a: 1 }))
+  })
+
+  it('key changes when a quantity changes', () => {
+    expect(cartKey({ a: 1, b: 2 })).not.toBe(cartKey({ a: 1, b: 3 }))
+  })
+
+  it('treats a zero entry like a missing one', () => {
+    expect(cartKey({ a: 1, b: 0 })).toBe(cartKey({ a: 1 }))
+  })
+})
+```
+
+```ts
+export type CartItem = { menuItemId: string; qty: number; note: null }
+
+/** Items actually sent to the server: qty > 0 only, sorted by menuItemId. */
+export function cartItems(cart: Record<string, number>): CartItem[] {
+  return Object.entries(cart)
+    .filter(([, qty]) => qty > 0)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([menuItemId, qty]) => ({ menuItemId, qty, note: null }))
+}
+
+/** Stable identity of the cart contents; the idempotency key follows this. */
+export function cartKey(cart: Record<string, number>): string {
+  return JSON.stringify(cartItems(cart).map((i) => [i.menuItemId, i.qty]))
+}
+```
+
+- [ ] **Step 6: Create `src/features/pos/spike/QrSpike.tsx`**
 
 ```tsx
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../../../shared/lib/supabase'
+import { cartItems, cartKey } from './qrCart'
 
 interface QrMenu {
   tableLabel: string
@@ -1977,52 +2027,99 @@ interface QrMenu {
   items: { id: string; name: string; priceSen: number; available: boolean }[]
 }
 
+type MenuState =
+  | { kind: 'loading' }
+  | { kind: 'invalid' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; menu: QrMenu }
+
 const rm = (sen: number) => `RM ${(sen / 100).toFixed(2)}`
 
 export default function QrSpike() {
   const token = new URLSearchParams(window.location.search).get('t') ?? ''
-  const [menu, setMenu] = useState<QrMenu | null | undefined>(undefined)
+  const [state, setState] = useState<MenuState>({ kind: 'loading' })
   const [cart, setCart] = useState<Record<string, number>>({})
-  // Kept until the server confirms, so tapping "Place order" again after a
-  // timeout resends the SAME order instead of creating a second one.
-  const [pendingId, setPendingId] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
+  const sendingRef = useRef(false)
+  // The idempotency key follows the cart contents: resending the same cart
+  // (e.g. after a timeout) reuses the id; a different cart gets a new one.
+  // Cleared only after the server confirms.
+  const pending = useRef<{ id: string; cartKey: string } | null>(null)
   const [status, setStatus] = useState<string | null>(null)
 
-  useEffect(() => {
-    void supabase
-      .rpc('spike_qr_menu', { p_token: token })
-      .then(({ data, error }) => setMenu(error ? null : ((data as QrMenu | null) ?? null)))
+  const load = useCallback(async () => {
+    if (!token) {
+      setState({ kind: 'invalid' })
+      return
+    }
+    setState({ kind: 'loading' })
+    const { data, error } = await supabase.rpc('spike_qr_menu', { p_token: token })
+    if (error) {
+      console.error('spike_qr_menu failed', error)
+      setState({ kind: 'error', message: 'Could not load the menu. Check your connection and try again.' })
+      return
+    }
+    const menu = data as QrMenu | null
+    setState(menu ? { kind: 'ready', menu } : { kind: 'invalid' })
   }, [token])
 
-  if (menu === undefined) return <p className="p-6">Loading menu…</p>
-  if (menu === null) return <p className="p-6">This table code is not valid. Please ask our staff.</p>
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  if (state.kind === 'loading') return <p className="p-6">Loading menu…</p>
+  if (state.kind === 'invalid') return <p className="p-6">This table code is not valid. Please ask our staff.</p>
+  if (state.kind === 'error') {
+    return (
+      <div className="space-y-3 p-6">
+        <p>{state.message}</p>
+        <button type="button" className="rounded border px-4 py-2" onClick={() => void load()}>
+          Try again
+        </button>
+      </div>
+    )
+  }
+  const { menu } = state
 
   const change = (id: string, delta: number) => {
-    setPendingId(null) // a different cart is a different order
+    setStatus(null)
     setCart((c) => ({ ...c, [id]: Math.max(0, (c[id] ?? 0) + delta) }))
   }
 
-  const items = Object.entries(cart)
-    .filter(([, qty]) => qty > 0)
-    .map(([menuItemId, qty]) => ({ menuItemId, qty, note: null }))
+  const items = cartItems(cart)
 
   const place = async () => {
-    const id = pendingId ?? crypto.randomUUID()
-    setPendingId(id)
+    if (sendingRef.current) return
+    sendingRef.current = true
+    setSending(true)
     setStatus('Sending…')
-    const { error } = await supabase.rpc('spike_place_table_order', {
-      p_token: token,
-      p_items: items,
-      p_client_order_id: id,
-    })
-    if (error) {
-      setStatus(`Not sent: ${error.message} Tap Place order to try again.`)
-      return
+    try {
+      const key = cartKey(cart)
+      if (pending.current?.cartKey !== key) {
+        pending.current = { id: crypto.randomUUID(), cartKey: key }
+      }
+      const { error } = await supabase.rpc('spike_place_table_order', {
+        p_token: token,
+        p_items: items,
+        p_client_order_id: pending.current.id,
+      })
+      if (error) {
+        setStatus(`Not sent: ${error.message} Tap Place order to try again.`)
+        return
+      }
+      pending.current = null
+      setCart({})
+      setStatus(`Order placed at ${new Date().toLocaleTimeString()}`)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      setStatus(`Not sent: ${message} Tap Place order to try again.`)
+    } finally {
+      sendingRef.current = false
+      setSending(false)
     }
-    setPendingId(null)
-    setCart({})
-    setStatus(`Order placed at ${new Date().toLocaleTimeString()}`)
   }
+
+  const editLocked = sending || menu.paused
 
   return (
     <main className="mx-auto max-w-md space-y-4 p-4">
@@ -2037,17 +2134,34 @@ export default function QrSpike() {
             </div>
             {item.available && (
               <div className="flex items-center gap-3">
-                <button className="h-9 w-9 rounded border text-lg" onClick={() => change(item.id, -1)}>−</button>
+                <button
+                  type="button"
+                  aria-label={`Remove one ${item.name}`}
+                  className="h-9 w-9 rounded border text-lg disabled:opacity-40"
+                  disabled={editLocked}
+                  onClick={() => change(item.id, -1)}
+                >
+                  −
+                </button>
                 <span className="w-5 text-center">{cart[item.id] ?? 0}</span>
-                <button className="h-9 w-9 rounded border text-lg" onClick={() => change(item.id, 1)}>+</button>
+                <button
+                  type="button"
+                  aria-label={`Add one ${item.name}`}
+                  className="h-9 w-9 rounded border text-lg disabled:opacity-40"
+                  disabled={editLocked}
+                  onClick={() => change(item.id, 1)}
+                >
+                  +
+                </button>
               </div>
             )}
           </li>
         ))}
       </ul>
       <button
+        type="button"
         className="w-full rounded bg-neutral-900 py-3 text-white disabled:opacity-40"
-        disabled={items.length === 0 || menu.paused || status === 'Sending…'}
+        disabled={items.length === 0 || menu.paused || sending}
         onClick={() => void place()}
       >
         Place order
@@ -2058,7 +2172,7 @@ export default function QrSpike() {
 }
 ```
 
-- [ ] **Step 6: Type-check and smoke-test**
+- [ ] **Step 7: Type-check and smoke-test**
 
 Run: `npx tsc -b`
 Expected: no errors.
@@ -2071,10 +2185,10 @@ HTTPS=1 npm run dev -- --host
 
 Expected: Vite prints a `https://` Network URL. Get a table token from the dev SQL editor (`select label, qr_token from spike_tables;`), open `https://localhost:5173/spike/qr.html?t=<token>` on the Mac, accept the self-signed certificate warning, and confirm the five seed items show with prices and "Table A1" heading. Place one order and confirm `Order placed at …` appears and `select count(*) from spike_orders;` on dev went up by one.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add vite.config.ts package.json package-lock.json spike/qr.html src/features/pos/spike/qr-main.tsx src/features/pos/spike/QrSpike.tsx
+git add vite.config.ts package.json package-lock.json spike/qr.html src/features/pos/spike/qr-main.tsx src/features/pos/spike/qrCart.ts src/features/pos/spike/qrCart.test.ts src/features/pos/spike/QrSpike.tsx
 git commit -m "feat(pos-spike): customer QR order page and opt-in HTTPS dev server
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
