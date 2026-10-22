@@ -1050,6 +1050,14 @@ describe('buildPosMenu', () => {
     expect(p.groups[0].options.map((o) => o.name)).toEqual(['Full cream', 'Oat milk'])  // hidden option dropped
   })
 
+  it('orders products inside a category by sort_order then name, whatever the input order', () => {
+    const a = { ...water, id: 'p-a', name: 'B tea', sort_order: 1 }
+    const b = { ...water, id: 'p-b', name: 'A tea', sort_order: 1 }
+    const c = { ...water, id: 'p-c', name: 'Z first', sort_order: 0 }
+    const m = buildPosMenu([a, b, c], [], [], [], 'counter')
+    expect(m.categories[0].products.map((p) => p.name)).toEqual(['Z first', 'A tea', 'B tea'])
+  })
+
   it('qr mode drops counter_only products and marks sold-out products and options', () => {
     const m = buildPosMenu([water, latte, oat], [milk], links, [{ product_id: 'p-oat', is_sold_out: true }], 'qr')
     expect(m.categories.map((c) => c.name)).toEqual(['MILK COFFEE'])
@@ -1087,6 +1095,11 @@ describe('lines', () => {
     expect(lineLabel(p, { ...defaultLine(p), variantId: 'v-cold', optionIds: ['o-oat'] })).toEqual({ name: 'Coffee Latte (COLD)', mods: ['Oat milk'] })
     const single = buildPosMenu([water], [], [], [], 'counter').categories[0].products[0]
     expect(lineLabel(single, defaultLine(single)).name).toBe('Sky Juice')   // base variant: no suffix
+  })
+
+  it('lists modifiers in menu order, not in the order they were tapped', () => {
+    const two = { ...p, groups: [{ ...p.groups[0], max: 2 }] }
+    expect(lineLabel(two, { ...defaultLine(two), optionIds: ['o-oat', 'o-full'] }).mods).toEqual(['Full cream', 'Oat milk'])
   })
 
   it('subtotal and a stable key', () => {
@@ -1191,7 +1204,7 @@ export function buildPosMenu(
   for (const l of links) linksByProduct.set(l.product_id, [...(linksByProduct.get(l.product_id) ?? []), l])
 
   const cats = new Map<string, { sort: number; products: PosProduct[] }>()
-  for (const row of products) {
+  for (const row of [...products].sort(bySort)) {
     if (!row.is_active || row.is_addon || !allowed(mode, row.availability)) continue
     const variants = row.menu_variants.filter((v) => v.is_active).sort(bySort)
     if (variants.length === 0) continue
@@ -1221,7 +1234,7 @@ export function buildPosMenu(
     cat.products.push(product)
     cats.set(catName, cat)
   }
-  // keep the row order inside a category (products come sorted from posApi), categories by sort then name
+  // products were visited in sort_order/name order (as qr_menu sorts them); categories by sort then name
   return {
     categories: [...cats.entries()]
       .sort((a, b) => a[1].sort - b[1].sort || a[0].localeCompare(b[0]))
@@ -1312,10 +1325,10 @@ export function validateLine(p: PosProduct, line: OrderLine): string | null {
 
 export function lineLabel(p: PosProduct, line: OrderLine): { name: string; mods: string[] } {
   const variant = p.variants.find((v) => v.id === line.variantId)
-  const opts = optionsOf(p)
   return {
     name: variant && !variant.isBase ? `${p.name} (${variant.name})` : p.name,
-    mods: line.optionIds.map((id) => opts.get(id)?.option.name).filter((n): n is string => !!n),
+    // menu order (group, then option), which is the order the server snapshots and prints them in
+    mods: p.groups.flatMap((g) => g.options.filter((o) => line.optionIds.includes(o.id)).map((o) => o.name)),
   }
 }
 
@@ -1340,7 +1353,7 @@ export function formatSen(sen: number): string {
 }
 ```
 
-- [ ] **Step 4: Run the tests.** Run: `npx vitest run src/features/pos/order/cart.test.ts` — Expected: PASS (9 tests). Then `npx tsc -b` — Expected: no output.
+- [ ] **Step 4: Run the tests.** Run: `npx vitest run src/features/pos/order/cart.test.ts` — Expected: PASS (11 tests). Then `npx tsc -b` — Expected: no output.
 
 - [ ] **Step 5: Commit**
 

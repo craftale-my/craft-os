@@ -66,7 +66,7 @@ export function buildPosMenu(
   for (const l of links) linksByProduct.set(l.product_id, [...(linksByProduct.get(l.product_id) ?? []), l])
 
   const cats = new Map<string, { sort: number; products: PosProduct[] }>()
-  for (const row of products) {
+  for (const row of [...products].sort(bySort)) {
     if (!row.is_active || row.is_addon || !allowed(mode, row.availability)) continue
     const variants = row.menu_variants.filter((v) => v.is_active).sort(bySort)
     if (variants.length === 0) continue
@@ -96,7 +96,7 @@ export function buildPosMenu(
     cat.products.push(product)
     cats.set(catName, cat)
   }
-  // keep the row order inside a category (products come sorted from posApi), categories by sort then name
+  // products were visited in sort_order/name order (as qr_menu sorts them); categories by sort then name
   return {
     categories: [...cats.entries()]
       .sort((a, b) => a[1].sort - b[1].sort || a[0].localeCompare(b[0]))
@@ -187,10 +187,10 @@ export function validateLine(p: PosProduct, line: OrderLine): string | null {
 
 export function lineLabel(p: PosProduct, line: OrderLine): { name: string; mods: string[] } {
   const variant = p.variants.find((v) => v.id === line.variantId)
-  const opts = optionsOf(p)
   return {
     name: variant && !variant.isBase ? `${p.name} (${variant.name})` : p.name,
-    mods: line.optionIds.map((id) => opts.get(id)?.option.name).filter((n): n is string => !!n),
+    // menu order (group, then option), which is the order the server snapshots and prints them in
+    mods: p.groups.flatMap((g) => g.options.filter((o) => line.optionIds.includes(o.id)).map((o) => o.name)),
   }
 }
 

@@ -42,6 +42,14 @@ describe('buildPosMenu', () => {
     expect(p.groups[0].options.map((o) => o.name)).toEqual(['Full cream', 'Oat milk'])  // hidden option dropped
   })
 
+  it('orders products inside a category by sort_order then name, whatever the input order', () => {
+    const a = { ...water, id: 'p-a', name: 'B tea', sort_order: 1 }
+    const b = { ...water, id: 'p-b', name: 'A tea', sort_order: 1 }
+    const c = { ...water, id: 'p-c', name: 'Z first', sort_order: 0 }
+    const m = buildPosMenu([a, b, c], [], [], [], 'counter')
+    expect(m.categories[0].products.map((p) => p.name)).toEqual(['Z first', 'A tea', 'B tea'])
+  })
+
   it('qr mode drops counter_only products and marks sold-out products and options', () => {
     const m = buildPosMenu([water, latte, oat], [milk], links, [{ product_id: 'p-oat', is_sold_out: true }], 'qr')
     expect(m.categories.map((c) => c.name)).toEqual(['MILK COFFEE'])
@@ -79,6 +87,11 @@ describe('lines', () => {
     expect(lineLabel(p, { ...defaultLine(p), variantId: 'v-cold', optionIds: ['o-oat'] })).toEqual({ name: 'Coffee Latte (COLD)', mods: ['Oat milk'] })
     const single = buildPosMenu([water], [], [], [], 'counter').categories[0].products[0]
     expect(lineLabel(single, defaultLine(single)).name).toBe('Sky Juice')   // base variant: no suffix
+  })
+
+  it('lists modifiers in menu order, not in the order they were tapped', () => {
+    const two = { ...p, groups: [{ ...p.groups[0], max: 2 }] }
+    expect(lineLabel(two, { ...defaultLine(two), optionIds: ['o-oat', 'o-full'] }).mods).toEqual(['Full cream', 'Oat milk'])
   })
 
   it('subtotal and a stable key', () => {
