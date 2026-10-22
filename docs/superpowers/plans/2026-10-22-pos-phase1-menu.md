@@ -23,7 +23,7 @@
 - All UI copy, field names and error messages in English (`english-product-copy` rule); comments may be Chinese or English, matching surrounding files.
 - Money is integer sen; SST is basis points (600 = 6%).
 - Join on Feedme IDs, never on names (`feedme-pos` memory: names have trailing spaces, mixed CJK).
-- `has_menu_cap('access_settings')` must mirror `DEFAULT_SYSTEM_ROLE_CAPS[*].access_settings` (owner, admin, manager → true) plus the rank fallback `manager` — change both in the same commit if either changes (`procurement-phase1-defects` memory, item 3).
+- `has_menu_cap('access_settings')` must mirror the app's `buildRoleCaps` (`src/shared/lib/lookups.tsx`): the Owner's `system_role_permissions` setting overrides `DEFAULT_SYSTEM_ROLE_CAPS[*].access_settings` (owner, admin, manager → true); rank is not consulted — change both in the same commit if either changes (`procurement-phase1-defects` memory, item 3; the rank fallback was dropped after the final review, 2026-10-23).
 - Every write whose success is shown to a user goes through `writeOutcome` (`src/shared/lib/db-write.ts`) with `.select()`.
 - The repo has no ESLint config (pre-existing) — lint steps are skipped; `npx tsc -b` and `npx vitest run` are the gates.
 - Every commit ends with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
@@ -114,23 +114,21 @@ Expected: one row, `system_role = owner`. (`76cbcf9f…` is the dev test login `
 -- ============================================================================
 
 -- ── Permission helper ────────────────────────────────────────────────────────
--- Mirrors DEFAULT_SYSTEM_ROLE_CAPS[*].access_settings in src/shared/types/index.ts
--- (owner/admin/manager) plus the legacy rank fallback. Change both together.
+-- Mirrors buildRoleCaps in src/shared/lib/lookups.tsx: the Owner's setting in
+-- system_role_permissions overrides DEFAULT_SYSTEM_ROLE_CAPS[*].access_settings
+-- (owner/admin/manager, src/shared/types/index.ts); rank is not consulted.
+-- Change both together.
 create or replace function has_menu_cap(p_cap text) returns boolean
-language sql security definer stable set search_path = public as $$
+language sql security definer stable set search_path = public, pg_temp as $$
   select coalesce((
-    select
-      coalesce((
-        select (srp.permissions ->> p_cap)::boolean
-        from system_role_permissions srp
-        where srp.system_role = s.system_role
-      ), false)
-      or
+    select coalesce(
+      (select (srp.permissions ->> p_cap)::boolean
+         from system_role_permissions srp
+        where srp.system_role = s.system_role),
       case p_cap
-        when 'access_settings' then
-          s.system_role in ('owner','admin','manager') or s.rank = 'manager'
+        when 'access_settings' then s.system_role in ('owner','admin','manager')
         else false
-      end
+      end)
     from staff s
     where s.id = auth.uid()
   ), false)
@@ -289,7 +287,7 @@ begin
   for r in select * from (values
       ('owner', 'trainee', true), ('admin', 'trainee', true), ('manager', 'trainee', true),
       ('hr', 'trainee', false), ('supervisor', 'trainee', false), ('staff', 'trainee', false),
-      ('staff', 'manager', true)) as m(role, rank, expected) loop
+      ('staff', 'manager', false)) as m(role, rank, expected) loop  -- rank is not consulted
     v_id := gen_random_uuid();
     insert into auth.users (id) values (v_id);  -- staff.id references auth.users
     insert into staff (id, name, rank, onboarding_completed, joined_at, system_role)
@@ -297,6 +295,21 @@ begin
     perform set_config('request.jwt.claims', json_build_object('sub', v_id, 'role', 'authenticated')::text, true);
     if has_menu_cap('access_settings') is distinct from r.expected then
       raise exception 'FAIL cap matrix: role % rank % expected %', r.role, r.rank, r.expected;
+    end if;
+  end loop;
+
+  -- C1b. the Owner's setting overrides the default both ways (same merge as buildRoleCaps)
+  insert into system_role_permissions (system_role, permissions)
+  values ('manager', '{"access_settings": false}'), ('hr', '{"access_settings": true}')
+  on conflict (system_role) do update set permissions = excluded.permissions;
+  for r in select * from (values ('manager', false), ('hr', true)) as m(role, expected) loop
+    v_id := gen_random_uuid();
+    insert into auth.users (id) values (v_id);
+    insert into staff (id, name, rank, onboarding_completed, joined_at, system_role)
+    values (v_id, 'verify override ' || r.role, 'trainee', true, current_date, r.role);
+    perform set_config('request.jwt.claims', json_build_object('sub', v_id, 'role', 'authenticated')::text, true);
+    if has_menu_cap('access_settings') is distinct from r.expected then
+      raise exception 'FAIL cap override: role % expected %', r.role, r.expected;
     end if;
   end loop;
 
@@ -400,22 +413,22 @@ begin
   -- variants: upsert the file's, then switch off the imported products' others
   -- (dropped first: a second call in the same transaction — as in the verify
   -- script — would otherwise hit "relation already exists")
-  drop table if exists _imp_variants;
-  create temp table _imp_variants on commit drop as
+  drop table if exists pg_temp._imp_variants;
+  create temp table pg_temp._imp_variants on commit drop as
   select mp.id as product_id, x.key, x.name, x."priceSen" as price_sen, x."sortOrder" as sort_order
     from jsonb_to_recordset(p_payload->'products') as p("feedmeId" text, variants jsonb)
     join menu_products mp on mp.feedme_product_id = p."feedmeId"
     cross join lateral jsonb_to_recordset(p.variants) as x(key text, name text, "priceSen" int, "sortOrder" int);
 
   insert into menu_variants(product_id, feedme_variant_key, name, price_sen, sort_order, is_active)
-  select product_id, key, name, price_sen, sort_order, true from _imp_variants
+  select product_id, key, name, price_sen, sort_order, true from pg_temp._imp_variants
   on conflict (product_id, feedme_variant_key) do update set
     name = excluded.name, price_sen = excluded.price_sen, sort_order = excluded.sort_order, is_active = true;
   get diagnostics n_var = row_count;
 
   update menu_variants mv set is_active = false
-   where mv.product_id in (select distinct product_id from _imp_variants)
-     and not exists (select 1 from _imp_variants iv
+   where mv.product_id in (select distinct product_id from pg_temp._imp_variants)
+     and not exists (select 1 from pg_temp._imp_variants iv
                       where iv.product_id = mv.product_id and iv.key = mv.feedme_variant_key);
 
   -- modifier groups

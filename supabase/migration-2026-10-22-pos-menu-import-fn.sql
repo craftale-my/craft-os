@@ -52,22 +52,22 @@ begin
   -- variants: upsert the file's, then switch off the imported products' others
   -- (dropped first: a second call in the same transaction — as in the verify
   -- script — would otherwise hit "relation already exists")
-  drop table if exists _imp_variants;
-  create temp table _imp_variants on commit drop as
+  drop table if exists pg_temp._imp_variants;
+  create temp table pg_temp._imp_variants on commit drop as
   select mp.id as product_id, x.key, x.name, x."priceSen" as price_sen, x."sortOrder" as sort_order
     from jsonb_to_recordset(p_payload->'products') as p("feedmeId" text, variants jsonb)
     join menu_products mp on mp.feedme_product_id = p."feedmeId"
     cross join lateral jsonb_to_recordset(p.variants) as x(key text, name text, "priceSen" int, "sortOrder" int);
 
   insert into menu_variants(product_id, feedme_variant_key, name, price_sen, sort_order, is_active)
-  select product_id, key, name, price_sen, sort_order, true from _imp_variants
+  select product_id, key, name, price_sen, sort_order, true from pg_temp._imp_variants
   on conflict (product_id, feedme_variant_key) do update set
     name = excluded.name, price_sen = excluded.price_sen, sort_order = excluded.sort_order, is_active = true;
   get diagnostics n_var = row_count;
 
   update menu_variants mv set is_active = false
-   where mv.product_id in (select distinct product_id from _imp_variants)
-     and not exists (select 1 from _imp_variants iv
+   where mv.product_id in (select distinct product_id from pg_temp._imp_variants)
+     and not exists (select 1 from pg_temp._imp_variants iv
                       where iv.product_id = mv.product_id and iv.key = mv.feedme_variant_key);
 
   -- modifier groups

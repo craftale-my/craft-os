@@ -5,23 +5,21 @@
 -- ============================================================================
 
 -- ── Permission helper ────────────────────────────────────────────────────────
--- Mirrors DEFAULT_SYSTEM_ROLE_CAPS[*].access_settings in src/shared/types/index.ts
--- (owner/admin/manager) plus the legacy rank fallback. Change both together.
+-- Mirrors buildRoleCaps in src/shared/lib/lookups.tsx: the Owner's setting in
+-- system_role_permissions overrides DEFAULT_SYSTEM_ROLE_CAPS[*].access_settings
+-- (owner/admin/manager, src/shared/types/index.ts); rank is not consulted.
+-- Change both together.
 create or replace function has_menu_cap(p_cap text) returns boolean
-language sql security definer stable set search_path = public as $$
+language sql security definer stable set search_path = public, pg_temp as $$
   select coalesce((
-    select
-      coalesce((
-        select (srp.permissions ->> p_cap)::boolean
-        from system_role_permissions srp
-        where srp.system_role = s.system_role
-      ), false)
-      or
+    select coalesce(
+      (select (srp.permissions ->> p_cap)::boolean
+         from system_role_permissions srp
+        where srp.system_role = s.system_role),
       case p_cap
-        when 'access_settings' then
-          s.system_role in ('owner','admin','manager') or s.rank = 'manager'
+        when 'access_settings' then s.system_role in ('owner','admin','manager')
         else false
-      end
+      end)
     from staff s
     where s.id = auth.uid()
   ), false)

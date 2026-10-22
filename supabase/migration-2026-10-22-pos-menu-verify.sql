@@ -163,7 +163,7 @@ begin
   for r in select * from (values
       ('owner', 'trainee', true), ('admin', 'trainee', true), ('manager', 'trainee', true),
       ('hr', 'trainee', false), ('supervisor', 'trainee', false), ('staff', 'trainee', false),
-      ('staff', 'manager', true)) as m(role, rank, expected) loop
+      ('staff', 'manager', false)) as m(role, rank, expected) loop  -- rank is not consulted
     v_id := gen_random_uuid();
     insert into auth.users (id) values (v_id);  -- staff.id references auth.users
     insert into staff (id, name, rank, onboarding_completed, joined_at, system_role)
@@ -171,6 +171,21 @@ begin
     perform set_config('request.jwt.claims', json_build_object('sub', v_id, 'role', 'authenticated')::text, true);
     if has_menu_cap('access_settings') is distinct from r.expected then
       raise exception 'FAIL cap matrix: role % rank % expected %', r.role, r.rank, r.expected;
+    end if;
+  end loop;
+
+  -- C1b. the Owner's setting overrides the default both ways (same merge as buildRoleCaps)
+  insert into system_role_permissions (system_role, permissions)
+  values ('manager', '{"access_settings": false}'), ('hr', '{"access_settings": true}')
+  on conflict (system_role) do update set permissions = excluded.permissions;
+  for r in select * from (values ('manager', false), ('hr', true)) as m(role, expected) loop
+    v_id := gen_random_uuid();
+    insert into auth.users (id) values (v_id);
+    insert into staff (id, name, rank, onboarding_completed, joined_at, system_role)
+    values (v_id, 'verify override ' || r.role, 'trainee', true, current_date, r.role);
+    perform set_config('request.jwt.claims', json_build_object('sub', v_id, 'role', 'authenticated')::text, true);
+    if has_menu_cap('access_settings') is distinct from r.expected then
+      raise exception 'FAIL cap override: role % expected %', r.role, r.expected;
     end if;
   end loop;
 
