@@ -6,10 +6,11 @@ import type { QueuedOrder } from '../offline/orderQueue'
 import type { SubmitResult } from './useOrderQueue'
 import LineSheet from './LineSheet'
 
-type Mode = { orderType: 'dine_in'; tableId: string; needsPax: boolean } | { orderType: 'takeaway' }
+export type PadMode = ({ orderType: 'dine_in'; tableId: string; needsPax: boolean; initialPax?: number } | { orderType: 'takeaway' })
+type Mode = PadMode
 
-export default function OrderPad({ branchId, mode, submit, onClose, onSent }: {
-  branchId: string; mode: Mode
+export default function OrderPad({ branchId, mode, initialLines, submit, onClose, onSent }: {
+  branchId: string; mode: Mode; initialLines?: OrderLine[]
   submit: (o: QueuedOrder) => Promise<SubmitResult>
   onClose: () => void; onSent: () => void
 }) {
@@ -17,9 +18,9 @@ export default function OrderPad({ branchId, mode, submit, onClose, onSent }: {
   const [error, setError] = useState<string | null>(null)
   const [category, setCategory] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [lines, setLines] = useState<OrderLine[]>([])
+  const [lines, setLines] = useState<OrderLine[]>(initialLines ?? [])
   const [sheet, setSheet] = useState<{ product: PosProduct; index: number | null } | null>(null)
-  const [pax, setPax] = useState<string>('')
+  const [pax, setPax] = useState<string>(mode.orderType === 'dine_in' && mode.initialPax ? String(mode.initialPax) : '')
   const [soldOutMode, setSoldOutMode] = useState(false)
   const [sending, setSending] = useState(false)
 
@@ -60,7 +61,7 @@ export default function OrderPad({ branchId, mode, submit, onClose, onSent }: {
     setSending(true)
     try {
       const res = await submit(newQueuedOrder(mode.orderType, mode.orderType === 'dine_in' ? mode.tableId : null, paxNum, lines))
-      if (res.rejectedReason) { setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); return }
+      if (res.rejectedReason) { setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); await load(); return }
       setLines([]); setError(null); onSent()
     } catch (e) {
       setError(`Order NOT saved on this iPad: ${e instanceof Error ? e.message : String(e)}`)

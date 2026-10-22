@@ -115,6 +115,19 @@ export async function fetchRoutes(branchId: string): Promise<PrintRoute[]> {
   return (data ?? []).map((r) => ({ route: r.name, kind: r.kind as PrintRoute['kind'], address: r.address }))
 }
 
+/** Distinct print routes the active menu points at (to spot routes with no printer). */
+export async function fetchMenuRoutes(): Promise<string[]> {
+  const { data, error } = await supabase.from('menu_products').select('print_route').eq('is_active', true).not('print_route', 'is', null)
+  if (error) fail(error)
+  return [...new Set((data ?? []).map((r) => (r as { print_route: string | null }).print_route).filter((x): x is string => !!x))]
+}
+
+export async function fetchBranchName(branchId: string): Promise<string | null> {
+  const { data, error } = await supabase.from('branches').select('name').eq('id', branchId).maybeSingle()
+  if (error) fail(error)
+  return (data as { name: string } | null)?.name ?? null
+}
+
 export async function fetchPrintJobs(branchId: string, statuses: string[]): Promise<PrintJobRow[]> {
   const { data, error } = await supabase.from('print_jobs')
     .select('id, branch_id, route, payload, status, attempts, last_error, claimed_at, created_at')

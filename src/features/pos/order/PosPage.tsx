@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext'
 import { useCan } from '../../../shared/lib/permissions'
-import { fetchOpenBills, fetchTables, type OpenBillRow, type TableRow } from './posApi'
+import { fetchBranchName, fetchOpenBills, fetchPosMenu, fetchTables, type OpenBillRow, type TableRow } from './posApi'
 import { tableCards, takeawayBills } from './tableStatus'
 import { usePosRealtime, type OrderInsert } from './usePosRealtime'
 import TablesGrid from './TablesGrid'
 import BillPanel from './BillPanel'
-import OrderPad from './OrderPad'
+import OrderPad, { type PadMode } from './OrderPad'
+import { findProduct, type OrderLine, type PosMenu } from './cart'
 import PrintHostPanel from './PrintHostPanel'
 import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
@@ -24,7 +25,10 @@ export default function PosPage() {
   const [selection, setSelection] = useState<Selection>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [error, setError] = useState<string | null>(null)
-  const [pad, setPad] = useState<{ orderType: 'dine_in'; tableId: string; needsPax: boolean } | { orderType: 'takeaway' } | null>(null)
+  const [pad, setPad] = useState<PadMode | null>(null)
+  const [padLines, setPadLines] = useState<OrderLine[] | undefined>(undefined)
+  const [branchName, setBranchName] = useState<string | null>(null)
+  const [stuckMenu, setStuckMenu] = useState<PosMenu | null>(null)
   const queue = useOrderQueue()
   const reqId = useRef(0)
   const selectedBillIdRef = useRef<string | null>(null)
@@ -39,6 +43,13 @@ export default function PosPage() {
     } catch (e) { if (id === reqId.current) setError(e instanceof Error ? e.message : String(e)) }
   }, [branchId])
   useEffect(() => { void reload() }, [reload])
+  useEffect(() => {
+    if (branchId) fetchBranchName(branchId).then(setBranchName, () => setBranchName(null))
+  }, [branchId])
+  const hasStuck = queue.stuck.length > 0
+  useEffect(() => {
+    if (hasStuck && branchId && !stuckMenu) fetchPosMenu(branchId).then(setStuckMenu, () => undefined)
+  }, [hasStuck, branchId, stuckMenu])
 
   const onOrder = useCallback((row: OrderInsert) => {
     if (row.source === 'qr' && row.bill_id !== selectedBillIdRef.current) setNewBillIds((s) => new Set(s).add(row.bill_id))
@@ -69,14 +80,21 @@ export default function PosPage() {
     return res
   }
 
+  const editRejected = (o: QueuedOrder) => {
+    setPadLines(o.items)
+    setPad(o.tableId ? { orderType: 'dine_in', tableId: o.tableId, needsPax: o.pax != null, initialPax: o.pax ?? undefined } : { orderType: 'takeaway' })
+    void queue.discard(o.clientOrderId) // the pad now owns the lines; sending again makes a fresh order
+  }
+  const closePad = () => { setPad(null); setPadLines(undefined) }
+
   if (!staff) return null
   if (!branchId) {
     return <div className="p-8 text-center">Your account has no branch — ask a manager to set it in Team.</div>
   }
   return (
-    <div className="flex h-screen flex-col bg-cream">
+    <div className="flex h-dvh flex-col bg-cream">
       <header className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
-        <div className="font-semibold">Craft POS · {staff.branch ?? 'Branch'}</div>
+        <div className="font-semibold">Craft POS · {branchName ?? staff.branch ?? 'Branch'}</div>
         <div className="flex items-center gap-3 text-xs text-brown-muted">
           <PrintHostPanel branchId={branchId} />
           <span>Live: {rtStatus}</span>
@@ -95,9 +113,11 @@ export default function PosPage() {
           {queue.stuck.map((o) => {
             const n = o.items.reduce((sum, l) => sum + l.qty, 0)
             const where = o.tableId ? `Table ${tables.find((t) => t.id === o.tableId)?.label ?? '?'}` : 'Takeaway'
+            const names = o.items.map((l) => `${l.qty} × ${(stuckMenu && findProduct(stuckMenu, l.productId)?.name) || 'Unknown item'}`).join(', ')
             return (
               <p key={o.clientOrderId} className="text-red-700">
-                Rejected: {o.failedReason} · {where} · {n} item{n === 1 ? '' : 's'}{' '}
+                Rejected: {o.failedReason} · {where} · {n} item{n === 1 ? '' : 's'} ({names}){' '}
+                <button className="mr-2 underline" onClick={() => editRejected(o)}>Edit</button>
                 <button className="underline" onClick={() => void queue.discard(o.clientOrderId)}>Discard</button>
               </p>
             )
@@ -120,8 +140,8 @@ export default function PosPage() {
         )}
       </div>
       {pad && (
-        <OrderPad branchId={branchId} mode={pad} submit={submitFromPad} onClose={() => setPad(null)}
-          onSent={() => { setPad(null); setRefreshKey((k) => k + 1); void reload() }} />
+        <OrderPad branchId={branchId} mode={pad} initialLines={padLines} submit={submitFromPad} onClose={closePad}
+          onSent={() => { closePad(); setRefreshKey((k) => k + 1); void reload() }} />
       )}
     </div>
   )
