@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext'
 import { useCan } from '../../../shared/lib/permissions'
@@ -7,6 +7,7 @@ import { tableCards, takeawayBills } from './tableStatus'
 import { usePosRealtime, type OrderInsert } from './usePosRealtime'
 import TablesGrid from './TablesGrid'
 import BillPanel from './BillPanel'
+import OrderPad from './OrderPad'
 
 export type Selection = { kind: 'table'; tableId: string } | { kind: 'bill'; billId: string } | null
 
@@ -20,28 +21,34 @@ export default function PosPage() {
   const [selection, setSelection] = useState<Selection>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [pad, setPad] = useState<{ orderType: 'dine_in'; tableId: string; needsPax: boolean } | { orderType: 'takeaway' } | null>(null)
+  const reqId = useRef(0)
+  const selectedBillIdRef = useRef<string | null>(null)
 
   const reload = useCallback(async () => {
     if (!branchId) return
+    const id = ++reqId.current
     try {
       const [t, b] = await Promise.all([fetchTables(branchId), fetchOpenBills(branchId)])
+      if (id !== reqId.current) return
       setTables(t); setBills(b); setError(null)
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    } catch (e) { if (id === reqId.current) setError(e instanceof Error ? e.message : String(e)) }
   }, [branchId])
   useEffect(() => { void reload() }, [reload])
 
   const onOrder = useCallback((row: OrderInsert) => {
-    if (row.source === 'qr') setNewBillIds((s) => new Set(s).add(row.bill_id))
+    if (row.source === 'qr' && row.bill_id !== selectedBillIdRef.current) setNewBillIds((s) => new Set(s).add(row.bill_id))
     setRefreshKey((k) => k + 1)
     void reload()
   }, [reload])
-  const rtStatus = usePosRealtime(branchId, { onOrder, onSweep: reload })
+  const rtStatus = usePosRealtime(branchId, { onOrder, onSweep: () => { setRefreshKey((k) => k + 1); void reload() } })
 
   const cards = useMemo(() => tableCards(tables, bills, newBillIds), [tables, bills, newBillIds])
   const selectedTable = selection?.kind === 'table' ? tables.find((t) => t.id === selection.tableId) ?? null : null
   const selectedBill = selection?.kind === 'table'
     ? bills.find((b) => b.table_id === selection.tableId) ?? null
     : selection?.kind === 'bill' ? bills.find((b) => b.id === selection.billId) ?? null : null
+  selectedBillIdRef.current = selectedBill?.id ?? null
   const selectedId = selection?.kind === 'table' ? selection.tableId : selection?.kind === 'bill' ? selection.billId : null
 
   const pick = (tableId: string) => {
@@ -68,12 +75,20 @@ export default function PosPage() {
       <div className="grid flex-1 grid-cols-[1fr_380px] gap-4 overflow-hidden p-4">
         <div className="overflow-y-auto">
           <TablesGrid cards={cards} takeaway={takeawayBills(bills)} selectedId={selectedId}
-            onPick={pick} onTakeaway={() => setSelection(null)} onPickBill={(billId) => setSelection({ kind: 'bill', billId })} />
+            onPick={pick} onTakeaway={() => setPad({ orderType: 'takeaway' })} onPickBill={(billId) => setSelection({ kind: 'bill', billId })} />
         </div>
         {(selectedTable || selectedBill) && (
-          <BillPanel table={selectedTable} bill={selectedBill} refreshKey={refreshKey} onAddItems={() => undefined} />
+          <BillPanel table={selectedTable} bill={selectedBill} refreshKey={refreshKey} onChanged={() => void reload()}
+            onAddItems={() => {
+              if (selectedTable) setPad({ orderType: 'dine_in', tableId: selectedTable.id, needsPax: !selectedBill?.pax })
+              else setPad({ orderType: 'takeaway' })
+            }} />
         )}
       </div>
+      {pad && (
+        <OrderPad branchId={branchId} mode={pad} onClose={() => setPad(null)}
+          onSent={() => { setPad(null); setRefreshKey((k) => k + 1); void reload() }} />
+      )}
     </div>
   )
 }

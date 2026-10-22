@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react'
 import { fetchBillItems, setTablePaused, type BillItemRow, type OpenBillRow, type TableRow } from './posApi'
 import { formatSen } from './cart'
 
-export default function BillPanel({ table, bill, refreshKey, onAddItems }: {
+export default function BillPanel({ table, bill, refreshKey, onAddItems, onChanged }: {
   table: TableRow | null          // null = takeaway bill
   bill: OpenBillRow | null        // null = empty table
   refreshKey: number              // bump to refetch (a new order arrived)
   onAddItems: () => void
+  onChanged?: () => void          // called after a successful pause toggle
 }) {
   const [items, setItems] = useState<BillItemRow[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -15,9 +16,10 @@ export default function BillPanel({ table, bill, refreshKey, onAddItems }: {
   useEffect(() => {
     if (!bill) { setItems([]); return }
     let alive = true
-    fetchBillItems(bill.id).then((rows) => { if (alive) setItems(rows) }, (e) => { if (alive) setError(e.message) })
+    fetchBillItems(bill.id).then((rows) => { if (alive) { setItems(rows); setError(null) } }, (e) => { if (alive) setError(e.message) })
     return () => { alive = false }
   }, [bill?.id, refreshKey])
+  useEffect(() => { setItems([]); setError(null) }, [bill?.id])
 
   const subtotal = items.filter((i) => !i.voided_at).reduce((n, i) => n + i.unit_price_sen * i.qty, 0)
   const orders = [...new Map(items.map((i) => [i.order_id, i.orders])).entries()]
@@ -26,7 +28,7 @@ export default function BillPanel({ table, bill, refreshKey, onAddItems }: {
     if (!table) return
     const next = !paused
     setPaused(next)
-    try { await setTablePaused(table.id, next) } catch (e) { setPaused(!next); setError(e instanceof Error ? e.message : String(e)) }
+    try { await setTablePaused(table.id, next); onChanged?.() } catch (e) { setPaused(!next); setError(e instanceof Error ? e.message : String(e)) }
   }
 
   return (
