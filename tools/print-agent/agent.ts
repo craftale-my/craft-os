@@ -21,6 +21,12 @@ async function main(): Promise<void> {
   const url = env('SUPABASE_URL')
   assertDevDatabase(url)
   const supabase = createClient(url, env('SUPABASE_ANON_KEY'), { auth: { persistSession: false } })
+  let maxAgeMin = 30
+  if (process.env.MAX_AGE_MIN !== undefined) {
+    const parsed = Number(process.env.MAX_AGE_MIN)
+    if (Number.isFinite(parsed) && parsed > 0) maxAgeMin = parsed
+    else console.warn(`Invalid MAX_AGE_MIN "${process.env.MAX_AGE_MIN}"; using 30.`)
+  }
   let cols = 42
   if (process.env.TICKET_COLS !== undefined) {
     const parsed = Number(process.env.TICKET_COLS)
@@ -69,9 +75,17 @@ async function main(): Promise<void> {
   }
 
   // Never rejects: it is called from the sweep, a Realtime callback and an interval.
-  const handle = async (job: PrintJob): Promise<void> => {
+  const handle = async (job: PrintJob & { created_at?: string }): Promise<void> => {
     if (!addressOf.has(job.route)) return
     const id8 = job.id.slice(0, 8)
+    // An old ticket stays pending (the iPad shows it as "Waiting") so staff decide, not a backlog dump.
+    if (job.created_at) {
+      const ageMin = (Date.now() - Date.parse(job.created_at)) / 60_000
+      if (ageMin > maxAgeMin) {
+        console.log(`skipped old ticket ${job.route} ${id8} (${Math.round(ageMin)} min)`)
+        return
+      }
+    }
     // Per call, so a concurrent handler of the same job cannot mislabel the log.
     let printed = false
     const deps: PrintHostDeps = {
@@ -106,7 +120,7 @@ async function main(): Promise<void> {
     try {
       const { data, error } = await supabase
         .from('print_jobs')
-        .select('id, route, payload, status')
+        .select('id, route, payload, status, created_at')
         .eq('status', 'pending')
         .in('route', [...addressOf.keys()])
         .order('created_at')
@@ -114,7 +128,7 @@ async function main(): Promise<void> {
         console.error('sweep failed:', error.message)
         return
       }
-      for (const job of (data ?? []) as PrintJob[]) await handle(job)
+      for (const job of (data ?? []) as (PrintJob & { created_at?: string })[]) await handle(job)
     } catch (e) {
       console.error('sweep failed:', errMessage(e))
     } finally {

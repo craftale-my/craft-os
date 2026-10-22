@@ -168,7 +168,7 @@ export default function PosSettingsPage() {
 
       {card && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40" onClick={() => setCard(null)}>
-          <div className="rounded-2xl bg-white p-6 text-center" onClick={(e) => e.stopPropagation()}>
+          <div className="print-card rounded-2xl bg-white p-6 text-center" onClick={(e) => e.stopPropagation()}>
             <div className="text-3xl font-semibold">Table {card.table.label}</div>
             <img src={card.png} alt={`QR for ${card.table.label}`} className="mx-auto my-3 h-80 w-80" />
             <div className="text-xs text-brown-muted">Scan to order · {card.url}</div>

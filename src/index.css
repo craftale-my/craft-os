@@ -29,3 +29,9 @@
     background: #B8A890;
   }
 }
+
+@media print {
+  body * { visibility: hidden; }
+  .print-card, .print-card * { visibility: visible; }
+  .print-card { position: fixed; inset: 0; margin: auto; height: fit-content; width: fit-content; }
+}

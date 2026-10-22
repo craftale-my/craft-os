@@ -1,8 +1,11 @@
--- Dev-only seed for the POS demo (craft-os-dev). Re-runnable.
+-- Dev-only seed for the POS demo (craft-os-dev). Re-runnable. NEVER run this on prod.
 -- Creates the Demo branch, ten tables, the two print routes and points the test login at it.
 do $$
 declare v_branch uuid;
 begin
+  if not exists (select 1 from staff where id = '76cbcf9f-905e-450d-9f5e-1c9e72a9373d') then
+    raise exception 'STOP: this seed is for craft-os-dev only';
+  end if;
   select id into v_branch from branches where name = 'Demo';
   if v_branch is null then
     insert into branches(name, address, is_active) values ('Demo', 'Demo outlet (POS pilot)', true) returning id into v_branch;

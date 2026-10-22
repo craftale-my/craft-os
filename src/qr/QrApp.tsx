@@ -141,7 +141,7 @@ export default function QrApp() {
           )
         })}
         {needsPax && lines.length > 0 && (
-          <label className="my-1 block">How many people? <input inputMode="numeric" className="ml-2 w-16 rounded border border-border p-1" value={pax} onChange={(e) => setPax(e.target.value)} /></label>
+          <label className="my-1 block">How many people? <input inputMode="numeric" className="ml-2 w-16 rounded border border-border p-1 text-base" value={pax} onChange={(e) => setPax(e.target.value)} /></label>
         )}
         {error && <p className="my-1 text-red-700">{error}</p>}
         </div>

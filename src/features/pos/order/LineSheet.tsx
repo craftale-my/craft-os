@@ -67,7 +67,7 @@ export default function LineSheet({ product, initial, onCancel, onDone }: {
           <span className="w-8 text-center text-lg">{line.qty}</span>
           <button className="h-10 w-10 rounded-lg border border-border text-xl" onClick={() => setLine({ ...line, qty: Math.min(20, line.qty + 1) })}>+</button>
         </div>
-        <input className="mt-3 w-full rounded-lg border border-border p-2 text-sm" placeholder="Note for the kitchen (optional)"
+        <input className="mt-3 w-full rounded-lg border border-border p-2 text-base" placeholder="Note for the kitchen (optional)"
           value={line.note ?? ''} onChange={(e) => setLine({ ...line, note: e.target.value || null })} maxLength={120} />
 
         {touched && problem && <p className="mt-2 text-sm text-red-700">{problem}</p>}
