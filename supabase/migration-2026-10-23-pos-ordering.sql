@@ -75,7 +75,8 @@ create table if not exists orders (
   source           text not null check (source in ('counter', 'qr')),
   placed_by        uuid references staff(id),                        -- null for qr
   client_order_id  uuid not null unique,
-  placed_at        timestamptz not null default now()
+  placed_at        timestamptz not null default now(),
+  unique (bill_id, order_no)
 );
 create index if not exists orders_bill_idx on orders(bill_id);
 
@@ -133,6 +134,22 @@ end $$;
 -- tables: any staff may pause/unpause or rename; only settings holders add or remove
 drop policy if exists dining_tables_update on dining_tables;
 create policy dining_tables_update on dining_tables for update to authenticated using (true) with check (true);
+
+-- ...and the trigger keeps that "any staff" update to label and qr_paused: changing
+-- the QR token, branch, active flag or order needs access_settings (Task 10's page)
+create or replace function dining_tables_guard() returns trigger
+language plpgsql security invoker set search_path = public, pg_temp as $$
+begin
+  if (new.qr_token, new.branch_id, new.is_active, new.sort_order)
+     is distinct from (old.qr_token, old.branch_id, old.is_active, old.sort_order)
+     and not has_menu_cap('access_settings') then
+    raise exception 'Only a manager can change this table''s QR code, branch or status';
+  end if;
+  return new;
+end $$;
+drop trigger if exists dining_tables_guard on dining_tables;
+create trigger dining_tables_guard before update on dining_tables
+  for each row execute function dining_tables_guard();
 drop policy if exists dining_tables_insert on dining_tables;
 create policy dining_tables_insert on dining_tables for insert to authenticated with check (has_menu_cap('access_settings'));
 drop policy if exists dining_tables_delete on dining_tables;
@@ -147,9 +164,12 @@ create policy print_routes_manage on print_routes for all to authenticated
 drop policy if exists branch_menu_status_write on branch_menu_status;
 create policy branch_menu_status_write on branch_menu_status for all to authenticated using (true) with check (true);
 
--- print jobs: status changes go through the security-invoker RPCs, which need UPDATE
+-- print jobs: status changes go through the security-invoker RPCs, which need UPDATE —
+-- but only of the lifecycle columns, so a client can never rewrite a ticket's content
 drop policy if exists print_jobs_update on print_jobs;
 create policy print_jobs_update on print_jobs for update to authenticated using (true) with check (true);
+revoke update on print_jobs from authenticated;
+grant update (status, attempts, last_error, claimed_at, printed_at) on print_jobs to authenticated;
 
 -- ── Realtime ────────────────────────────────────────────────────────────────
 do $$ begin alter publication supabase_realtime add table orders;

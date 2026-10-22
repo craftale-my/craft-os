@@ -154,7 +154,8 @@ create table if not exists orders (
   source           text not null check (source in ('counter', 'qr')),
   placed_by        uuid references staff(id),                        -- null for qr
   client_order_id  uuid not null unique,
-  placed_at        timestamptz not null default now()
+  placed_at        timestamptz not null default now(),
+  unique (bill_id, order_no)
 );
 create index if not exists orders_bill_idx on orders(bill_id);
 
@@ -212,6 +213,22 @@ end $$;
 -- tables: any staff may pause/unpause or rename; only settings holders add or remove
 drop policy if exists dining_tables_update on dining_tables;
 create policy dining_tables_update on dining_tables for update to authenticated using (true) with check (true);
+
+-- ...and the trigger keeps that "any staff" update to label and qr_paused: changing
+-- the QR token, branch, active flag or order needs access_settings (Task 10's page)
+create or replace function dining_tables_guard() returns trigger
+language plpgsql security invoker set search_path = public, pg_temp as $$
+begin
+  if (new.qr_token, new.branch_id, new.is_active, new.sort_order)
+     is distinct from (old.qr_token, old.branch_id, old.is_active, old.sort_order)
+     and not has_menu_cap('access_settings') then
+    raise exception 'Only a manager can change this table''s QR code, branch or status';
+  end if;
+  return new;
+end $$;
+drop trigger if exists dining_tables_guard on dining_tables;
+create trigger dining_tables_guard before update on dining_tables
+  for each row execute function dining_tables_guard();
 drop policy if exists dining_tables_insert on dining_tables;
 create policy dining_tables_insert on dining_tables for insert to authenticated with check (has_menu_cap('access_settings'));
 drop policy if exists dining_tables_delete on dining_tables;
@@ -226,9 +243,12 @@ create policy print_routes_manage on print_routes for all to authenticated
 drop policy if exists branch_menu_status_write on branch_menu_status;
 create policy branch_menu_status_write on branch_menu_status for all to authenticated using (true) with check (true);
 
--- print jobs: status changes go through the security-invoker RPCs, which need UPDATE
+-- print jobs: status changes go through the security-invoker RPCs, which need UPDATE —
+-- but only of the lifecycle columns, so a client can never rewrite a ticket's content
 drop policy if exists print_jobs_update on print_jobs;
 create policy print_jobs_update on print_jobs for update to authenticated using (true) with check (true);
+revoke update on print_jobs from authenticated;
+grant update (status, attempts, last_error, claimed_at, printed_at) on print_jobs to authenticated;
 
 -- ── Realtime ────────────────────────────────────────────────────────────────
 do $$ begin alter publication supabase_realtime add table orders;
@@ -432,6 +452,7 @@ begin
       returning id into v_bill_id;
     end if;
 
+    perform 1 from bills where id = v_bill_id for update;   -- serialise order numbering on this bill
     select count(*) + 1 into v_n from orders where bill_id = v_bill_id;
     v_order_no := v_bill_no || '/' || v_n;
     insert into orders(bill_id, branch_id, order_no, source, placed_by, client_order_id)
@@ -736,6 +757,10 @@ begin
   if has_function_privilege('authenticated', 'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid)', 'execute') then
     raise exception 'FAIL grants: pos_insert_order must be internal';
   end if;
+  if has_column_privilege('authenticated', 'print_jobs', 'payload', 'UPDATE')
+     or not has_column_privilege('authenticated', 'print_jobs', 'status', 'UPDATE') then
+    raise exception 'FAIL grants: print_jobs must be updatable only in its lifecycle columns';
+  end if;
 
   -- A2. fixture: a branch with one table, a product with two variants and a milk group
   insert into branches(name, address) values ('VERIFY', 'verify') returning id into v_branch;
@@ -755,6 +780,16 @@ begin
   insert into modifier_options(group_id, product_id, name, price_delta_sen) values (v_milk, v_oat, 'Oat milk', 200) returning id into v_opt;
   insert into product_modifier_groups(product_id, group_id) values (v_latte, v_milk);
   update staff set branch_id = v_branch where id = v_owner;
+
+  -- A3. any staff may pause a table, only a settings holder may change its QR token
+  insert into auth.users (id) values ('99999999-9999-9999-9999-999999999999');
+  insert into staff (id, name, rank, onboarding_completed, joined_at, system_role, branch_id)
+  values ('99999999-9999-9999-9999-999999999999', 'verify staff', 'trainee', true, current_date, 'staff', v_branch);
+  perform set_config('request.jwt.claims', json_build_object('sub', '99999999-9999-9999-9999-999999999999', 'role', 'authenticated')::text, true);
+  update dining_tables set qr_paused = true, label = 'V1' where id = v_table.id;
+  begin update dining_tables set qr_token = 'forged' where id = v_table.id; raise exception 'FAIL: staff changed a QR token';
+  exception when raise_exception then if sqlerrm not like 'Only a manager%' then raise; end if; end;
+  update dining_tables set qr_paused = false where id = v_table.id;
 
   -- B1. QR menu: table found, product listed with 2 variants and the milk group
   perform set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
