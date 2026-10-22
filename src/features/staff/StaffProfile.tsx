@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams, Navigate, Link } from 'react-router-dom'
+import { useParams, Navigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { ErrorBoundary } from '../../shared/components/ErrorBoundary'
@@ -21,6 +21,7 @@ import { SkillDots } from '../../shared/components/SkillDots'
 import { Avatar } from '../../shared/components/Avatar'
 import { canPromote } from '../../shared/lib/xp'
 import { CareerProgress } from './CareerProgress'
+import { Badge, Button, ButtonLink, Card, SegmentedTabs } from '../../shared/components/ui'
 
 type Tab = 'missions' | 'skills' | 'career' | 'personal' | 'reviews' | 'history'
 
@@ -31,6 +32,14 @@ const TAB_LABELS: Record<Tab, string> = {
   personal: 'Personal',
   reviews:  'Reviews',
   history:  'History',
+}
+
+// Time-of-day greeting for the self-view header.
+function greeting(d = new Date()) {
+  const h = d.getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 18) return 'Good afternoon'
+  return 'Good evening'
 }
 
 const now = new Date()
@@ -186,10 +195,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         <p className="text-2xl mb-2">⚠️</p>
         <p className="text-brown-dark font-semibold mb-1">Could not load profile</p>
         <p className="text-brown-muted text-sm mb-4">{fetchError}</p>
-        <button onClick={() => { setFetchError(null); setLoading(true) }}
-          className="text-sm bg-brown-btn hover:bg-brown-btn-hover text-white px-4 py-2 rounded-lg transition-colors">
-          Retry
-        </button>
+        <Button variant="dark" onClick={() => { setFetchError(null); setLoading(true) }}>Retry</Button>
       </div>
     )
   }
@@ -199,13 +205,15 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
   return (
     <ErrorBoundary>
-      <div className="max-w-3xl mx-auto px-4 py-8">
+      <div className="max-w-3xl mx-auto px-4 py-8 font-brand">
+        {isSelf && <p className="type-eyebrow text-[11px] text-brown-brand mb-2.5">{greeting()}</p>}
+
         {/* Probation banner */}
         {staff.rank === 'trainee' && probation && (
-          <div className="bg-[#FEF3E2] border border-[#C4813A40] rounded-xl px-4 py-3 mb-4 flex items-center gap-3">
+          <Card tone="tint" padded={false} className="px-4 py-3 mb-4 flex items-center gap-3">
             <span className="text-xl flex-shrink-0">🌱</span>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-[#C4813A]">
+              <p className="type-semicondensed text-[15px] font-bold text-[#A86C2C]">
                 Probation Period — Day {getProbationDay(probation.start_date)} of 3
               </p>
               <div className="flex gap-1.5 mt-1.5">
@@ -221,79 +229,61 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
               </div>
             </div>
             {canReview && (
-              <Link
-                to={`/probation/${staff.id}`}
-                className="text-xs font-semibold text-[#C4813A] px-3 py-1.5 rounded-lg border border-[#C4813A40] hover:bg-[#C4813A10] transition-colors flex-shrink-0"
-              >
-                View Review →
-              </Link>
+              <ButtonLink to={`/probation/${staff.id}`} variant="secondary" size="sm" className="flex-shrink-0">
+                View review →
+              </ButtonLink>
             )}
-          </div>
+          </Card>
         )}
 
         {/* Profile header */}
-        <div className="bg-white rounded-2xl shadow-card p-6 mb-6">
+        <Card className="p-6 mb-4">
           <div className="flex items-start gap-4">
-            <Avatar name={staff.name} avatar={staff.avatar} />
+            <div className="rounded-full ring-4 ring-cream flex-shrink-0">
+              <Avatar name={staff.name} avatar={staff.avatar} />
+            </div>
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-3 flex-wrap mb-1">
-                <h1 className="font-display text-xl font-bold text-brown-dark">{staff.name}</h1>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="type-wordmark text-[28px] text-brown-dark break-words">{staff.name}</h1>
                 <RankBadge rank={staff.rank} size="sm" />
-                {staff.status === 'resigned' && (
-                  <span className="text-xs text-[#9E4A30] border border-[#C0624240] bg-[#C0624210] rounded-full px-2 py-0.5 font-medium">
-                    Resigned
-                  </span>
-                )}
-                {promote && (
-                  <span className="text-xs text-[#C4813A] border border-[#C4813A40] bg-[#C4813A0C] rounded-full px-2 py-0.5">
-                    Ready to Promote
-                  </span>
-                )}
+                {staff.status === 'resigned' && <Badge tone="danger">Resigned</Badge>}
+                {promote && <Badge tone="brand">Ready to promote</Badge>}
               </div>
-              <p className="text-xs text-brown-faint capitalize mb-3">
+              <p className="type-condensed text-[15px] text-brown-muted capitalize mt-1.5 mb-4">
                 {deptName(staff.department) || '—'} · Level {staff.level}
               </p>
               <XPBar xp={staff.xp ?? 0} level={staff.level ?? 1} />
             </div>
           </div>
-        </div>
+        </Card>
 
         {/* Review banner — shown when self-view and current month review is pending */}
         {isSelf && pendingReviewStatus === 'pending' && (
-          <div className="bg-[#FEF3E2] border border-[#C4813A35] rounded-xl px-5 py-4 mb-6 flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold text-[#8B5E2E]">Monthly review is ready</p>
+          <Card tone="tint" padded={false} className="px-5 py-4 mb-4 flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="type-semicondensed text-[15px] font-bold text-[#8B5E2E]">Your monthly review is ready</p>
               <p className="text-xs text-brown-muted mt-0.5">
                 Complete your self-evaluation for {MONTHS_FULL[CURRENT_MONTH - 1]}
               </p>
             </div>
-            <button
-              onClick={() => setTab('reviews')}
-              className="shrink-0 text-sm bg-[#C4813A] hover:bg-[#B8722E] text-white px-4 py-2 rounded-lg transition-colors font-medium"
-            >
+            <Button size="sm" className="shrink-0 !h-9 !px-4 !text-sm" onClick={() => setTab('reviews')}>
               Start →
-            </button>
-          </div>
+            </Button>
+          </Card>
         )}
 
         {/* Tabs */}
-        <div className="flex gap-1 mb-6 bg-white shadow-card rounded-xl p-1 overflow-x-auto">
-          {(Object.keys(TAB_LABELS) as Tab[]).map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`flex-1 py-2 text-sm rounded-lg whitespace-nowrap px-2 transition-colors relative ${
-                tab === t
-                  ? 'bg-[#4A2E1A] text-[#F5F0E8] font-medium'
-                  : 'text-brown-muted hover:text-brown-dark'
-              }`}
-            >
-              {TAB_LABELS[t]}
-              {t === 'reviews' && pendingReviewStatus === 'pending' && tab !== 'reviews' && (
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#C4813A]" />
-              )}
-            </button>
-          ))}
+        <div className="mt-6 mb-6">
+          <SegmentedTabs
+            label="Profile sections"
+            value={tab}
+            onChange={setTab}
+            tabs={(Object.keys(TAB_LABELS) as Tab[]).map(t => ({
+              id: t,
+              label: TAB_LABELS[t],
+              dot: t === 'reviews' && pendingReviewStatus === 'pending',
+            }))}
+          />
         </div>
 
         {tab === 'missions' && (
@@ -915,7 +905,7 @@ function MissionsTab({
 
   if (available.length === 0 && pendingMissions.length === 0) {
     return (
-      <div className="bg-white rounded-xl shadow-card px-5 py-8 text-center">
+      <div className="bg-white rounded-2xl shadow-card px-5 py-8 text-center">
         <p className="text-2xl mb-2">🏆</p>
         <p className="text-brown-dark font-semibold">All missions completed!</p>
         <p className="text-brown-muted text-sm mt-1">Check back with your manager for new challenges.</p>
@@ -932,11 +922,11 @@ function MissionsTab({
             {pendingMissions.map(m => {
               const completion = pendingMap.get(m.id)
               return (
-                <div key={m.id} className="bg-white rounded-xl shadow-card px-5 py-4 flex items-center justify-between gap-4">
+                <div key={m.id} className="bg-white rounded-2xl shadow-card px-5 py-4 flex items-center justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-brown-dark">{m.title}</p>
+                    <p className="type-semicondensed text-base font-bold text-brown-dark">{m.title}</p>
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      <span className="text-xs text-[#C4813A] font-semibold">+{m.xp_reward} XP</span>
+                      <span className="type-condensed text-sm text-accent-text font-semibold">+{m.xp_reward} XP</span>
                       {m.verification_type && <VerificationTag type={m.verification_type} />}
                       {completion?.photo_url && (
                         <button onClick={() => window.open(completion.photo_url!, '_blank')}
@@ -944,9 +934,7 @@ function MissionsTab({
                       )}
                     </div>
                   </div>
-                  <span className="shrink-0 text-xs text-[#C4813A] border border-[#C4813A35] bg-[#C4813A10] px-2.5 py-0.5 rounded-full whitespace-nowrap">
-                    Pending
-                  </span>
+                  <Badge tone="brand" className="shrink-0 whitespace-nowrap">Pending</Badge>
                 </div>
               )
             })}
@@ -959,27 +947,25 @@ function MissionsTab({
           <div className="space-y-2">
             {available.map(m => (
               <div key={m.id}>
-                <div className="bg-white rounded-xl shadow-card px-5 py-4 flex items-center justify-between gap-4">
+                <div className="bg-white rounded-2xl shadow-card px-5 py-4 flex items-center justify-between gap-4">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-brown-dark">{m.title}</p>
+                    <p className="type-semicondensed text-base font-bold text-brown-dark">{m.title}</p>
                     {m.description && <p className="text-xs text-brown-muted mt-0.5 line-clamp-1">{m.description}</p>}
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      <span className="text-xs text-[#C4813A] font-semibold">+{m.xp_reward} XP</span>
+                      <span className="type-condensed text-sm text-accent-text font-semibold">+{m.xp_reward} XP</span>
                       {m.category && <span className="text-xs text-brown-faint">{MISSION_CATEGORY_LABELS[m.category]}</span>}
                       {m.verification_type && <VerificationTag type={m.verification_type} />}
                     </div>
                   </div>
                   {isSelf && (
-                    <button
+                    <Button
+                      size="sm"
+                      variant={activeId === m.id ? 'dark' : 'secondary'}
+                      className="shrink-0"
                       onClick={() => setActiveId(prev => prev === m.id ? null : m.id)}
-                      className={`shrink-0 text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                        activeId === m.id
-                          ? 'bg-brown-btn text-white border-brown-btn'
-                          : 'border-[#8B634440] text-[#8B6344] bg-[#8B634408] hover:bg-[#8B634418]'
-                      }`}
                     >
                       {activeId === m.id ? 'Cancel' : 'Complete'}
-                    </button>
+                    </Button>
                   )}
                 </div>
                 {activeId === m.id && isSelf && (
@@ -1798,10 +1784,10 @@ function StatusPill({ status }: { status: string }) {
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest mb-3">{children}</p>
+  return <p className="type-eyebrow text-[11px] text-brown-brand mb-3">{children}</p>
 }
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest">{children}</p>
+  return <p className="type-eyebrow text-[11px] text-brown-brand">{children}</p>
 }
 function InfoRow({ label, value, note, multiline }: { label: string; value: string; note?: string; multiline?: boolean }) {
   return (

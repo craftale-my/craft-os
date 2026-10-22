@@ -12,7 +12,7 @@ export function Avatar({
     return <img src={avatar} alt={name} className={`${sizeClass} rounded-full object-cover flex-shrink-0`} />
   }
   return (
-    <div className={`${sizeClass} rounded-full bg-[#C4813A20] flex items-center justify-center font-bold text-[#8B6344] flex-shrink-0`}>
+    <div className={`${sizeClass} rounded-full bg-[#EAD9C2] flex items-center justify-center font-bold text-[#6B4C35] flex-shrink-0`}>
       {name.charAt(0).toUpperCase()}
     </div>
   )

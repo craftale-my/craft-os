@@ -14,6 +14,7 @@ import { AddToHomeScreenLogo } from './AddToHomeScreen'
 import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
 import { NotificationBell } from '../../features/notifications/NotificationBell'
+import { Wordmark } from './ui'
 
 // 叶子项与大类共用一张表:大类标题也要出图标,否则它的文字会顶到
 // 图标的位置,和下面子项的标签对不齐。
@@ -79,12 +80,12 @@ export function SidebarContent({ onNavigate, onClose }: {
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 font-brand">
       {/* Logo */}
       <div className="flex items-center justify-between px-4 pt-5 pb-4 flex-shrink-0">
-        <Link to="/" className="flex items-center gap-2.5">
-          <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
-          <span className="font-display text-xl font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
+        <Link to="/" className="flex items-center gap-2">
+          <img src="/craft-logo.jpg" alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+          <Wordmark />
         </Link>
         {/* No bell here — see the comment on <Sidebar> for why it lives
             there instead, mounted exactly once. */}
@@ -101,7 +102,7 @@ export function SidebarContent({ onNavigate, onClose }: {
           <div className="flex items-center gap-3 p-3 rounded-xl bg-[#3D2410]">
             <Avatar name={staff.name} avatar={staff.avatar} size="md" />
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-[#F5F0E8] truncate">{staff.name}</p>
+              <p className="type-semicondensed text-sm font-bold text-[#F5F0E8] truncate">{staff.name}</p>
               <div className="mt-1">
                 <RankBadge rank={staff.rank} size="sm" />
               </div>
@@ -137,7 +138,7 @@ export function SidebarContent({ onNavigate, onClose }: {
               >
                 <span className="flex items-center gap-3 min-w-0">
                   {GroupIcon && <GroupIcon size={16} className="flex-shrink-0" />}
-                  <span className="font-semibold tracking-wide truncate">{entry.label}</span>
+                  <span className="type-semicondensed font-bold tracking-wide truncate">{entry.label}</span>
                 </span>
                 <ChevronDown size={14} className={`flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
               </button>
