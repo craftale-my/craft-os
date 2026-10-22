@@ -53,8 +53,15 @@ export const NAV: NavEntry[] = [
       { id: 'salary',     label: 'Salary',     to: '/hr/salary' },
     ],
   },
-  { id: 'pos', label: 'POS', to: '/pos', activePaths: ['/pos'] },
-  { id: 'menu', label: 'Menu', to: '/menu', activePaths: ['/menu'], cap: 'access_settings' },
+  {
+    id: 'pos',
+    label: 'POS',
+    children: [
+      { id: 'pos-register', label: 'Register',          to: '/pos', activePaths: ['/pos'] },
+      { id: 'menu',         label: 'Menu',              to: '/menu', activePaths: ['/menu'], cap: 'access_settings' },
+      { id: 'pos-settings', label: 'Tables & Printers', to: '/pos/settings', cap: 'access_settings' },
+    ],
+  },
   { id: 'settings', label: 'Settings', to: '/settings', cap: 'access_settings' },
 ]
 

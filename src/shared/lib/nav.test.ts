@@ -48,7 +48,16 @@ describe('visibleNav', () => {
   })
 
   it('access_settings 控制 Settings 叶子项', () => {
-    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'pos', 'menu', 'settings'])
+    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'pos', 'settings'])
+  })
+
+  it('POS groups the register, menu and tables & printers; staff see only the register', () => {
+    const pos = (can: (c: Capability) => boolean) => {
+      const g = visibleNav(can).find(e => e.id === 'pos')
+      return g && isGroup(g) ? g.children.map(c => c.id) : []
+    }
+    expect(pos(canWith())).toEqual(['pos-register'])
+    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'menu', 'pos-settings'])
   })
 
   it('不修改原始 NAV', () => {
