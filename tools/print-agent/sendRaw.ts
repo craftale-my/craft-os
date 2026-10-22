@@ -1,22 +1,32 @@
 import net from 'node:net'
 
-/** Sends raw bytes to a printer on TCP (default port 9100). Resolves only once
- *  the bytes were flushed to the socket without error; rejects if the printer
- *  is unreachable, resets the connection, or does not answer within 5 s. */
+/** Sends raw bytes to a printer on TCP (default port 9100).
+ *
+ *  Resolves when the bytes were flushed and the connection then closed cleanly,
+ *  or when LINGER_MS (1 s) has passed after the flush without an error.
+ *  Rejects if the printer is unreachable, the connection errors or is reset,
+ *  the printer closes early (before the flush completes or with an error), or
+ *  it does not answer within 5 s.
+ *
+ *  Raw TCP 9100 has no acknowledgement: a reset that arrives later than
+ *  LINGER_MS cannot be detected, so a print is only "sent", never "confirmed". */
 export function sendRaw(address: string, bytes: Uint8Array): Promise<void> {
   const [host, port = '9100'] = address.split(':')
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port: Number(port) })
     let settled = false
+    let lingerTimer: ReturnType<typeof setTimeout> | undefined
     const fail = (err: Error): void => {
       if (settled) return
       settled = true
+      clearTimeout(lingerTimer)
       socket.destroy()
       reject(err)
     }
     const succeed = (): void => {
       if (settled) return
       settled = true
+      clearTimeout(lingerTimer)
       socket.destroy()
       resolve()
     }
@@ -36,7 +46,8 @@ export function sendRaw(address: string, bytes: Uint8Array): Promise<void> {
       socket.end(Buffer.from(bytes), (err?: Error | null) => {
         if (err) return fail(err)
         flushed = true
-        setTimeout(succeed, LINGER_MS).unref()
+        lingerTimer = setTimeout(succeed, LINGER_MS)
+        lingerTimer.unref()
       }),
     )
   })

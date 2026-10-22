@@ -36,6 +36,10 @@ describe('assertDevDatabase', () => {
     expect(() => assertDevDatabase('https://yfsoesxzurzjdwstszru.supabase.co')).toThrow('production')
   })
 
+  it('refuses the production project however the URL is capitalised', () => {
+    expect(() => assertDevDatabase('https://YFSOESXZURZJDWSTSZRU.supabase.co')).toThrow('production')
+  })
+
   it('allows any other project', () => {
     expect(() => assertDevDatabase('https://abcdefgh.supabase.co')).not.toThrow()
   })

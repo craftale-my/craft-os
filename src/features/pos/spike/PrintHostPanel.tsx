@@ -21,6 +21,7 @@ export default function PrintHostPanel() {
     async (job: PrintJob): Promise<void> => {
       const route = routesRef.current.find((r) => r.route === job.route)
       if (!route || route.kind === 'agent') return // the Node agent prints these
+      let printed = false // per call: set only when the print step itself succeeded
       try {
         const result = await processJob(job, {
           claim: claimJob,
@@ -28,6 +29,7 @@ export default function PrintHostPanel() {
           print: async (j) => {
             try {
               await printFromBrowser(route, j.payload)
+              printed = true
             } catch (e) {
               note(`${j.route} error: ${e instanceof Error ? e.message : String(e)}`)
               throw e
@@ -37,9 +39,14 @@ export default function PrintHostPanel() {
         note(`${job.route} ${job.id.slice(0, 8)} → ${result}`)
         if (result === 'failed') setFailed((f) => [...f, job])
       } catch (e) {
-        // The ticket printed but recording it failed. Do NOT offer a reprint:
-        // that would produce a duplicate ticket.
-        note(`${job.route} ${job.id.slice(0, 8)} printed but could not record it: ${e instanceof Error ? e.message : String(e)}`)
+        const why = e instanceof Error ? e.message : String(e)
+        if (printed) {
+          // The ticket printed but recording it failed. Do NOT offer a reprint:
+          // that would produce a duplicate ticket.
+          note(`${job.route} ${job.id.slice(0, 8)} printed but could not record it: ${why}`)
+        } else {
+          note(`${job.route} ${job.id.slice(0, 8)} failed and could not record the failure: ${why}`)
+        }
       }
     },
     [note],
