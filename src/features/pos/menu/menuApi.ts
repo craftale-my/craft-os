@@ -38,7 +38,7 @@ export async function updateProducts(ids: string[], patch: ProductPatch): Promis
     .in('id', ids)
     .select('id')
   const outcome = writeOutcome(res)
-  if (!outcome.ok) throw new Error(`Menu change ${outcome.reason}`)
+  if (!outcome.ok) throw new Error(`Menu change failed: ${outcome.reason}`)
   if ((res.data ?? []).length !== ids.length) throw new Error('Some products were not updated — refresh and try again.')
 }
 

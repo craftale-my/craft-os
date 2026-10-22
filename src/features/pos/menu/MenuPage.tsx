@@ -84,7 +84,13 @@ export default function MenuPage() {
               <select
                 className={select}
                 value=""
-                onChange={(e) => void save(section.products.map((p) => p.id), { print_route: e.target.value || null })}
+                onChange={(e) =>
+                  void save(
+                    // the whole category, not just the rows the search/add-on filter is showing
+                    (rows ?? []).filter((r) => (r.category?.name ?? 'Uncategorised') === section.title).map((p) => p.id),
+                    { print_route: e.target.value || null },
+                  )
+                }
               >
                 <option value="" disabled>Choose…</option>
                 {PRINT_ROUTES.map((r) => (

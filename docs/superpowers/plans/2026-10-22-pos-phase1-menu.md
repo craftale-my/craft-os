@@ -1439,7 +1439,7 @@ export async function updateProducts(ids: string[], patch: ProductPatch): Promis
     .in('id', ids)
     .select('id')
   const outcome = writeOutcome(res)
-  if (!outcome.ok) throw new Error(`Menu change ${outcome.reason}`)
+  if (!outcome.ok) throw new Error(`Menu change failed: ${outcome.reason}`)
   if ((res.data ?? []).length !== ids.length) throw new Error('Some products were not updated — refresh and try again.')
 }
 
@@ -1591,7 +1591,13 @@ export default function MenuPage() {
               <select
                 className={select}
                 value=""
-                onChange={(e) => void save(section.products.map((p) => p.id), { print_route: e.target.value || null })}
+                onChange={(e) =>
+                  void save(
+                    // the whole category, not just the rows the search/add-on filter is showing
+                    (rows ?? []).filter((r) => (r.category?.name ?? 'Uncategorised') === section.title).map((p) => p.id),
+                    { print_route: e.target.value || null },
+                  )
+                }
               >
                 <option value="" disabled>Choose…</option>
                 {PRINT_ROUTES.map((r) => (
