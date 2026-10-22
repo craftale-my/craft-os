@@ -25,7 +25,11 @@ export function readXlsx(bytes: Uint8Array): Workbook {
   const files = unzipSync(bytes)
   const parse = (path: string): Document | null => {
     const f = files[path]
-    return f ? new DOMParser().parseFromString(strFromU8(f), 'application/xml') : null
+    if (!f) return null
+    const doc = new DOMParser().parseFromString(strFromU8(f), 'application/xml')
+    // A malformed part must not read as an empty sheet — that would look like "no rows".
+    if (doc.getElementsByTagName('parsererror').length > 0) throw new Error('Not an Excel (.xlsx) file')
+    return doc
   }
   const book = parse('xl/workbook.xml')
   const rels = parse('xl/_rels/workbook.xml.rels')
@@ -41,8 +45,10 @@ export function readXlsx(bytes: Uint8Array): Workbook {
   for (const sheet of Array.from(book.getElementsByTagNameNS(MAIN, 'sheet'))) {
     const t = target.get(sheet.getAttributeNS(REL, 'id') ?? '') ?? ''
     const path = t.startsWith('/') ? t.slice(1) : t.startsWith('xl/') ? t : `xl/${t}`
+    const doc = parse(path)
+    if (!doc) throw new Error('Not an Excel (.xlsx) file')
     const rows: Sheet = []
-    for (const row of Array.from(parse(path)?.getElementsByTagNameNS(MAIN, 'row') ?? [])) {
+    for (const row of Array.from(doc.getElementsByTagNameNS(MAIN, 'row'))) {
       const cells: string[] = []
       for (const c of Array.from(row.getElementsByTagNameNS(MAIN, 'c'))) {
         const type = c.getAttribute('t')

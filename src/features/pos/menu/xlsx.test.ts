@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { strToU8, zipSync } from 'fflate'
+import { strToU8, unzipSync, zipSync } from 'fflate'
 import { readXlsx } from './xlsx'
 import { makeXlsx } from './testing/makeXlsx'
 
@@ -42,5 +42,17 @@ describe('readXlsx', () => {
 
   it('rejects a file that is not an Excel workbook', () => {
     expect(() => readXlsx(zipSync({ 'hello.txt': strToU8('hi') }))).toThrow('Not an Excel (.xlsx) file')
+  })
+
+  it('rejects a workbook whose sheet XML cannot be parsed instead of returning no rows', () => {
+    const good = unzipSync(makeXlsx({ S: [['a']] }))
+    const bytes = zipSync({ ...good, 'xl/worksheets/sheet1.xml': strToU8('<worksheet><sheetData><row></worksheet>') })
+    expect(() => readXlsx(bytes)).toThrow('Not an Excel (.xlsx) file')
+  })
+
+  it('rejects a workbook whose sheet part is missing', () => {
+    const good = unzipSync(makeXlsx({ S: [['a']] }))
+    delete good['xl/worksheets/sheet1.xml']
+    expect(() => readXlsx(zipSync(good))).toThrow('Not an Excel (.xlsx) file')
   })
 })

@@ -145,6 +145,44 @@ describe('buildMenuImport', () => {
     expect(warnings.filter((w) => w.includes('Default Catalog'))).toHaveLength(1)
   })
 
+  it('refuses a link sheet with no catalog column, since importing would remove every link', () => {
+    const f = files()
+    f.itemLinkedAddon = {
+      '1. Sauce | Choose One': [
+        ['Group ID', 'Item ID', 'Item Name', 'Grab Food'],
+        ['group_sauce', 'product_don', 'Smoked Duck DON', 'T'],
+      ],
+    }
+    expect(() => buildMenuImport(f, 'Craft Cafe')).toThrow(
+      'Invalid import file: no add-on link sheet has a "Craft Cafe" column — importing would remove every add-on link',
+    )
+  })
+
+  it('refuses an export with no link sheets at all while groups exist', () => {
+    const f = files()
+    f.itemLinkedAddon = {}
+    expect(() => buildMenuImport(f, 'Craft Cafe')).toThrow('no add-on link sheet has a "Craft Cafe" column')
+  })
+
+  it('warns when readable link sheets yield no links', () => {
+    const f = files()
+    f.itemLinkedAddon['1. Sauce | Choose One'][1][3] = ''
+    const r = buildMenuImport(f, 'Craft Cafe')
+    expect(r.payload.links).toEqual([])
+    expect(r.warnings).toContain('No product ↔ add-on links found — importing will remove every add-on link')
+  })
+
+  it('does not warn about links when the normal path produces some', () => {
+    expect(warnings.some((w) => w.includes('No product ↔ add-on links'))).toBe(false)
+  })
+
+  it('warns about a group whose options were all skipped', () => {
+    const f = files()
+    f.addonGroup['Craft Cafe'] = [GROUP_HEADER, groupRow('group_sauce', 'Sauce | Choose One', '1', '1', 'item_ghost', 'Ghost', '0')]
+    const r = buildMenuImport(f, 'Craft Cafe')
+    expect(r.warnings).toContain('Sauce | Choose One: no usable options — importing will remove all its options')
+  })
+
   it('fails clearly when the catalog sheet is missing', () => {
     expect(() => buildMenuImport(files(), 'Craftale')).toThrow('Sheet "Craftale" not found in the menu file')
   })

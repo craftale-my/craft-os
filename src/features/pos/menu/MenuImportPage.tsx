@@ -52,7 +52,7 @@ export default function MenuImportPage() {
       <h1 className="text-2xl font-semibold">Import menu from Feedme</h1>
       <p className="text-sm text-gray-500">
         In the Feedme portal go to Menu → Products → Export and choose the downloaded <code>books_….zip</code>.
-        Availability is taken from the “{FEEDME_CATALOG}” catalog. Importing again updates names, prices and add-ons;
+        Availability is taken from the “{FEEDME_CATALOG}” catalog. Importing again updates names, prices, add-ons and availability from Feedme;
         SST and print routes set in Craft OS are kept, and no product is deleted.
       </p>
 
@@ -69,6 +69,7 @@ export default function MenuImportPage() {
             {stage.payload.products.filter((p) => p.isAddon).length} add-on items),{' '}
             {stage.payload.products.reduce((n, p) => n + p.variants.length, 0)} variants,{' '}
             {stage.payload.categories.length} categories, {stage.payload.groups.length} add-on groups,{' '}
+            {stage.payload.groups.reduce((n, g) => n + g.options.length, 0)} add-on options,{' '}
             {stage.payload.links.length} product ↔ add-on links.
           </p>
           {stage.warnings.length > 0 && (

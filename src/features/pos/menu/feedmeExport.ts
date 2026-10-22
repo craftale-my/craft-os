@@ -225,6 +225,7 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
   const links: ImportLink[] = []
   const seen = new Set<string>()
   let warnedFallback = false
+  let usableSheets = 0
   for (const sheet of Object.values(files.itemLinkedAddon)) {
     if (sheet.length === 0) continue
     const lc = columns(sheet[0], ['Group ID', 'Item ID'])
@@ -237,6 +238,7 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
         warnedFallback = true
       }
     }
+    usableSheets++
     for (const r of sheet.slice(1)) {
       if (clean(r[flag]).toUpperCase() !== 'T') continue
       const gid = clean(r[lc['Group ID']])
@@ -246,6 +248,18 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
       seen.add(`${pid}|${gid}`)
       links.push({ productFeedmeId: pid, groupFeedmeId: gid, sortOrder: group.sortOrder })
     }
+  }
+
+  if (groups.size > 0) {
+    if (usableSheets === 0) {
+      throw new Error(
+        `Invalid import file: no add-on link sheet has a "${catalog}" column — importing would remove every add-on link`,
+      )
+    }
+    if (links.length === 0) warnings.push('No product ↔ add-on links found — importing will remove every add-on link')
+  }
+  for (const g of groups.values()) {
+    if (g.options.length === 0) warnings.push(`${g.name}: no usable options — importing will remove all its options`)
   }
 
   return {
