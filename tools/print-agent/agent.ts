@@ -1,11 +1,11 @@
-// POS spike print agent: prints every spike_print_jobs row whose route is
-// kind 'agent', by sending raw ESC/POS bytes to the printer on TCP 9100.
+// Craft POS print agent — prints print_jobs for routes of kind 'agent'
+// Sends raw ESC/POS bytes to the printer on TCP 9100.
 // Run:  node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
 import { createClient } from '@supabase/supabase-js'
 import { renderTicketLines } from '../../src/features/pos/print/ticket.ts'
 import { encodeEscPos } from '../../src/features/pos/print/escpos.ts'
 import { processJob, type PrintHostDeps, type PrintJob } from '../../src/features/pos/print/printHost.ts'
-import { assertDevDatabase } from '../../src/features/pos/spike/guard.ts'
+import { assertDevDatabase } from '../../src/features/pos/guard.ts'
 import { sendRaw } from './sendRaw.ts'
 import { checkPrinter, interpretStatus, PAPER_STATUS, queryStatus } from './printerStatus.ts'
 
@@ -35,13 +35,13 @@ async function main(): Promise<void> {
   if (authError) throw authError
 
   const { data: routes, error: routeError } = await supabase
-    .from('spike_print_routes')
+    .from('print_routes')
     .select('route, address')
     .eq('kind', 'agent')
   if (routeError) throw routeError
-  const addressOf = new Map<string, string>((routes ?? []).map((r: { route: string; address: string }) => [r.route, r.address]))
+  const addressOf = new Map<string, string>((routes ?? []).map((r: { name: string; address: string }) => [r.name, r.address]))
   console.log('agent routes:', Object.fromEntries(addressOf))
-  console.log('Routes are read at startup; restart the agent after changing spike_print_routes.')
+  console.log('Routes are read at startup; restart the agent after changing print_routes.')
   if (addressOf.size === 0) {
     console.warn("No route has kind 'agent', so there is nothing to print. Waiting; point a route at the agent and restart.")
   }
@@ -76,12 +76,12 @@ async function main(): Promise<void> {
     let printed = false
     const deps: PrintHostDeps = {
       claim: async (id) => {
-        const { data, error } = await supabase.rpc('spike_claim_print_job', { p_id: id })
+        const { data, error } = await supabase.rpc('claim_print_job', { p_id: id })
         if (error) throw error
         return data === true
       },
       finish: async (id, ok, err) => {
-        const { error } = await supabase.rpc('spike_finish_print_job', { p_id: id, p_ok: ok, p_error: err })
+        const { error } = await supabase.rpc('finish_print_job', { p_id: id, p_ok: ok, p_error: err })
         if (error) throw error
       },
       print: async (j) => {
@@ -105,7 +105,7 @@ async function main(): Promise<void> {
     sweeping = true
     try {
       const { data, error } = await supabase
-        .from('spike_print_jobs')
+        .from('print_jobs')
         .select('id, route, payload, status')
         .eq('status', 'pending')
         .in('route', [...addressOf.keys()])
@@ -123,8 +123,8 @@ async function main(): Promise<void> {
   }
 
   supabase
-    .channel('print-agent')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_print_jobs' }, (p) => {
+    .channel(`print-agent-${crypto.randomUUID()}`)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'print_jobs' }, (p) => {
       void handle(p.new as PrintJob)
     })
     .subscribe((status) => {

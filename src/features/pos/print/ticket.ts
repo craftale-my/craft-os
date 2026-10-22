@@ -1,5 +1,5 @@
-/** What one kitchen/bar ticket says. The spike SQL (spike_insert_order) builds
- *  exactly this shape into spike_print_jobs.payload, so keep the two in step. */
+/** What one kitchen/bar ticket says. The pos_insert_order function builds
+ *  exactly this shape into print_jobs.payload, so keep the two in step. */
 export interface TicketLine {
   qty: number
   name: string
