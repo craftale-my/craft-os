@@ -23,10 +23,10 @@ export default function MenuImportPage() {
         files = readFeedmeExport(bytes)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        const lower = msg.toLowerCase()
-        throw new Error(
-          lower.includes('zip') || lower.includes('invalid') ? 'That file is not a Feedme export zip (books_….zip).' : msg,
-        )
+        // fflate's own errors ("invalid zip data", "unexpected EOF") mean the file is not a zip at all;
+        // readFeedmeExport's messages already say which workbook is missing, so pass those through
+        const notAZip = /invalid zip|unexpected eof/i.test(msg)
+        throw new Error(notAZip ? 'That file is not a Feedme export zip (books_….zip).' : msg)
       }
       const { payload, warnings } = buildMenuImport(files, FEEDME_CATALOG)
       setStage({ kind: 'preview', fileName: file.name, payload, warnings })
