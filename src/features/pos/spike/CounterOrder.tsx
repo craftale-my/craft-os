@@ -36,6 +36,9 @@ export default function CounterOrder() {
   const [cart, setCart] = useState<CartLine[]>([])
   const [online, setOnline] = useState(navigator.onLine)
   const [report, setReport] = useState<FlushReport | null>(null)
+  const [sentTotal, setSentTotal] = useState(0) // cumulative across every flush this session
+  const [oldestQueuedAt, setOldestQueuedAt] = useState<number | null>(null)
+  const [now, setNow] = useState(Date.now())
   const [dupResult, setDupResult] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -55,7 +58,11 @@ export default function CounterOrder() {
         do {
           again.current = false
           try {
-            setReport(await flushQueue(store, sendCounterOrder))
+            const r = await flushQueue(store, sendCounterOrder)
+            setReport(r)
+            setSentTotal((n) => n + r.sent)
+            const waiting = (await store.all()).filter((o) => !o.failedReason)
+            setOldestQueuedAt(waiting.length ? Math.min(...waiting.map((o) => o.queuedAt)) : null)
           } catch {
             // a failed flush just leaves the queue for the next tick
           }
@@ -81,7 +88,9 @@ export default function CounterOrder() {
     window.addEventListener('online', goOnline)
     window.addEventListener('offline', goOffline)
     const timer = window.setInterval(() => void flush(), 15_000)
+    const clock = window.setInterval(() => setNow(Date.now()), 1000)
     return () => {
+      window.clearInterval(clock)
       window.removeEventListener('online', goOnline)
       window.removeEventListener('offline', goOffline)
       window.clearInterval(timer)
@@ -135,9 +144,15 @@ export default function CounterOrder() {
     <section className="rounded border p-4">
       <h2 className="font-semibold">Spike 3 — counter orders</h2>
       <p className="text-sm text-neutral-500">
-        {online ? 'Online' : 'OFFLINE'} · queued: {report?.pending ?? '…'} · rejected: {report?.stuck ?? '…'} · sent in
-        last flush: {report?.sent ?? '…'}
+        {online ? 'Online' : 'OFFLINE'} · queued: {report?.pending ?? '…'} · rejected: {report?.stuck ?? '…'} · sent
+        this session: {sentTotal}
       </p>
+      {(report?.pending ?? 0) > 0 && (
+        <p className="text-sm text-amber-700">
+          Oldest queued order: {oldestQueuedAt === null ? '…' : `${Math.max(0, Math.round((now - oldestQueuedAt) / 1000))} s`}{' '}
+          old · last failure: {report?.lastError ?? 'none (will send on the next flush)'}
+        </p>
+      )}
       {stuck > 0 && (
         <p className="mt-1 text-sm font-semibold text-red-600">
           {stuck} order{stuck === 1 ? '' : 's'} rejected by the server and stuck on this iPad

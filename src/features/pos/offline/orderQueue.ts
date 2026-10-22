@@ -30,6 +30,8 @@ export interface FlushReport {
   sent: number
   pending: number
   stuck: number
+  /** Reason of the retryable failure that stopped this flush; null if none did. */
+  lastError: string | null
 }
 
 export function newQueuedOrder(
@@ -48,6 +50,7 @@ export async function enqueue(store: QueueStore, order: QueuedOrder): Promise<vo
 export async function flushQueue(store: QueueStore, send: Sender): Promise<FlushReport> {
   const queued = (await store.all()).sort((a, b) => a.queuedAt - b.queuedAt)
   let sent = 0
+  let lastError: string | null = null
   for (const order of queued) {
     if (order.failedReason) continue
     let res: SendResult
@@ -62,7 +65,10 @@ export async function flushQueue(store: QueueStore, send: Sender): Promise<Flush
       sent++
       continue
     }
-    if (res.retryable) break // still offline — keep order, try again later
+    if (res.retryable) {
+      lastError = res.reason
+      break // still offline — keep order, try again later
+    }
     await store.put({ ...order, failedReason: res.reason })
   }
   const left = await store.all()
@@ -70,6 +76,7 @@ export async function flushQueue(store: QueueStore, send: Sender): Promise<Flush
     sent,
     pending: left.filter((o) => !o.failedReason).length,
     stuck: left.filter((o) => o.failedReason).length,
+    lastError,
   }
 }
 

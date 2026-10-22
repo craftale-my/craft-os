@@ -57,13 +57,15 @@ export async function fetchOrderTableLabel(orderId: string): Promise<string | nu
   return row?.spike_bills?.spike_tables?.label ?? null
 }
 
+const SEND_TIMEOUT_MS = 8000
+
 export async function sendCounterOrder(o: QueuedOrder): Promise<SendResult> {
   try {
     const { error } = await supabase.rpc('spike_place_counter_order', {
       p_table_id: o.tableId,
       p_items: o.items,
       p_client_order_id: o.clientOrderId,
-    })
+    }).abortSignal(AbortSignal.timeout(SEND_TIMEOUT_MS)) // a hung request becomes a retryable failure
     return toSendResult(error) // keeps the Postgres code, so only real rejections are final
   } catch (e) {
     return { ok: false, retryable: true, reason: e instanceof Error ? e.message : String(e) }

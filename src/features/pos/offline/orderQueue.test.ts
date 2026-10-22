@@ -23,7 +23,7 @@ describe('flushQueue', () => {
     await enqueue(store, newQueuedOrder(null, [line], 2000, 'b'))
     await enqueue(store, newQueuedOrder(null, [line], 1000, 'a'))
     const send = vi.fn(async (_o: QueuedOrder) => ok)
-    expect(await flushQueue(store, send)).toEqual({ sent: 2, pending: 0, stuck: 0 })
+    expect(await flushQueue(store, send)).toEqual({ sent: 2, pending: 0, stuck: 0, lastError: null })
     expect(send.mock.calls.map(([o]) => o.clientOrderId)).toEqual(['a', 'b'])
   })
 
@@ -32,7 +32,7 @@ describe('flushQueue', () => {
     await enqueue(store, newQueuedOrder(null, [line], 1, 'a'))
     await enqueue(store, newQueuedOrder(null, [line], 2, 'b'))
     const send = vi.fn(async () => ({ ok: false, retryable: true, reason: 'Load failed' }) as SendResult)
-    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 2, stuck: 0 })
+    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 2, stuck: 0, lastError: 'Load failed' })
     expect(send).toHaveBeenCalledTimes(1)
   })
 
@@ -43,7 +43,7 @@ describe('flushQueue', () => {
     const send = vi.fn(async (o: QueuedOrder) =>
       o.clientOrderId === 'bad' ? ({ ok: false, retryable: false, reason: 'Item is not available' } as SendResult) : ok,
     )
-    expect(await flushQueue(store, send)).toEqual({ sent: 1, pending: 0, stuck: 1 })
+    expect(await flushQueue(store, send)).toEqual({ sent: 1, pending: 0, stuck: 1, lastError: null })
     expect(store.rows.get('bad')?.failedReason).toBe('Item is not available')
   })
 
@@ -61,7 +61,25 @@ describe('flushQueue with a throwing sender', () => {
     const store = memoryStore()
     await enqueue(store, newQueuedOrder(null, [line], 1, 'a'))
     const send = vi.fn(async () => { throw new Error('boom') })
-    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 1, stuck: 0 })
+    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 1, stuck: 0, lastError: 'boom' })
+  })
+})
+
+describe('flushQueue lastError', () => {
+  it('reports the reason of the retryable failure that stopped the flush, and null after a clean flush', async () => {
+    const store = memoryStore()
+    await enqueue(store, newQueuedOrder(null, [line], 1, 'a'))
+    const down = vi.fn(async () => ({ ok: false, retryable: true, reason: 'Load failed' }) as SendResult)
+    expect((await flushQueue(store, down)).lastError).toBe('Load failed')
+    const up = vi.fn(async () => ok)
+    expect((await flushQueue(store, up)).lastError).toBeNull()
+  })
+
+  it('does not report a final rejection as lastError', async () => {
+    const store = memoryStore()
+    await enqueue(store, newQueuedOrder(null, [line], 1, 'bad'))
+    const send = vi.fn(async () => ({ ok: false, retryable: false, reason: 'Item is not available' }) as SendResult)
+    expect((await flushQueue(store, send)).lastError).toBeNull()
   })
 })
 
