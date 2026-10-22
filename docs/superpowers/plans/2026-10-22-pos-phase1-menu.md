@@ -55,7 +55,7 @@ Done by the controller in the Supabase dashboard of **craft-os-dev**, not by a s
 
 - [ ] **Step 2: Run the base schema.** Run `supabase/FRESH_BUILD_full.sql` in the SQL editor (load it with `window.monaco.editor.getModels()[0].setValue(...)` after checking its SHA-256 against the file, as done on 2026-10-22). Expected: "Success. No rows returned".
 
-- [ ] **Step 3: Run every later migration, in filename order,** one at a time, checking each result before the next:
+- [ ] **Step 3: Run every later migration in the order below** (not plain filename order: `checklist-assignee` alters a table that `tasks-projects` creates), one at a time, checking each result before the next:
 
 ```
 migration-2026-07-06-rbac.sql
@@ -68,9 +68,9 @@ migration-2026-08-02-dedupe-chan-jie-ling.sql
 migration-2026-08-02-department-normalise.sql
 migration-2026-08-02-service-crew-backfill.sql
 migration-2026-08-03-avatar-storage-policies.sql
-migration-2026-08-14-checklist-assignee.sql
 migration-2026-08-14-tasks-projects.sql
 migration-2026-08-14-tasks-upsert-fn.sql
+migration-2026-08-14-checklist-assignee.sql
 migration-2026-09-02-late-reason-notifications.sql
 migration-2026-09-02-notify-late-fn.sql
 migration-2026-09-02-rejudge-boundary-late.sql
