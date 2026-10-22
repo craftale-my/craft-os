@@ -20,7 +20,12 @@ async function main(): Promise<void> {
   const url = env('SUPABASE_URL')
   assertDevDatabase(url)
   const supabase = createClient(url, env('SUPABASE_ANON_KEY'), { auth: { persistSession: false } })
-  const cols = Number(process.env.TICKET_COLS ?? 42)
+  let cols = 42
+  if (process.env.TICKET_COLS !== undefined) {
+    const parsed = Number(process.env.TICKET_COLS)
+    if (Number.isInteger(parsed) && parsed > 0) cols = parsed
+    else console.warn(`Invalid TICKET_COLS "${process.env.TICKET_COLS}"; using 42.`)
+  }
 
   const { error: authError } = await supabase.auth.signInWithPassword({
     email: env('AGENT_EMAIL'),
@@ -40,41 +45,33 @@ async function main(): Promise<void> {
     console.warn("No route has kind 'agent', so there is nothing to print. Waiting; point a route at the agent and restart.")
   }
 
-  // Ids whose ticket reached the printer, so a later rejection can be told
-  // apart from a claim/finish(false) failure.
-  const printedIds = new Set<string>()
-
-  const deps: PrintHostDeps = {
-    claim: async (id) => {
-      const { data, error } = await supabase.rpc('spike_claim_print_job', { p_id: id })
-      if (error) throw error
-      return data === true
-    },
-    finish: async (id, ok, err) => {
-      const { error } = await supabase.rpc('spike_finish_print_job', { p_id: id, p_ok: ok, p_error: err })
-      if (error) throw error
-    },
-    print: async (job) => {
-      await sendRaw(addressOf.get(job.route)!, encodeEscPos(renderTicketLines(job.payload, cols)))
-      printedIds.add(job.id)
-    },
-  }
-
   // Never rejects: it is called from the sweep, a Realtime callback and an interval.
   const handle = async (job: PrintJob): Promise<void> => {
     if (!addressOf.has(job.route)) return
     const id8 = job.id.slice(0, 8)
+    // Per call, so a concurrent handler of the same job cannot mislabel the log.
+    let printed = false
+    const deps: PrintHostDeps = {
+      claim: async (id) => {
+        const { data, error } = await supabase.rpc('spike_claim_print_job', { p_id: id })
+        if (error) throw error
+        return data === true
+      },
+      finish: async (id, ok, err) => {
+        const { error } = await supabase.rpc('spike_finish_print_job', { p_id: id, p_ok: ok, p_error: err })
+        if (error) throw error
+      },
+      print: async (j) => {
+        await sendRaw(addressOf.get(j.route)!, encodeEscPos(renderTicketLines(j.payload, cols)))
+        printed = true
+      },
+    }
     try {
       const result = await processJob(job, deps)
       console.log(new Date().toISOString(), job.route, id8, result)
     } catch (e) {
-      if (printedIds.has(job.id)) {
-        console.error(`${job.route} ${id8} printed but could not record it: ${errMessage(e)}`)
-      } else {
-        console.error(`${job.route} ${id8} failed: ${errMessage(e)}`)
-      }
-    } finally {
-      printedIds.delete(job.id)
+      if (printed) console.error(`${job.route} ${id8} printed but could not record it: ${errMessage(e)}`)
+      else console.error(`${job.route} ${id8} failed: ${errMessage(e)}`)
     }
   }
 

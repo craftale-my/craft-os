@@ -2931,6 +2931,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ### Task 10: Node print agent (raw TCP fallback)
 
 **Files:**
+- Create: `tools/print-agent/sendRaw.ts`
 - Create: `tools/print-agent/agent.ts`
 - Create: `tools/print-agent/.env.example`
 
@@ -2951,18 +2952,66 @@ AGENT_PASSWORD=<the password set in Task 0>
 TICKET_COLS=42
 ```
 
-- [ ] **Step 2: Create `tools/print-agent/agent.ts`**
+- [ ] **Step 2: Create `tools/print-agent/sendRaw.ts`**
+
+```ts
+import net from 'node:net'
+
+/** Sends raw bytes to a printer on TCP (default port 9100). Resolves only once
+ *  the bytes were flushed to the socket without error; rejects if the printer
+ *  is unreachable, resets the connection, or does not answer within 5 s. */
+export function sendRaw(address: string, bytes: Uint8Array): Promise<void> {
+  const [host, port = '9100'] = address.split(':')
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port: Number(port) })
+    let settled = false
+    const fail = (err: Error): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      reject(err)
+    }
+    const succeed = (): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve()
+    }
+    socket.setTimeout(5000)
+    // Stays attached for the socket's lifetime so a late error cannot crash the process.
+    socket.on('error', fail)
+    socket.on('timeout', () => fail(new Error(`Printer ${address} did not answer within 5 s`)))
+    // A successful flush only means the kernel accepted the bytes. Linger briefly
+    // so a reset or early close from the printer is reported instead of hidden.
+    const LINGER_MS = 1000
+    let flushed = false
+    socket.on('close', (hadError) => {
+      if (flushed && !hadError) succeed()
+      else fail(new Error(`Printer ${address} closed the connection before the ticket was sent`))
+    })
+    socket.on('connect', () =>
+      socket.end(Buffer.from(bytes), (err?: Error | null) => {
+        if (err) return fail(err)
+        flushed = true
+        setTimeout(succeed, LINGER_MS).unref()
+      }),
+    )
+  })
+}
+```
+
+- [ ] **Step 3: Create `tools/print-agent/agent.ts`**
 
 ```ts
 // POS spike print agent: prints every spike_print_jobs row whose route is
 // kind 'agent', by sending raw ESC/POS bytes to the printer on TCP 9100.
 // Run:  node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
-import net from 'node:net'
 import { createClient } from '@supabase/supabase-js'
 import { renderTicketLines } from '../../src/features/pos/print/ticket.ts'
 import { encodeEscPos } from '../../src/features/pos/print/escpos.ts'
 import { processJob, type PrintHostDeps, type PrintJob } from '../../src/features/pos/print/printHost.ts'
 import { assertDevDatabase } from '../../src/features/pos/spike/guard.ts'
+import { sendRaw } from './sendRaw.ts'
 
 function env(key: string): string {
   const value = process.env[key]
@@ -2970,28 +3019,19 @@ function env(key: string): string {
   return value
 }
 
-const url = env('SUPABASE_URL')
-assertDevDatabase(url)
-const supabase = createClient(url, env('SUPABASE_ANON_KEY'), { auth: { persistSession: false } })
-const cols = Number(process.env.TICKET_COLS ?? 42)
-
-function sendRaw(address: string, bytes: Uint8Array): Promise<void> {
-  const [host, port = '9100'] = address.split(':')
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host, port: Number(port) })
-    socket.setTimeout(5000)
-    socket.on('connect', () =>
-      socket.end(Buffer.from(bytes), () => {
-        socket.destroy()
-        resolve()
-      }),
-    )
-    socket.on('timeout', () => socket.destroy(new Error(`Printer ${address} did not answer within 5 s`)))
-    socket.on('error', reject)
-  })
-}
+const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 async function main(): Promise<void> {
+  const url = env('SUPABASE_URL')
+  assertDevDatabase(url)
+  const supabase = createClient(url, env('SUPABASE_ANON_KEY'), { auth: { persistSession: false } })
+  let cols = 42
+  if (process.env.TICKET_COLS !== undefined) {
+    const parsed = Number(process.env.TICKET_COLS)
+    if (Number.isInteger(parsed) && parsed > 0) cols = parsed
+    else console.warn(`Invalid TICKET_COLS "${process.env.TICKET_COLS}"; using 42.`)
+  }
+
   const { error: authError } = await supabase.auth.signInWithPassword({
     email: env('AGENT_EMAIL'),
     password: env('AGENT_PASSWORD'),
@@ -3005,50 +3045,74 @@ async function main(): Promise<void> {
   if (routeError) throw routeError
   const addressOf = new Map<string, string>((routes ?? []).map((r: { route: string; address: string }) => [r.route, r.address]))
   console.log('agent routes:', Object.fromEntries(addressOf))
-
-  const deps: PrintHostDeps = {
-    claim: async (id) => {
-      const { data, error } = await supabase.rpc('spike_claim_print_job', { p_id: id })
-      if (error) throw error
-      return data === true
-    },
-    finish: async (id, ok, err) => {
-      const { error } = await supabase.rpc('spike_finish_print_job', { p_id: id, p_ok: ok, p_error: err })
-      if (error) throw error
-    },
-    print: async (job) => {
-      await sendRaw(addressOf.get(job.route)!, encodeEscPos(renderTicketLines(job.payload, cols)))
-    },
+  console.log('Routes are read at startup; restart the agent after changing spike_print_routes.')
+  if (addressOf.size === 0) {
+    console.warn("No route has kind 'agent', so there is nothing to print. Waiting; point a route at the agent and restart.")
   }
 
+  // Never rejects: it is called from the sweep, a Realtime callback and an interval.
   const handle = async (job: PrintJob): Promise<void> => {
     if (!addressOf.has(job.route)) return
-    const result = await processJob(job, deps)
-    console.log(new Date().toISOString(), job.route, job.id.slice(0, 8), result)
+    const id8 = job.id.slice(0, 8)
+    // Per call, so a concurrent handler of the same job cannot mislabel the log.
+    let printed = false
+    const deps: PrintHostDeps = {
+      claim: async (id) => {
+        const { data, error } = await supabase.rpc('spike_claim_print_job', { p_id: id })
+        if (error) throw error
+        return data === true
+      },
+      finish: async (id, ok, err) => {
+        const { error } = await supabase.rpc('spike_finish_print_job', { p_id: id, p_ok: ok, p_error: err })
+        if (error) throw error
+      },
+      print: async (j) => {
+        await sendRaw(addressOf.get(j.route)!, encodeEscPos(renderTicketLines(j.payload, cols)))
+        printed = true
+      },
+    }
+    try {
+      const result = await processJob(job, deps)
+      console.log(new Date().toISOString(), job.route, id8, result)
+    } catch (e) {
+      if (printed) console.error(`${job.route} ${id8} printed but could not record it: ${errMessage(e)}`)
+      else console.error(`${job.route} ${id8} failed: ${errMessage(e)}`)
+    }
   }
 
   // Realtime can drop events while reconnecting; the sweep catches anything missed.
+  let sweeping = false
   const sweep = async (): Promise<void> => {
-    const { data, error } = await supabase
-      .from('spike_print_jobs')
-      .select('id, route, payload, status')
-      .eq('status', 'pending')
-      .in('route', [...addressOf.keys()])
-      .order('created_at')
-    if (error) {
-      console.error('sweep failed:', error.message)
-      return
+    if (sweeping || addressOf.size === 0) return
+    sweeping = true
+    try {
+      const { data, error } = await supabase
+        .from('spike_print_jobs')
+        .select('id, route, payload, status')
+        .eq('status', 'pending')
+        .in('route', [...addressOf.keys()])
+        .order('created_at')
+      if (error) {
+        console.error('sweep failed:', error.message)
+        return
+      }
+      for (const job of (data ?? []) as PrintJob[]) await handle(job)
+    } catch (e) {
+      console.error('sweep failed:', errMessage(e))
+    } finally {
+      sweeping = false
     }
-    for (const job of (data ?? []) as PrintJob[]) await handle(job)
   }
 
-  await sweep()
   supabase
     .channel('print-agent')
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_print_jobs' }, (p) => {
       void handle(p.new as PrintJob)
     })
-    .subscribe((status) => console.log('realtime:', status))
+    .subscribe((status) => {
+      console.log('realtime:', status)
+      if (status === 'SUBSCRIBED') void sweep()
+    })
   setInterval(() => void sweep(), 10_000)
 }
 
@@ -3058,7 +3122,7 @@ main().catch((e) => {
 })
 ```
 
-- [ ] **Step 3: Smoke-test against a fake printer**
+- [ ] **Step 4: Smoke-test against a fake printer**
 
 In one terminal, a stand-in printer that dumps what it receives:
 
@@ -3081,10 +3145,10 @@ node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
 On the POS spike page press **Test print Kitchen**.
 Expected: the agent logs `realtime: SUBSCRIBED` then `… Kitchen <id> printed`; the `nc` window shows bytes starting `1b40` and containing `KITCHEN TICKET`. Afterwards set the Kitchen route back to the real printer address from Task 0.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add tools/print-agent/agent.ts tools/print-agent/.env.example
+git add tools/print-agent/sendRaw.ts tools/print-agent/agent.ts tools/print-agent/.env.example
 git commit -m "feat(pos-spike): Node print agent for raw TCP 9100 printers
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
