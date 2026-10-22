@@ -1031,7 +1031,7 @@ describe('Epson ePOS-Print', () => {
   it('wraps lines in a SOAP epos-print document with feed and cut', () => {
     const xml = buildEposXml(['A & B', 'C'])
     expect(xml).toContain('<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">')
-    expect(xml).toContain('<text lang="zh-hans">A &amp; B&#10;C&#10;</text>')
+    expect(xml).toContain('<text lang="zh-cn">A &amp; B&#10;C&#10;</text>')
     expect(xml).toContain('<cut type="feed"/>')
   })
 
@@ -1076,6 +1076,22 @@ describe('printFromBrowser', () => {
     expect(vi.mocked(f).mock.calls[0][0]).toBe(starEndpoint(star.address))
   })
 
+  it('rejects when the Epson printer never answers (fetch aborts on timeout)', async () => {
+    const f = vi.fn(async () => {
+      throw new DOMException('timed out', 'TimeoutError')
+    }) as unknown as typeof fetch
+    await expect(printFromBrowser(epson, payload, f)).rejects.toThrow('timed out')
+    expect(vi.mocked(f).mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('rejects when the Star printer never answers (fetch aborts on timeout)', async () => {
+    const f = vi.fn(async () => {
+      throw new DOMException('timed out', 'TimeoutError')
+    }) as unknown as typeof fetch
+    await expect(printFromBrowser(star, payload, f)).rejects.toThrow('timed out')
+    expect(vi.mocked(f).mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
+  })
+
   it('refuses routes that belong to the print agent', async () => {
     await expect(
       printFromBrowser({ route: 'Kitchen', kind: 'agent', address: '10.0.0.5:9100' }, payload, fakeFetch(200, '')),
@@ -1108,7 +1124,7 @@ export function escapeXml(s: string): string {
 import { escapeXml } from './xml'
 
 /** Epson ePOS-Print: the printer runs a small web service, so a web page can
- *  print with a plain HTTP POST — no driver, no app. lang="zh-hans" lets the
+ *  print with a plain HTTP POST — no driver, no app. lang="zh-cn" lets the
  *  printer render Chinese if its firmware has the font. */
 export function buildEposXml(lines: string[]): string {
   const text = lines.map((l) => `${escapeXml(l)}&#10;`).join('')
@@ -1116,10 +1132,13 @@ export function buildEposXml(lines: string[]): string {
     '<?xml version="1.0" encoding="utf-8"?>' +
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>' +
     '<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">' +
-    `<text lang="zh-hans">${text}</text><feed line="3"/><cut type="feed"/>` +
+    `<text lang="zh-cn">${text}</text><feed line="3"/><cut type="feed"/>` +
     '</epos-print></s:Body></s:Envelope>'
   )
 }
+
+/** Generous: the ePOS service itself waits up to 10 s (timeout=10000) before answering. */
+const PRINTER_TIMEOUT_MS = 12000
 
 export function eposEndpoint(address: string): string {
   return `${address.replace(/\/$/, '')}/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000`
@@ -1130,6 +1149,7 @@ export async function printEpson(address: string, lines: string[], fetchFn: type
     method: 'POST',
     headers: { 'Content-Type': 'text/xml; charset=utf-8', SOAPAction: '""' },
     body: buildEposXml(lines),
+    signal: AbortSignal.timeout(PRINTER_TIMEOUT_MS), // a printer that never answers must not hang the job
   })
   const body = await res.text()
   if (!res.ok || !/success="true"/.test(body)) {
@@ -1154,6 +1174,8 @@ export function buildStarXml(lines: string[]): string {
   )
 }
 
+const PRINTER_TIMEOUT_MS = 12000
+
 export function starEndpoint(address: string): string {
   return `${address.replace(/\/$/, '')}/StarWebPRNT/SendMessage`
 }
@@ -1163,6 +1185,7 @@ export async function printStar(address: string, lines: string[], fetchFn: typeo
     method: 'POST',
     headers: { 'Content-Type': 'text/xml; charset=UTF-8' },
     body: buildStarXml(lines),
+    signal: AbortSignal.timeout(PRINTER_TIMEOUT_MS), // a printer that never answers must not hang the job
   })
   const body = await res.text()
   if (!res.ok || !/<success>\s*true\s*<\/success>/i.test(body)) {
@@ -1205,7 +1228,7 @@ export async function printFromBrowser(
 - [ ] **Step 7: Run test to verify it passes**
 
 Run: `npx vitest run src/features/pos/print/adapter.test.ts`
-Expected: PASS (9 tests)
+Expected: PASS (11 tests)
 
 - [ ] **Step 8: Commit**
 
@@ -1427,6 +1450,10 @@ describe('assertDevDatabase', () => {
     expect(() => assertDevDatabase('https://yfsoesxzurzjdwstszru.supabase.co')).toThrow('production')
   })
 
+  it('refuses the production project however the URL is capitalised', () => {
+    expect(() => assertDevDatabase('https://YFSOESXZURZJDWSTSZRU.supabase.co')).toThrow('production')
+  })
+
   it('allows any other project', () => {
     expect(() => assertDevDatabase('https://abcdefgh.supabase.co')).not.toThrow()
   })
@@ -1469,7 +1496,7 @@ const PROD_REF = 'yfsoesxzurzjdwstszru'
 /** The spike writes test orders and print jobs freely. It must never point
  *  at the production project, which local dev uses by default. */
 export function assertDevDatabase(url: string): void {
-  if (url.includes(PROD_REF)) {
+  if (url.toLowerCase().includes(PROD_REF)) {
     throw new Error(
       'The POS spike must never run against the production database. Point VITE_SUPABASE_URL at the dev project.',
     )
@@ -1480,7 +1507,7 @@ export function assertDevDatabase(url: string): void {
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run src/features/pos/spike/latency.test.ts`
-Expected: PASS (7 tests)
+Expected: PASS (8 tests)
 
 - [ ] **Step 6: Commit**
 
@@ -1509,7 +1536,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `interface QueueStore { put(o: QueuedOrder): Promise<void>; all(): Promise<QueuedOrder[]>; remove(clientOrderId: string): Promise<void> }`
   - `type SendResult = { ok: true } | { ok: false; retryable: boolean; reason: string }`
   - `type Sender = (o: QueuedOrder) => Promise<SendResult>`
-  - `interface FlushReport { sent: number; pending: number; stuck: number }`
+  - `interface FlushReport { sent: number; pending: number; stuck: number; lastError: string | null }` — `lastError` is the reason of the retryable failure that stopped the flush, else null
   - `newQueuedOrder(tableId: string | null, items: CartLine[], now?: number, id?: string): QueuedOrder`
   - `enqueue(store: QueueStore, order: QueuedOrder): Promise<void>`
   - `flushQueue(store: QueueStore, send: Sender): Promise<FlushReport>`
@@ -1554,7 +1581,7 @@ describe('flushQueue', () => {
     await enqueue(store, newQueuedOrder(null, [line], 2000, 'b'))
     await enqueue(store, newQueuedOrder(null, [line], 1000, 'a'))
     const send = vi.fn(async (_o: QueuedOrder) => ok)
-    expect(await flushQueue(store, send)).toEqual({ sent: 2, pending: 0, stuck: 0 })
+    expect(await flushQueue(store, send)).toEqual({ sent: 2, pending: 0, stuck: 0, lastError: null })
     expect(send.mock.calls.map(([o]) => o.clientOrderId)).toEqual(['a', 'b'])
   })
 
@@ -1563,7 +1590,7 @@ describe('flushQueue', () => {
     await enqueue(store, newQueuedOrder(null, [line], 1, 'a'))
     await enqueue(store, newQueuedOrder(null, [line], 2, 'b'))
     const send = vi.fn(async () => ({ ok: false, retryable: true, reason: 'Load failed' }) as SendResult)
-    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 2, stuck: 0 })
+    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 2, stuck: 0, lastError: 'Load failed' })
     expect(send).toHaveBeenCalledTimes(1)
   })
 
@@ -1574,7 +1601,7 @@ describe('flushQueue', () => {
     const send = vi.fn(async (o: QueuedOrder) =>
       o.clientOrderId === 'bad' ? ({ ok: false, retryable: false, reason: 'Item is not available' } as SendResult) : ok,
     )
-    expect(await flushQueue(store, send)).toEqual({ sent: 1, pending: 0, stuck: 1 })
+    expect(await flushQueue(store, send)).toEqual({ sent: 1, pending: 0, stuck: 1, lastError: null })
     expect(store.rows.get('bad')?.failedReason).toBe('Item is not available')
   })
 
@@ -1592,7 +1619,25 @@ describe('flushQueue with a throwing sender', () => {
     const store = memoryStore()
     await enqueue(store, newQueuedOrder(null, [line], 1, 'a'))
     const send = vi.fn(async () => { throw new Error('boom') })
-    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 1, stuck: 0 })
+    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 1, stuck: 0, lastError: 'boom' })
+  })
+})
+
+describe('flushQueue lastError', () => {
+  it('reports the reason of the retryable failure that stopped the flush, and null after a clean flush', async () => {
+    const store = memoryStore()
+    await enqueue(store, newQueuedOrder(null, [line], 1, 'a'))
+    const down = vi.fn(async () => ({ ok: false, retryable: true, reason: 'Load failed' }) as SendResult)
+    expect((await flushQueue(store, down)).lastError).toBe('Load failed')
+    const up = vi.fn(async () => ok)
+    expect((await flushQueue(store, up)).lastError).toBeNull()
+  })
+
+  it('does not report a final rejection as lastError', async () => {
+    const store = memoryStore()
+    await enqueue(store, newQueuedOrder(null, [line], 1, 'bad'))
+    const send = vi.fn(async () => ({ ok: false, retryable: false, reason: 'Item is not available' }) as SendResult)
+    expect((await flushQueue(store, send)).lastError).toBeNull()
   })
 })
 
@@ -1683,6 +1728,8 @@ export interface FlushReport {
   sent: number
   pending: number
   stuck: number
+  /** Reason of the retryable failure that stopped this flush; null if none did. */
+  lastError: string | null
 }
 
 export function newQueuedOrder(
@@ -1701,6 +1748,7 @@ export async function enqueue(store: QueueStore, order: QueuedOrder): Promise<vo
 export async function flushQueue(store: QueueStore, send: Sender): Promise<FlushReport> {
   const queued = (await store.all()).sort((a, b) => a.queuedAt - b.queuedAt)
   let sent = 0
+  let lastError: string | null = null
   for (const order of queued) {
     if (order.failedReason) continue
     let res: SendResult
@@ -1715,7 +1763,10 @@ export async function flushQueue(store: QueueStore, send: Sender): Promise<Flush
       sent++
       continue
     }
-    if (res.retryable) break // still offline — keep order, try again later
+    if (res.retryable) {
+      lastError = res.reason
+      break // still offline — keep order, try again later
+    }
     await store.put({ ...order, failedReason: res.reason })
   }
   const left = await store.all()
@@ -1723,6 +1774,7 @@ export async function flushQueue(store: QueueStore, send: Sender): Promise<Flush
     sent,
     pending: left.filter((o) => !o.failedReason).length,
     stuck: left.filter((o) => o.failedReason).length,
+    lastError,
   }
 }
 
@@ -1746,7 +1798,7 @@ export function toSendResult(error: { message: string; code?: string } | null): 
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run src/features/pos/offline/orderQueue.test.ts`
-Expected: PASS (15 tests)
+Expected: PASS (17 tests)
 
 - [ ] **Step 6: Write the failing IndexedDB test**
 
@@ -1876,7 +1928,7 @@ export function createIdbStore(dbName = 'craft-pos'): QueueStore {
 - [ ] **Step 9: Run both tests**
 
 Run: `npx vitest run src/features/pos/offline`
-Expected: PASS (20 tests)
+Expected: PASS (22 tests)
 
 - [ ] **Step 10: Commit**
 
@@ -2098,18 +2150,20 @@ export default function QrSpike() {
       if (pending.current?.cartKey !== key) {
         pending.current = { id: crypto.randomUUID(), cartKey: key }
       }
+      const startedAt = performance.now()
       const { error } = await supabase.rpc('spike_place_table_order', {
         p_token: token,
         p_items: items,
         p_client_order_id: pending.current.id,
       })
+      const sentInMs = Math.round(performance.now() - startedAt) // the customer's half of the trip
       if (error) {
         setStatus(`Not sent: ${error.message} Tap Place order to try again.`)
         return
       }
       pending.current = null
       setCart({})
-      setStatus(`Order placed at ${new Date().toLocaleTimeString()}`)
+      setStatus(`Order placed at ${new Date().toLocaleTimeString()} (sent in ${sentInMs} ms)`)
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       setStatus(`Not sent: ${message} Tap Place order to try again.`)
@@ -2308,13 +2362,15 @@ export async function fetchOrderTableLabel(orderId: string): Promise<string | nu
   return row?.spike_bills?.spike_tables?.label ?? null
 }
 
+const SEND_TIMEOUT_MS = 8000
+
 export async function sendCounterOrder(o: QueuedOrder): Promise<SendResult> {
   try {
     const { error } = await supabase.rpc('spike_place_counter_order', {
       p_table_id: o.tableId,
       p_items: o.items,
       p_client_order_id: o.clientOrderId,
-    })
+    }).abortSignal(AbortSignal.timeout(SEND_TIMEOUT_MS)) // a hung request becomes a retryable failure
     return toSendResult(error) // keeps the Postgres code, so only real rejections are final
   } catch (e) {
     return { ok: false, retryable: true, reason: e instanceof Error ? e.message : String(e) }
@@ -2384,16 +2440,23 @@ import { supabase } from '../../../shared/lib/supabase'
 import { clockOffsetMs, latencyMs, LATENCY_BUDGET_MS } from './latency'
 import { fetchOrderTableLabel, fetchServerNow } from './spikeApi'
 
+/** ms = a real figure; offset-unknown = the clock offset had never been
+ *  measured when the order arrived; unparsed = placed_at could not be read. */
+type Latency = { kind: 'ms'; ms: number } | { kind: 'offset-unknown' } | { kind: 'unparsed' }
+
 interface LiveRow {
   id: string
   source: string
   table: string
-  latency: number
+  latency: Latency
 }
 
 export default function LiveOrders() {
-  const offsetRef = useRef(0)
+  const offsetRef = useRef<number | null>(null) // null until a measurement has succeeded
   const [offset, setOffset] = useState<number | null>(null)
+  const [measuredAt, setMeasuredAt] = useState<number | null>(null) // when the offset in use was measured
+  const [lastTryFailed, setLastTryFailed] = useState(false)
+  const [now, setNow] = useState(Date.now())
   const [status, setStatus] = useState('connecting')
   const [rows, setRows] = useState<LiveRow[]>([])
 
@@ -2402,14 +2465,24 @@ export default function LiveOrders() {
       const sent = Date.now()
       fetchServerNow()
         .then((iso) => {
-          offsetRef.current = clockOffsetMs(sent, iso, Date.now())
-          setOffset(Math.round(offsetRef.current))
+          const received = Date.now()
+          const next = clockOffsetMs(sent, iso, received)
+          if (Number.isNaN(next)) throw new Error('unparseable server time')
+          offsetRef.current = next
+          setOffset(Math.round(next))
+          setMeasuredAt(received)
+          setLastTryFailed(false)
         })
-        .catch(() => setOffset(null))
+        // keep the last good offset; only the label changes
+        .catch(() => setLastTryFailed(true))
     }
     measure()
     const timer = window.setInterval(measure, 60_000)
-    return () => window.clearInterval(timer)
+    const clock = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => {
+      window.clearInterval(timer)
+      window.clearInterval(clock)
+    }
   }, [])
 
   useEffect(() => {
@@ -2419,7 +2492,13 @@ export default function LiveOrders() {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_orders' }, (p) => {
         const receivedAt = Date.now() // stamp before any further round trip
         const row = p.new as { id: string; source: string; placed_at: string }
-        const latency = Math.round(latencyMs(row.placed_at, receivedAt, offsetRef.current))
+        let latency: Latency
+        if (offsetRef.current === null) {
+          latency = { kind: 'offset-unknown' }
+        } else {
+          const ms = Math.round(latencyMs(row.placed_at, receivedAt, offsetRef.current))
+          latency = Number.isNaN(ms) ? { kind: 'unparsed' } : { kind: 'ms', ms }
+        }
         void fetchOrderTableLabel(row.id)
           .catch(() => 'Unknown')
           .then((label) =>
@@ -2432,14 +2511,25 @@ export default function LiveOrders() {
     }
   }, [])
 
-  const worst = rows.length ? Math.max(...rows.map((r) => r.latency)) : null
+  // Rows without a real figure are left out of the worst-case number.
+  const figures = rows.flatMap((r) => (r.latency.kind === 'ms' ? [r.latency.ms] : []))
+  const worst = figures.length ? Math.max(...figures) : null
+  const excluded = rows.length - figures.length
+
+  const offsetLabel =
+    offset === null
+      ? 'unknown'
+      : lastTryFailed && measuredAt !== null
+        ? `${offset} ms (last measured ${Math.round((now - measuredAt) / 1000)} s ago)`
+        : `${offset} ms`
 
   return (
     <section className="rounded border p-4">
       <h2 className="font-semibold">Spike 2 — live orders</h2>
       <p className="text-sm text-neutral-500">
-        Realtime: {status} · clock offset: {offset === null ? 'unknown' : `${offset} ms`} · worst latency:{' '}
-        {worst === null ? '—' : `${worst} ms`} (budget {LATENCY_BUDGET_MS} ms)
+        Realtime: {status} · clock offset: {offsetLabel} · worst latency: {worst === null ? '—' : `${worst} ms`} (budget{' '}
+        {LATENCY_BUDGET_MS} ms)
+        {excluded > 0 && ` · ${excluded} row${excluded === 1 ? '' : 's'} without a figure not counted`}
       </p>
       <table className="mt-2 w-full text-sm">
         <thead>
@@ -2456,9 +2546,13 @@ export default function LiveOrders() {
               <td className="font-mono">{r.id.slice(0, 6).toUpperCase()}</td>
               <td>{r.table}</td>
               <td>{r.source}</td>
-              <td className={r.latency <= LATENCY_BUDGET_MS ? 'text-green-600' : 'font-semibold text-red-600'}>
-                {r.latency} ms
-              </td>
+              {r.latency.kind === 'ms' ? (
+                <td className={r.latency.ms <= LATENCY_BUDGET_MS ? 'text-green-600' : 'font-semibold text-red-600'}>
+                  {r.latency.ms} ms
+                </td>
+              ) : (
+                <td className="text-amber-700">{r.latency.kind === 'unparsed' ? 'unparsed' : 'offset unknown'}</td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -2509,6 +2603,9 @@ export default function CounterOrder() {
   const [cart, setCart] = useState<CartLine[]>([])
   const [online, setOnline] = useState(navigator.onLine)
   const [report, setReport] = useState<FlushReport | null>(null)
+  const [sentTotal, setSentTotal] = useState(0) // cumulative across every flush this session
+  const [oldestQueuedAt, setOldestQueuedAt] = useState<number | null>(null)
+  const [now, setNow] = useState(Date.now())
   const [dupResult, setDupResult] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -2528,7 +2625,11 @@ export default function CounterOrder() {
         do {
           again.current = false
           try {
-            setReport(await flushQueue(store, sendCounterOrder))
+            const r = await flushQueue(store, sendCounterOrder)
+            setReport(r)
+            setSentTotal((n) => n + r.sent)
+            const waiting = (await store.all()).filter((o) => !o.failedReason)
+            setOldestQueuedAt(waiting.length ? Math.min(...waiting.map((o) => o.queuedAt)) : null)
           } catch {
             // a failed flush just leaves the queue for the next tick
           }
@@ -2554,7 +2655,9 @@ export default function CounterOrder() {
     window.addEventListener('online', goOnline)
     window.addEventListener('offline', goOffline)
     const timer = window.setInterval(() => void flush(), 15_000)
+    const clock = window.setInterval(() => setNow(Date.now()), 1000)
     return () => {
+      window.clearInterval(clock)
       window.removeEventListener('online', goOnline)
       window.removeEventListener('offline', goOffline)
       window.clearInterval(timer)
@@ -2608,9 +2711,15 @@ export default function CounterOrder() {
     <section className="rounded border p-4">
       <h2 className="font-semibold">Spike 3 — counter orders</h2>
       <p className="text-sm text-neutral-500">
-        {online ? 'Online' : 'OFFLINE'} · queued: {report?.pending ?? '…'} · rejected: {report?.stuck ?? '…'} · sent in
-        last flush: {report?.sent ?? '…'}
+        {online ? 'Online' : 'OFFLINE'} · queued: {report?.pending ?? '…'} · rejected: {report?.stuck ?? '…'} · sent
+        this session: {sentTotal}
       </p>
+      {(report?.pending ?? 0) > 0 && (
+        <p className="text-sm text-amber-700">
+          Oldest queued order: {oldestQueuedAt === null ? '…' : `${Math.max(0, Math.round((now - oldestQueuedAt) / 1000))} s`}{' '}
+          old · last failure: {report?.lastError ?? 'none (will send on the next flush)'}
+        </p>
+      )}
       {stuck > 0 && (
         <p className="mt-1 text-sm font-semibold text-red-600">
           {stuck} order{stuck === 1 ? '' : 's'} rejected by the server and stuck on this iPad
@@ -2686,6 +2795,7 @@ export default function PrintHostPanel() {
     async (job: PrintJob): Promise<void> => {
       const route = routesRef.current.find((r) => r.route === job.route)
       if (!route || route.kind === 'agent') return // the Node agent prints these
+      let printed = false // per call: set only when the print step itself succeeded
       try {
         const result = await processJob(job, {
           claim: claimJob,
@@ -2693,6 +2803,7 @@ export default function PrintHostPanel() {
           print: async (j) => {
             try {
               await printFromBrowser(route, j.payload)
+              printed = true
             } catch (e) {
               note(`${j.route} error: ${e instanceof Error ? e.message : String(e)}`)
               throw e
@@ -2702,9 +2813,14 @@ export default function PrintHostPanel() {
         note(`${job.route} ${job.id.slice(0, 8)} → ${result}`)
         if (result === 'failed') setFailed((f) => [...f, job])
       } catch (e) {
-        // The ticket printed but recording it failed. Do NOT offer a reprint:
-        // that would produce a duplicate ticket.
-        note(`${job.route} ${job.id.slice(0, 8)} printed but could not record it: ${e instanceof Error ? e.message : String(e)}`)
+        const why = e instanceof Error ? e.message : String(e)
+        if (printed) {
+          // The ticket printed but recording it failed. Do NOT offer a reprint:
+          // that would produce a duplicate ticket.
+          note(`${job.route} ${job.id.slice(0, 8)} printed but could not record it: ${why}`)
+        } else {
+          note(`${job.route} ${job.id.slice(0, 8)} failed and could not record the failure: ${why}`)
+        }
       }
     },
     [note],
@@ -2912,7 +3028,7 @@ With `HTTPS=1 npm run dev -- --host` running, open `https://localhost:5173/spike
 1. "QR pages" lists tables A1, A2, B5 with links.
 2. "Spike 2 — live orders" shows `Realtime: SUBSCRIBED` and a clock offset in ms.
 3. Opening a QR link in another tab and placing an order adds a row to "live orders" with a latency figure.
-4. "Spike 3" → pick Table A2, tap two items, **Submit order** → "queued: 0 · sent in last flush: 1".
+4. "Spike 3" → pick Table A2, tap two items, **Submit order** → "queued: 0 · sent this session: 1".
 5. **Duplicate test** → `PASS — sent twice, stored once`.
 
 Expected: all five hold. (Printing is checked on site in Task 11.)
@@ -2957,23 +3073,33 @@ TICKET_COLS=42
 ```ts
 import net from 'node:net'
 
-/** Sends raw bytes to a printer on TCP (default port 9100). Resolves only once
- *  the bytes were flushed to the socket without error; rejects if the printer
- *  is unreachable, resets the connection, or does not answer within 5 s. */
+/** Sends raw bytes to a printer on TCP (default port 9100).
+ *
+ *  Resolves when the bytes were flushed and the connection then closed cleanly,
+ *  or when LINGER_MS (1 s) has passed after the flush without an error.
+ *  Rejects if the printer is unreachable, the connection errors or is reset,
+ *  the printer closes early (before the flush completes or with an error), or
+ *  it does not answer within 5 s.
+ *
+ *  Raw TCP 9100 has no acknowledgement: a reset that arrives later than
+ *  LINGER_MS cannot be detected, so a print is only "sent", never "confirmed". */
 export function sendRaw(address: string, bytes: Uint8Array): Promise<void> {
   const [host, port = '9100'] = address.split(':')
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port: Number(port) })
     let settled = false
+    let lingerTimer: ReturnType<typeof setTimeout> | undefined
     const fail = (err: Error): void => {
       if (settled) return
       settled = true
+      clearTimeout(lingerTimer)
       socket.destroy()
       reject(err)
     }
     const succeed = (): void => {
       if (settled) return
       settled = true
+      clearTimeout(lingerTimer)
       socket.destroy()
       resolve()
     }
@@ -2993,7 +3119,8 @@ export function sendRaw(address: string, bytes: Uint8Array): Promise<void> {
       socket.end(Buffer.from(bytes), (err?: Error | null) => {
         if (err) return fail(err)
         flushed = true
-        setTimeout(succeed, LINGER_MS).unref()
+        lingerTimer = setTimeout(succeed, LINGER_MS)
+        lingerTimer.unref()
       }),
     )
   })
@@ -3182,36 +3309,48 @@ Plan: docs/superpowers/plans/2026-10-22-pos-phase0-spikes.md
 | Phone(s) used for QR | |
 | Bar printer — brand / model / IP / route kind | |
 | Kitchen printer — brand / model / IP / route kind | |
+| Supabase project region | |
+| Dev Supabase verify script (spike-2026-10-22-pos-phase0-verify.sql) returned VERIFY OK | |
+| Dry run done off site (fake printer + dev DB) | |
+
+## Before going on site
+
+1. Run the verify script (`spike-2026-10-22-pos-phase0-verify.sql`) in the dev Supabase SQL editor and confirm `VERIFY OK`.
+2. Run Task 10's fake-printer check against the dev DB: `nc -l 9100` in one terminal, the agent in another, then press **Test print** on the POS page.
+3. Open `spike/pos.html` and `spike/qr.html` once on the Mac and confirm both load.
+4. Bring the Epson ePOS-Print and Star WebPRNT official sample pages (vendor SDK downloads), so a 1a FAIL can be told apart as a code problem or a printer problem.
 
 ## Spike 1 — printing
 
 | Check | How | Result | Evidence |
 |---|---|---|---|
-| 1a Browser → printer over HTTPS | iPad: open `https://<printer-ip>` once and accept its certificate, then POS page → Test print (browser route) | | |
+| 1a Browser → printer over HTTPS | iPad: open `https://<printer-ip>` once and accept its certificate, then POS page → Test print (browser route). If the printer offers no HTTPS, record 1a FAIL — the production POS is HTTPS. | | |
 | 1b Certificate acceptance survives closing and reopening Safari | Close Safari fully, reopen POS page, Test print again | | |
 | 1c Agent → printer on TCP 9100 | Mac: run agent, POS page → Test print (agent route) | | |
+| 1c-2 Agent: unplug the printer's network cable, then Test print again | Agent log should say the job failed, not printed; the job shows as failed in `select id, status, last_error from spike_print_jobs order by created_at desc limit 5;` (no page lists agent jobs) | | |
 | 1d Chinese characters | Look at the "Chinese check" line on each ticket | | |
 | 1e Ticket width | Does a 42-column rule fit on one line? If not, what does? | | |
-| 1f Failure shows and reprints | Open the printer cover, Test print, close cover, press Reprint | | |
+| 1f-browser Failure shows and reprints (browser route) | Open the printer cover, Test print: the job shows as failed. Close the cover, press Reprint: it prints once | | |
+| 1f-agent Failure and requeue (agent route) | Open the cover or unplug the cable on an agent route, Test print, then run `select id, status, last_error from spike_print_jobs order by created_at desc limit 5;`. If failed, requeue with `select spike_requeue_print_job('<id>');` and confirm it prints once | | |
 
-**Spike 1 verdict:** PASS if 1a+1b pass OR 1c passes, and 1f passes.
+**Spike 1 verdict:** PASS if (1a + 1b + 1f-browser) OR (1c + 1c-2 + 1f-agent).
 
 ## Spike 2 — QR order → POS ≤ 2 s, tickets printed
 
-Procedure: iPad shows the POS page. On a phone on the shop Wi-Fi open the Table B5 QR link. Place 10 orders, each with one Bar and one Kitchen item, about 10 s apart.
+Procedure: iPad shows the POS page. On a phone on the shop Wi-Fi open the QR links. The server rejects a 6th QR order from one table within a minute, so rotate the 10 orders across tables B5, A1, A2 (in that order, repeating), about 10 s apart. Each order has one Bar and one Kitchen item. The phone shows "sent in N ms" after each order — record it as the customer send time.
 
-| # | Latency on POS (ms) | Bar ticket printed | Kitchen ticket printed |
-|---|---|---|---|
-| 1 | | | |
-| 2 | | | |
-| 3 | | | |
-| 4 | | | |
-| 5 | | | |
-| 6 | | | |
-| 7 | | | |
-| 8 | | | |
-| 9 | | | |
-| 10 | | | |
+| # | Table | Latency on POS (ms) | Customer send time (ms) | Bar ticket printed | Kitchen ticket printed |
+|---|---|---|---|---|---|
+| 1 | B5 | | | | |
+| 2 | A1 | | | | |
+| 3 | A2 | | | | |
+| 4 | B5 | | | | |
+| 5 | A1 | | | | |
+| 6 | A2 | | | | |
+| 7 | B5 | | | | |
+| 8 | A1 | | | | |
+| 9 | A2 | | | | |
+| 10 | B5 | | | | |
 
 Order-to-print time from the database (paste the output):
 
@@ -3219,19 +3358,28 @@ Order-to-print time from the database (paste the output):
       from spike_print_jobs j join spike_orders o on o.id = j.order_id
      where o.source = 'qr' order by o.placed_at desc limit 20;
 
-**Spike 2 verdict:** PASS if all 10 latencies ≤ 2000 ms and all 20 tickets printed exactly once.
+**Spike 2 verdict:** PASS if for all 10 orders (latency + customer send time / 2) ≤ 2000 ms and all 20 tickets printed exactly once.
 
 ## Spike 3 — counter orders survive an outage
+
+Note the time (UTC) here: ____ (before 3a; the 3d queries use it as `<noted time>`, e.g. `2026-10-22 03:48:00+00`). Note "sent this session" now: ____
 
 | Check | How | Result | Evidence |
 |---|---|---|---|
 | 3a Queue while internet is down | Unplug the router's internet (WAN) cable — Wi-Fi stays up. Submit 3 counter orders. "queued" shows 3 | | |
 | 3b Survives closing the tab | Close the POS tab, reopen it (still no internet). "queued" still 3 | | |
-| 3c Sends on reconnect | Plug WAN back in. Within 15 s "queued" is 0 and "sent" is 3 | | |
-| 3d No duplicates | Paste: `select client_order_id, count(*) from spike_orders where source = 'counter' group by 1 having count(*) > 1;` — expect zero rows | | |
+| 3c Sends on reconnect | Plug WAN back in. Within 30 s "queued" is 0 and "sent this session" went up by 3 | | |
+| 3d No duplicates, nothing lost | Count: `select count(*) from spike_orders o where o.source = 'counter' and o.placed_at >= '<noted time>' and not exists (select 1 from spike_order_items i where i.order_id = o.id and i.note = 'duplicate test');` — expect exactly 3. Contents: `select o.id, string_agg(i.qty \|\| ' x ' \|\| i.name_snapshot, ', ') from spike_orders o join spike_order_items i on i.order_id = o.id where o.source = 'counter' and o.placed_at >= '<noted time>' group by o.id;` — match against what was rung up | | |
 | 3e Duplicate test button | Press Duplicate test | | |
 
 **Spike 3 verdict:** PASS if 3a–3e all pass.
+
+## Known limitations going in
+
+- **Raw TCP 9100 cannot confirm a print.** The agent waits up to 1 s after sending; a printer that keeps the connection open and drops it later than that is reported as printed. Epson ePOS / Star WebPRNT return an explicit success, so they do not have this gap.
+- **Stuck "printing" jobs are not recovered automatically.** If the iPad or agent dies after claiming a job, it stays "printing". Note any you see (`select id, route, created_at from spike_print_jobs where status = 'printing';`).
+- **Chinese text on tickets** is sent as "?" over raw TCP (ESC/POS without a code page); Epson ePOS sends it as text with lang="zh-cn". Spike 1d records what each printer actually shows.
+- **The Supabase SQL editor may ask to confirm a "destructive operation"** when running the verify script — it is safe to confirm: the whole script is rolled back.
 
 ## Outcome
 
@@ -3250,6 +3398,8 @@ Order-to-print time from the database (paste the output):
 ```
 
 - [ ] **Step 2: Run the spikes with the user and fill in every row**
+
+Before leaving for the shop, complete the "Before going on site" section of the results document.
 
 Start on the Mac (both in the background, on the shop Wi-Fi):
 
