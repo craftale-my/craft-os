@@ -306,7 +306,7 @@ begin
   insert into bill_counters(branch_id, day, next_no) values (p_branch_id, v_day, 2)
   on conflict (branch_id, day) do update set next_no = bill_counters.next_no + 1
   returning next_no - 1 into v_n;
-  return to_char(v_day, 'YYMMDD') || '-' || lpad(v_n::text, 3, '0');
+  return to_char(v_day, 'YYMMDD') || '-' || lpad(v_n::text, greatest(3, length(v_n::text)), '0');
 end $$;
 revoke all on function pos_next_bill_no(uuid) from public, anon, authenticated;
 
@@ -324,7 +324,8 @@ declare
   v_order_no   text;
   v_label      text;
   v_item       jsonb;
-  v_opt        text;
+  v_opt_id     uuid;
+  v_opt_ids    uuid[];
   v_prod       menu_products;
   v_var        menu_variants;
   v_opt_row    record;
@@ -345,7 +346,10 @@ begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Order has no items';
   end if;
-  if p_order_type not in ('dine_in', 'takeaway') then
+  if jsonb_array_length(p_items) > 50 then
+    raise exception 'Too many items in one order';
+  end if;
+  if p_order_type is null or p_order_type not in ('dine_in', 'takeaway') then
     raise exception 'Invalid order type';
   end if;
   if (p_order_type = 'dine_in') <> (p_table_id is not null) then
@@ -360,7 +364,8 @@ begin
     if jsonb_typeof(v_item) <> 'object'
        or jsonb_typeof(v_item->'productId') is distinct from 'string'
        or jsonb_typeof(v_item->'variantId') is distinct from 'string'
-       or (v_item->>'productId') !~* '^[0-9a-f-]{36}$' or (v_item->>'variantId') !~* '^[0-9a-f-]{36}$' then
+       or (v_item->>'productId') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+       or (v_item->>'variantId') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
       raise exception 'Invalid item';
     end if;
     select * into v_prod from menu_products
@@ -385,17 +390,24 @@ begin
     if v_item->'optionIds' is not null and jsonb_typeof(v_item->'optionIds') <> 'array' then
       raise exception 'Invalid add-ons';
     end if;
-    -- each option must belong to a group linked to this product, be orderable here, and appear once
-    select count(*), count(distinct x.v) into v_n, v_qty
+    -- each option must be a well-formed uuid string, appear once (compared as uuids, so
+    -- letter case cannot sneak a duplicate past), belong to a group linked to this
+    -- product, and be orderable here
+    if exists (select 1 from jsonb_array_elements(coalesce(v_item->'optionIds', '[]'::jsonb)) e
+                where jsonb_typeof(e) <> 'string' or (e #>> '{}') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') then
+      raise exception 'Invalid add-ons';
+    end if;
+    select coalesce(array_agg(x.v::uuid), '{}') into v_opt_ids
       from jsonb_array_elements_text(coalesce(v_item->'optionIds', '[]'::jsonb)) as x(v);
-    if v_n <> v_qty then raise exception 'Invalid add-ons'; end if;
-    for v_opt in select * from jsonb_array_elements_text(coalesce(v_item->'optionIds', '[]'::jsonb)) loop
-      if v_opt !~* '^[0-9a-f-]{36}$' then raise exception 'Invalid add-ons'; end if;
+    if cardinality(v_opt_ids) <> (select count(distinct u) from unnest(v_opt_ids) u) then
+      raise exception 'Invalid add-ons';
+    end if;
+    foreach v_opt_id in array v_opt_ids loop
       select o.id, o.name, o.availability, o.product_id, g.name as group_name into v_opt_row
         from modifier_options o
         join modifier_groups g on g.id = o.group_id and g.is_active
         join product_modifier_groups pmg on pmg.group_id = g.id and pmg.product_id = v_prod.id
-       where o.id = v_opt::uuid;
+       where o.id = v_opt_id;
       if not found then
         raise exception 'Add-on is not available for %', v_prod.name;
       end if;
@@ -410,7 +422,7 @@ begin
       select g.name, g.min_select, g.max_select,
              (select count(*) from modifier_options o
                where o.group_id = g.id
-                 and o.id::text in (select * from jsonb_array_elements_text(coalesce(v_item->'optionIds', '[]'::jsonb)))) as chosen
+                 and o.id = any (v_opt_ids)) as chosen
         from product_modifier_groups pmg join modifier_groups g on g.id = pmg.group_id and g.is_active
        where pmg.product_id = v_prod.id
     loop
@@ -452,7 +464,11 @@ begin
       returning id into v_bill_id;
     end if;
 
-    perform 1 from bills where id = v_bill_id for update;   -- serialise order numbering on this bill
+    -- serialise order numbering on this bill, and refuse a bill that was closed meanwhile
+    perform 1 from bills where id = v_bill_id and status = 'open' for update;
+    if not found then
+      raise exception 'This bill was just closed. Please send the order again.';
+    end if;
     select count(*) + 1 into v_n from orders where bill_id = v_bill_id;
     v_order_no := v_bill_no || '/' || v_n;
     insert into orders(bill_id, branch_id, order_no, source, placed_by, client_order_id)
@@ -484,7 +500,8 @@ begin
     values (v_order_id, v_bill_id, v_prod.id, v_var.id,
             v_prod.name || case when v_var.feedme_variant_key <> '' then ' (' || v_var.name || ')' else '' end,
             v_var.price_sen + v_price, v_prod.sst_rate_bp, v_mods, v_prod.print_route,
-            coalesce((v_item->'qty')::numeric::integer, 1), nullif(trim(v_item->>'note'), ''));
+            coalesce((v_item->'qty')::numeric::integer, 1),
+            nullif(trim(left(case when jsonb_typeof(v_item->'note') = 'string' then v_item->>'note' end, 200)), ''));
   end loop;
 
   -- ── tickets: one job per route, shaped exactly like TicketPayload (ticket.ts) ──
@@ -575,7 +592,8 @@ language sql stable security definer set search_path = public, pg_temp as $$
           jsonb_agg(jsonb_build_object(
             'id', p.id, 'name', p.name, 'description', p.description,
             'soldOut', coalesce(bms.is_sold_out, false),
-            'variants', (select jsonb_agg(jsonb_build_object('id', v.id, 'name', v.name, 'priceSen', v.price_sen)
+            'variants', (select jsonb_agg(jsonb_build_object('id', v.id, 'name', v.name, 'priceSen', v.price_sen,
+                                                             'isBase', v.feedme_variant_key = '')
                                           order by v.sort_order, v.name)
                            from menu_variants v where v.product_id = p.id and v.is_active),
             'groups', coalesce((
@@ -795,7 +813,9 @@ begin
   perform set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
   if qr_menu('no-such-token') is not null then raise exception 'FAIL qr_menu: bad token must be null'; end if;
   if (qr_menu(v_table.qr_token)->>'tableLabel') <> 'V1' then raise exception 'FAIL qr_menu: label'; end if;
-  if jsonb_array_length(qr_menu(v_table.qr_token)->'categories'->0->'products'->0->'variants') <> 2 then
+  if jsonb_array_length((select c->'products'->0->'variants'
+                           from jsonb_array_elements(qr_menu(v_table.qr_token)->'categories') c
+                          where c->>'name' = 'VERIFY CAT')) <> 2 then
     raise exception 'FAIL qr_menu: variants';
   end if;
   if (qr_menu(v_table.qr_token)->>'needsPax')::boolean is not true then raise exception 'FAIL qr_menu: needsPax'; end if;
@@ -847,6 +867,8 @@ begin
   begin perform place_table_order(v_table.qr_token, null, jsonb_build_array(jsonb_build_object('productId', v_latte, 'variantId', v_oat_var)), gen_random_uuid()); raise exception 'FAIL: foreign variant accepted';
   exception when raise_exception then if sqlerrm <> 'Item is not available: Verify Latte' then raise; end if; end;
   begin perform place_table_order(v_table.qr_token, null, jsonb_build_array(jsonb_build_object('productId', v_latte, 'variantId', v_hot, 'optionIds', jsonb_build_array(v_opt, v_opt))), gen_random_uuid()); raise exception 'FAIL: duplicate option accepted';
+  exception when raise_exception then if sqlerrm <> 'Invalid add-ons' then raise; end if; end;
+  begin perform place_table_order(v_table.qr_token, null, jsonb_build_array(jsonb_build_object('productId', v_latte, 'variantId', v_hot, 'optionIds', jsonb_build_array(v_opt::text, upper(v_opt::text)))), gen_random_uuid()); raise exception 'FAIL: case-duplicate option accepted';
   exception when raise_exception then if sqlerrm <> 'Invalid add-ons' then raise; end if; end;
   update modifier_groups set min_select = 1 where id = v_milk;
   begin perform place_table_order(v_table.qr_token, null, jsonb_build_array(jsonb_build_object('productId', v_latte, 'variantId', v_hot)), gen_random_uuid()); raise exception 'FAIL: min_select ignored';
@@ -1085,12 +1107,12 @@ describe('posMenuFromQr', () => {
     const m = posMenuFromQr({
       tableLabel: 'T1', paused: false, needsPax: true,
       categories: [{ name: 'TEA', products: [{ id: 'p', name: 'Tea', description: null, soldOut: true,
-        variants: [{ id: 'v', name: 'HOT', priceSen: 1000 }],
+        variants: [{ id: 'v', name: 'HOT', priceSen: 1000, isBase: true }],
         groups: [{ id: 'g', name: 'Sugar', min: 1, max: 1, options: [{ id: 'o', name: 'Less', priceDeltaSen: 0, isDefault: true, available: true }] }] }] }],
     })
     const p = m.categories[0].products[0]
     expect(p.soldOut).toBe(true)
-    expect(p.variants[0].isBase).toBe(true)      // single variant = base
+    expect(p.variants[0].isBase).toBe(true)      // the server says which variant is the base (feedme key '')
     expect(defaultLine(p).optionIds).toEqual(['o'])
   })
 })
@@ -1216,7 +1238,7 @@ export interface QrMenuJson {
     name: string
     products: {
       id: string; name: string; description: string | null; soldOut: boolean
-      variants: { id: string; name: string; priceSen: number }[]
+      variants: { id: string; name: string; priceSen: number; isBase: boolean }[]
       groups: { id: string; name: string; min: number; max: number
         options: { id: string; name: string; priceDeltaSen: number; isDefault: boolean; available: boolean }[] }[]
     }[]
@@ -1229,7 +1251,7 @@ export function posMenuFromQr(json: QrMenuJson): PosMenu {
       name: c.name,
       products: c.products.map((p) => ({
         id: p.id, name: p.name.trim(), description: p.description, soldOut: p.soldOut,
-        variants: p.variants.map((v) => ({ id: v.id, name: v.name.trim(), priceSen: v.priceSen, isBase: p.variants.length === 1 })),
+        variants: p.variants.map((v) => ({ id: v.id, name: v.name.trim(), priceSen: v.priceSen, isBase: v.isBase })),
         groups: p.groups.map((g) => ({ id: g.id, name: g.name, min: g.min, max: g.max,
           options: g.options.map((o) => ({ ...o, name: o.name.trim() })) })),
       })),
