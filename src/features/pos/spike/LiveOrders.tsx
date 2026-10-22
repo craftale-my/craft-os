@@ -17,24 +17,30 @@ export default function LiveOrders() {
   const [rows, setRows] = useState<LiveRow[]>([])
 
   useEffect(() => {
-    const sent = Date.now()
-    fetchServerNow()
-      .then((iso) => {
-        offsetRef.current = clockOffsetMs(sent, iso, Date.now())
-        setOffset(Math.round(offsetRef.current))
-      })
-      .catch(() => setOffset(null))
+    const measure = () => {
+      const sent = Date.now()
+      fetchServerNow()
+        .then((iso) => {
+          offsetRef.current = clockOffsetMs(sent, iso, Date.now())
+          setOffset(Math.round(offsetRef.current))
+        })
+        .catch(() => setOffset(null))
+    }
+    measure()
+    const timer = window.setInterval(measure, 60_000)
+    return () => window.clearInterval(timer)
   }, [])
 
   useEffect(() => {
+    // unique topic per run: supabase.channel() reuses a same-named channel that is still being removed
     const channel = supabase
-      .channel('spike-orders')
+      .channel(`spike-orders-${crypto.randomUUID()}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_orders' }, (p) => {
         const receivedAt = Date.now() // stamp before any further round trip
         const row = p.new as { id: string; source: string; placed_at: string }
         const latency = Math.round(latencyMs(row.placed_at, receivedAt, offsetRef.current))
         void fetchOrderTableLabel(row.id)
-          .catch(() => null)
+          .catch(() => 'Unknown')
           .then((label) =>
             setRows((r) => [{ id: row.id, source: row.source, table: label ?? 'Takeaway', latency }, ...r].slice(0, 20)),
           )

@@ -2315,7 +2315,7 @@ export async function sendCounterOrder(o: QueuedOrder): Promise<SendResult> {
       p_items: o.items,
       p_client_order_id: o.clientOrderId,
     })
-    return toSendResult(error)
+    return toSendResult(error) // keeps the Postgres code, so only real rejections are final
   } catch (e) {
     return { ok: false, retryable: true, reason: e instanceof Error ? e.message : String(e) }
   }
@@ -2398,24 +2398,30 @@ export default function LiveOrders() {
   const [rows, setRows] = useState<LiveRow[]>([])
 
   useEffect(() => {
-    const sent = Date.now()
-    fetchServerNow()
-      .then((iso) => {
-        offsetRef.current = clockOffsetMs(sent, iso, Date.now())
-        setOffset(Math.round(offsetRef.current))
-      })
-      .catch(() => setOffset(null))
+    const measure = () => {
+      const sent = Date.now()
+      fetchServerNow()
+        .then((iso) => {
+          offsetRef.current = clockOffsetMs(sent, iso, Date.now())
+          setOffset(Math.round(offsetRef.current))
+        })
+        .catch(() => setOffset(null))
+    }
+    measure()
+    const timer = window.setInterval(measure, 60_000)
+    return () => window.clearInterval(timer)
   }, [])
 
   useEffect(() => {
+    // unique topic per run: supabase.channel() reuses a same-named channel that is still being removed
     const channel = supabase
-      .channel('spike-orders')
+      .channel(`spike-orders-${crypto.randomUUID()}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_orders' }, (p) => {
         const receivedAt = Date.now() // stamp before any further round trip
         const row = p.new as { id: string; source: string; placed_at: string }
         const latency = Math.round(latencyMs(row.placed_at, receivedAt, offsetRef.current))
         void fetchOrderTableLabel(row.id)
-          .catch(() => null)
+          .catch(() => 'Unknown')
           .then((label) =>
             setRows((r) => [{ id: row.id, source: row.source, table: label ?? 'Takeaway', latency }, ...r].slice(0, 20)),
           )
@@ -2504,22 +2510,41 @@ export default function CounterOrder() {
   const [online, setOnline] = useState(navigator.onLine)
   const [report, setReport] = useState<FlushReport | null>(null)
   const [dupResult, setDupResult] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
   const inFlight = useRef<Promise<void> | null>(null)
+  const again = useRef(false)
 
-  const flush = useCallback(() => {
-    // one flush at a time — overlapping flushes would send the same order twice
-    inFlight.current ??= flushQueue(store, sendCounterOrder)
-      .then(setReport)
-      .finally(() => {
+  const flush = useCallback((): Promise<void> => {
+    // One flush at a time — overlapping flushes would send the same order twice.
+    // A call that arrives mid-flush may have enqueued after that flush read the
+    // store, so it asks for exactly one follow-up pass and awaits that.
+    if (inFlight.current) {
+      again.current = true
+      return inFlight.current
+    }
+    const run = async (): Promise<void> => {
+      try {
+        do {
+          again.current = false
+          try {
+            setReport(await flushQueue(store, sendCounterOrder))
+          } catch {
+            // a failed flush just leaves the queue for the next tick
+          }
+        } while (again.current)
+      } finally {
         inFlight.current = null
-      })
+      }
+    }
+    inFlight.current = run()
     return inFlight.current
   }, [])
 
   useEffect(() => {
     cachedLoad('pos-spike:tables', fetchTables, setTables)
     cachedLoad('pos-spike:menu', fetchMenu, setMenu)
-    void navigator.storage?.persist?.()
+    void navigator.storage?.persist?.()?.catch(() => undefined)
     void flush()
     const goOnline = () => {
       setOnline(true)
@@ -2544,24 +2569,40 @@ export default function CounterOrder() {
     )
 
   const submit = async () => {
-    await enqueue(store, newQueuedOrder(tableId || null, cart)) // on disk before anything else
+    if (saving) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      await enqueue(store, newQueuedOrder(tableId || null, cart)) // on disk before anything else
+    } catch (e) {
+      // not on disk: keep the cart so the order can be retried, and say so loudly
+      setSaveError(`Order NOT saved on this iPad: ${e instanceof Error ? e.message : String(e)}`)
+      setSaving(false)
+      return
+    }
     setCart([])
+    setSaving(false)
     await flush()
   }
 
   const duplicateTest = async () => {
-    const order = newQueuedOrder(tableId || null, [{ menuItemId: menu[0].id, qty: 1, note: 'duplicate test' }])
-    const first = await sendCounterOrder(order)
-    const second = await sendCounterOrder(order) // simulates a resend after a lost reply
-    const rows = await countOrdersWithClientId(order.clientOrderId)
-    setDupResult(
-      first.ok && second.ok && rows === 1
-        ? 'PASS — sent twice, stored once'
-        : `FAIL — first ${first.ok ? 'ok' : 'error'}, second ${second.ok ? 'ok' : 'error'}, rows ${rows}`,
-    )
+    try {
+      const order = newQueuedOrder(tableId || null, [{ menuItemId: menu[0].id, qty: 1, note: 'duplicate test' }])
+      const first = await sendCounterOrder(order)
+      const second = await sendCounterOrder(order) // simulates a resend after a lost reply
+      const rows = await countOrdersWithClientId(order.clientOrderId)
+      setDupResult(
+        first.ok && second.ok && rows === 1
+          ? 'PASS — sent twice, stored once'
+          : `FAIL — first ${first.ok ? 'ok' : 'error'}, second ${second.ok ? 'ok' : 'error'}, rows ${rows}`,
+      )
+    } catch (e) {
+      setDupResult(`FAIL — ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   const nameOf = (id: string) => menu.find((m) => m.id === id)?.name ?? id
+  const stuck = report?.stuck ?? 0
 
   return (
     <section className="rounded border p-4">
@@ -2570,6 +2611,11 @@ export default function CounterOrder() {
         {online ? 'Online' : 'OFFLINE'} · queued: {report?.pending ?? '…'} · rejected: {report?.stuck ?? '…'} · sent in
         last flush: {report?.sent ?? '…'}
       </p>
+      {stuck > 0 && (
+        <p className="mt-1 text-sm font-semibold text-red-600">
+          {stuck} order{stuck === 1 ? '' : 's'} rejected by the server and stuck on this iPad
+        </p>
+      )}
       <div className="mt-2 flex flex-wrap gap-2">
         <select className="rounded border p-2" value={tableId} onChange={(e) => setTableId(e.target.value)}>
           <option value="">Takeaway</option>
@@ -2592,10 +2638,11 @@ export default function CounterOrder() {
           </li>
         ))}
       </ul>
+      {saveError && <p className="mt-2 text-sm font-semibold text-red-600">{saveError}</p>}
       <div className="mt-2 flex gap-2">
         <button
           className="rounded bg-neutral-900 px-4 py-2 text-white disabled:opacity-40"
-          disabled={cart.length === 0}
+          disabled={cart.length === 0 || saving}
           onClick={() => void submit()}
         >
           Submit order
@@ -2604,7 +2651,7 @@ export default function CounterOrder() {
           Retry now
         </button>
         <button className="rounded border px-4 py-2" disabled={menu.length === 0} onClick={() => void duplicateTest()}>
-          Duplicate test
+          Duplicate test (creates a real order)
         </button>
       </div>
       {dupResult && <p className="mt-2 text-sm">{dupResult}</p>}
@@ -2634,24 +2681,31 @@ export default function PrintHostPanel() {
     [],
   )
 
+  /** Never rejects, so callers can safely `void` it. */
   const handle = useCallback(
-    async (job: PrintJob) => {
+    async (job: PrintJob): Promise<void> => {
       const route = routesRef.current.find((r) => r.route === job.route)
       if (!route || route.kind === 'agent') return // the Node agent prints these
-      const result = await processJob(job, {
-        claim: claimJob,
-        finish: finishJob,
-        print: async (j) => {
-          try {
-            await printFromBrowser(route, j.payload)
-          } catch (e) {
-            note(`${j.route} error: ${e instanceof Error ? e.message : String(e)}`)
-            throw e
-          }
-        },
-      })
-      note(`${job.route} ${job.id.slice(0, 8)} → ${result}`)
-      if (result === 'failed') setFailed((f) => [...f, job])
+      try {
+        const result = await processJob(job, {
+          claim: claimJob,
+          finish: finishJob,
+          print: async (j) => {
+            try {
+              await printFromBrowser(route, j.payload)
+            } catch (e) {
+              note(`${j.route} error: ${e instanceof Error ? e.message : String(e)}`)
+              throw e
+            }
+          },
+        })
+        note(`${job.route} ${job.id.slice(0, 8)} → ${result}`)
+        if (result === 'failed') setFailed((f) => [...f, job])
+      } catch (e) {
+        // The ticket printed but recording it failed. Do NOT offer a reprint:
+        // that would produce a duplicate ticket.
+        note(`${job.route} ${job.id.slice(0, 8)} printed but could not record it: ${e instanceof Error ? e.message : String(e)}`)
+      }
     },
     [note],
   )
@@ -2659,31 +2713,61 @@ export default function PrintHostPanel() {
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
-    fetchRoutes()
-      .then(async (rs) => {
-        routesRef.current = rs
-        setRoutes(rs)
-        const browserRoutes = rs.filter((r) => r.kind !== 'agent').map((r) => r.route)
+    let channel: ReturnType<typeof supabase.channel> | null = null
+    let timer: number | undefined
+    let sweeping = false
+
+    /** Prints every pending browser-route job. Never rejects; one sweep at a time. */
+    const sweep = async (): Promise<void> => {
+      if (sweeping || cancelled) return
+      sweeping = true
+      try {
+        const browserRoutes = routesRef.current.filter((r) => r.kind !== 'agent').map((r) => r.route)
         for (const job of await fetchPendingJobs(browserRoutes)) {
           if (cancelled) return
           await handle(job)
         }
+      } catch (e) {
+        note(`could not sweep pending jobs: ${e instanceof Error ? e.message : String(e)}`)
+      } finally {
+        sweeping = false
+      }
+    }
+
+    fetchRoutes()
+      .then((rs) => {
+        if (cancelled) return
+        routesRef.current = rs
+        setRoutes(rs)
+        // Subscribe only now: an INSERT that arrived before routes loaded would be dropped.
+        // Unique topic per run: supabase.channel() reuses a same-named channel that is still being removed.
+        channel = supabase
+          .channel(`spike-print-jobs-${crypto.randomUUID()}`)
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_print_jobs' }, (p) => {
+            void handle(p.new as PrintJob)
+          })
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') void sweep() // initial subscribe and every reconnect
+            else note(`realtime ${status}`)
+          })
+        timer = window.setInterval(() => void sweep(), 15_000)
+        void sweep()
       })
-      .catch((e: Error) => note(`could not load routes: ${e.message}`))
-    const channel = supabase
-      .channel('spike-print-jobs')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_print_jobs' }, (p) => {
-        void handle(p.new as PrintJob)
-      })
-      .subscribe()
+      .catch((e: unknown) => note(`could not load routes: ${e instanceof Error ? e.message : String(e)}`))
     return () => {
       cancelled = true
-      void supabase.removeChannel(channel)
+      if (timer !== undefined) window.clearInterval(timer)
+      if (channel) void supabase.removeChannel(channel)
     }
   }, [enabled, handle, note])
 
   const reprint = async (job: PrintJob) => {
-    await requeueJob(job.id)
+    try {
+      await requeueJob(job.id)
+    } catch (e) {
+      note(`${job.route} ${job.id.slice(0, 8)} could not be requeued: ${e instanceof Error ? e.message : String(e)}`)
+      return
+    }
     setFailed((f) => f.filter((x) => x.id !== job.id))
     await handle({ ...job, status: 'pending' })
   }
@@ -2793,10 +2877,11 @@ export default function PosSpike() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    void supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session)
-      setReady(true)
-    })
+    void supabase.auth
+      .getSession()
+      .then(({ data }) => setSession(data.session))
+      .catch(() => undefined) // offline start: show the sign-in form rather than hang
+      .finally(() => setReady(true))
     const { data } = supabase.auth.onAuthStateChange((_event, s) => setSession(s))
     return () => data.subscription.unsubscribe()
   }, [])

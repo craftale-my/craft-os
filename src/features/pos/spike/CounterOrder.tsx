@@ -40,15 +40,31 @@ export default function CounterOrder() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const inFlight = useRef<Promise<void> | null>(null)
+  const again = useRef(false)
 
-  const flush = useCallback(() => {
-    // one flush at a time — overlapping flushes would send the same order twice
-    inFlight.current ??= flushQueue(store, sendCounterOrder)
-      .then(setReport)
-      .catch(() => undefined) // a failed flush just leaves the queue for the next tick
-      .finally(() => {
+  const flush = useCallback((): Promise<void> => {
+    // One flush at a time — overlapping flushes would send the same order twice.
+    // A call that arrives mid-flush may have enqueued after that flush read the
+    // store, so it asks for exactly one follow-up pass and awaits that.
+    if (inFlight.current) {
+      again.current = true
+      return inFlight.current
+    }
+    const run = async (): Promise<void> => {
+      try {
+        do {
+          again.current = false
+          try {
+            setReport(await flushQueue(store, sendCounterOrder))
+          } catch {
+            // a failed flush just leaves the queue for the next tick
+          }
+        } while (again.current)
+      } finally {
         inFlight.current = null
-      })
+      }
+    }
+    inFlight.current = run()
     return inFlight.current
   }, [])
 
@@ -162,7 +178,7 @@ export default function CounterOrder() {
           Retry now
         </button>
         <button className="rounded border px-4 py-2" disabled={menu.length === 0} onClick={() => void duplicateTest()}>
-          Duplicate test
+          Duplicate test (creates a real order)
         </button>
       </div>
       {dupResult && <p className="mt-2 text-sm">{dupResult}</p>}

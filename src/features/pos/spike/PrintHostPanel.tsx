@@ -48,26 +48,51 @@ export default function PrintHostPanel() {
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
-    fetchRoutes()
-      .then(async (rs) => {
-        routesRef.current = rs
-        setRoutes(rs)
-        const browserRoutes = rs.filter((r) => r.kind !== 'agent').map((r) => r.route)
+    let channel: ReturnType<typeof supabase.channel> | null = null
+    let timer: number | undefined
+    let sweeping = false
+
+    /** Prints every pending browser-route job. Never rejects; one sweep at a time. */
+    const sweep = async (): Promise<void> => {
+      if (sweeping || cancelled) return
+      sweeping = true
+      try {
+        const browserRoutes = routesRef.current.filter((r) => r.kind !== 'agent').map((r) => r.route)
         for (const job of await fetchPendingJobs(browserRoutes)) {
           if (cancelled) return
           await handle(job)
         }
+      } catch (e) {
+        note(`could not sweep pending jobs: ${e instanceof Error ? e.message : String(e)}`)
+      } finally {
+        sweeping = false
+      }
+    }
+
+    fetchRoutes()
+      .then((rs) => {
+        if (cancelled) return
+        routesRef.current = rs
+        setRoutes(rs)
+        // Subscribe only now: an INSERT that arrived before routes loaded would be dropped.
+        // Unique topic per run: supabase.channel() reuses a same-named channel that is still being removed.
+        channel = supabase
+          .channel(`spike-print-jobs-${crypto.randomUUID()}`)
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_print_jobs' }, (p) => {
+            void handle(p.new as PrintJob)
+          })
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') void sweep() // initial subscribe and every reconnect
+            else note(`realtime ${status}`)
+          })
+        timer = window.setInterval(() => void sweep(), 15_000)
+        void sweep()
       })
       .catch((e: unknown) => note(`could not load routes: ${e instanceof Error ? e.message : String(e)}`))
-    const channel = supabase
-      .channel('spike-print-jobs')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'spike_print_jobs' }, (p) => {
-        void handle(p.new as PrintJob)
-      })
-      .subscribe()
     return () => {
       cancelled = true
-      void supabase.removeChannel(channel)
+      if (timer !== undefined) window.clearInterval(timer)
+      if (channel) void supabase.removeChannel(channel)
     }
   }, [enabled, handle, note])
 
