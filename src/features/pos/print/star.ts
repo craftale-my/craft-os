@@ -11,6 +11,8 @@ export function buildStarXml(lines: string[]): string {
   )
 }
 
+const PRINTER_TIMEOUT_MS = 12000
+
 export function starEndpoint(address: string): string {
   return `${address.replace(/\/$/, '')}/StarWebPRNT/SendMessage`
 }
@@ -20,6 +22,7 @@ export async function printStar(address: string, lines: string[], fetchFn: typeo
     method: 'POST',
     headers: { 'Content-Type': 'text/xml; charset=UTF-8' },
     body: buildStarXml(lines),
+    signal: AbortSignal.timeout(PRINTER_TIMEOUT_MS), // a printer that never answers must not hang the job
   })
   const body = await res.text()
   if (!res.ok || !/<success>\s*true\s*<\/success>/i.test(body)) {

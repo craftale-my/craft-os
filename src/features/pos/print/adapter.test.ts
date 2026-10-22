@@ -29,7 +29,7 @@ describe('Epson ePOS-Print', () => {
   it('wraps lines in a SOAP epos-print document with feed and cut', () => {
     const xml = buildEposXml(['A & B', 'C'])
     expect(xml).toContain('<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">')
-    expect(xml).toContain('<text lang="zh-hans">A &amp; B&#10;C&#10;</text>')
+    expect(xml).toContain('<text lang="zh-cn">A &amp; B&#10;C&#10;</text>')
     expect(xml).toContain('<cut type="feed"/>')
   })
 
@@ -72,6 +72,22 @@ describe('printFromBrowser', () => {
     const f = fakeFetch(200, '<Response><success>true</success></Response>')
     await printFromBrowser(star, payload, f)
     expect(vi.mocked(f).mock.calls[0][0]).toBe(starEndpoint(star.address))
+  })
+
+  it('rejects when the Epson printer never answers (fetch aborts on timeout)', async () => {
+    const f = vi.fn(async () => {
+      throw new DOMException('timed out', 'TimeoutError')
+    }) as unknown as typeof fetch
+    await expect(printFromBrowser(epson, payload, f)).rejects.toThrow('timed out')
+    expect(vi.mocked(f).mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('rejects when the Star printer never answers (fetch aborts on timeout)', async () => {
+    const f = vi.fn(async () => {
+      throw new DOMException('timed out', 'TimeoutError')
+    }) as unknown as typeof fetch
+    await expect(printFromBrowser(star, payload, f)).rejects.toThrow('timed out')
+    expect(vi.mocked(f).mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('refuses routes that belong to the print agent', async () => {
