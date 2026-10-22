@@ -36,7 +36,7 @@ Plan: docs/superpowers/plans/2026-10-22-pos-phase0-spikes.md
 | 1d Chinese characters | Look at the "Chinese check" line on each ticket | Prints as "?" | Test ticket 18:19: "Chinese check: ??? ??". Text ESC/POS with no code page; Feedme prints this printer "Image-based" (rasterised), which is how it shows Chinese |
 | 1e Ticket width | Does a 42-column rule fit on one line? If not, what does? | 48 columns fit | A 48-digit row printed on one line; agent TICKET_COLS set to 48 |
 | 1f-browser Failure shows and reprints (browser route) | Open the printer cover, Test print: the job shows as failed. Close the cover, press Reprint: it prints once | | |
-| 1f-agent Failure and requeue (agent route) | Open the cover or unplug the cable on an agent route, Test print, then run `select id, status, last_error from spike_print_jobs order by created_at desc limit 5;`. If failed, requeue with `select spike_requeue_print_job('<id>');` and confirm it prints once | | |
+| 1f-agent Failure and requeue (agent route) | Open the cover or unplug the cable on an agent route, Test print, then run `select id, status, last_error from spike_print_jobs order by created_at desc limit 5;`. If failed, requeue with `select spike_requeue_print_job('<id>');` and confirm it prints once | PASS (natural failure) | 18:45: AFF004 Bar ticket 3519cc29 failed with ECONNRESET (agent sent Bar+Kitchen to the one-connection ZY301 together — bug, fixed in 8a3715d) and was recorded failed, not printed; nothing came out on paper. Requeued with spike_requeue_print_job → agent sweep printed it at 18:53:51, attempts 2; exactly one ticket came out (photo). The cable-unplug case is still covered by 1c-2 |
 
 **Spike 1 verdict:** PASS if (1a + 1b + 1f-browser) OR (1c + 1c-2 + 1f-agent).
 
