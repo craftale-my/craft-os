@@ -70,7 +70,7 @@ export default function PrintHostPanel({ branchId }: { branchId: string }) {
           {problems.map((j) => (
             <div key={j.id} className="mb-2 rounded bg-red-50 p-2">
               <div className="font-medium">{j.route} · {j.payload.orderNo}{j.payload.tableLabel ? ` · ${j.payload.tableLabel}` : ' · takeaway'}</div>
-              <div className="text-xs text-red-700">{j.status === 'printing' ? 'Stuck while printing' : j.last_error ?? 'Failed'} · {j.attempts} attempt{j.attempts === 1 ? '' : 's'}</div>
+              <div className="text-xs text-red-700">{j.status === 'printing' ? 'Stuck while printing — check the printer before reprinting' : j.last_error ?? 'Failed'} · {j.attempts} attempt{j.attempts === 1 ? '' : 's'}</div>
               <button onClick={() => void reprint(j)} className="mt-1 rounded bg-brown-btn px-2 py-1 text-xs text-white">Reprint</button>
             </div>
           ))}
