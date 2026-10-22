@@ -24,10 +24,13 @@ export async function processJob(job: PrintJob, deps: PrintHostDeps): Promise<Jo
   if (!(await deps.claim(job.id))) return 'skipped'
   try {
     await deps.print(job)
-    await deps.finish(job.id, true, null)
-    return 'printed'
   } catch (e) {
     await deps.finish(job.id, false, e instanceof Error ? e.message : String(e))
     return 'failed'
   }
+  // Outside the try on purpose: the ticket is already on paper, so failing to
+  // record that must never turn into 'failed' (which would invite a duplicate
+  // reprint). The error propagates and the job stays 'printing'.
+  await deps.finish(job.id, true, null)
+  return 'printed'
 }

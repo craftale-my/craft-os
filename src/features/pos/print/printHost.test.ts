@@ -51,4 +51,21 @@ describe('processJob', () => {
     expect(await processJob(job, d)).toBe('failed')
     expect(d.finish).toHaveBeenCalledWith('job-1', false, 'Cover open')
   })
+
+  it('never marks a printed ticket failed when recording success fails', async () => {
+    const finish = vi.fn(async (_id: string, ok: boolean) => {
+      if (ok) throw new Error('network down')
+    })
+    const d = deps({ finish })
+    await expect(processJob(job, d)).rejects.toThrow('network down')
+    expect(d.print).toHaveBeenCalledTimes(1)
+    expect(finish).toHaveBeenCalledTimes(1)
+    expect(finish).not.toHaveBeenCalledWith('job-1', false, expect.anything())
+  })
+
+  it('records a non-Error throw as text', async () => {
+    const d = deps({ print: vi.fn(async () => Promise.reject('paper jam')) })
+    expect(await processJob(job, d)).toBe('failed')
+    expect(d.finish).toHaveBeenCalledWith('job-1', false, 'paper jam')
+  })
 })
