@@ -1,3 +1,10 @@
+do $$
+begin
+  if to_regclass('public.staff') is not null then
+    raise exception 'STOP: public.staff exists, so this is the Craft OS production database. Run the POS spike only in the craft-os-dev project.';
+  end if;
+end $$;
+
 -- ============================================================================
 -- POS Phase 0 spike schema — DEV SUPABASE ONLY.
 -- NEVER run this in the prod project (yfsoesxzurzjdwstszru).
@@ -72,7 +79,7 @@ create table if not exists spike_print_jobs (
   printed_at  timestamptz
 );
 
--- ── RLS: signed-in staff may do anything; anon may do nothing directly ──────
+-- ── RLS: anon may do nothing directly; staff read orders, all writes go via RPCs ──
 do $$
 declare t text;
 begin
@@ -81,7 +88,13 @@ begin
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists spike_staff_all on %I', t);
-    execute format('create policy spike_staff_all on %I for all to authenticated using (true) with check (true)', t);
+    execute format('drop policy if exists spike_staff_read on %I', t);
+    -- bills/orders/items are read-only to staff (writes only via the security-definer RPCs, so prices can't be forged); admin tables and print jobs stay writable
+    if t in ('spike_bills', 'spike_orders', 'spike_order_items') then
+      execute format('create policy spike_staff_read on %I for select to authenticated using (true)', t);
+    else
+      execute format('create policy spike_staff_all on %I for all to authenticated using (true) with check (true)', t);
+    end if;
   end loop;
 end $$;
 
@@ -110,15 +123,40 @@ declare
   v_label     text;
   v_item      jsonb;
   v_menu      spike_menu_items;
+  v_qty       numeric;
 begin
   select id into v_existing from spike_orders where client_order_id = p_client_order_id;
   if v_existing is not null then
     return v_existing;
   end if;
 
+  if p_client_order_id is null then
+    raise exception 'Order id is missing';
+  end if;
+
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Order has no items';
   end if;
+
+  -- validate every line before writing anything, so bad input is always a P0001 (final) error
+  for v_item in select * from jsonb_array_elements(p_items) loop
+    if jsonb_typeof(v_item) <> 'object' then
+      raise exception 'Invalid item';
+    end if;
+    if jsonb_typeof(v_item->'menuItemId') is distinct from 'string'
+       or (v_item->>'menuItemId') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+      raise exception 'Item is not available: %', coalesce(v_item->>'menuItemId', '?');
+    end if;
+    if v_item->'qty' is not null then
+      if jsonb_typeof(v_item->'qty') <> 'number' then
+        raise exception 'Invalid quantity';
+      end if;
+      v_qty := (v_item->'qty')::numeric;
+      if v_qty < 1 or v_qty > 20 or v_qty <> trunc(v_qty) then
+        raise exception 'Invalid quantity';
+      end if;
+    end if;
+  end loop;
 
   if p_table_id is null then
     insert into spike_bills(table_id) values (null) returning id into v_bill_id;
@@ -149,7 +187,7 @@ begin
     end if;
     insert into spike_order_items(order_id, menu_item_id, name_snapshot, unit_price_sen, qty, note, route)
     values (v_order_id, v_menu.id, v_menu.name, v_menu.price_sen,
-            coalesce((v_item->>'qty')::integer, 1), nullif(v_item->>'note', ''), v_menu.route);
+            coalesce((v_item->'qty')::numeric::integer, 1), nullif(v_item->>'note', ''), v_menu.route);
   end loop;
 
   -- one ticket per route, shaped exactly like TicketPayload (ticket.ts)
@@ -178,9 +216,20 @@ language plpgsql security definer set search_path = public as $$
 declare
   v_table   spike_tables;
   v_recent  integer;
+  v_existing uuid;
 begin
-  select * into v_table from spike_tables where qr_token = p_token and is_active;
+  select * into v_table from spike_tables where qr_token = p_token;
   if not found then
+    raise exception 'Invalid table code';
+  end if;
+
+  -- resend of an order that already went in: return it even if the table was paused/deactivated since
+  select id into v_existing from spike_orders where client_order_id = p_client_order_id;
+  if v_existing is not null then
+    return v_existing;
+  end if;
+
+  if not v_table.is_active then
     raise exception 'Invalid table code';
   end if;
   if v_table.qr_paused then
@@ -190,8 +239,7 @@ begin
   select count(*) into v_recent
     from spike_orders o join spike_bills b on b.id = o.bill_id
    where b.table_id = v_table.id and o.source = 'qr' and o.placed_at > now() - interval '1 minute';
-  if v_recent >= 5
-     and not exists (select 1 from spike_orders where client_order_id = p_client_order_id) then
+  if v_recent >= 5 then
     raise exception 'Too many orders from this table. Please wait a minute.';
   end if;
 

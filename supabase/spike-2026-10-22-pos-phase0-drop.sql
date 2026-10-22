@@ -1,3 +1,10 @@
+do $$
+begin
+  if to_regclass('public.staff') is not null then
+    raise exception 'STOP: public.staff exists, so this is the Craft OS production database. Run the POS spike only in the craft-os-dev project.';
+  end if;
+end $$;
+
 -- Removes everything spike-2026-10-22-pos-phase0.sql created. DEV ONLY.
 drop function if exists spike_place_table_order(text, jsonb, uuid);
 drop function if exists spike_place_counter_order(uuid, jsonb, uuid);

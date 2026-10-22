@@ -114,6 +114,13 @@ Expected: install finishes; Node is `v22.18.0` or newer (type stripping is on by
 `supabase/spike-2026-10-22-pos-phase0.sql`:
 
 ```sql
+do $$
+begin
+  if to_regclass('public.staff') is not null then
+    raise exception 'STOP: public.staff exists, so this is the Craft OS production database. Run the POS spike only in the craft-os-dev project.';
+  end if;
+end $$;
+
 -- ============================================================================
 -- POS Phase 0 spike schema — DEV SUPABASE ONLY.
 -- NEVER run this in the prod project (yfsoesxzurzjdwstszru).
@@ -188,7 +195,7 @@ create table if not exists spike_print_jobs (
   printed_at  timestamptz
 );
 
--- ── RLS: signed-in staff may do anything; anon may do nothing directly ──────
+-- ── RLS: anon may do nothing directly; staff read orders, all writes go via RPCs ──
 do $$
 declare t text;
 begin
@@ -197,7 +204,13 @@ begin
   loop
     execute format('alter table %I enable row level security', t);
     execute format('drop policy if exists spike_staff_all on %I', t);
-    execute format('create policy spike_staff_all on %I for all to authenticated using (true) with check (true)', t);
+    execute format('drop policy if exists spike_staff_read on %I', t);
+    -- bills/orders/items are read-only to staff (writes only via the security-definer RPCs, so prices can't be forged); admin tables and print jobs stay writable
+    if t in ('spike_bills', 'spike_orders', 'spike_order_items') then
+      execute format('create policy spike_staff_read on %I for select to authenticated using (true)', t);
+    else
+      execute format('create policy spike_staff_all on %I for all to authenticated using (true) with check (true)', t);
+    end if;
   end loop;
 end $$;
 
@@ -226,15 +239,40 @@ declare
   v_label     text;
   v_item      jsonb;
   v_menu      spike_menu_items;
+  v_qty       numeric;
 begin
   select id into v_existing from spike_orders where client_order_id = p_client_order_id;
   if v_existing is not null then
     return v_existing;
   end if;
 
+  if p_client_order_id is null then
+    raise exception 'Order id is missing';
+  end if;
+
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Order has no items';
   end if;
+
+  -- validate every line before writing anything, so bad input is always a P0001 (final) error
+  for v_item in select * from jsonb_array_elements(p_items) loop
+    if jsonb_typeof(v_item) <> 'object' then
+      raise exception 'Invalid item';
+    end if;
+    if jsonb_typeof(v_item->'menuItemId') is distinct from 'string'
+       or (v_item->>'menuItemId') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+      raise exception 'Item is not available: %', coalesce(v_item->>'menuItemId', '?');
+    end if;
+    if v_item->'qty' is not null then
+      if jsonb_typeof(v_item->'qty') <> 'number' then
+        raise exception 'Invalid quantity';
+      end if;
+      v_qty := (v_item->'qty')::numeric;
+      if v_qty < 1 or v_qty > 20 or v_qty <> trunc(v_qty) then
+        raise exception 'Invalid quantity';
+      end if;
+    end if;
+  end loop;
 
   if p_table_id is null then
     insert into spike_bills(table_id) values (null) returning id into v_bill_id;
@@ -265,7 +303,7 @@ begin
     end if;
     insert into spike_order_items(order_id, menu_item_id, name_snapshot, unit_price_sen, qty, note, route)
     values (v_order_id, v_menu.id, v_menu.name, v_menu.price_sen,
-            coalesce((v_item->>'qty')::integer, 1), nullif(v_item->>'note', ''), v_menu.route);
+            coalesce((v_item->'qty')::numeric::integer, 1), nullif(v_item->>'note', ''), v_menu.route);
   end loop;
 
   -- one ticket per route, shaped exactly like TicketPayload (ticket.ts)
@@ -294,9 +332,20 @@ language plpgsql security definer set search_path = public as $$
 declare
   v_table   spike_tables;
   v_recent  integer;
+  v_existing uuid;
 begin
-  select * into v_table from spike_tables where qr_token = p_token and is_active;
+  select * into v_table from spike_tables where qr_token = p_token;
   if not found then
+    raise exception 'Invalid table code';
+  end if;
+
+  -- resend of an order that already went in: return it even if the table was paused/deactivated since
+  select id into v_existing from spike_orders where client_order_id = p_client_order_id;
+  if v_existing is not null then
+    return v_existing;
+  end if;
+
+  if not v_table.is_active then
     raise exception 'Invalid table code';
   end if;
   if v_table.qr_paused then
@@ -306,8 +355,7 @@ begin
   select count(*) into v_recent
     from spike_orders o join spike_bills b on b.id = o.bill_id
    where b.table_id = v_table.id and o.source = 'qr' and o.placed_at > now() - interval '1 minute';
-  if v_recent >= 5
-     and not exists (select 1 from spike_orders where client_order_id = p_client_order_id) then
+  if v_recent >= 5 then
     raise exception 'Too many orders from this table. Please wait a minute.';
   end if;
 
@@ -395,8 +443,15 @@ where not exists (select 1 from spike_menu_items);
 `supabase/spike-2026-10-22-pos-phase0-verify.sql` — everything runs inside a transaction that is rolled back, so it leaves no rows behind:
 
 ```sql
+do $$
+begin
+  if to_regclass('public.staff') is not null then
+    raise exception 'STOP: public.staff exists, so this is the Craft OS production database. Run the POS spike only in the craft-os-dev project.';
+  end if;
+end $$;
+
 -- Run in the DEV project's SQL editor after the schema file.
--- Success = "VERIFY OK" notice. Any failure raises and names the check.
+-- Success = a result row "VERIFY OK" (plus a notice). Any failure raises and names the check.
 begin;
 
 do $$
@@ -408,6 +463,12 @@ declare
   v2        uuid;
   v_jobs    integer;
   v_price   integer;
+  v_job     uuid;
+  v_job2    uuid;
+  v_order   uuid;
+  v_status  text;
+  r         record;
+  l         jsonb;
 begin
   select qr_token into v_token from spike_tables where label = 'A1';
   select id into v_bar     from spike_menu_items where route = 'Bar'     order by name limit 1;
@@ -471,8 +532,112 @@ begin
   if not spike_claim_print_job(v1) then raise exception 'FAIL claim: first claim lost'; end if;
   if spike_claim_print_job(v1)     then raise exception 'FAIL claim: second claim also won'; end if;
 
+  -- 8. print payload shape matches TicketPayload
+  select id into v1 from spike_orders where client_order_id = '00000000-0000-0000-0000-0000000000a1';
+  for r in select payload from spike_print_jobs where order_id = v1 loop
+    if not (r.payload ?& array['kind','route','tableLabel','orderNo','source','placedAt','lines']) then
+      raise exception 'FAIL payload: missing a required key in %', r.payload;
+    end if;
+    if (select count(*) from jsonb_object_keys(r.payload)) <> 7 then
+      raise exception 'FAIL payload: expected exactly 7 keys in %', r.payload;
+    end if;
+    if r.payload->>'placedAt' !~ '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$' then
+      raise exception 'FAIL payload: placedAt is not ISO-8601 UTC with milliseconds: %', r.payload->>'placedAt';
+    end if;
+    if r.payload->>'tableLabel' is distinct from 'A1' then
+      raise exception 'FAIL payload: tableLabel should be A1, got %', r.payload->>'tableLabel';
+    end if;
+    if jsonb_typeof(r.payload->'lines') is distinct from 'array' then
+      raise exception 'FAIL payload: lines is not an array';
+    end if;
+    for l in select * from jsonb_array_elements(r.payload->'lines') loop
+      if (select count(*) from jsonb_object_keys(l)) <> 3 or not (l ?& array['qty','name','note']) then
+        raise exception 'FAIL payload: line should have exactly qty, name, note: %', l;
+      end if;
+    end loop;
+  end loop;
+
+  -- 9. takeaway order (no table) prints with a null tableLabel
+  v_order := spike_insert_order(null, 'counter', null,
+               jsonb_build_array(jsonb_build_object('menuItemId', v_bar)), gen_random_uuid());
+  select payload into r from spike_print_jobs where order_id = v_order limit 1;
+  if r.payload->'tableLabel' is distinct from 'null'::jsonb then
+    raise exception 'FAIL takeaway: tableLabel should be JSON null, got %', r.payload->'tableLabel';
+  end if;
+  if r.payload->>'source' is distinct from 'counter' then
+    raise exception 'FAIL takeaway: source should be counter, got %', r.payload->>'source';
+  end if;
+
+  -- 10. bad quantity is a final (P0001) error
+  begin
+    perform spike_place_table_order((select qr_token from spike_tables where label = 'A2'),
+              jsonb_build_array(jsonb_build_object('menuItemId', v_bar, 'qty', 0)), gen_random_uuid());
+    raise exception 'FAIL quantity: qty 0 was accepted';
+  exception when raise_exception then
+    if sqlerrm not like 'Invalid quantity%' then raise; end if;
+  end;
+
+  -- 11. paused table: a resend still returns the original order, a new order is refused
+  update spike_tables set qr_paused = true where label = 'A1';
+  v2 := spike_place_table_order(v_token,
+          jsonb_build_array(jsonb_build_object('menuItemId', v_bar, 'qty', 2)),
+          '00000000-0000-0000-0000-0000000000a1');
+  if v2 is distinct from v1 then raise exception 'FAIL paused resend: did not return the original order'; end if;
+  begin
+    perform spike_place_table_order(v_token,
+              jsonb_build_array(jsonb_build_object('menuItemId', v_bar)), gen_random_uuid());
+    raise exception 'FAIL paused: new order was accepted while paused';
+  exception when raise_exception then
+    if sqlerrm not like 'Ordering is paused%' then raise; end if;
+  end;
+
+  -- 12. print lifecycle: pending -> printing -> failed -> pending -> printing -> printed
+  select id into v_job2 from spike_print_jobs where status = 'pending' limit 1;
+  if v_job2 is null then raise exception 'FAIL lifecycle: no pending job to test with'; end if;
+  if not spike_claim_print_job(v_job2) then raise exception 'FAIL lifecycle: claim lost'; end if;
+  perform spike_finish_print_job(v_job2, false, 'cover open');
+  select status into v_status from spike_print_jobs where id = v_job2;
+  if v_status is distinct from 'failed' then raise exception 'FAIL lifecycle: expected failed, got %', v_status; end if;
+  if (select last_error from spike_print_jobs where id = v_job2) is distinct from 'cover open' then
+    raise exception 'FAIL lifecycle: last_error was not recorded';
+  end if;
+  perform spike_requeue_print_job(v_job2);
+  select status into v_status from spike_print_jobs where id = v_job2;
+  if v_status is distinct from 'pending' then raise exception 'FAIL lifecycle: expected pending after requeue, got %', v_status; end if;
+  if not spike_claim_print_job(v_job2) then raise exception 'FAIL lifecycle: claim after requeue lost'; end if;
+  perform spike_finish_print_job(v_job2, true, null);
+  select status into v_status from spike_print_jobs where id = v_job2;
+  if v_status is distinct from 'printed' then raise exception 'FAIL lifecycle: expected printed, got %', v_status; end if;
+  if (select printed_at from spike_print_jobs where id = v_job2) is null then
+    raise exception 'FAIL lifecycle: printed_at not set';
+  end if;
+
+  -- 13. privileges
+  if has_function_privilege('anon', 'spike_insert_order(uuid,text,uuid,jsonb,uuid)', 'execute') then
+    raise exception 'FAIL privileges: anon can execute spike_insert_order';
+  end if;
+  if has_function_privilege('authenticated', 'spike_insert_order(uuid,text,uuid,jsonb,uuid)', 'execute') then
+    raise exception 'FAIL privileges: authenticated can execute spike_insert_order';
+  end if;
+  if has_function_privilege('anon', 'spike_place_counter_order(uuid,jsonb,uuid)', 'execute') then
+    raise exception 'FAIL privileges: anon can execute spike_place_counter_order';
+  end if;
+  if not has_function_privilege('anon', 'spike_place_table_order(text,jsonb,uuid)', 'execute') then
+    raise exception 'FAIL privileges: anon cannot execute spike_place_table_order';
+  end if;
+
+  -- 14. RLS: order tables are read-only for staff
+  if exists (select 1 from pg_policies
+              where schemaname = 'public'
+                and tablename in ('spike_bills','spike_orders','spike_order_items')
+                and cmd <> 'SELECT') then
+    raise exception 'FAIL rls: a write policy exists on bills/orders/order_items';
+  end if;
+
   raise notice 'VERIFY OK';
 end $$;
+
+select 'VERIFY OK' as result;
 
 rollback;
 ```
@@ -482,6 +647,13 @@ rollback;
 `supabase/spike-2026-10-22-pos-phase0-drop.sql`:
 
 ```sql
+do $$
+begin
+  if to_regclass('public.staff') is not null then
+    raise exception 'STOP: public.staff exists, so this is the Craft OS production database. Run the POS spike only in the craft-os-dev project.';
+  end if;
+end $$;
+
 -- Removes everything spike-2026-10-22-pos-phase0.sql created. DEV ONLY.
 drop function if exists spike_place_table_order(text, jsonb, uuid);
 drop function if exists spike_place_counter_order(uuid, jsonb, uuid);
@@ -499,7 +671,7 @@ drop table if exists spike_print_jobs, spike_order_items, spike_orders, spike_bi
 
 The user opens the **dev** project's SQL editor (confirm the project name at the top reads `craft-os-dev`), pastes the schema file, runs it, then pastes and runs the verify file.
 
-Expected: the verify run shows the notice `VERIFY OK` and no error.
+Expected: the verify run returns a result row `VERIFY OK` and no error.
 
 - [ ] **Step 5: Register the printers**
 
