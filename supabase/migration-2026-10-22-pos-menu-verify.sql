@@ -99,7 +99,7 @@ begin
 
   -- B4. idempotent: same payload again → same row counts in the tables
   perform menu_import(v_payload);
-  select count(*) into n from menu_products where feedme_product_id like 'verify-%';
+  select count(*) into n from menu_products where feedme_product_id in ('verify-latte', 'verify-oat');
   if n <> 2 then raise exception 'FAIL idempotent: % verify products', n; end if;
   select count(*) into n from modifier_options mo join modifier_groups mg on mg.id = mo.group_id where mg.feedme_group_id = 'verify-milk';
   if n <> 1 then raise exception 'FAIL idempotent: % options', n; end if;
@@ -119,6 +119,38 @@ begin
   end;
 
   raise notice 'VERIFY OK (import)';
+end $$;
+
+do $$
+declare
+  r record;
+  v_id uuid;
+begin
+  -- C1. permission matrix on real staff rows (inserted here, rolled back with everything else)
+  for r in select * from (values
+      ('owner', 'trainee', true), ('admin', 'trainee', true), ('manager', 'trainee', true),
+      ('hr', 'trainee', false), ('supervisor', 'trainee', false), ('staff', 'trainee', false),
+      ('staff', 'manager', true)) as m(role, rank, expected) loop
+    v_id := gen_random_uuid();
+    insert into auth.users (id) values (v_id);  -- staff.id references auth.users
+    insert into staff (id, name, rank, onboarding_completed, joined_at, system_role)
+    values (v_id, 'verify ' || r.role || '/' || r.rank, r.rank, true, current_date, r.role);
+    perform set_config('request.jwt.claims', json_build_object('sub', v_id, 'role', 'authenticated')::text, true);
+    if has_menu_cap('access_settings') is distinct from r.expected then
+      raise exception 'FAIL cap matrix: role % rank % expected %', r.role, r.rank, r.expected;
+    end if;
+  end loop;
+
+  -- C2. the two edit policies exist, are UPDATE-only and gated on has_menu_cap
+  for r in select t from unnest(array['menu_products','menu_variants']) as t loop
+    if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = r.t
+                      and policyname = r.t || '_edit' and cmd = 'UPDATE'
+                      and qual like '%has_menu_cap%' and with_check like '%has_menu_cap%') then
+      raise exception 'FAIL rls: %_edit policy missing or not gated on has_menu_cap', r.t;
+    end if;
+  end loop;
+
+  raise notice 'VERIFY OK (permissions)';
 end $$;
 
 select 'VERIFY OK' as result;
