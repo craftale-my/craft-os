@@ -45,6 +45,17 @@ async function main(): Promise<void> {
     console.warn("No route has kind 'agent', so there is nothing to print. Waiting; point a route at the agent and restart.")
   }
 
+  // Cheap LAN printers accept one connection at a time: a second ticket sent while
+  // the first is still open gets ECONNRESET (seen on the ZyWell ZY301, 2026-10-22,
+  // when an order's Bar and Kitchen tickets went to the same printer 30 ms apart).
+  // So sends to one address are queued; different printers still print in parallel.
+  const printerQueues = new Map<string, Promise<void>>()
+  const sendInTurn = (address: string, bytes: Uint8Array): Promise<void> => {
+    const turn = (printerQueues.get(address) ?? Promise.resolve()).then(() => sendRaw(address, bytes))
+    printerQueues.set(address, turn.catch(() => undefined))
+    return turn
+  }
+
   // Never rejects: it is called from the sweep, a Realtime callback and an interval.
   const handle = async (job: PrintJob): Promise<void> => {
     if (!addressOf.has(job.route)) return
@@ -62,7 +73,7 @@ async function main(): Promise<void> {
         if (error) throw error
       },
       print: async (j) => {
-        await sendRaw(addressOf.get(j.route)!, encodeEscPos(renderTicketLines(j.payload, cols)))
+        await sendInTurn(addressOf.get(j.route)!, encodeEscPos(renderTicketLines(j.payload, cols)))
         printed = true
       },
     }
