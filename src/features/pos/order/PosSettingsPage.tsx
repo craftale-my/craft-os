@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { supabase } from '../../../shared/lib/supabase'
@@ -8,12 +8,13 @@ import { fetchRoutes, fetchTables, insertTestPrint, type TableRow } from './posA
 import type { PrintRoute, PrinterKind } from '../print/adapter'
 import { qrLink, newQrToken } from './qrLink'
 import { PRINT_ROUTES } from '../menu/menuView'
+import { addTableAction, friendlyDbMessage, openBillMessage, renameConflict } from './tableAdmin'
 
 const KINDS: PrinterKind[] = ['agent', 'epson-epos', 'star-webprnt']
 
 function check(res: { data: unknown[] | null; error: { message: string } | null }, what: string) {
   const out = writeOutcome(res)
-  if (!out.ok) throw new Error(`${what} failed: ${out.reason}`)
+  if (!out.ok) throw new Error(`${what} failed: ${friendlyDbMessage(out.reason)}`)
 }
 
 export default function PosSettingsPage() {
@@ -26,12 +27,18 @@ export default function PosSettingsPage() {
   const [card, setCard] = useState<{ table: TableRow; url: string; png: string } | null>(null)
   const [draft, setDraft] = useState<Record<string, { kind: PrinterKind; address: string }>>({})
 
+  const dirty = useRef<Set<string>>(new Set())
+
   const load = async () => {
     if (!branchId) return
     try {
       const [t, r] = await Promise.all([fetchTables(branchId), fetchRoutes(branchId)])
       setTables(t); setRoutes(r)
-      setDraft(Object.fromEntries(r.map((x) => [x.route, { kind: x.kind, address: x.address }])))
+      setDraft((prev) => {
+        const next: Record<string, { kind: PrinterKind; address: string }> = Object.fromEntries(r.map((x) => [x.route, { kind: x.kind, address: x.address }]))
+        for (const name of dirty.current) if (prev[name]) next[name] = prev[name]
+        return next
+      })
       setError(null)
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
@@ -44,17 +51,40 @@ export default function PosSettingsPage() {
   const addTable = () => run(async () => {
     const label = newLabel.trim()
     if (!label || !branchId) throw new Error('Enter a table label')
-    check(await supabase.from('dining_tables').insert({ branch_id: branchId, label, sort_order: tables.length + 1 }).select('id'), 'Adding the table')
+    const { data: inactive, error: inactiveErr } = await supabase.from('dining_tables').select('id').eq('branch_id', branchId).eq('label', label).eq('is_active', false).limit(1)
+    if (inactiveErr) throw new Error(`Adding the table failed: ${inactiveErr.message}`)
+    const action = addTableAction(label, tables, (inactive ?? []).length > 0)
+    if (action === 'exists') throw new Error(`Table ${label} already exists.`)
+    if (action === 'reactivate') {
+      check(await supabase.from('dining_tables').update({ is_active: true, qr_token: newQrToken(), sort_order: tables.length + 1 }).eq('branch_id', branchId).eq('label', label).eq('is_active', false).select('id'), 'Adding the table')
+    } else {
+      check(await supabase.from('dining_tables').insert({ branch_id: branchId, label, sort_order: tables.length + 1 }).select('id'), 'Adding the table')
+    }
     setNewLabel('')
   })
   const rename = (t: TableRow) => {
     const label = window.prompt('Table label', t.label)?.trim()
     if (!label || label === t.label) return
-    void run(async () => { check(await supabase.from('dining_tables').update({ label }).eq('id', t.id).select('id'), 'Renaming') })
+    void run(async () => {
+      let inactiveExists = false
+      if (!renameConflict(label, t.id, tables, false) && branchId) {
+        const { data, error: err } = await supabase.from('dining_tables').select('id').eq('branch_id', branchId).eq('label', label).eq('is_active', false).neq('id', t.id).limit(1)
+        if (err) throw new Error(`Renaming failed: ${err.message}`)
+        inactiveExists = (data ?? []).length > 0
+      }
+      const conflict = renameConflict(label, t.id, tables, inactiveExists)
+      if (conflict) throw new Error(conflict)
+      check(await supabase.from('dining_tables').update({ label }).eq('id', t.id).select('id'), 'Renaming')
+    })
   }
   const remove = (t: TableRow) => {
     if (!window.confirm(`Remove table ${t.label}? Its QR code stops working.`)) return
-    void run(async () => { check(await supabase.from('dining_tables').update({ is_active: false }).eq('id', t.id).select('id'), 'Removing') })
+    void run(async () => {
+      const { data, error: err } = await supabase.from('bills').select('bill_no').eq('table_id', t.id).eq('status', 'open').limit(1)
+      if (err) throw new Error(`Removing failed: ${err.message}`)
+      if (data && data.length > 0) throw new Error(openBillMessage(t.label, String(data[0].bill_no)))
+      check(await supabase.from('dining_tables').update({ is_active: false }).eq('id', t.id).select('id'), 'Removing')
+    })
   }
   const regenerate = (t: TableRow) => {
     if (!window.confirm(`New QR code for ${t.label}? The printed card for this table must be replaced.`)) return
@@ -62,17 +92,23 @@ export default function PosSettingsPage() {
   }
   const showCard = async (t: TableRow) => {
     const url = qrLink(window.location.origin, t.qr_token, import.meta.env.DEV)
-    setCard({ table: t, url, png: await QRCode.toDataURL(url, { width: 320, margin: 1 }) })
+    try {
+      setCard({ table: t, url, png: await QRCode.toDataURL(url, { width: 320, margin: 1 }) })
+    } catch (e) {
+      setError(`Could not make the QR code: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   const saveRoute = (name: string) => run(async () => {
     const d = draft[name]
     if (!branchId || !d || !d.address.trim()) throw new Error('Enter the printer address')
     check(await supabase.from('print_routes').upsert({ branch_id: branchId, name, kind: d.kind, address: d.address.trim() }).select('name'), 'Saving the printer')
+    dirty.current.delete(name)
   })
   const removeRoute = (name: string) => run(async () => {
     if (!branchId) return
     check(await supabase.from('print_routes').delete().eq('branch_id', branchId).eq('name', name).select('name'), 'Removing the printer')
+    dirty.current.delete(name)
   })
 
   if (!branchId) return <div className="p-6">Your account has no branch — set it in Team first.</div>
@@ -118,10 +154,10 @@ export default function PosSettingsPage() {
           return (
             <div key={name} className="mt-2 flex items-center gap-2 text-sm">
               <span className="w-28 font-medium">{name}</span>
-              <select className="rounded border border-border p-1" value={d.kind} onChange={(e) => setDraft({ ...draft, [name]: { ...d, kind: e.target.value as PrinterKind } })}>
+              <select className="rounded border border-border p-1" value={d.kind} onChange={(e) => { dirty.current.add(name); setDraft({ ...draft, [name]: { ...d, kind: e.target.value as PrinterKind } }) }}>
                 {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
               </select>
-              <input className="flex-1 rounded border border-border p-1" placeholder="192.168.0.8:9100" value={d.address} onChange={(e) => setDraft({ ...draft, [name]: { ...d, address: e.target.value } })} />
+              <input className="flex-1 rounded border border-border p-1" placeholder="192.168.0.8:9100" value={d.address} onChange={(e) => { dirty.current.add(name); setDraft({ ...draft, [name]: { ...d, address: e.target.value } }) }} />
               <button onClick={() => void saveRoute(name)} className="rounded bg-brown-btn px-2 py-1 text-xs text-white">Save</button>
               {saved && <button onClick={() => insertTestPrint(name).catch((e) => setError(e.message))} className="rounded border border-border px-2 py-1 text-xs">Test print</button>}
               {saved && <button onClick={() => void removeRoute(name)} className="text-xs text-red-700 underline">Remove</button>}
