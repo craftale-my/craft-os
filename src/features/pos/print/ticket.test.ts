@@ -62,4 +62,19 @@ describe('renderTicketLines', () => {
     expect(lines[1]).toBe('TAKEAWAY')
     expect(lines[2]).toBe('Order: AB12CD (COUNTER)')
   })
+
+  it('prints modifiers as + lines under the item, before the note', () => {
+    const t: TicketPayload = {
+      kind: 'ticket', route: 'Bar', tableLabel: 'T3', orderNo: '261023-004/2', source: 'qr',
+      placedAt: '2026-10-23T02:00:00.000Z',
+      lines: [{ qty: 2, name: 'Coffee Latte (COLD)', note: 'less ice', mods: ['Oat milk', 'Extra shot'] }],
+    }
+    const out = renderTicketLines(t, 32)
+    expect(out.slice(5, 9)).toEqual([
+      '2 x Coffee Latte (COLD)',
+      '    + Oat milk',
+      '    + Extra shot',
+      '    * less ice',
+    ])
+  })
 })

@@ -4,6 +4,7 @@ export interface TicketLine {
   qty: number
   name: string
   note: string | null
+  mods?: string[] // modifier names, e.g. ["Oat milk"]; absent on Phase 0 payloads
 }
 
 export interface TicketPayload {
@@ -53,6 +54,7 @@ export function renderTicketLines(t: TicketPayload, cols: number): string[] {
   const rule = '-'.repeat(cols)
   const body = t.lines.flatMap((l) => [
     ...wrap(`${l.qty} x ${l.name}`, cols, '    '),
+    ...(l.mods ?? []).flatMap((m) => wrap(`+ ${m}`, cols - 4, '  ').map((s) => `    ${s}`)),
     ...(l.note ? wrap(`* ${l.note}`, cols - 4, '  ').map((s) => `    ${s}`) : []),
   ])
   return [
