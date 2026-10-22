@@ -20,6 +20,7 @@ import TasksArchivePage from './features/tasks/TasksArchive'
 import ProjectsPage from './features/tasks/Projects'
 import ProjectDetailPage from './features/tasks/ProjectDetail'
 import SettingsPage from './features/settings/Settings'
+import MenuPage from './features/pos/menu/MenuPage'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
@@ -243,6 +244,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout><SchedulePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/menu"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><MenuPage /></AppLayout>
           </ProtectedRoute>
         }
       />

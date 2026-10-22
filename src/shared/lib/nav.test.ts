@@ -48,7 +48,7 @@ describe('visibleNav', () => {
   })
 
   it('access_settings 控制 Settings 叶子项', () => {
-    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'settings'])
+    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'menu', 'settings'])
   })
 
   it('不修改原始 NAV', () => {
