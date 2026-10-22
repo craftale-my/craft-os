@@ -8,6 +8,8 @@ import { usePosRealtime, type OrderInsert } from './usePosRealtime'
 import TablesGrid from './TablesGrid'
 import BillPanel from './BillPanel'
 import OrderPad from './OrderPad'
+import type { QueuedOrder } from '../offline/orderQueue'
+import { useOrderQueue } from './useOrderQueue'
 
 export type Selection = { kind: 'table'; tableId: string } | { kind: 'bill'; billId: string } | null
 
@@ -22,6 +24,7 @@ export default function PosPage() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [pad, setPad] = useState<{ orderType: 'dine_in'; tableId: string; needsPax: boolean } | { orderType: 'takeaway' } | null>(null)
+  const queue = useOrderQueue()
   const reqId = useRef(0)
   const selectedBillIdRef = useRef<string | null>(null)
 
@@ -57,6 +60,14 @@ export default function PosPage() {
     if (bill) setNewBillIds((s) => { const n = new Set(s); n.delete(bill.id); return n })
   }
 
+  // A rejected order is handed straight back to the pad (cart intact), so drop the queued copy
+  // instead of leaving a duplicate in the strip once the cashier fixes and resends.
+  const submitFromPad = async (o: QueuedOrder) => {
+    const res = await queue.submit(o)
+    if (res.rejectedReason) await queue.discard(res.clientOrderId)
+    return res
+  }
+
   if (!staff) return null
   if (!branchId) {
     return <div className="p-8 text-center">Your account has no branch — ask a manager to set it in Team.</div>
@@ -71,6 +82,27 @@ export default function PosPage() {
           <Link to="/profile" className="underline">Exit</Link>
         </div>
       </header>
+      {(queue.report && (queue.report.pending > 0 || queue.report.lastError)) || queue.stuck.length > 0 || queue.discardError ? (
+        <div className="space-y-1 border-b border-border bg-amber-50 px-4 py-2 text-sm">
+          {queue.report && (queue.report.pending > 0 || queue.report.lastError) && (
+            <p className="text-amber-800">
+              {queue.report.pending} order{queue.report.pending === 1 ? '' : 's'} waiting to send{queue.report.lastError ? ` — ${queue.report.lastError}` : ''}{' '}
+              <button className="underline" onClick={() => void queue.flush()}>Retry now</button>
+            </p>
+          )}
+          {queue.stuck.map((o) => {
+            const n = o.items.reduce((sum, l) => sum + l.qty, 0)
+            const where = o.tableId ? `Table ${tables.find((t) => t.id === o.tableId)?.label ?? '?'}` : 'Takeaway'
+            return (
+              <p key={o.clientOrderId} className="text-red-700">
+                Rejected: {o.failedReason} · {where} · {n} item{n === 1 ? '' : 's'}{' '}
+                <button className="underline" onClick={() => void queue.discard(o.clientOrderId)}>Discard</button>
+              </p>
+            )
+          })}
+          {queue.discardError && <p className="text-red-700">Could not discard: {queue.discardError}</p>}
+        </div>
+      ) : null}
       {error && <p className="m-3 rounded bg-red-50 p-2 text-sm text-red-700">{error} <button className="underline" onClick={() => void reload()}>Retry</button></p>}
       <div className="grid flex-1 grid-cols-[1fr_380px] gap-4 overflow-hidden p-4">
         <div className="overflow-y-auto">
@@ -86,7 +118,7 @@ export default function PosPage() {
         )}
       </div>
       {pad && (
-        <OrderPad branchId={branchId} mode={pad} onClose={() => setPad(null)}
+        <OrderPad branchId={branchId} mode={pad} submit={submitFromPad} onClose={() => setPad(null)}
           onSent={() => { setPad(null); setRefreshKey((k) => k + 1); void reload() }} />
       )}
     </div>

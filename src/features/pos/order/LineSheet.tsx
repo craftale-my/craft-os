@@ -8,7 +8,7 @@ export default function LineSheet({ product, initial, onCancel, onDone }: {
   onDone: (line: OrderLine) => void
 }) {
   const [line, setLine] = useState<OrderLine>(initial ?? defaultLine(product))
-  const [touched, setTouched] = useState(false)
+  const [touched, setTouched] = useState(initial !== undefined)
   const problem = validateLine(product, line)
   const price = linePriceSen(product, line)
 

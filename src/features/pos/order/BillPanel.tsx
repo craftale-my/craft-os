@@ -69,7 +69,7 @@ export default function BillPanel({ table, bill, refreshKey, onAddItems, onChang
         <div className="flex justify-between text-sm"><span>Subtotal</span><b>{formatSen(subtotal)}</b></div>
         <p className="text-xs text-brown-muted">Service charge, SST and checkout come in the next step.</p>
         <button onClick={onAddItems} className="mt-2 w-full rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover">
-          {bill ? 'Add items' : 'New order'}
+          {!table ? 'New takeaway order' : bill ? 'Add items' : 'New order'}
         </button>
       </div>
     </div>

@@ -2,12 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchPosMenu, setSoldOut } from './posApi'
 import { cartSubtotalSen, findProduct, formatSen, lineLabel, linePriceSen, validateLine, defaultLine, type OrderLine, type PosMenu, type PosProduct } from './cart'
 import { newQueuedOrder } from '../offline/orderQueue'
-import { useOrderQueue } from './useOrderQueue'
+import type { QueuedOrder } from '../offline/orderQueue'
+import type { SubmitResult } from './useOrderQueue'
 import LineSheet from './LineSheet'
 
 type Mode = { orderType: 'dine_in'; tableId: string; needsPax: boolean } | { orderType: 'takeaway' }
 
-export default function OrderPad({ branchId, mode, onClose, onSent }: { branchId: string; mode: Mode; onClose: () => void; onSent: () => void }) {
+export default function OrderPad({ branchId, mode, submit, onClose, onSent }: {
+  branchId: string; mode: Mode
+  submit: (o: QueuedOrder) => Promise<SubmitResult>
+  onClose: () => void; onSent: () => void
+}) {
   const [menu, setMenu] = useState<PosMenu | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [category, setCategory] = useState<string | null>(null)
@@ -17,7 +22,8 @@ export default function OrderPad({ branchId, mode, onClose, onSent }: { branchId
   const [pax, setPax] = useState<string>('')
   const [soldOutMode, setSoldOutMode] = useState(false)
   const [sending, setSending] = useState(false)
-  const { submit, report, stuck, discard } = useOrderQueue()
+
+  useEffect(() => { setError(null) }, [lines, pax])
 
   const load = async () => {
     try { setMenu(await fetchPosMenu(branchId)); setError(null) } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
@@ -53,7 +59,8 @@ export default function OrderPad({ branchId, mode, onClose, onSent }: { branchId
     }
     setSending(true)
     try {
-      await submit(newQueuedOrder(mode.orderType, mode.orderType === 'dine_in' ? mode.tableId : null, paxNum, lines))
+      const res = await submit(newQueuedOrder(mode.orderType, mode.orderType === 'dine_in' ? mode.tableId : null, paxNum, lines))
+      if (res.rejectedReason) { setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); return }
       setLines([]); setError(null); onSent()
     } catch (e) {
       setError(`Order NOT saved on this iPad: ${e instanceof Error ? e.message : String(e)}`)
@@ -97,7 +104,12 @@ export default function OrderPad({ branchId, mode, onClose, onSent }: { branchId
         <div className="flex-1 overflow-y-auto p-3 text-sm">
           {lines.map((l, i) => {
             const p = menu ? findProduct(menu, l.productId) : undefined
-            if (!p) return null
+            if (!p) return (
+              <div key={i} className="mb-2 flex justify-between text-red-700">
+                <span>Unavailable item</span>
+                <button className="text-xs underline" onClick={() => setLines((ls) => ls.filter((_, k) => k !== i))}>remove</button>
+              </div>
+            )
             const { name, mods } = lineLabel(p, l)
             const unit = linePriceSen(p, l) ?? 0
             return (
@@ -127,16 +139,6 @@ export default function OrderPad({ branchId, mode, onClose, onSent }: { branchId
             className="mt-2 w-full rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover disabled:opacity-40">
             {sending ? 'Saving…' : 'Send order'}
           </button>
-          {report && (report.pending > 0 || report.lastError) && (
-            <p className="mt-2 text-xs text-amber-700">
-              {report.pending} order{report.pending === 1 ? '' : 's'} waiting to send{report.lastError ? ` — ${report.lastError}` : ''}
-            </p>
-          )}
-          {stuck.map((o) => (
-            <p key={o.clientOrderId} className="mt-1 text-xs text-red-700">
-              Rejected: {o.failedReason} <button className="underline" onClick={() => void discard(o.clientOrderId)}>Discard</button>
-            </p>
-          ))}
         </div>
       </div>
 
