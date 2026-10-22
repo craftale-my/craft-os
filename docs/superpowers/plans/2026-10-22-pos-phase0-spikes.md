@@ -3362,14 +3362,14 @@ Order-to-print time from the database (paste the output):
 
 ## Spike 3 — counter orders survive an outage
 
-Note the time (UTC) here: ____ (before 3a; the 3d queries use it as `<noted time>`, e.g. `2026-10-22 03:48:00+00`). Note "sent this session" now: ____
+Note the time (UTC) here: ____ (before 3a; the 3d queries use it as `<noted time>`, e.g. `2026-10-22 03:48:00+00`).
 
 | Check | How | Result | Evidence |
 |---|---|---|---|
 | 3a Queue while internet is down | Unplug the router's internet (WAN) cable — Wi-Fi stays up. Submit 3 counter orders. "queued" shows 3 | | |
 | 3b Survives closing the tab | Close the POS tab, reopen it (still no internet). "queued" still 3 | | |
-| 3c Sends on reconnect | Plug WAN back in. Within 30 s "queued" is 0 and "sent this session" went up by 3 | | |
-| 3d No duplicates, nothing lost | Count: `select count(*) from spike_orders o where o.source = 'counter' and o.placed_at >= '<noted time>' and not exists (select 1 from spike_order_items i where i.order_id = o.id and i.note = 'duplicate test');` — expect exactly 3. Contents: `select o.id, string_agg(i.qty \|\| ' x ' \|\| i.name_snapshot, ', ') from spike_orders o join spike_order_items i on i.order_id = o.id where o.source = 'counter' and o.placed_at >= '<noted time>' group by o.id;` — match against what was rung up | | |
+| 3c Sends on reconnect | After reopening the tab in 3b the counter restarts at 0. Plug the WAN back in and wait until a web page loads on the iPad; within 30 s of that, "queued" is 0 and "sent this session" shows 3. | | |
+| 3d No duplicates, nothing lost | Count: `select count(*) from spike_orders o where o.source = 'counter' and o.placed_at >= '<noted time>' and not exists (select 1 from spike_order_items i where i.order_id = o.id and i.note = 'duplicate test');` — expect exactly 3. Contents: `select o.id, string_agg(format('%s x %s', i.qty, i.name_snapshot), ', ' order by i.name_snapshot) from spike_orders o join spike_order_items i on i.order_id = o.id where o.source = 'counter' and o.placed_at >= '<noted time>' group by o.id;` — match against what was rung up | | |
 | 3e Duplicate test button | Press Duplicate test | | |
 
 **Spike 3 verdict:** PASS if 3a–3e all pass.
@@ -3391,7 +3391,7 @@ Note the time (UTC) here: ____ (before 3a; the 3d queries use it as `<noted time
 
 **Decision:**
 - All three PASS → start Phase 1 on the spec as written; the print path is whichever of 1a/1c passed.
-- Only 1c passed for printing → amend the spec: Phase 1 needs an always-on print agent device in each shop.
+- Only the agent path (1c + 1c-2 + 1f-agent) passed for printing → amend the spec: Phase 1 needs an always-on print agent device in each shop.
 - Spike 1 fails entirely → stop and decide on printer hardware before Phase 1.
 - Spike 2 fails → investigate Realtime region/latency before Phase 1.
 - Spike 3 fails → fix the queue before Phase 1; do not pilot without it.
