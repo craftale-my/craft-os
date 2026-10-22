@@ -31,7 +31,7 @@ Plan: docs/superpowers/plans/2026-10-22-pos-phase0-spikes.md
 |---|---|---|---|
 | 1a Browser → printer over HTTPS | iPad: open `https://<printer-ip>` once and accept its certificate, then POS page → Test print (browser route). If the printer offers no HTTPS, record 1a FAIL — the production POS is HTTPS. | FAIL (hardware) | ZY301 answers on 9100 only; ports 80 and 443 do not respond (curl 000) — no web service, so a browser cannot print to it |
 | 1b Certificate acceptance survives closing and reopening Safari | Close Safari fully, reopen POS page, Test print again | N/A | Follows from 1a — the printer has no HTTPS at all |
-| 1c Agent → printer on TCP 9100 | Mac: run agent, POS page → Test print (agent route) | | |
+| 1c Agent → printer on TCP 9100 | Mac: run agent, POS page → Test print (agent route) | PASS | 2026-10-22 18:24 MYT: job 00e298f4 inserted into spike_print_jobs → agent (Realtime) printed it on the ZY301 at 192.168.0.8; DB status printed, attempts 1, 708 ms insert→printed_at; ticket "Order: AGENT1 (TEST)" printed with 48-column rules (photo) |
 | 1c-2 Agent: unplug the printer's network cable, then Test print again | Agent log should say the job failed, not printed; the job shows as failed in `select id, status, last_error from spike_print_jobs order by created_at desc limit 5;` (no page lists agent jobs) | | |
 | 1d Chinese characters | Look at the "Chinese check" line on each ticket | Prints as "?" | Test ticket 18:19: "Chinese check: ??? ??". Text ESC/POS with no code page; Feedme prints this printer "Image-based" (rasterised), which is how it shows Chinese |
 | 1e Ticket width | Does a 42-column rule fit on one line? If not, what does? | 48 columns fit | A 48-digit row printed on one line; agent TICKET_COLS set to 48 |
