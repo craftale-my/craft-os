@@ -21,6 +21,7 @@ import ProjectsPage from './features/tasks/Projects'
 import ProjectDetailPage from './features/tasks/ProjectDetail'
 import SettingsPage from './features/settings/Settings'
 import MenuPage from './features/pos/menu/MenuPage'
+import MenuImportPage from './features/pos/menu/MenuImportPage'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
@@ -253,6 +254,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="access_settings">
             <AppLayout><MenuPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/menu/import"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><MenuImportPage /></AppLayout>
           </ProtectedRoute>
         }
       />
