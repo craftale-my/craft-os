@@ -117,6 +117,10 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
 
     if (!key) {
       const name = clean(r[mc['Name']])
+      if (products.has(id)) {
+        warnings.push(`${name || id}: second base row for the same Product ID — skipped`)
+        return
+      }
       if (!name) {
         warnings.push(`Product ${id} has no name — skipped`)
         skipped.add(id)
@@ -154,6 +158,10 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
       return
     }
     const variantName = clean(r[mc['Variant Name']]) || key
+    if (p.variants.some((v) => v.key === key)) {
+      warnings.push(`${p.name} / ${variantName}: duplicate variant key — skipped`)
+      return
+    }
     if (price === null) {
       warnings.push(`${p.name} / ${variantName}: price "${rawPrice}" is not a number — variant skipped`)
       return

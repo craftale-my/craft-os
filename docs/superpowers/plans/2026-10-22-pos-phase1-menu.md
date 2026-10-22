@@ -962,6 +962,20 @@ describe('buildMenuImport', () => {
     expect(byId.get('item_egg')).toMatchObject({ name: 'Salted Egg 咸蛋酱', isAddon: true, availability: 'hidden' })
   })
 
+  it('skips a repeated variant key and a repeated base row, keeping the first', () => {
+    const f = files()
+    f.menu['Craft Cafe'].push(
+      menuRow('product_tea', 'Apple Tea', 'variant_x/1', 'COLD AGAIN', 'TEA', 'ALL', '99'),
+      menuRow('product_don', 'Smoked Duck DON v2', '', '', 'DONBURI', 'ALL', '1'),
+    )
+    const r = buildMenuImport(f, 'Craft Cafe')
+    const tea = r.payload.products.find((p) => p.feedmeId === 'product_tea')!
+    expect(tea.variants.map((v) => v.priceSen)).toEqual([1000, 1150])
+    expect(r.payload.products.find((p) => p.feedmeId === 'product_don')!.variants[0].priceSen).toBe(2400)
+    expect(r.warnings).toContain('Apple Tea / COLD AGAIN: duplicate variant key — skipped')
+    expect(r.warnings).toContain('Smoked Duck DON v2: second base row for the same Product ID — skipped')
+  })
+
   it('skips a product with no valid price and says why', () => {
     expect(byId.has('item_bad')).toBe(false)
     expect(warnings).toContain('Broken price: price "abc" is not a number — skipped')
@@ -1143,6 +1157,10 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
 
     if (!key) {
       const name = clean(r[mc['Name']])
+      if (products.has(id)) {
+        warnings.push(`${name || id}: second base row for the same Product ID — skipped`)
+        return
+      }
       if (!name) {
         warnings.push(`Product ${id} has no name — skipped`)
         skipped.add(id)
@@ -1180,6 +1198,10 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
       return
     }
     const variantName = clean(r[mc['Variant Name']]) || key
+    if (p.variants.some((v) => v.key === key)) {
+      warnings.push(`${p.name} / ${variantName}: duplicate variant key — skipped`)
+      return
+    }
     if (price === null) {
       warnings.push(`${p.name} / ${variantName}: price "${rawPrice}" is not a number — variant skipped`)
       return
@@ -1281,7 +1303,7 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run src/features/pos/menu/feedmeExport.test.ts`
-Expected: PASS (13 tests). Then `npx tsc -b` — clean.
+Expected: PASS (14 tests). Then `npx tsc -b` — clean.
 
 - [ ] **Step 5: Check it against the real export (controller only, no commit of data)**
 

@@ -111,6 +111,20 @@ describe('buildMenuImport', () => {
     expect(byId.get('item_egg')).toMatchObject({ name: 'Salted Egg 咸蛋酱', isAddon: true, availability: 'hidden' })
   })
 
+  it('skips a repeated variant key and a repeated base row, keeping the first', () => {
+    const f = files()
+    f.menu['Craft Cafe'].push(
+      menuRow('product_tea', 'Apple Tea', 'variant_x/1', 'COLD AGAIN', 'TEA', 'ALL', '99'),
+      menuRow('product_don', 'Smoked Duck DON v2', '', '', 'DONBURI', 'ALL', '1'),
+    )
+    const r = buildMenuImport(f, 'Craft Cafe')
+    const tea = r.payload.products.find((p) => p.feedmeId === 'product_tea')!
+    expect(tea.variants.map((v) => v.priceSen)).toEqual([1000, 1150])
+    expect(r.payload.products.find((p) => p.feedmeId === 'product_don')!.variants[0].priceSen).toBe(2400)
+    expect(r.warnings).toContain('Apple Tea / COLD AGAIN: duplicate variant key — skipped')
+    expect(r.warnings).toContain('Smoked Duck DON v2: second base row for the same Product ID — skipped')
+  })
+
   it('skips a product with no valid price and says why', () => {
     expect(byId.has('item_bad')).toBe(false)
     expect(warnings).toContain('Broken price: price "abc" is not a number — skipped')
