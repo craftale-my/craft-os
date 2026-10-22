@@ -56,6 +56,15 @@ describe('flushQueue', () => {
   })
 })
 
+describe('flushQueue with a throwing sender', () => {
+  it('keeps the order and stops the flush instead of rejecting', async () => {
+    const store = memoryStore()
+    await enqueue(store, newQueuedOrder(null, [line], 1, 'a'))
+    const send = vi.fn(async () => { throw new Error('boom') })
+    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 1, stuck: 0 })
+  })
+})
+
 describe('newQueuedOrder', () => {
   it('copies the cart so later cart edits cannot change a queued order', () => {
     const items = [{ ...line }]
@@ -77,9 +86,27 @@ describe('toSendResult', () => {
     },
   )
 
-  it('treats database errors as final', () => {
-    expect(toSendResult({ message: 'Item is not available: x' })).toEqual({
+  it('treats the RPC\'s own business-rule rejections as final', () => {
+    expect(toSendResult({ message: 'Item is not available: x', code: 'P0001' })).toEqual({
       ok: false, retryable: false, reason: 'Item is not available: x',
+    })
+  })
+
+  it('treats a check violation as final', () => {
+    expect(toSendResult({ message: 'new row violates check constraint', code: '23514' })).toEqual({
+      ok: false, retryable: false, reason: 'new row violates check constraint',
+    })
+  })
+
+  it('retries an expired JWT', () => {
+    expect(toSendResult({ message: 'JWT expired', code: 'PGRST301' })).toEqual({
+      ok: false, retryable: true, reason: 'JWT expired',
+    })
+  })
+
+  it('retries a statement timeout', () => {
+    expect(toSendResult({ message: 'canceling statement due to statement timeout', code: '57014' })).toEqual({
+      ok: false, retryable: true, reason: 'canceling statement due to statement timeout',
     })
   })
 })

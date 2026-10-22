@@ -13,23 +13,31 @@ function openDb(dbName: string): Promise<IDBDatabase> {
 
 /** Opens, runs one request, and waits for the transaction to COMMIT — only
  *  then is the order on disk. Resolving on the request's onsuccess would be
- *  too early. */
-async function run<T>(
+ *  too early. Always settles: a commit-time abort (quota, eviction) rejects,
+ *  and a synchronous throw closes the connection instead of leaking it. */
+export async function runTransaction<T>(
   dbName: string,
   mode: IDBTransactionMode,
   fn: (s: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> {
   const db = await openDb(dbName)
   return new Promise<T>((resolve, reject) => {
-    const tx = db.transaction(STORE, mode)
-    const req = fn(tx.objectStore(STORE))
-    tx.oncomplete = () => {
+    let settled = false
+    const finish = (settle: () => void) => {
+      if (settled) return
+      settled = true
       db.close()
-      resolve(req.result)
+      settle()
     }
-    tx.onerror = () => {
-      db.close()
-      reject(tx.error)
+    try {
+      const tx = db.transaction(STORE, mode)
+      const req = fn(tx.objectStore(STORE))
+      tx.oncomplete = () => finish(() => resolve(req.result))
+      tx.onerror = () => finish(() => reject(tx.error))
+      tx.onabort = () =>
+        finish(() => reject(tx.error ?? new DOMException('Transaction aborted', 'AbortError')))
+    } catch (e) {
+      finish(() => reject(e))
     }
   })
 }
@@ -37,11 +45,11 @@ async function run<T>(
 export function createIdbStore(dbName = 'craft-pos'): QueueStore {
   return {
     put: async (o) => {
-      await run(dbName, 'readwrite', (s) => s.put(o))
+      await runTransaction(dbName, 'readwrite', (s) => s.put(o))
     },
-    all: () => run(dbName, 'readonly', (s) => s.getAll() as IDBRequest<QueuedOrder[]>),
+    all: () => runTransaction(dbName, 'readonly', (s) => s.getAll() as IDBRequest<QueuedOrder[]>),
     remove: async (id) => {
-      await run(dbName, 'readwrite', (s) => s.delete(id))
+      await runTransaction(dbName, 'readwrite', (s) => s.delete(id))
     },
   }
 }

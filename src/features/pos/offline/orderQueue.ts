@@ -50,7 +50,13 @@ export async function flushQueue(store: QueueStore, send: Sender): Promise<Flush
   let sent = 0
   for (const order of queued) {
     if (order.failedReason) continue
-    const res = await send(order)
+    let res: SendResult
+    try {
+      res = await send(order)
+    } catch (e) {
+      // A throwing sender must not lose the flush: keep the order, stop here.
+      res = { ok: false, retryable: true, reason: e instanceof Error ? e.message : String(e) }
+    }
     if (res.ok) {
       await store.remove(order.clientOrderId)
       sent++
@@ -67,10 +73,18 @@ export async function flushQueue(store: QueueStore, send: Sender): Promise<Flush
   }
 }
 
-// Chrome: "Failed to fetch"; Safari: "Load failed"; Firefox: "NetworkError…"; Node: "fetch failed"
-const NETWORK_ERROR = /failed to fetch|load failed|networkerror|network request failed|fetch failed/i
+/** Only these server-confirmed Postgres errors are final. Anything else —
+ *  network failures, expired JWT, 502/503/504, statement timeout, aborts — is
+ *  retried, which is always safe because the server dedupes on client_order_id. */
+const FINAL_ERROR_CODES = new Set([
+  'P0001', // raise_exception — the RPC's own business-rule rejections, e.g. "Item is not available"
+  '23514', // check_violation — e.g. qty out of range
+  '22P02', // invalid_text_representation — e.g. malformed uuid
+  '23503', // foreign_key_violation
+])
 
-export function toSendResult(error: { message: string } | null): SendResult {
+export function toSendResult(error: { message: string; code?: string } | null): SendResult {
   if (!error) return { ok: true }
-  return { ok: false, retryable: NETWORK_ERROR.test(error.message), reason: error.message }
+  const final = error.code !== undefined && FINAL_ERROR_CODES.has(error.code)
+  return { ok: false, retryable: !final, reason: error.message }
 }

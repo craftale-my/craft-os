@@ -1321,7 +1321,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   - `newQueuedOrder(tableId: string | null, items: CartLine[], now?: number, id?: string): QueuedOrder`
   - `enqueue(store: QueueStore, order: QueuedOrder): Promise<void>`
   - `flushQueue(store: QueueStore, send: Sender): Promise<FlushReport>`
-  - `toSendResult(error: { message: string } | null): SendResult`
+  - `toSendResult(error: { message: string; code?: string } | null): SendResult`
   - `createIdbStore(dbName?: string): QueueStore`
 
 - [ ] **Step 1: Install the IndexedDB test double**
@@ -1395,6 +1395,15 @@ describe('flushQueue', () => {
   })
 })
 
+describe('flushQueue with a throwing sender', () => {
+  it('keeps the order and stops the flush instead of rejecting', async () => {
+    const store = memoryStore()
+    await enqueue(store, newQueuedOrder(null, [line], 1, 'a'))
+    const send = vi.fn(async () => { throw new Error('boom') })
+    expect(await flushQueue(store, send)).toEqual({ sent: 0, pending: 1, stuck: 0 })
+  })
+})
+
 describe('newQueuedOrder', () => {
   it('copies the cart so later cart edits cannot change a queued order', () => {
     const items = [{ ...line }]
@@ -1416,9 +1425,27 @@ describe('toSendResult', () => {
     },
   )
 
-  it('treats database errors as final', () => {
-    expect(toSendResult({ message: 'Item is not available: x' })).toEqual({
+  it('treats the RPC\'s own business-rule rejections as final', () => {
+    expect(toSendResult({ message: 'Item is not available: x', code: 'P0001' })).toEqual({
       ok: false, retryable: false, reason: 'Item is not available: x',
+    })
+  })
+
+  it('treats a check violation as final', () => {
+    expect(toSendResult({ message: 'new row violates check constraint', code: '23514' })).toEqual({
+      ok: false, retryable: false, reason: 'new row violates check constraint',
+    })
+  })
+
+  it('retries an expired JWT', () => {
+    expect(toSendResult({ message: 'JWT expired', code: 'PGRST301' })).toEqual({
+      ok: false, retryable: true, reason: 'JWT expired',
+    })
+  })
+
+  it('retries a statement timeout', () => {
+    expect(toSendResult({ message: 'canceling statement due to statement timeout', code: '57014' })).toEqual({
+      ok: false, retryable: true, reason: 'canceling statement due to statement timeout',
     })
   })
 })
@@ -1484,7 +1511,13 @@ export async function flushQueue(store: QueueStore, send: Sender): Promise<Flush
   let sent = 0
   for (const order of queued) {
     if (order.failedReason) continue
-    const res = await send(order)
+    let res: SendResult
+    try {
+      res = await send(order)
+    } catch (e) {
+      // A throwing sender must not lose the flush: keep the order, stop here.
+      res = { ok: false, retryable: true, reason: e instanceof Error ? e.message : String(e) }
+    }
     if (res.ok) {
       await store.remove(order.clientOrderId)
       sent++
@@ -1501,19 +1534,27 @@ export async function flushQueue(store: QueueStore, send: Sender): Promise<Flush
   }
 }
 
-// Chrome: "Failed to fetch"; Safari: "Load failed"; Firefox: "NetworkError…"; Node: "fetch failed"
-const NETWORK_ERROR = /failed to fetch|load failed|networkerror|network request failed|fetch failed/i
+/** Only these server-confirmed Postgres errors are final. Anything else —
+ *  network failures, expired JWT, 502/503/504, statement timeout, aborts — is
+ *  retried, which is always safe because the server dedupes on client_order_id. */
+const FINAL_ERROR_CODES = new Set([
+  'P0001', // raise_exception — the RPC's own business-rule rejections, e.g. "Item is not available"
+  '23514', // check_violation — e.g. qty out of range
+  '22P02', // invalid_text_representation — e.g. malformed uuid
+  '23503', // foreign_key_violation
+])
 
-export function toSendResult(error: { message: string } | null): SendResult {
+export function toSendResult(error: { message: string; code?: string } | null): SendResult {
   if (!error) return { ok: true }
-  return { ok: false, retryable: NETWORK_ERROR.test(error.message), reason: error.message }
+  const final = error.code !== undefined && FINAL_ERROR_CODES.has(error.code)
+  return { ok: false, retryable: !final, reason: error.message }
 }
 ```
 
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run src/features/pos/offline/orderQueue.test.ts`
-Expected: PASS (11 tests)
+Expected: PASS (15 tests)
 
 - [ ] **Step 6: Write the failing IndexedDB test**
 
@@ -1522,8 +1563,8 @@ Expected: PASS (11 tests)
 ```ts
 import 'fake-indexeddb/auto'
 import { describe, it, expect } from 'vitest'
-import { createIdbStore } from './idbStore'
-import { newQueuedOrder } from './orderQueue'
+import { createIdbStore, runTransaction } from './idbStore'
+import { newQueuedOrder, type QueuedOrder } from './orderQueue'
 
 describe('createIdbStore', () => {
   it('keeps orders across separate store instances (i.e. a page reload)', async () => {
@@ -1545,6 +1586,32 @@ describe('createIdbStore', () => {
     expect(await store.all()).toEqual([{ ...order, failedReason: 'rejected' }])
     await store.remove('a')
     expect(await store.all()).toEqual([])
+  })
+
+  describe('never hangs', () => {
+    it('rejects a put with no key instead of hanging', async () => {
+      const store = createIdbStore('test-nokey')
+      await expect(store.put({ foo: 1 } as unknown as QueuedOrder)).rejects.toBeDefined()
+    })
+
+    it('rejects when the transaction is aborted', async () => {
+      const order = newQueuedOrder(null, [{ menuItemId: 'm1', qty: 1, note: null }], 1, 'a')
+      await expect(
+        runTransaction('test-abort', 'readwrite', (s) => {
+          const r = s.put(order)
+          s.transaction.abort()
+          return r
+        }),
+      ).rejects.toBeDefined()
+    })
+
+    it('still works on the same database after a rejected call', async () => {
+      const store = createIdbStore('test-after-reject')
+      await store.put({ foo: 1 } as unknown as QueuedOrder).catch(() => {})
+      const order = newQueuedOrder(null, [{ menuItemId: 'm1', qty: 1, note: null }], 1, 'a')
+      await store.put(order)
+      expect(await store.all()).toEqual([order])
+    })
   })
 })
 ```
@@ -1572,23 +1639,31 @@ function openDb(dbName: string): Promise<IDBDatabase> {
 
 /** Opens, runs one request, and waits for the transaction to COMMIT — only
  *  then is the order on disk. Resolving on the request's onsuccess would be
- *  too early. */
-async function run<T>(
+ *  too early. Always settles: a commit-time abort (quota, eviction) rejects,
+ *  and a synchronous throw closes the connection instead of leaking it. */
+export async function runTransaction<T>(
   dbName: string,
   mode: IDBTransactionMode,
   fn: (s: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> {
   const db = await openDb(dbName)
   return new Promise<T>((resolve, reject) => {
-    const tx = db.transaction(STORE, mode)
-    const req = fn(tx.objectStore(STORE))
-    tx.oncomplete = () => {
+    let settled = false
+    const finish = (settle: () => void) => {
+      if (settled) return
+      settled = true
       db.close()
-      resolve(req.result)
+      settle()
     }
-    tx.onerror = () => {
-      db.close()
-      reject(tx.error)
+    try {
+      const tx = db.transaction(STORE, mode)
+      const req = fn(tx.objectStore(STORE))
+      tx.oncomplete = () => finish(() => resolve(req.result))
+      tx.onerror = () => finish(() => reject(tx.error))
+      tx.onabort = () =>
+        finish(() => reject(tx.error ?? new DOMException('Transaction aborted', 'AbortError')))
+    } catch (e) {
+      finish(() => reject(e))
     }
   })
 }
@@ -1596,11 +1671,11 @@ async function run<T>(
 export function createIdbStore(dbName = 'craft-pos'): QueueStore {
   return {
     put: async (o) => {
-      await run(dbName, 'readwrite', (s) => s.put(o))
+      await runTransaction(dbName, 'readwrite', (s) => s.put(o))
     },
-    all: () => run(dbName, 'readonly', (s) => s.getAll() as IDBRequest<QueuedOrder[]>),
+    all: () => runTransaction(dbName, 'readonly', (s) => s.getAll() as IDBRequest<QueuedOrder[]>),
     remove: async (id) => {
-      await run(dbName, 'readwrite', (s) => s.delete(id))
+      await runTransaction(dbName, 'readwrite', (s) => s.delete(id))
     },
   }
 }
@@ -1609,7 +1684,7 @@ export function createIdbStore(dbName = 'craft-pos'): QueueStore {
 - [ ] **Step 9: Run both tests**
 
 Run: `npx vitest run src/features/pos/offline`
-Expected: PASS (13 tests)
+Expected: PASS (20 tests)
 
 - [ ] **Step 10: Commit**
 
