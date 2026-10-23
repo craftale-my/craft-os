@@ -297,8 +297,9 @@ Deno.serve(async (req) => {
   //      之后任何"什么都没建成"的失败都会释放认领,让申请可以重试。
   //   2. email / 姓名 / 电话一律取自申请行;body 的 email 若与申请不符就拒绝。
   //   3. 新 auth 用户带 app_metadata.registration_request_id。email 已有 auth 用户时:
-  //      - 已有 staff 行:绝不重设密码、绝不覆盖 staff 行;电话只有调用者本身是
-  //        私人栏位读者(can_read_staff_private)时才补进空着的 staff_private;
+  //      - 已有 staff 行:绝不重设密码、绝不覆盖 staff 行;电话只在调用者本身是
+  //        私人栏位读者(can_read_staff_private),或这个帐号正是本申请建出、
+  //        还从未登入过时,才补进空着的 staff_private;
   //        标记申请已批准,回传 alreadyExisted;
   //      - 没有 staff 行:只有当它是"本申请"被中断的审批留下的(app_metadata
   //        对得上 requestId)才接管并重设密码;否则是别的登入(非员工、日后 POS /
