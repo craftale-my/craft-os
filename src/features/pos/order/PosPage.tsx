@@ -12,6 +12,8 @@ import { findProduct, type OrderLine, type PosMenu } from './cart'
 import PrintHostPanel from './PrintHostPanel'
 import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
+import CheckoutSheet from '../checkout/CheckoutSheet'
+import { fetchBillingConfig, type BillingConfig } from '../checkout/checkoutApi'
 
 export type Selection = { kind: 'table'; tableId: string } | { kind: 'bill'; billId: string } | null
 
@@ -29,6 +31,8 @@ export default function PosPage() {
   const [padLines, setPadLines] = useState<OrderLine[] | undefined>(undefined)
   const [branchName, setBranchName] = useState<string | null>(null)
   const [stuckMenu, setStuckMenu] = useState<PosMenu | null>(null)
+  const [billing, setBilling] = useState<BillingConfig | null>(null)
+  const [checkout, setCheckout] = useState<OpenBillRow | null>(null)
   const queue = useOrderQueue()
   const reqId = useRef(0)
   const selectedBillIdRef = useRef<string | null>(null)
@@ -46,6 +50,10 @@ export default function PosPage() {
   useEffect(() => {
     if (branchId) fetchBranchName(branchId).then(setBranchName, () => setBranchName(null))
   }, [branchId])
+  const loadBilling = useCallback(() => {
+    if (branchId) fetchBillingConfig(branchId).then(setBilling, (e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [branchId])
+  useEffect(() => { loadBilling() }, [loadBilling])
   const hasStuck = queue.stuck.length > 0
   useEffect(() => {
     if (hasStuck && branchId && !stuckMenu) fetchPosMenu(branchId).then(setStuckMenu, () => undefined)
@@ -56,7 +64,12 @@ export default function PosPage() {
     setRefreshKey((k) => k + 1)
     void reload()
   }, [reload])
-  const rtStatus = usePosRealtime(branchId, { onOrder, onSweep: () => { setRefreshKey((k) => k + 1); void reload() } })
+  const rtStatus = usePosRealtime(branchId, {
+    onOrder,
+    // another iPad paid, voided, moved or merged a bill: refresh the grid and the open panel
+    onBill: () => { setRefreshKey((k) => k + 1); void reload() },
+    onSweep: () => { setRefreshKey((k) => k + 1); void reload() },
+  })
 
   const cards = useMemo(() => tableCards(tables, bills, newBillIds), [tables, bills, newBillIds])
   const selectedTable = selection?.kind === 'table' ? tables.find((t) => t.id === selection.tableId) ?? null : null
@@ -140,7 +153,8 @@ export default function PosPage() {
             onPick={pick} onTakeaway={() => setPad({ orderType: 'takeaway' })} onPickBill={(billId) => setSelection({ kind: 'bill', billId })} />
         </div>
         {(selectedTable || selectedBill) && (
-          <BillPanel table={selectedTable} bill={selectedBill} refreshKey={refreshKey} onChanged={() => void reload()}
+          <BillPanel table={selectedTable} bill={selectedBill} refreshKey={refreshKey} billing={billing} onChanged={() => void reload()}
+            onCheckout={() => { if (selectedBill) { loadBilling(); setCheckout(selectedBill) } }}
             onAddItems={() => {
               if (selectedTable) setPad({ orderType: 'dine_in', tableId: selectedTable.id, needsPax: !selectedBill?.pax })
               else setPad({ orderType: 'takeaway' })
@@ -150,6 +164,12 @@ export default function PosPage() {
       {pad && (
         <OrderPad branchId={branchId} mode={pad} initialLines={padLines} submit={submitFromPad} onClose={closePad}
           onSent={() => { closePad(); setRefreshKey((k) => k + 1); void reload() }} />
+      )}
+      {checkout && (
+        <CheckoutSheet branchId={branchId} bill={checkout}
+          title={checkout.table_id ? `Table ${tables.find((t) => t.id === checkout.table_id)?.label ?? '?'}` : 'Takeaway'}
+          onClose={() => setCheckout(null)}
+          onPaid={() => { setCheckout(null); setSelection(null); setRefreshKey((k) => k + 1); void reload() }} />
       )}
     </div>
   )
