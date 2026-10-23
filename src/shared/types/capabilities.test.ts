@@ -17,4 +17,14 @@ describe('capabilities', () => {
       owner: true, admin: true, hr: false, manager: true, supervisor: true, staff: false,
     })
   })
+
+  it('manage_menu is in the System Roles matrix as "Edit menu"', () => {
+    expect(CAPABILITIES.find((c) => c.key === 'manage_menu')?.label).toBe('Edit menu')
+  })
+
+  it('manage_menu defaults match has_menu_cap / staff_has_cap in SQL: owner and admin only', () => {
+    expect(Object.fromEntries(SYSTEM_ROLES.map((r) => [r, DEFAULT_SYSTEM_ROLE_CAPS[r].manage_menu]))).toEqual({
+      owner: true, admin: true, hr: false, manager: false, supervisor: false, staff: false,
+    })
+  })
 })
