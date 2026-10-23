@@ -4,6 +4,7 @@ import { buildCatalogsImport, readFeedmeExport, type CatalogsImport } from './fe
 import { countCatalogs, importFeedme, type ImportReport } from './menuApi'
 import { IMPORT_CONFIRM_WORD, MASTER_WARNING_INTRO, MASTER_WARNING_KEPT, MASTER_WARNING_LOSSES, canImport, catalogSummary } from './importView'
 import MenuTabs from './MenuTabs'
+import PhotoImportSection from './PhotoImportSection'
 
 type Stage =
   | { kind: 'pick' }
@@ -154,6 +155,9 @@ export default function MenuImportPage() {
           <Link to="/menu" className="underline">Open the menu</Link>
         </div>
       )}
+
+      {/* M3: a separate step, used after the menu itself has been imported */}
+      <PhotoImportSection />
     </div>
   )
 }
