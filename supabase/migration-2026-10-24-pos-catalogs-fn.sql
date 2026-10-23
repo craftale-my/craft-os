@@ -764,6 +764,12 @@ end $$;
 revoke all on function menu_import_catalogs(jsonb) from public, anon;
 grant execute on function menu_import_catalogs(jsonb) to authenticated;
 
+-- menu_import is internal from M1 on: no client calls it, and an old client's
+-- /menu/import must not change master prices while orders are priced by catalog.
+-- menu_import_catalogs (security definer) still calls it. Re-applied here because
+-- the create above keeps the grant migration-2026-10-22-pos-menu-import-fn.sql gave.
+revoke all on function menu_import(jsonb) from public, anon, authenticated;
+
 -- PostgREST picks up the new place_counter_order signature now, not at its next poll
 notify pgrst, 'reload schema';
 

@@ -64,14 +64,13 @@ begin
     raise exception 'FAIL schema: orders.catalog_id has no foreign key';
   end if;
   for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid,uuid)', 'save_branch_catalogs(jsonb)',
-                                      'menu_import_catalogs(jsonb)', 'menu_set_catalog_product(uuid,uuid,text)',
-                                      'menu_import(jsonb)']) as f loop
+                                      'menu_import_catalogs(jsonb)', 'menu_set_catalog_product(uuid,uuid,text)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
     if not has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL grants: staff cannot call %', r.f; end if;
   end loop;
   for r in select f from unnest(array['pos_order_catalog(uuid,text,text,uuid)',
                                       'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid,uuid)',
-                                      'staff_has_cap(uuid,text)']) as f loop
+                                      'staff_has_cap(uuid,text)', 'menu_import(jsonb)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') or has_function_privilege('authenticated', r.f, 'execute') then
       raise exception 'FAIL grants: % must be internal', r.f;
     end if;
@@ -429,11 +428,11 @@ begin
     exception when raise_exception then
       if r.allowed or sqlerrm <> 'Not allowed to import the menu' then raise; end if;
     end;
-    begin
+    begin                                         -- internal from M1 on: no one calls it directly
       perform menu_import('{"categories": [], "products": [], "groups": [], "links": []}'::jsonb);
-      if not r.allowed then raise exception 'FAIL H %: menu_import was allowed', r.label; end if;
-    exception when raise_exception then
-      if r.allowed or sqlerrm <> 'Not allowed to import the menu' then raise; end if;
+      raise exception 'FAIL H %: menu_import is callable directly', r.label;
+    exception when insufficient_privilege then
+      null;
     end;
     reset role;
   end loop;

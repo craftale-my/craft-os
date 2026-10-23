@@ -119,12 +119,13 @@ begin
     if sqlerrm not like 'Invalid import file%' then raise; end if;
   end;
 
-  -- B7. grants: anon cannot call it, authenticated can (the cap check is the second gate)
+  -- B7. grants: neither anon nor staff can call it directly (from M1 only menu_import_catalogs,
+  --     security definer, calls it — migration-2026-10-24-pos-catalogs-fn.sql revokes it)
   if has_function_privilege('anon', 'menu_import(jsonb)', 'execute') then
     raise exception 'FAIL grants: anon can execute menu_import';
   end if;
-  if not has_function_privilege('authenticated', 'menu_import(jsonb)', 'execute') then
-    raise exception 'FAIL grants: authenticated cannot execute menu_import';
+  if has_function_privilege('authenticated', 'menu_import(jsonb)', 'execute') then
+    raise exception 'FAIL grants: authenticated can execute menu_import (re-run migration-2026-10-24-pos-catalogs-fn.sql)';
   end if;
 
   -- B8. atomic: a bad group (max 0) aborts the whole call, leaving no new category behind

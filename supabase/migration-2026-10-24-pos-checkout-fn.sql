@@ -1,3 +1,11 @@
+-- STOP guard (M1): this file re-creates the pre-catalog pos_insert_order /
+-- place_counter_order next to the M1 ones, so PostgREST cannot choose one.
+do $$ begin
+  if to_regprocedure('pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid,uuid)') is not null then
+    raise exception 'STOP: menu catalogs (M1) are applied — re-run migration-2026-10-24-pos-catalogs-fn.sql instead of this file';
+  end if;
+end $$;
+
 -- ============================================================================
 -- Craft OS — POS Phase 1 · Checkout RPCs (2026-10-24). Run after
 -- migration-2026-10-24-pos-checkout.sql. Idempotent.
