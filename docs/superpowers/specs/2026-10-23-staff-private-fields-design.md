@@ -226,6 +226,18 @@ alter table staff
   只在 `staff_private.contact_number` 为空时补上电话、标记申请 approved,并回传 `alreadyExisted: true`,
   Directory 显示 "Account Already Existed" 而不是一组从未生效的登入资料;staff 行一律 insert,不 upsert;
   最后标记申请的 update 也检查结果(0 行或出错都回错)。
+  补强(fix round 4):
+  - **孤儿登入只在"本申请"时接管。** 新 auth 用户带 `app_metadata.registration_request_id`;
+    email 已有 auth 用户而没有 staff 行时,只有 metadata 对得上本 `requestId`(本申请被中断的审批)
+    才接管并重设密码,否则 409 "This email belongs to an existing login that is not a staff account.
+    Ask an admin." —— supervisor/hr 能改 pending 申请的 email,若无条件接管,任何非员工登入
+    (以及日后共用后端的 POS / 顾客帐号)都可能被接管。旧版 function 留下的无 metadata 孤儿需人工处理。
+  - **"帐号已存在"分支补电话要求调用者是读者。** service role 会绕过 `staff_private` RLS,
+    所以只有 `can_read_staff_private()` 那批人(rank manager 或 hr/manager/admin/owner)审批时才补;
+    supervisor 审批时跳过,并在 message 里说明电话没有复制。
+  - **先认领再动手。** 条件式 update(pending、未被认领或认领逾 5 分钟)认领申请,0 行回 409;
+    什么都没建成的失败会释放认领以便重试;建好帐号之后的失败会明说"帐号已建好、请把画面上的密码交给对方"。
+    审批途中被 reject 会以 approve/reject 竞态的讯息回报。
 - **provision-staff create 的 system_role 由 rank 推出(接受的行为)。** `create` 建号时
   `system_role = rankToSystemRole(rank)`:manager-tier 建 rank supervisor / manager 时会连带得到
   system_role supervisor / manager。D1 的"system_role 只有 owner 能改"指的是**改**既有员工的角色
