@@ -2,6 +2,8 @@
 import { Navigate, Route, Routes, useParams } from 'react-router-dom'
 import ProductListPage from './ProductListPage'
 import ProductEditorPage from './ProductEditorPage'
+import CatalogsPage from './CatalogsPage'
+import CatalogGridPage from './CatalogGridPage'
 import GroupListPage from './GroupListPage'
 import GroupEditorPage from './GroupEditorPage'
 import MenuImportPage from './MenuImportPage'
@@ -10,6 +12,11 @@ import MenuImportPage from './MenuImportPage'
 function ProductEditorRoute() {
   const { id } = useParams<{ id: string }>()
   return <ProductEditorPage key={id ?? 'new'} productId={id ?? null} />
+}
+
+function CatalogGridRoute() {
+  const { id = '' } = useParams<{ id: string }>()
+  return <CatalogGridPage key={id} catalogId={id} />
 }
 
 function GroupEditorRoute() {
@@ -24,6 +31,8 @@ export default function MenuRoutes() {
       <Route index element={<ProductListPage />} />
       <Route path="products/new" element={<ProductEditorRoute />} />
       <Route path="products/:id" element={<ProductEditorRoute />} />
+      <Route path="catalogs" element={<CatalogsPage />} />
+      <Route path="catalogs/:id" element={<CatalogGridRoute />} />
       <Route path="groups" element={<GroupListPage />} />
       <Route path="groups/new" element={<GroupEditorRoute />} />
       <Route path="groups/:id" element={<GroupEditorRoute />} />
