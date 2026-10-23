@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
-  flushQueue, newQueuedOrder, enqueue, toSendResult,
+  flushQueue, newQueuedOrder, enqueue, toSendResult, counterOrderArgs,
   type QueueStore, type QueuedOrder, type SendResult,
 } from './orderQueue'
 
@@ -98,7 +98,25 @@ describe('newQueuedOrder', () => {
     const items = [{ ...line }]
     const order = newQueuedOrder('dine_in', 't1', 4, items, 5, 'id')
     items[0].qty = 9
-    expect(order).toEqual({ clientOrderId: 'id', orderType: 'dine_in', tableId: 't1', pax: 4, items: [line], queuedAt: 5, failedReason: null })
+    expect(order).toEqual({ clientOrderId: 'id', orderType: 'dine_in', tableId: 't1', pax: 4, items: [line], queuedAt: 5, failedReason: null, catalogId: null })
+  })
+
+  it('carries the catalog the cart was priced from', () => {
+    expect(newQueuedOrder('takeaway', null, null, [line], 5, 'id', 'c-staff').catalogId).toBe('c-staff')
+  })
+})
+
+describe('counterOrderArgs', () => {
+  it('sends the catalog with the order', () => {
+    expect(counterOrderArgs(newQueuedOrder('dine_in', 't1', 2, [line], 5, 'id', 'c-grab'))).toEqual({
+      p_table_id: 't1', p_order_type: 'dine_in', p_pax: 2, p_items: [line], p_client_order_id: 'id', p_catalog_id: 'c-grab',
+    })
+  })
+
+  it('sends null for an order queued before catalogs (the server uses the branch default)', () => {
+    const { catalogId: _drop, ...legacy } = newQueuedOrder('takeaway', null, null, [line], 5, 'old')
+    void _drop
+    expect(counterOrderArgs(legacy as QueuedOrder).p_catalog_id).toBeNull()
   })
 })
 

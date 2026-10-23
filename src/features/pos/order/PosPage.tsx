@@ -9,7 +9,8 @@ import TablesGrid from './TablesGrid'
 import BillPanel from './BillPanel'
 import OrderPad, { type PadMode } from './OrderPad'
 import type { OrderLine } from './cart'
-import { defaultCatalogId, type BranchCatalogs } from './catalogs'
+import { defaultCatalogProblem, selectableCatalogs, type BranchCatalogs } from './catalogs'
+import { padFromRejected } from './rejectedOrder'
 import PrintHostPanel from './PrintHostPanel'
 import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
@@ -32,6 +33,10 @@ export default function PosPage() {
   const [error, setError] = useState<string | null>(null)
   const [pad, setPad] = useState<PadMode | null>(null)
   const [padLines, setPadLines] = useState<OrderLine[] | undefined>(undefined)
+  const [padCatalogId, setPadCatalogId] = useState<string | null>(null)
+  const [padCatalogs, setPadCatalogs] = useState<BranchCatalogs | null>(null)
+  const [padCatalogsError, setPadCatalogsError] = useState<string | null>(null)
+  const [padCatalogsTry, setPadCatalogsTry] = useState(0)
   const [branchName, setBranchName] = useState<string | null>(null)
   const [stuckNames, setStuckNames] = useState<Map<string, string> | null>(null)
   const [branchCatalogs, setBranchCatalogs] = useState<BranchCatalogs | null>(null)
@@ -68,7 +73,23 @@ export default function PosPage() {
     if (branchId) fetchBranchCatalogs(branchId).then(setBranchCatalogs, (e) => setError(e instanceof Error ? e.message : String(e)))
   }, [branchId])
   useEffect(() => { loadCatalogs() }, [loadCatalogs])
-  useEffect(() => { if (pad) loadCatalogs() }, [pad, loadCatalogs])
+  // The pad gets the branch's catalogs only once they have been fetched for THIS opening,
+  // so a default changed on another device since /pos was opened is never used.
+  // Offline: the last list this iPad saw; with none, the pad shows the error and Retry.
+  useEffect(() => {
+    setPadCatalogs(null); setPadCatalogsError(null)
+    if (!pad || !branchId) return
+    let live = true
+    fetchBranchCatalogs(branchId).then(
+      (c) => { if (live) { setBranchCatalogs(c); setPadCatalogs(c) } },
+      (e) => {
+        if (!live) return
+        if (branchCatalogs) setPadCatalogs(branchCatalogs)
+        else setPadCatalogsError(e instanceof Error ? e.message : String(e))
+      },
+    )
+    return () => { live = false }
+  }, [pad, branchId, padCatalogsTry]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const onOrder = useCallback((row: OrderInsert) => {
     if (row.source === 'qr' && row.bill_id !== selectedBillIdRef.current) setNewBillIds((s) => new Set(s).add(row.bill_id))
@@ -114,10 +135,12 @@ export default function PosPage() {
   const editingFrom = useRef<string | null>(null)
   const editRejected = (o: QueuedOrder) => {
     editingFrom.current = o.clientOrderId
-    setPadLines(o.items)
-    setPad(o.tableId ? { orderType: 'dine_in', tableId: o.tableId, needsPax: o.pax != null, initialPax: o.pax ?? undefined } : { orderType: 'takeaway' })
+    const p = padFromRejected(o)
+    setPadLines(p.lines)
+    setPadCatalogId(p.catalogId)
+    setPad(p.mode)
   }
-  const closePad = () => { setPad(null); setPadLines(undefined); editingFrom.current = null }
+  const closePad = () => { setPad(null); setPadLines(undefined); setPadCatalogId(null); editingFrom.current = null }
 
   if (!staff) return null
   if (!branchId) {
@@ -147,10 +170,11 @@ export default function PosPage() {
           {queue.stuck.map((o) => {
             const n = o.items.reduce((sum, l) => sum + l.qty, 0)
             const where = o.tableId ? `Table ${tables.find((t) => t.id === o.tableId)?.label ?? '?'}` : 'Takeaway'
+            const catalog = o.catalogId ? branchCatalogs?.catalogs.find((c) => c.id === o.catalogId)?.name : null
             const names = o.items.map((l) => `${l.qty} × ${stuckNames?.get(l.productId) || 'Unknown item'}`).join(', ')
             return (
               <p key={o.clientOrderId} className="text-red-700">
-                Rejected: {o.failedReason} · {where} · {n} item{n === 1 ? '' : 's'} ({names}){' '}
+                Rejected: {o.failedReason} · {where}{catalog ? ` · ${catalog}` : ''} · {n} item{n === 1 ? '' : 's'} ({names}){' '}
                 <button className="mr-2 underline" onClick={() => editRejected(o)}>Edit</button>
                 <button className="underline" onClick={() => void queue.discard(o.clientOrderId)}>Discard</button>
               </p>
@@ -186,8 +210,11 @@ export default function PosPage() {
       </div>
       {pad && (
         <OrderPad branchId={branchId} mode={pad} initialLines={padLines} submit={submitFromPad} onClose={closePad}
-          catalogId={branchCatalogs ? defaultCatalogId(branchCatalogs.assignments, pad.orderType) : null}
-          catalogsLoaded={branchCatalogs !== null}
+          catalogs={padCatalogs ? selectableCatalogs(padCatalogs.assignments, padCatalogs.catalogs, pad.orderType, padCatalogId) : null}
+          defaultProblem={padCatalogs ? defaultCatalogProblem(padCatalogs.assignments, padCatalogs.catalogs, pad.orderType) : null}
+          catalogsError={padCatalogsError}
+          onRetryCatalogs={() => setPadCatalogsTry((n) => n + 1)}
+          initialCatalogId={padCatalogId}
           onSent={() => { closePad(); setRefreshKey((k) => k + 1); void reload() }} />
       )}
       {drawer === 'bills' && <TodayBillsDrawer branchId={branchId} onClose={() => setDrawer(null)} />}

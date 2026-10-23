@@ -3,7 +3,7 @@ import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
 import type { PrintJob } from '../print/printHost'
 import type { PrintRoute } from '../print/adapter'
-import { toSendResult, type QueuedOrder, type SendResult, type OrderType } from '../offline/orderQueue'
+import { counterOrderArgs, toSendResult, type QueuedOrder, type SendResult, type OrderType } from '../offline/orderQueue'
 import {
   buildPosMenu, type CatalogProductRow, type GroupRow, type LinkRow, type OptionPriceRow, type PosMenu, type ProductRow,
   type SoldOutRow, type VariantPriceRow,
@@ -116,9 +116,7 @@ export async function fetchBillItems(billId: string): Promise<BillItemRow[]> {
 export async function sendCounterOrder(o: QueuedOrder): Promise<SendResult> {
   try {
     const { error } = await supabase
-      .rpc('place_counter_order', {
-        p_table_id: o.tableId, p_order_type: o.orderType, p_pax: o.pax, p_items: o.items, p_client_order_id: o.clientOrderId,
-      })
+      .rpc('place_counter_order', counterOrderArgs(o))
       .abortSignal(AbortSignal.timeout(SEND_TIMEOUT_MS))
     return toSendResult(error)
   } catch (e) {

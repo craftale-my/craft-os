@@ -15,6 +15,9 @@ export interface QueuedOrder {
   items: OrderLine[]
   queuedAt: number
   failedReason: string | null // set when the server rejected it; never resent automatically
+  /** The menu catalog the cart was priced from. Absent on orders queued before
+   *  catalogs existed: the server then uses the branch's default for the order type. */
+  catalogId?: string | null
 }
 
 export interface QueueStore {
@@ -41,11 +44,20 @@ export function newQueuedOrder(
   items: OrderLine[],
   now: number = Date.now(),
   id: string = crypto.randomUUID(),
+  catalogId: string | null = null,
 ): QueuedOrder {
   return {
     clientOrderId: id, orderType, tableId, pax,
     items: items.map((l) => ({ ...l, optionIds: [...l.optionIds] })),
-    queuedAt: now, failedReason: null,
+    queuedAt: now, failedReason: null, catalogId,
+  }
+}
+
+/** The arguments of place_counter_order for a queued order. */
+export function counterOrderArgs(o: QueuedOrder) {
+  return {
+    p_table_id: o.tableId, p_order_type: o.orderType, p_pax: o.pax, p_items: o.items,
+    p_client_order_id: o.clientOrderId, p_catalog_id: o.catalogId ?? null,
   }
 }
 

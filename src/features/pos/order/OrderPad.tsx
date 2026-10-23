@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchPosMenu, setSoldOut } from './posApi'
 import { cartSubtotalSen, findProduct, formatSen, lineLabel, linePriceSen, validateLine, defaultLine, type OrderLine, type PosMenu, type PosProduct } from './cart'
-import { noCatalogMessage } from './catalogs'
+import { noCatalogMessage, SWITCH_CATALOG_CONFIRM, type CatalogChoice } from './catalogs'
 import { newQueuedOrder } from '../offline/orderQueue'
 import type { QueuedOrder } from '../offline/orderQueue'
 import type { SubmitResult } from './useOrderQueue'
@@ -10,14 +10,25 @@ import LineSheet from './LineSheet'
 export type PadMode = ({ orderType: 'dine_in'; tableId: string; needsPax: boolean; initialPax?: number } | { orderType: 'takeaway' })
 type Mode = PadMode
 
-export default function OrderPad({ branchId, mode, catalogId, catalogsLoaded, initialLines, submit, onClose, onSent }: {
+export default function OrderPad({
+  branchId, mode, catalogs, defaultProblem, catalogsError, onRetryCatalogs, initialCatalogId, initialLines, submit, onClose, onSent,
+}: {
   branchId: string; mode: Mode
-  /** The branch's catalog for this order type; null = none set (or not loaded yet). */
-  catalogId: string | null; catalogsLoaded: boolean
+  /** What this order may be priced from, the order type's default first; null until the
+   *  branch's catalogs have been fetched for this pad (never a stale list). */
+  catalogs: CatalogChoice[] | null
+  /** Why the order type has no usable default (none set, or switched off); null when it has one. */
+  defaultProblem: string | null
+  /** The branch's catalogs could not be fetched and this iPad has no earlier list. */
+  catalogsError: string | null
+  onRetryCatalogs: () => void
+  /** A rejected order being edited keeps its catalog. */
+  initialCatalogId?: string | null
   initialLines?: OrderLine[]
   submit: (o: QueuedOrder) => Promise<SubmitResult>
   onClose: () => void; onSent: () => void
 }) {
+  const [catalogId, setCatalogId] = useState<string | null>(initialCatalogId ?? null)
   const [menu, setMenu] = useState<PosMenu | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [category, setCategory] = useState<string | null>(null)
@@ -27,15 +38,60 @@ export default function OrderPad({ branchId, mode, catalogId, catalogsLoaded, in
   const [pax, setPax] = useState<string>(mode.orderType === 'dine_in' && mode.initialPax ? String(mode.initialPax) : '')
   const [soldOutMode, setSoldOutMode] = useState(false)
   const [sending, setSending] = useState(false)
+  const [carry, setCarry] = useState<{ lines: OrderLine[]; to: string } | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const loadSeq = useRef(0)
 
   useEffect(() => { setError(null) }, [lines, pax])
 
+  // Only the order type's default is ever picked for the cashier. With no usable default
+  // the pad says why and waits for an explicit pick (never an additional catalog by itself).
+  useEffect(() => {
+    if (!catalogs) return
+    const def = catalogs.find((c) => c.isDefault)
+    // belt and braces: a catalog the fresh list does not offer, that is not the edited
+    // order's own, is dropped while the cart is still empty
+    if (catalogId !== null && catalogId !== (initialCatalogId ?? null) && lines.length === 0
+        && !catalogs.some((c) => c.id === catalogId)) {
+      setCatalogId(def?.id ?? null)
+      return
+    }
+    if (catalogId === null && def) setCatalogId(def.id)
+  }, [catalogs, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const load = async () => {
+    const seq = ++loadSeq.current                // a slow reply for the previous catalog must not win
     if (!catalogId) { setMenu(null); return }
-    try { setMenu(await fetchPosMenu(branchId, catalogId)); setError(null) } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    try {
+      const m = await fetchPosMenu(branchId, catalogId)
+      if (seq === loadSeq.current) { setMenu(m); setError(null) }
+    } catch (e) {
+      if (seq === loadSeq.current) setError(e instanceof Error ? e.message : String(e))
+    }
   }
   useEffect(() => { void load() }, [branchId, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
-  const noCatalog = catalogsLoaded && !catalogId
+
+  const current = catalogs?.find((c) => c.id === catalogId) ?? null
+  const noCatalog = catalogs !== null && catalogId === null
+
+  // One order = one catalog: switching starts the cart again. Leaving the catalog of an
+  // edited order that the branch no longer offers keeps what the new catalog also sells.
+  const switchCatalog = (id: string) => {
+    if (!id || id === catalogId) return
+    if (lines.length > 0 && current && !current.offered) setCarry({ lines, to: id })
+    else if (lines.length > 0 && !window.confirm(SWITCH_CATALOG_CONFIRM)) return
+    setLines([]); setSheet(null); setMenu(null); setCategory(null); setNotice(null); setCatalogId(id)
+  }
+  useEffect(() => {
+    if (!carry || !menu || carry.to !== catalogId) return
+    const kept = carry.lines.filter((l) => {
+      const p = findProduct(menu, l.productId)
+      return p !== undefined && validateLine(p, l) === null
+    })
+    setLines(kept)
+    if (kept.length < carry.lines.length) setNotice(`Items not in ${current?.name ?? 'this catalog'} were removed`)
+    setCarry(null)
+  }, [menu, carry, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const products = useMemo(() => {
     if (!menu) return []
@@ -56,6 +112,7 @@ export default function OrderPad({ branchId, mode, catalogId, catalogsLoaded, in
 
   const send = async () => {
     if (!menu || lines.length === 0) return
+    if (!catalogId) { setError(noCatalogMessage(mode.orderType)); return }
     const needPax = mode.orderType === 'dine_in' && mode.needsPax
     const paxNum = needPax ? Number(pax) : null
     if (needPax && (!Number.isInteger(paxNum) || (paxNum as number) < 1 || (paxNum as number) > 99)) { setError('Enter the number of guests (1–99)'); return }
@@ -66,7 +123,8 @@ export default function OrderPad({ branchId, mode, catalogId, catalogsLoaded, in
     }
     setSending(true)
     try {
-      const res = await submit(newQueuedOrder(mode.orderType, mode.orderType === 'dine_in' ? mode.tableId : null, paxNum, lines))
+      const res = await submit(newQueuedOrder(mode.orderType, mode.orderType === 'dine_in' ? mode.tableId : null, paxNum, lines,
+        Date.now(), crypto.randomUUID(), catalogId))
       if (res.rejectedReason) { setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); await load(); return }
       setLines([]); setError(null); onSent()
     } catch (e) {
@@ -80,6 +138,13 @@ export default function OrderPad({ branchId, mode, catalogId, catalogsLoaded, in
       <div className="flex flex-col overflow-hidden">
         <div className="flex items-center gap-2 border-b border-border bg-card p-2">
           <button onClick={onClose} className="rounded-lg border border-border px-3 py-2">← Tables</button>
+          {catalogs && catalogs.length > 0 && (
+            <select aria-label="Catalog" value={catalogId ?? ''} onChange={(e) => switchCatalog(e.target.value)}
+              className={`rounded-lg border p-2 text-sm ${current && !current.isDefault ? 'border-amber-500 bg-amber-50' : 'border-border'}`}>
+              {catalogId === null && <option value="" disabled>Choose a catalog…</option>}
+              {catalogs.map((c) => <option key={c.id} value={c.id}>{c.name}{c.offered ? '' : ' (no longer offered)'}</option>)}
+            </select>
+          )}
           <input className="flex-1 rounded-lg border border-border p-2 text-sm" placeholder="Search" value={search} onChange={(e) => setSearch(e.target.value)} />
           <button onClick={() => setSoldOutMode((v) => !v)} className={`rounded-lg px-3 py-2 text-sm ${soldOutMode ? 'bg-red-600 text-white' : 'border border-border'}`}>
             {soldOutMode ? 'Tap items to mark sold out · Done' : 'Sold out…'}
@@ -94,9 +159,21 @@ export default function OrderPad({ branchId, mode, catalogId, catalogsLoaded, in
           ))}
         </div>
         {error && <p className="m-2 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+        {notice && <p className="m-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{notice}</p>}
         <div className="grid flex-1 grid-cols-4 content-start gap-2 overflow-y-auto p-2">
-          {noCatalog && <p className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">{noCatalogMessage(mode.orderType)}</p>}
-          {!menu && !error && !noCatalog && <p className="text-brown-muted">Loading menu…</p>}
+          {catalogs === null && catalogsError && (
+            <p className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">
+              Could not load the menu catalogs: {catalogsError}{' '}
+              <button className="underline" onClick={onRetryCatalogs}>Retry</button>
+            </p>
+          )}
+          {noCatalog && (
+            <p className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">
+              {defaultProblem ?? noCatalogMessage(mode.orderType)}
+              {catalogs.length > 0 && ' — or choose a catalog above for this order.'}
+            </p>
+          )}
+          {!menu && !error && !noCatalog && !(catalogs === null && catalogsError) && <p className="text-brown-muted">Loading menu…</p>}
           {products.map((p) => (
             <button key={p.id} onClick={() => void tap(p)}
               className={`min-h-20 rounded-xl border p-2 text-left text-sm ${p.soldOut ? 'border-red-300 bg-red-50 text-red-700' : 'border-border bg-card'}`}>
@@ -108,7 +185,10 @@ export default function OrderPad({ branchId, mode, catalogId, catalogsLoaded, in
       </div>
 
       <div className="flex flex-col border-l border-border bg-card">
-        <div className="border-b border-border p-3 font-semibold">{mode.orderType === 'takeaway' ? 'Takeaway' : 'Dine-in'} order</div>
+        <div className="border-b border-border p-3 font-semibold">
+          {mode.orderType === 'takeaway' ? 'Takeaway' : 'Dine-in'} order
+          {current && <span className={`ml-2 text-sm font-normal ${current.isDefault ? 'text-brown-muted' : 'text-amber-700'}`}>· {current.name}</span>}
+        </div>
         <div className="flex-1 overflow-y-auto p-3 text-sm">
           {lines.map((l, i) => {
             const p = menu ? findProduct(menu, l.productId) : undefined
