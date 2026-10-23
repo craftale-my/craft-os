@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TableRow } from '../order/posApi'
 import type { BillOrderType, CashRounding } from './bill'
 import {
@@ -20,28 +20,41 @@ const input = 'rounded border border-border p-1'
 /** The checkout sections of /pos/settings: receipt details, service charge,
  *  payment methods, reason templates and approver PINs (access_settings holders). */
 export default function CheckoutSettings({ branchId, routes, tables }: { branchId: string; routes: string[]; tables: TableRow[] }) {
-  const [error, setError] = useState<string | null>(null)
-  const [note, setNote] = useState<string | null>(null)
-  const run = async (fn: () => Promise<void>, done: string) => {
-    setError(null); setNote(null)
-    try { await fn(); setNote(done) } catch (e) { setError(msg(e)) }
-  }
+  const [outcome, setOutcome] = useState<Outcome | null>(null)
+  // Each section gets its own run/onError/banner so the result shows beside the button that was pressed.
+  const bind = (section: SettingsSection): SectionProps => ({
+    outcome: outcome?.section === section ? outcome : null,
+    run: async (fn, done) => {
+      setOutcome(null)
+      try { await fn(); setOutcome({ section, kind: 'ok', text: done }) } catch (e) { setOutcome({ section, kind: 'error', text: msg(e) }) }
+    },
+    onError: (text) => setOutcome({ section, kind: 'error', text }),
+  })
   return (
-    <div className="space-y-6">
-      {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-      {note && <p className="rounded bg-green-50 p-3 text-sm text-green-800">{note}</p>}
-      <ReceiptSection branchId={branchId} routes={routes} run={run} onError={setError} />
-      <ServiceChargeSection branchId={branchId} tables={tables} run={run} onError={setError} />
-      <PaymentMethodsSection branchId={branchId} run={run} onError={setError} />
-      <ReasonsSection branchId={branchId} run={run} onError={setError} />
-      <ApproversSection run={run} onError={setError} />
+    // change events bubble from every input/select/textarea: any edit clears the stale outcome
+    <div className="space-y-6" onChange={() => setOutcome(null)}>
+      <ReceiptSection branchId={branchId} routes={routes} {...bind('receipt')} />
+      <ServiceChargeSection branchId={branchId} tables={tables} {...bind('service')} />
+      <PaymentMethodsSection branchId={branchId} {...bind('methods')} />
+      <ReasonsSection branchId={branchId} {...bind('reasons')} />
+      <ApproversSection {...bind('approvers')} />
     </div>
   )
 }
 
+type SettingsSection = 'receipt' | 'service' | 'methods' | 'reasons' | 'approvers'
+interface Outcome { section: SettingsSection; kind: 'ok' | 'error'; text: string }
 type Run = (fn: () => Promise<void>, done: string) => Promise<void>
+interface SectionProps { outcome: Outcome | null; run: Run; onError: (m: string) => void }
 
-function ReceiptSection({ branchId, routes, run, onError }: { branchId: string; routes: string[]; run: Run; onError: (m: string) => void }) {
+function OutcomeBanner({ outcome }: { outcome: Outcome | null }) {
+  if (!outcome) return null
+  return outcome.kind === 'error'
+    ? <p role="alert" className="mt-3 rounded bg-red-50 p-3 text-sm text-red-700">{outcome.text}</p>
+    : <p role="status" className="mt-3 rounded bg-green-50 p-3 text-sm text-green-800">{outcome.text}</p>
+}
+
+function ReceiptSection({ branchId, routes, run, onError, outcome }: { branchId: string; routes: string[] } & SectionProps) {
   const [d, setD] = useState<ReceiptDetails | null>(null)
   useEffect(() => { fetchReceiptDetails(branchId).then(setD, (e) => onError(msg(e))) }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
   if (!d) return <section className={box}><h2 className="font-semibold">Receipt</h2><p className="text-sm text-brown-muted">Loading…</p></section>
@@ -85,6 +98,7 @@ function ReceiptSection({ branchId, routes, run, onError }: { branchId: string; 
         </label>
         <label className="col-span-2 text-sm"><input type="checkbox" checked={d.qrRequiresOpenBill} onChange={(e) => setD({ ...d, qrRequiresOpenBill: e.target.checked })} /> Staff must open a table before customers can order by QR</label>
       </div>
+      <OutcomeBanner outcome={outcome} />
       <button onClick={() => void save()} className="mt-3 rounded bg-brown-btn px-3 py-2 text-sm text-white">Save receipt settings</button>
     </section>
   )
@@ -95,7 +109,7 @@ const toDraft = (r: ServiceChargeRuleRow): RuleDraft => ({
   id: r.id, rateText: bpToPercentText(r.rate_bp), orderTypes: r.order_types, tableIds: r.table_ids, productIds: r.product_ids, sortOrder: r.sort_order, isActive: r.is_active,
 })
 
-function ServiceChargeSection({ branchId, tables, run, onError }: { branchId: string; tables: TableRow[]; run: Run; onError: (m: string) => void }) {
+function ServiceChargeSection({ branchId, tables, run, onError, outcome }: { branchId: string; tables: TableRow[] } & SectionProps) {
   const [rules, setRules] = useState<ServiceChargeRuleRow[]>([])
   const [products, setProducts] = useState<{ id: string; name: string }[]>([])
   const [draft, setDraft] = useState<RuleDraft | null>(null)
@@ -193,33 +207,49 @@ function ServiceChargeSection({ branchId, tables, run, onError }: { branchId: st
               </div>
             )}
           </div>
+          <OutcomeBanner outcome={outcome} />
           <div className="flex gap-2">
             <button onClick={() => void save()} className="rounded bg-brown-btn px-3 py-1 text-white">Save rule</button>
             <button onClick={() => setDraft(null)} className="rounded border border-border px-3 py-1">Cancel</button>
           </div>
         </div>
       )}
+      {!draft && <OutcomeBanner outcome={outcome} />}
     </section>
   )
 }
 
-function PaymentMethodsSection({ branchId, run, onError }: { branchId: string; run: Run; onError: (m: string) => void }) {
+function PaymentMethodsSection({ branchId, run, onError, outcome }: { branchId: string } & SectionProps) {
   const [rows, setRows] = useState<(Omit<PaymentMethodRow, 'id'> & { id?: string })[]>([])
   const load = () => fetchPaymentMethods(branchId, false).then(setRows, (e) => onError(msg(e)))
   useEffect(() => { void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
   const set = (i: number, patch: Partial<PaymentMethodRow>) => setRows((rs) => rs.map((r, k) => (k === i ? { ...r, ...patch } : r)))
-  const save = (i: number) => run(async () => {
-    const r = rows[i]
-    if (!r.name.trim()) throw new Error('Enter the payment method name')
-    await savePaymentMethod({ ...r, name: r.name.trim() })
-    await load()
-  }, 'Payment method saved')
+  // A new row has no id until load() returns, so a second tap would insert it twice: track in-flight saves by row key.
+  const inFlight = useRef(new Set<string>())
+  const [saving, setSaving] = useState<string[]>([])
+  const rowKey = (r: { id?: string }, i: number) => r.id ?? `new${i}`
+  const save = (i: number) => {
+    const key = rowKey(rows[i], i)
+    if (inFlight.current.has(key)) return Promise.resolve()
+    inFlight.current.add(key); setSaving([...inFlight.current])
+    return run(async () => {
+      try {
+        const r = rows[i]
+        if (!r.name.trim()) throw new Error('Enter the payment method name')
+        try { await savePaymentMethod({ ...r, name: r.name.trim() }) } catch (e) {
+          if (/23505|duplicate key/i.test(msg(e))) throw new Error('A payment method with this name already exists.')
+          throw e
+        }
+        await load()
+      } finally { inFlight.current.delete(key); setSaving([...inFlight.current]) }
+    }, 'Payment method saved')
+  }
   return (
     <section className={box}>
       <h2 className="font-semibold">Payment methods</h2>
       <p className="text-xs text-brown-muted">Only cash gives change. "Needs reference" makes the cashier type the terminal or transfer reference. Turn a method off instead of deleting it: old bills keep its name.</p>
       {rows.map((r, i) => (
-        <div key={r.id ?? `new${i}`} className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+        <div key={rowKey(r, i)} className="mt-2 flex flex-wrap items-center gap-2 text-sm">
           <input className={`${input} w-44`} value={r.name} onChange={(e) => set(i, { name: e.target.value })} />
           <select className={input} value={r.kind} onChange={(e) => set(i, { kind: e.target.value as PaymentKind })}>
             {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
@@ -227,16 +257,17 @@ function PaymentMethodsSection({ branchId, run, onError }: { branchId: string; r
           <label><input type="checkbox" checked={r.needs_reference} onChange={(e) => set(i, { needs_reference: e.target.checked })} /> Needs reference</label>
           <label><input type="checkbox" checked={r.is_active} onChange={(e) => set(i, { is_active: e.target.checked })} /> Active</label>
           <label>Order <input type="number" className={`${input} w-14`} value={r.sort_order} onChange={(e) => set(i, { sort_order: Number(e.target.value) || 0 })} /></label>
-          <button onClick={() => void save(i)} className="rounded bg-brown-btn px-2 py-1 text-xs text-white">Save</button>
+          <button onClick={() => void save(i)} disabled={saving.includes(rowKey(r, i))} className="rounded bg-brown-btn px-2 py-1 text-xs text-white disabled:opacity-50">Save</button>
         </div>
       ))}
+      <OutcomeBanner outcome={outcome} />
       <button onClick={() => setRows((rs) => [...rs, { branch_id: branchId, name: '', kind: 'other', needs_reference: false, sort_order: rs.length + 1, is_active: true }])}
         className="mt-2 rounded border border-border px-3 py-1 text-sm">Add payment method</button>
     </section>
   )
 }
 
-function ReasonsSection({ branchId, run, onError }: { branchId: string; run: Run; onError: (m: string) => void }) {
+function ReasonsSection({ branchId, run, onError, outcome }: { branchId: string } & SectionProps) {
   const [drafts, setDrafts] = useState<Record<ReasonAction, { text: string; compulsory: boolean; allowOther: boolean }>>({
     void_item: { text: '', compulsory: true, allowOther: true },
     void_bill: { text: '', compulsory: true, allowOther: true },
@@ -270,11 +301,12 @@ function ReasonsSection({ branchId, run, onError }: { branchId: string; run: Run
           </div>
         ))}
       </div>
+      <OutcomeBanner outcome={outcome} />
     </section>
   )
 }
 
-function ApproversSection({ run, onError }: { run: Run; onError: (m: string) => void }) {
+function ApproversSection({ run, onError, outcome }: SectionProps) {
   const [rows, setRows] = useState<Approver[]>([])
   const load = () => fetchApprovers().then(setRows, (e) => onError(msg(e)))
   useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -293,6 +325,7 @@ function ApproversSection({ run, onError }: { run: Run; onError: (m: string) => 
         </div>
       ))}
       {rows.length === 0 && <p className="text-sm text-brown-muted">Nobody at this branch can approve yet.</p>}
+      <OutcomeBanner outcome={outcome} />
     </section>
   )
 }
