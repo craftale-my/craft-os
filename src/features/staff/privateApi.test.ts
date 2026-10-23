@@ -58,12 +58,14 @@ describe('saveStaffPrivate', () => {
 
   it('throws when the write comes back with no rows (RLS filtered it)', async () => {
     h.state.result = { data: [], error: null }
-    await expect(api.saveStaffPrivate('s1', { address: 'x' })).rejects.toThrow()
+    await expect(api.saveStaffPrivate('s1', { address: 'x' }))
+      .rejects.toThrow('Personal details could not be saved — you may have been signed out.')
   })
 
   it('throws the database message on error', async () => {
     h.state.result = { data: null, error: { message: 'new row violates row-level security policy' } }
-    await expect(api.saveStaffPrivate('s1', { address: 'x' })).rejects.toThrow('row-level security')
+    await expect(api.saveStaffPrivate('s1', { address: 'x' }))
+      .rejects.toThrow('Personal details could not be saved: new row violates row-level security policy')
   })
 })
 
@@ -83,6 +85,7 @@ describe('manager notes', () => {
     expect(payload).toMatchObject({ staff_id: 's1', notes: 'note', updated_by: 'mgr-1' })
 
     h.state.result = { data: [], error: null }
-    await expect(api.saveManagerNotes('s1', 'note', 'mgr-1')).rejects.toThrow()
+    await expect(api.saveManagerNotes('s1', 'note', 'mgr-1'))
+      .rejects.toThrow('Notes could not be saved — you may have been signed out.')
   })
 })

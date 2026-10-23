@@ -58,8 +58,8 @@ describe('submitOnboarding', () => {
   })
 
   it('does not mark onboarding complete when the private write fails', async () => {
-    h.saveStaffPrivate.mockRejectedValue(new Error('Personal details were not saved: x'))
-    await expect(submitOnboarding('u1', FORM)).rejects.toThrow('Personal details were not saved')
+    h.saveStaffPrivate.mockRejectedValue(new Error('Personal details could not be saved: x'))
+    await expect(submitOnboarding('u1', FORM)).rejects.toThrow('Personal details could not be saved')
     expect(h.staffUpdate).not.toHaveBeenCalled()
   })
 

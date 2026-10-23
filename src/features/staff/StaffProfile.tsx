@@ -327,8 +327,9 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         )}
         {tab === 'history' && <HistoryTab completions={completions} />}
 
-        {/* Notes: hr/manager/admin/owner. Status + danger zone: rank manager (unchanged). */}
-        {(canSeePrivate || isManager) && !isSelf && (
+        {/* Notes: hr/manager/admin/owner. Status + danger zone: rank manager (unchanged).
+            canSeePrivate already includes rank manager, so it gates the whole block. */}
+        {canSeePrivate && !isSelf && (
           <div className="mt-6 space-y-4">
             {canSeePrivate && currentStaff && (
               <ManagerNotesCard staffId={staff.id} actorId={currentStaff.id} />

@@ -5,6 +5,16 @@ import type { StaffPrivate } from '../../shared/types'
 /** The four private columns; any subset may be written. */
 export type StaffPrivatePatch = Partial<Pick<StaffPrivate, 'ic_number' | 'date_of_birth' | 'contact_number' | 'address'>>
 
+/** writeOutcome's own reason for a 0-row write is a subject-less fragment
+ *  ("it was not saved — …"), which reads badly after "<what> could not be
+ *  saved". Phrase the two failure kinds here instead; writeOutcome still
+ *  decides whether the write failed. */
+function saveFailure(what: string, error: { message: string } | null): string {
+  return error
+    ? `${what} could not be saved: ${error.message}`
+    : `${what} could not be saved — you may have been signed out.`
+}
+
 /** One staff member's private row, or null when RLS hides it from the caller
  *  (they are neither the staff member nor hr/manager/admin/owner). A real
  *  failure throws — never conflate "can't see" with "couldn't load". */
@@ -22,8 +32,7 @@ export async function saveStaffPrivate(staffId: string, patch: StaffPrivatePatch
     .from('staff_private')
     .upsert({ staff_id: staffId, ...patch, updated_at: new Date().toISOString() }, { onConflict: 'staff_id' })
     .select('staff_id')
-  const outcome = writeOutcome(res)
-  if (!outcome.ok) throw new Error(`Personal details were not saved: ${outcome.reason}`)
+  if (!writeOutcome(res).ok) throw new Error(saveFailure('Personal details', res.error))
 }
 
 /** Manager notes about one staff member, or null (none written, or not allowed). */
@@ -39,6 +48,5 @@ export async function saveManagerNotes(staffId: string, notes: string | null, ac
     .from('staff_manager_notes')
     .upsert({ staff_id: staffId, notes, updated_by: actorId, updated_at: new Date().toISOString() }, { onConflict: 'staff_id' })
     .select('staff_id')
-  const outcome = writeOutcome(res)
-  if (!outcome.ok) throw new Error(`Notes were not saved: ${outcome.reason}`)
+  if (!writeOutcome(res).ok) throw new Error(saveFailure('Notes', res.error))
 }
