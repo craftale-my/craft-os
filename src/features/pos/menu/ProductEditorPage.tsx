@@ -10,6 +10,7 @@ import DetailsSection from './product/DetailsSection'
 import VariantsSection from './product/VariantsSection'
 import GroupsSection from './product/GroupsSection'
 import CatalogsSection from './product/CatalogsSection'
+import PhotoSection from './product/PhotoSection'
 import TimeSlotsSection from './product/TimeSlotsSection'
 import { OutcomeLine, btnCls, errorText, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
 
@@ -105,17 +106,20 @@ export default function ProductEditorPage({ productId }: { productId: string | n
       )}
       {!form || !lookups ? (!loadError && <p className="text-sm">Loading…</p>) : (
         <>
-          {/* Sections top to bottom. Time slots (M3) saves on its own, so it sits outside the
-              fieldset and appears once the product exists. */}
+          {/* Sections top to bottom. Photo and Time slots (M3) save on their own, so they sit
+              outside the fieldset and appear once the product exists. */}
           {/* Locked while saving (the reload would overwrite typing) and while the form is stale after a failed reload. */}
           <fieldset disabled={saving || !!loadError} className="m-0 min-w-0 space-y-4 border-0 p-0">
             <DetailsSection form={form} onChange={change} categories={lookups.categories} problem={problemOf('details')} />
+          </fieldset>
+          {form.id
+            ? <PhotoSection productId={form.id} productName={form.name} />
+            : <p className="text-sm text-brown-muted">Create the product first, then add its photo and time slots.</p>}
+          <fieldset disabled={saving || !!loadError} className="m-0 min-w-0 space-y-4 border-0 p-0">
             <VariantsSection form={form} onChange={change} problem={problemOf('variants')} />
             <GroupsSection form={form} onChange={change} groups={lookups.groups} problem={problemOf('groups')} />
           </fieldset>
-          {form.id
-            ? <TimeSlotsSection productId={form.id} />
-            : <p className="text-sm text-brown-muted">Create the product first, then pick its time slots.</p>}
+          {form.id && <TimeSlotsSection productId={form.id} />}
           <fieldset disabled={saving || !!loadError} className="m-0 min-w-0 space-y-4 border-0 p-0">
             <CatalogsSection form={form} onChange={change} catalogs={lookups.catalogs} problem={problemOf('catalogs')} />
           </fieldset>

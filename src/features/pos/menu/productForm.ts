@@ -25,7 +25,7 @@ export interface ProductForm {
   groupIds: string[]
   catalogs: CatalogForm[]
 }
-/** The editor's sections, top to bottom. M3 adds 'slots' and 'photo' here. */
+/** The sections this form saves. Photo and Time slots (M3) save on their own (product/PhotoSection.tsx, product/TimeSlotsSection.tsx). */
 export type ProductSection = 'details' | 'variants' | 'groups' | 'catalogs'
 export interface ProductProblem { section: ProductSection; message: string }
 
