@@ -115,24 +115,34 @@ begin
   -- Skips system and Supabase-managed schemas, extension-owned functions,
   -- and this branch's own functions. A hit is fail-closed: inspect it; a
   -- false positive (e.g. "address" in a comment) can be added to v_allow.
-  select string_agg(p.oid::regprocedure::text, '; ')
+  -- Each hit names schema.function(args) and the column word(s) it matched,
+  -- so the operator can judge a false positive at a glance.
+  select string_agg(h.hit, '; ' order by h.hit)
     into v_funcs
-  from pg_proc p
-  join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname not in ('pg_catalog','information_schema','pg_toast',
-                          'auth','storage','realtime','_realtime','extensions',
-                          'graphql','graphql_public','pgbouncer','pgsodium',
-                          'pgsodium_masks','vault','net','supabase_functions',
-                          'supabase_migrations','cron','_analytics')
-    and n.nspname not like 'pg_temp%'
-    and n.nspname not like 'pg_toast_temp%'
-    and not exists (select 1 from pg_depend e
-                    where e.classid = 'pg_proc'::regclass and e.objid = p.oid and e.deptype = 'e')
-    and p.proname <> all (v_allow)
-    and p.prosrc ~* '\m(ic_number|date_of_birth|contact_number|address|manager_notes)\M';
+  from (
+    select format('%s.%s(%s) mentions %s',
+                  n.nspname, p.proname, pg_get_function_identity_arguments(p.oid),
+                  (select string_agg(distinct lower(m.w[1]), ', ')
+                     from regexp_matches(p.prosrc,
+                            '\m(ic_number|date_of_birth|contact_number|address|manager_notes)\M',
+                            'gi') as m(w))) as hit
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname not in ('pg_catalog','information_schema','pg_toast',
+                            'auth','storage','realtime','_realtime','extensions',
+                            'graphql','graphql_public','pgbouncer','pgsodium',
+                            'pgsodium_masks','vault','net','supabase_functions',
+                            'supabase_migrations','cron','_analytics')
+      and n.nspname not like 'pg_temp%'
+      and n.nspname not like 'pg_toast_temp%'
+      and not exists (select 1 from pg_depend e
+                      where e.classid = 'pg_proc'::regclass and e.objid = p.oid and e.deptype = 'e')
+      and p.proname <> all (v_allow)
+      and p.prosrc ~* '\m(ic_number|date_of_birth|contact_number|address|manager_notes)\M'
+  ) h;
 
   if v_funcs is not null then
-    raise exception 'Functions still mention the old staff columns: %', v_funcs;
+    raise exception 'Functions still mention the old staff columns: %. If a hit is a false positive (e.g. "address" in a comment), add its name to v_allow and re-run.', v_funcs;
   end if;
 end
 $do$;

@@ -248,15 +248,70 @@ $do$;
 -- numbers out of supervisors' reach at the earliest step. Pending requests
 -- keep their phone: the approve flow still needs it.
 --
--- Optional pre-check — approved requests whose number exists nowhere else
--- (the staff member has no contact number). Clearing these drops the only
--- copy; review first if the count is not 0:
---   select r.id, r.email from registration_requests r
---   join staff s on lower(s.email) = lower(r.email)
---   left join staff_private p on p.staff_id = s.id
---   where r.status = 'approved' and r.phone is not null and p.contact_number is null;
-update registration_requests set phone = null
-where status <> 'pending' and phone is not null;
+-- It never destroys the only copy of a number:
+--   1. An approved request's phone is first copied into the matching staff
+--      member's staff_private.contact_number when that is still empty
+--      (request → staff by lower(email)).
+--   2. A non-pending request's phone is then cleared only if
+--        - that exact number is now in the matching staff member's
+--          staff_private row, or
+--        - the request is REJECTED and no staff row has its email (the number
+--          belongs to no staff member).
+--      Everything else keeps its phone — an approved request whose staff row
+--      cannot be matched (email null or changed), or whose staff member now
+--      has a different number — and is counted in a NOTICE for manual review.
+-- Idempotent. Skipped (with a notice) if registration_requests.phone or
+-- staff.email is absent.
+do $do$
+declare
+  v_left int;
+begin
+  if (select count(*) from information_schema.columns
+      where table_schema = 'public'
+        and ((table_name = 'registration_requests' and column_name = 'phone')
+          or (table_name = 'staff' and column_name = 'email'))) <> 2 then
+    raise notice 'registration_requests.phone or staff.email absent: phone cleanup skipped';
+    return;
+  end if;
+
+  execute $q$
+    update staff_private p
+       set contact_number = r.phone,
+           updated_at     = now()
+      from staff s
+      join registration_requests r on lower(r.email) = lower(s.email)
+     where p.staff_id = s.id
+       and r.status = 'approved'
+       and r.phone is not null
+       and p.contact_number is null
+  $q$;
+
+  execute $q$
+    update registration_requests r
+       set phone = null
+     where r.status <> 'pending'
+       and r.phone is not null
+       and (
+             exists (select 1
+                       from staff s
+                       join staff_private p on p.staff_id = s.id
+                      where lower(s.email) = lower(r.email)
+                        and p.contact_number = r.phone)
+          or (r.status = 'rejected'
+              and not exists (select 1 from staff s where lower(s.email) = lower(r.email)))
+           )
+  $q$;
+
+  execute $q$
+    select count(*) from registration_requests
+     where status <> 'pending' and phone is not null
+  $q$ into v_left;
+
+  if v_left > 0 then
+    raise notice '% non-pending registration request(s) keep their phone: no safe copy in staff_private. Review: select id, email, status, phone from registration_requests where status <> ''pending'' and phone is not null;', v_left;
+  end if;
+end
+$do$;
 
 commit;
 
