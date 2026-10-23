@@ -10,6 +10,15 @@ export interface CheckoutResult {
   receiptQueued: boolean
 }
 
+/** refund_bill's answer: the amount of THIS refund as recorded on the server (a resend
+ *  after a lost reply returns the first one), the bill's refunded total, and whether
+ *  a refund slip was queued for the receipt printer. */
+export interface RefundResult {
+  amountSen: number
+  refundedSen: number
+  slipQueued: boolean
+}
+
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 
 /** Throws the server's words when the action was refused; returns the reply otherwise. */
@@ -25,4 +34,13 @@ export function parseCheckoutResult(data: unknown): CheckoutResult {
     throw new Error('Unexpected reply from the server')
   }
   return { billId: data.billId, billNo: data.billNo, totalSen: data.totalSen, changeSen: data.changeSen, receiptQueued: data.receiptQueued }
+}
+
+/** Throws the server's words when the refund was refused; returns what was recorded otherwise. */
+export function parseRefundResult(data: unknown): RefundResult {
+  const r = unwrapAction(data)
+  if (typeof r.amountSen !== 'number' || typeof r.refundedSen !== 'number' || typeof r.slipQueued !== 'boolean') {
+    throw new Error('Unexpected reply from the server')
+  }
+  return { amountSen: r.amountSen, refundedSen: r.refundedSen, slipQueued: r.slipQueued }
 }

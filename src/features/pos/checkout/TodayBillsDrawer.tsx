@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { formatSen } from '../order/cart'
 import { fetchClosedBillsSince, fetchPaymentMethods, refundBill, reprintReceipt, type ClosedBillRow, type PaymentMethodRow } from './checkoutApi'
 import ApprovalDialog from './ApprovalDialog'
-import { mytDayStartIso, refundableSen, STATUS_LABEL } from './todayBills'
+import { mytDayStartIso, refundDoneNote, refundableSen, STATUS_LABEL } from './todayBills'
 import { parseRinggit } from './tender'
+import type { RefundResult } from './rpcResult'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kuala_Lumpur' })
@@ -18,6 +19,12 @@ export default function TodayBillsDrawer({ branchId, onClose }: { branchId: stri
   const [amountText, setAmountText] = useState('')
   const [methodId, setMethodId] = useState('')
   const refundId = useRef<string>('')
+  // After the first Approve of a refund dialog the amount and method are fixed: a
+  // retry after a lost reply resends the SAME refund (same refundId), never a new one.
+  const [refundLocked, setRefundLocked] = useState(false)
+  const refundResult = useRef<RefundResult | null>(null)
+  const reprintingRef = useRef(new Set<string>())   // synchronous guard: a fast double tap must not print twice
+  const [reprinting, setReprinting] = useState<ReadonlySet<string>>(new Set())
 
   const load = async () => {
     try { setBills(await fetchClosedBillsSince(branchId, mytDayStartIso(Date.now()))) } catch (e) { setNote(msg(e)) }
@@ -28,13 +35,18 @@ export default function TodayBillsDrawer({ branchId, onClose }: { branchId: stri
   }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const reprint = async (b: ClosedBillRow) => {
+    if (reprintingRef.current.has(b.id)) return
+    reprintingRef.current.add(b.id); setReprinting(new Set(reprintingRef.current))
     try { await reprintReceipt(b.id); setNote(`Receipt ${b.bill_no} sent to the printer`) } catch (e) { setNote(msg(e)) }
+    finally { reprintingRef.current.delete(b.id); setReprinting(new Set(reprintingRef.current)) }
   }
 
   const startRefund = (b: ClosedBillRow) => {
     refundId.current = crypto.randomUUID()          // one id per refund: a retry can never refund twice
     setAmountText((refundableSen(b) / 100).toFixed(2))
     setMethodId(methods.find((m) => m.kind === 'cash')?.id ?? methods[0]?.id ?? '')
+    setRefundLocked(false)
+    refundResult.current = null
     setRefunding(b)
   }
 
@@ -72,7 +84,8 @@ export default function TodayBillsDrawer({ branchId, onClose }: { branchId: stri
                 </div>
                 {b.status === 'paid' && (
                   <div className="flex gap-2">
-                    <button onClick={() => void reprint(b)} className="rounded border border-border px-2 py-1 text-xs">Reprint receipt</button>
+                    <button onClick={() => void reprint(b)} disabled={reprinting.has(b.id)}
+                      className="rounded border border-border px-2 py-1 text-xs disabled:opacity-40">{reprinting.has(b.id) ? 'Printing…' : 'Reprint receipt'}</button>
                     <button onClick={() => startRefund(b)} disabled={refundableSen(b) === 0}
                       className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 disabled:opacity-40">Refund</button>
                   </div>
@@ -88,19 +101,29 @@ export default function TodayBillsDrawer({ branchId, onClose }: { branchId: stri
           extra={
             <div className="space-y-2 text-sm">
               <label className="block">Amount (RM)
-                <input inputMode="decimal" className="ml-2 w-32 rounded border border-border p-2" value={amountText} onChange={(e) => setAmountText(e.target.value)} />
+                <input inputMode="decimal" className="ml-2 w-32 rounded border border-border p-2 disabled:opacity-60" value={amountText}
+                  disabled={refundLocked} onChange={(e) => setAmountText(e.target.value)} />
               </label>
               <label className="block">Paid back by
-                <select className="ml-2 rounded border border-border p-2" value={methodId} onChange={(e) => setMethodId(e.target.value)}>
+                <select className="ml-2 rounded border border-border p-2 disabled:opacity-60" value={methodId}
+                  disabled={refundLocked} onChange={(e) => setMethodId(e.target.value)}>
                   {methods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                 </select>
               </label>
+              {refundLocked && <p className="text-xs text-brown-muted">Amount and method are fixed for this refund. To refund a different amount, close and reopen.</p>}
             </div>
           }
           extraProblem={refundProblem}
-          onApprove={(a) => refundBill(refundId.current, refunding.id, amountSen ?? 0, methodId, a)}
+          onApprove={async (a) => {
+            setRefundLocked(true)
+            refundResult.current = await refundBill(refundId.current, refunding.id, amountSen ?? 0, methodId, a)
+          }}
           onClose={() => setRefunding(null)}
-          onDone={() => { setNote(`Refunded ${formatSen(amountSen ?? 0)} on ${refunding.bill_no}`); setRefunding(null); void load() }} />
+          onDone={() => {
+            const r = refundResult.current
+            setNote(r ? refundDoneNote(r, refunding.bill_no) : `Refund on ${refunding.bill_no} done`)
+            setRefunding(null); void load()
+          }} />
       )}
     </>
   )

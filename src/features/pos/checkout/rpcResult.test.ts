@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseCheckoutResult, unwrapAction } from './rpcResult'
+import { parseCheckoutResult, parseRefundResult, unwrapAction } from './rpcResult'
 
 describe('unwrapAction', () => {
   it('returns an approved reply', () => {
@@ -22,5 +22,19 @@ describe('parseCheckoutResult', () => {
   })
   it('refuses a reply with a missing field', () => {
     expect(() => parseCheckoutResult({ billNo: '261024-001', totalSen: 9280 })).toThrow('Unexpected reply')
+  })
+})
+
+describe('parseRefundResult', () => {
+  it('reads what the server recorded', () => {
+    expect(parseRefundResult({ ok: true, amountSen: 500, refundedSen: 1300, slipQueued: false }))
+      .toEqual({ amountSen: 500, refundedSen: 1300, slipQueued: false })
+  })
+  it('throws the server words when a resend differs from the recorded refund', () => {
+    const error = 'This refund was already recorded as RM 5.00 by Cash — close and reopen to refund more'
+    expect(() => parseRefundResult({ ok: false, error })).toThrow(error)
+  })
+  it('refuses a reply without the recorded amount', () => {
+    expect(() => parseRefundResult({ ok: true, refundedSen: 1300, slipQueued: true })).toThrow('Unexpected reply')
   })
 })

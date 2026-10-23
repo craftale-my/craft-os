@@ -1,3 +1,5 @@
+import { formatSen } from '../order/cart'
+
 /** Start of today in Malaysia (UTC+8, no daylight saving) as an ISO instant. */
 export function mytDayStartIso(nowMs: number): string {
   const h8 = 8 * 3600_000
@@ -12,3 +14,9 @@ export function refundableSen(bill: { status: string; total_sen: number | null; 
 }
 
 export const STATUS_LABEL: Record<string, string> = { paid: 'Paid', voided: 'Voided', merged: 'Merged' }
+
+/** The drawer's note after a refund, from what the SERVER recorded (a resend after a
+ *  lost reply answers with the first refund, whatever was typed the second time). */
+export function refundDoneNote(r: { amountSen: number; slipQueued: boolean }, billNo: string): string {
+  return `Refunded ${formatSen(r.amountSen)} on ${billNo}${r.slipQueued ? '' : ' — no refund slip printed (no receipt printer set)'}`
+}

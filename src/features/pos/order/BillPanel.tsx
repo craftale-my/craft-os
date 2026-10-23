@@ -172,7 +172,7 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
       )}
       {bill && dialog?.kind === 'void_bill' && (
         <ApprovalDialog branchId={branchId} action="void_bill" title="Void bill"
-          summary={`Bill ${bill.bill_no} · ${live.length} item${live.length === 1 ? '' : 's'} · ${formatSen(totals?.totalSen ?? 0)} — every item is voided and the table is freed`}
+          summary={`Bill ${bill.bill_no} · ${live.length} item${live.length === 1 ? '' : 's'}${totals ? ` · ${formatSen(totals.totalSen)}` : ''} — every item is voided and the table is freed`}
           onApprove={(a) => voidBill(bill.id, a)} onClose={() => setDialog(null)} onDone={changed} />
       )}
       {bill && dialog?.kind === 'move' && (

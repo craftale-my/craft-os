@@ -5,7 +5,7 @@ import { writeOutcome } from '../../../shared/lib/db-write'
 import type { BillOrderType, BillTotals, CashRounding, ServiceChargeRuleInput } from './bill'
 import type { PaymentKind } from './tender'
 import type { ReasonAction, ReasonTemplate } from './reasons'
-import { parseCheckoutResult, unwrapAction, type CheckoutResult } from './rpcResult'
+import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
 
 const CHECKOUT_TIMEOUT_MS = 10_000
 const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
@@ -222,13 +222,15 @@ export async function mergeBills(fromBillId: string, intoBillId: string): Promis
   if (error) fail(error)
 }
 
-export async function refundBill(refundId: string, billId: string, amountSen: number, methodId: string, a: Approval): Promise<void> {
+/** Answers what the server recorded — on a resend after a lost reply, that is the
+ *  FIRST call's refund, so the till pays out the recorded amount, not the typed one. */
+export async function refundBill(refundId: string, billId: string, amountSen: number, methodId: string, a: Approval): Promise<RefundResult> {
   const { data, error } = await supabase.rpc('refund_bill', {
     p_refund_id: refundId, p_bill_id: billId, p_amount_sen: amountSen, p_method_id: methodId,
     p_reason: a.reason, p_approver_id: a.approverId, p_pin: a.pin,
   })
   if (error) fail(error)
-  unwrapAction(data)
+  return parseRefundResult(data)
 }
 
 export async function openTable(tableId: string, pax: number | null): Promise<string> {
