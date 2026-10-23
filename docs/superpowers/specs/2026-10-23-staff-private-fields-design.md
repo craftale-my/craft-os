@@ -182,6 +182,38 @@ alter table staff
   HR 看得到四项与备注;
   新员工完成 Onboarding;manager 新增员工后电话出现在新表。
 
+## 2026-10-23 final-review additions
+
+七个 task 完成后的整体 review 找到的问题,用户 2026-10-23 拍板:
+
+- **D1 — 提权漏洞在本分支一并修掉。** 原本 supervisor / hr 持有 `manage_staff`,`staff_update` /
+  `staff_insert` 只按行判断,`staff_guard_authority_update()` 也只管调用者自己那一行,所以 supervisor
+  能把任何人改成 rank `manager`、改任何人的 `system_role`、直接 insert 一行高 rank 的 staff,
+  或让 `provision-staff create` 建一个 manager —— 被提上去的人随即进入 `staff_private` 的读者集合。
+  新增 `supabase/migration-2026-10-23-staff-authority-guard.sql`,取代原函数,改成
+  BEFORE INSERT OR UPDATE:`system_role` 只有 owner(`current_is_owner()`)能改、能 insert 非 `staff`
+  的值(与前端 `manage_system_roles` 仅 owner 一致);非 manager-tier(manager-tier =
+  `current_rank() = 'manager' or current_system_role() in ('manager','admin','owner')`)只能在
+  trainee/junior/senior 之间改 rank,也只能 insert 这三个 rank;本人那一行的 rank/system_role/status
+  保护照旧;`auth.uid() is null`(service role、SQL editor、cron)照旧放行。`provision-staff create`
+  对同样情况先回 403 `"Only a manager can create staff at supervisor rank or above."`。
+- **D2 — 部署窗口加临时同步 trigger。** 推翻上文"不额外加同步 trigger"。第一段 SQL 在旧栏存在时建
+  `staff_private_sync_legacy_trg`(`after insert or update of` 五栏,security definer):只有值真的变了
+  (`old.x is distinct from new.x`;insert 时 `new.x` 非空)才覆盖写进新表,避免旧版页面重送未改动的旧值
+  盖掉新版刚写的值;且只同步新表规则允许的写入者(私人栏位:本人 / `can_read_staff_private()`;
+  备注:`can_read_staff_private()` 且不是本人)。第二段删栏前先删这个 trigger。
+- **D3 — `registration_requests.phone` 只在 pending 时保留。** approve 标记 approved 时一并清空,
+  Directory reject 也清空;第一段 SQL 一次性清掉现有非 pending 的号码(第一段会跑两次,
+  也补上旧版 function 在部署窗口内批准的申请)。上文"范围外:`registration_requests.phone` 维持原样"作废。
+- **备注本人不可见(F6)。** `staff_manager_notes_all` 的 USING 与 WITH CHECK 都加上
+  `staff_id <> auth.uid()`:即使本人是 hr/manager/admin/owner,也读不到、写不了关于自己的备注。
+- **provision-staff approve 不回滚。** 与上文第 5 节"失败时回滚(删 auth user)"不同:`staff_private`
+  电话写入失败时回 400,auth user 与 staff 行保留,申请留在 pending;经理再按一次审批即可补上。
+  phone 为空时整段跳过(行由 insert trigger 保证),重复审批不会用 null 盖掉已有号码。
+- **上线顺序改为先上 DB。** 第一段 + authority guard + VERIFY 在合并前就在 prod 跑完(第一段只加不删,
+  旧版网站照常);再合并、部署、跑第一段补漏、跑第二段。第二段自带闸门:锁 `staff`、删同步 trigger、
+  核对查询差异不为 0 或仍有对象依赖五栏就整笔 rollback。VERIFY 改为每个身份一行 `pass`、加总 `all_pass`。
+
 ## 验收
 
 - trainee / supervisor 登录后,无论 UI 还是直接打 REST,都读不到同事的四项与任何备注。
