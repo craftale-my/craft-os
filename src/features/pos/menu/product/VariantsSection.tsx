@@ -21,11 +21,11 @@ export default function VariantsSection({ form, onChange, problem }: {
           {form.variants.map((v, i) => (
             <tr key={v.ref} className="border-t border-border">
               <td className="py-1 pr-2">
-                <input className={`${inputCls} w-full`} value={v.name} placeholder="e.g. Hot"
+                <input className={`${inputCls} w-full`} value={v.name} placeholder="e.g. Hot" aria-label={`Variant ${i + 1} name`}
                   onChange={(e) => onChange(updateVariant(form, v.ref, { name: e.target.value }))} />
               </td>
               <td className="py-1 pr-2">
-                <input className={`${inputCls} w-28`} inputMode="decimal" value={v.price}
+                <input className={`${inputCls} w-28`} inputMode="decimal" value={v.price} aria-label={`Variant ${i + 1} default price (RM)`}
                   onChange={(e) => onChange(updateVariant(form, v.ref, { price: e.target.value }))} />
               </td>
               <td className="py-1 pr-2">

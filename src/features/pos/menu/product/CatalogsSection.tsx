@@ -38,7 +38,7 @@ export default function CatalogsSection({ form, onChange, catalogs, problem }: {
                 <tr key={c.catalogId} className={`border-t border-border ${cat?.isActive === false ? 'text-brown-faint' : ''}`}>
                   <td className="py-1 pr-2">{cat?.name ?? 'Unknown catalog'}{cat?.isActive === false ? ' (off)' : ''}</td>
                   <td className="py-1 pr-2">
-                    <select className={inputCls} value={c.availability}
+                    <select className={inputCls} value={c.availability} aria-label={`${cat?.name ?? 'Catalog'} availability`}
                       onChange={(e) => onChange(setCatalogAvailability(form, c.catalogId, e.target.value as Availability))}>
                       {(Object.keys(CATALOG_AVAILABILITY_LABELS) as Availability[]).map((a) => (
                         <option key={a} value={a}>{CATALOG_AVAILABILITY_LABELS[a]}</option>

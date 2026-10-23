@@ -43,6 +43,13 @@ export default function ProductEditorPage({ productId }: { productId: string | n
   }, [productId])
   useEffect(() => { load().catch((e) => setLoadError(errorText(e))) }, [load])
 
+  /** Reload after a failure; a "Saved, but reloading failed" notice becomes plain "Saved". */
+  const retryLoad = () => {
+    load()
+      .then(() => setOutcome((o) => (o?.kind === 'error' && o.text.startsWith('Saved, but') ? { kind: 'ok', text: 'Saved' } : o)))
+      .catch((e) => setLoadError(errorText(e)))
+  }
+
   const change = (next: ProductForm) => { setForm(next); setOutcome(null) }
   const catalogName = (id: string) => lookups?.catalogs.find((c) => c.id === id)?.name ?? 'A catalog'
   const problems = form ? productProblems(form, catalogName) : []
@@ -50,7 +57,7 @@ export default function ProductEditorPage({ productId }: { productId: string | n
   const problemOf = (section: ProductSection) => (tried ? problems.find((p) => p.section === section)?.message ?? null : null)
 
   const save = async () => {
-    if (!form || saving) return
+    if (!form || saving || loadError) return
     setTried(true)
     if (problems.length > 0) { setOutcome({ kind: 'error', text: 'Not saved — fix the problems marked above.' }); return }
     setSaving(true)
@@ -66,7 +73,9 @@ export default function ProductEditorPage({ productId }: { productId: string | n
         setTried(false)
         setOutcome({ kind: 'ok', text: 'Saved' })
       } catch (e) {
-        setOutcome({ kind: 'error', text: `Saved, but reloading failed: ${errorText(e)}` })
+        // The form on screen is now stale: lock it until a fresh load succeeds.
+        setLoadError(errorText(e))
+        setOutcome({ kind: 'error', text: 'Saved, but reloading failed — reload before editing again.' })
       }
     } catch (e) {
       setOutcome({ kind: 'error', text: errorText(e) })
@@ -90,18 +99,21 @@ export default function ProductEditorPage({ productId }: { productId: string | n
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
-          <button className="text-sm underline" onClick={() => load().catch((e) => setLoadError(errorText(e)))}>Try again</button>
+          <button className="text-sm underline" disabled={saving} onClick={() => retryLoad()}>Try again</button>
         </div>
       )}
       {!form || !lookups ? (!loadError && <p className="text-sm">Loading…</p>) : (
         <>
           {/* Sections top to bottom. M3 adds "Time slots" after Add-on groups and "Photo" after Details. */}
-          <DetailsSection form={form} onChange={change} categories={lookups.categories} problem={problemOf('details')} />
-          <VariantsSection form={form} onChange={change} problem={problemOf('variants')} />
-          <GroupsSection form={form} onChange={change} groups={lookups.groups} problem={problemOf('groups')} />
-          <CatalogsSection form={form} onChange={change} catalogs={lookups.catalogs} problem={problemOf('catalogs')} />
+          {/* Locked while saving (the reload would overwrite typing) and while the form is stale after a failed reload. */}
+          <fieldset disabled={saving || !!loadError} className="m-0 min-w-0 space-y-4 border-0 p-0">
+            <DetailsSection form={form} onChange={change} categories={lookups.categories} problem={problemOf('details')} />
+            <VariantsSection form={form} onChange={change} problem={problemOf('variants')} />
+            <GroupsSection form={form} onChange={change} groups={lookups.groups} problem={problemOf('groups')} />
+            <CatalogsSection form={form} onChange={change} catalogs={lookups.catalogs} problem={problemOf('catalogs')} />
+          </fieldset>
           <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t border-border bg-cream py-3">
-            <button className={btnCls} disabled={saving} onClick={() => void save()}>
+            <button className={btnCls} disabled={saving || !!loadError} onClick={() => void save()}>
               {saving ? 'Saving…' : form.id ? 'Save product' : 'Create product'}
             </button>
             <OutcomeLine outcome={outcome} />

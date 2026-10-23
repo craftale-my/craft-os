@@ -16,6 +16,8 @@ export default function DetailsSection({ form, onChange, categories, problem }: 
   const choices = categories.filter((c) => c.isActive || c.id === form.categoryId)
   const routes: string[] = [...PRINT_ROUTES]
   if (form.printRoute && !routes.includes(form.printRoute)) routes.push(form.printRoute)
+  // a stored rate that is not one of the choices still shows, so the select matches the form value
+  const sstOdd = SST_CHOICES.some((c) => c.bp === form.sstRateBp) ? null : form.sstRateBp
   return (
     <Section title="Details" hint="These apply in every catalog." problem={problem}>
       <div className="grid gap-3 sm:grid-cols-2">
@@ -44,6 +46,7 @@ export default function DetailsSection({ form, onChange, categories, problem }: 
         <label className="block text-sm">SST
           <select className={`${inputCls} mt-1 w-full`} value={form.sstRateBp} onChange={(e) => set({ sstRateBp: Number(e.target.value) })}>
             {SST_CHOICES.map((c) => <option key={c.bp} value={c.bp}>{c.label}</option>)}
+            {sstOdd !== null && <option value={sstOdd}>{`${sstOdd / 100}% (stored)`}</option>}
           </select>
         </label>
         <label className="block text-sm">Takeaway packaging fee (RM)
