@@ -25,3 +25,18 @@ export function leftTheMenuNotice(names: string[]): string | null {
   if (names.length === 0) return null
   return `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} not available at this time and ${names.length === 1 ? 'was' : 'were'} taken out of your order.`
 }
+
+/** After the menu was read again: the cart without the lines whose product left the menu, and
+ *  where the line an open edit sheet holds (`index`) now sits — its new position, or null when
+ *  that line itself was taken out (the sheet then closes; the notice names the product). A
+ *  sheet adding a new line passes null and gets null. */
+export function pruneAfterRefresh(lines: OrderLine[], next: PosMenu, index: number | null): { lines: OrderLine[]; index: number | null } {
+  const kept: OrderLine[] = []
+  let moved: number | null = null
+  lines.forEach((l, i) => {
+    if (!findProduct(next, l.productId)) return
+    if (i === index) moved = kept.length
+    kept.push(l)
+  })
+  return { lines: kept, index: moved }
+}

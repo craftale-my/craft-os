@@ -14,15 +14,28 @@ export default function PhotoSection({ productId, productName }: { productId: st
   const busyRef = useRef(false)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
   const loadSeq = useRef(0)
+  const savedOutcome = useRef<Outcome | null>(null)              // what "Saved, but reloading failed" becomes after Try again
 
   const load = useCallback(async () => {
     const seq = ++loadSeq.current
-    const extras = await fetchProductExtras(productId)
+    let extras: Awaited<ReturnType<typeof fetchProductExtras>>
+    try {
+      extras = await fetchProductExtras(productId)
+    } catch (e) {
+      if (seq !== loadSeq.current) return                          // a newer load answers for it: never lock on a stale failure
+      throw e
+    }
     if (seq !== loadSeq.current) return
     setPath(extras.imagePath)
     setLoadError(null)
   }, [productId])
   useEffect(() => { load().catch((e) => setLoadError(errorText(e))) }, [load])
+  const reload = () => { load().catch((e) => setLoadError(errorText(e))) }
+  /** Try again: a successful reload turns "Saved, but reloading failed" into the save's own outcome. */
+  const retry = () => load().then(
+    () => setOutcome((o) => (o?.kind === 'error' && o.text.startsWith('Saved, but reloading failed') ? savedOutcome.current : o)),
+    (e) => setLoadError(errorText(e)),
+  )
 
   const run = async (label: string, action: () => Promise<{ warning: string | null }>, ok: string) => {
     if (busyRef.current || loadError) return
@@ -31,15 +44,18 @@ export default function PhotoSection({ productId, productName }: { productId: st
     setOutcome(null)
     try {
       const { warning } = await action()
+      const saved: Outcome = warning ? { kind: 'error', text: warning } : { kind: 'ok', text: ok }
+      savedOutcome.current = saved
       try {
         await load()
-        setOutcome(warning ? { kind: 'error', text: warning } : { kind: 'ok', text: ok })
+        setOutcome(saved)
       } catch (e) {
         setLoadError(errorText(e))
         setOutcome({ kind: 'error', text: 'Saved, but reloading failed — try again before changing more.' })
       }
     } catch (e) {
       setOutcome({ kind: 'error', text: errorText(e) })
+      reload()                    // the product may point at the new file after all (a lost answer): show what it shows now
     } finally {
       busyRef.current = false
       setBusy(null)
@@ -61,7 +77,7 @@ export default function PhotoSection({ productId, productName }: { productId: st
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
-          <button className="text-sm underline" disabled={busy !== null} onClick={() => { load().catch((e) => setLoadError(errorText(e))) }}>Try again</button>
+          <button className="text-sm underline" disabled={busy !== null} onClick={() => void retry()}>Try again</button>
         </div>
       )}
       <div className="flex flex-wrap items-start gap-4">

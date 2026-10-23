@@ -11,11 +11,17 @@ export async function resizePhoto(file: Blob): Promise<{ blob: Blob; mime: Photo
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
   } catch {
-    throw new Error('This image could not be read — try a JPEG or PNG')
+    // Browsers from before 'from-image' was named reject the option itself; EXIF orientation is
+    // their default anyway, so try once more without options before giving up.
+    try {
+      bitmap = await createImageBitmap(file)
+    } catch {
+      throw new Error('This image could not be read — try a JPEG or PNG')
+    }
   }
+  const canvas = document.createElement('canvas')
   try {
     const size = resizeTarget(bitmap.width, bitmap.height)
-    const canvas = document.createElement('canvas')
     canvas.width = size.width
     canvas.height = size.height
     const ctx = canvas.getContext('2d')
@@ -31,5 +37,9 @@ export async function resizePhoto(file: Blob): Promise<{ blob: Blob; mime: Photo
     throw new Error('This browser cannot make a JPEG or WebP photo')
   } finally {
     bitmap.close()
+    // Safari caps the memory of all canvases and frees a dropped one late: a long import would
+    // run out part-way ("cannot resize photos"), so give this one's memory back now.
+    canvas.width = 0
+    canvas.height = 0
   }
 }

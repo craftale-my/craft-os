@@ -14,8 +14,8 @@ describe('photo rules', () => {
     expect(photoInputProblem({ type: 'image/jpeg', size: 2_000_000 })).toBeNull()
     expect(photoInputProblem({ type: 'image/png', size: PHOTO_MAX_INPUT_BYTES - 1 })).toBeNull()
     expect(photoInputProblem({ type: 'image/png', size: PHOTO_MAX_INPUT_BYTES })).toBe('The photo is too large (at most 10 MB)')
-    expect(photoInputProblem({ type: 'application/pdf', size: 10 })).toBe('Choose an image file (JPEG, PNG, WebP or HEIC)')
-    expect(photoInputProblem({ type: '', size: 10 })).toBe('Choose an image file (JPEG, PNG, WebP or HEIC)')
+    expect(photoInputProblem({ type: 'application/pdf', size: 10 })).toBe('Choose an image file (JPEG, PNG or WebP; HEIC on Safari only)')
+    expect(photoInputProblem({ type: '', size: 10 })).toBe('Choose an image file (JPEG, PNG or WebP; HEIC on Safari only)')
     expect(photoInputProblem({ type: 'image/webp', size: 0 })).toBe('The photo file is empty')
   })
   it('scales down to 800 px wide (and 1600 px high) in proportion, never up', () => {

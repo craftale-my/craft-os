@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NO_WINDOWS, menuWindows, serverNow, slotProblem, tileSlotLabel } from './padSlots'
+import { NO_WINDOWS, TICK_MARGIN_MS, menuWindows, msUntilServerMinute, serverNow, slotProblem, tileSlotLabel } from './padSlots'
 
 const json = {
   now: '2026-10-26T01:00:00.000Z',                                         // Mon 09:00 in Malaysia
@@ -37,5 +37,30 @@ describe('padSlots', () => {
     const lines = [{ productId: 'latte' }, { productId: 'soup' }, { productId: 'pancake' }]
     expect(slotProblem(w, lines, (id) => names[id], new Date('2026-10-26T09:00:00+08:00'))).toBe('Soup is not available at this time')
     expect(slotProblem(w, lines, (id) => names[id], new Date('2026-10-26T11:15:00+08:00'))).toBeNull()
+  })
+
+  it('ticks just after the server\'s minute, not this iPad\'s', () => {
+    const minute = Date.parse('2026-10-26T00:00:00.000Z')                 // 08:00 in Malaysia
+    expect(TICK_MARGIN_MS).toBe(250)
+    // same clocks, 10 s into the minute: 50 s to go, plus the margin
+    expect(msUntilServerMinute(minute + 10_000, 0)).toBe(50_250)
+    // the server is 200 ms behind this iPad: at the iPad's 08:00:00.000 the server is at 07:59:59.800
+    expect(msUntilServerMinute(minute, -200)).toBe(450)
+    expect(new Date(minute + 450 - 200).toISOString()).toBe('2026-10-26T00:00:00.250Z')
+    // the server is ahead by 2 min 30 s: its minute starts 30 s after this iPad's
+    expect(msUntilServerMinute(minute, 150_000)).toBe(30_250)
+    // exactly on the server's minute: the next one, never 0
+    expect(msUntilServerMinute(minute, 0)).toBe(60_250)
+    expect(msUntilServerMinute(minute - 1, 0)).toBe(251)
+    // a negative instant still lands on a minute
+    expect(msUntilServerMinute(-10_000, 0)).toBe(10_250)
+    for (const off of [-59_999, -200, 0, 1, 37_123]) {
+      for (const t of [minute, minute + 1, minute + 59_999]) {
+        const d = msUntilServerMinute(t, off)
+        expect(d).toBeGreaterThan(TICK_MARGIN_MS)
+        expect(d).toBeLessThanOrEqual(60_000 + TICK_MARGIN_MS)
+        expect((t + off + d) % 60_000).toBe(TICK_MARGIN_MS)              // lands the margin after a server minute
+      }
+    }
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { strToU8, zipSync } from 'fflate'
-import { planPhotoImport, readPhotoZip, withoutPhoto } from './photoImport'
+import { strFromU8, strToU8, zipSync } from 'fflate'
+import { inflatePhoto, planPhotoImport, readPhotoZip, withoutPhoto } from './photoImport'
 import type { PhotoTarget } from './slotsApi'
 
 const target = (id: string, feedmeProductId: string | null, over: Partial<PhotoTarget> = {}): PhotoTarget =>
@@ -25,6 +25,15 @@ describe('readPhotoZip', () => {
       ['FM-2.PNG', 'FM-2', 'image/png'], ['FM-9.webp', 'FM-9', 'image/webp'],
     ])
     expect(skipped).toEqual(['FM-7.jpg (10 MB or more)', 'notes.txt'])
+  })
+  it('holds no photo bytes until one is unpacked for its upload', () => {
+    const { photos } = readPhotoZip(zip)
+    expect(photos.every((p) => !('bytes' in p))).toBe(true)
+    const jpg = photos.find((p) => p.fileName === 'FM-1.jpg')!
+    expect(jpg.path).toBe('photos/FM-1.jpg')
+    expect(strFromU8(inflatePhoto(zip, jpg))).toBe('a')
+    expect(strFromU8(inflatePhoto(zip, photos.find((p) => p.fileName === 'FM-1.jpeg')!))).toBe('g')
+    expect(() => inflatePhoto(zip, { path: 'photos/gone.jpg', fileName: 'gone.jpg' })).toThrow('gone.jpg could not be read from the zip')
   })
   it('refuses a file that is not a zip', () => {
     expect(() => readPhotoZip(strToU8('not a zip'))).toThrow()

@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { fetchMenu, type MenuProductRow } from './menuApi'
 import { fetchScheduleDetail, fetchSchedules, saveSchedule, type ScheduleSummary } from './slotsApi'
 import {
-  emptyScheduleForm, scheduleFormDirty, scheduleFormFromDetail, schedulePayload, scheduleProblems, type ScheduleForm, type ScheduleSection,
+  emptyScheduleForm, scheduleFormFromDetail, scheduleFormUnsaved, schedulePayload, scheduleProblems, type ScheduleForm, type ScheduleSection,
 } from './scheduleForm'
 import MenuTabs from './MenuTabs'
 import WindowsSection from './schedule/WindowsSection'
@@ -31,9 +31,15 @@ export default function ScheduleEditorPage({ scheduleId }: { scheduleId: string 
   /** Loads the schedules (for the twin-name check), the products and this schedule; a reply to an older load is dropped. */
   const load = useCallback(async () => {
     const seq = ++loadSeq.current
-    const [list, rows, d] = await Promise.all([
-      fetchSchedules(), fetchMenu(), scheduleId ? fetchScheduleDetail(scheduleId) : Promise.resolve(null),
-    ])
+    let list: ScheduleSummary[], rows: MenuProductRow[], d: Awaited<ReturnType<typeof fetchScheduleDetail>> | null
+    try {
+      [list, rows, d] = await Promise.all([
+        fetchSchedules(), fetchMenu(), scheduleId ? fetchScheduleDetail(scheduleId) : Promise.resolve(null),
+      ])
+    } catch (e) {
+      if (seq !== loadSeq.current) return                            // a newer load answers for it: never lock on a stale failure
+      throw e
+    }
     if (seq !== loadSeq.current) return
     setOthers(list)
     setProducts(rows)
@@ -53,7 +59,7 @@ export default function ScheduleEditorPage({ scheduleId }: { scheduleId: string 
 
   const change = (next: ScheduleForm) => { setForm(next); setOutcome(null) }
   const problems = form ? scheduleProblems(form, others) : []
-  useUnsavedWarning(!!form && !saving && scheduleFormDirty(form, loaded) && (loaded !== null || form.name.trim() !== ''))
+  useUnsavedWarning(!!form && !saving && scheduleFormUnsaved(form, loaded))
   const problemOf = (s: ScheduleSection) => (tried ? problems.find((p) => p.section === s)?.message ?? null : null)
 
   const save = async () => {

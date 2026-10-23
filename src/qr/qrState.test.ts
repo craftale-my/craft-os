@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tokenFromLocation, addLine, replaceLine, removeLine, leftTheMenu, leftTheMenuNotice } from './qrState'
+import { tokenFromLocation, addLine, replaceLine, removeLine, leftTheMenu, leftTheMenuNotice, pruneAfterRefresh } from './qrState'
 import type { PosMenu } from '../features/pos/order/cart'
 
 describe('tokenFromLocation', () => {
@@ -31,6 +31,20 @@ describe('the minute refresh', () => {
   it('names each product of the cart that left the menu once, from the menu before', () => {
     expect(leftTheMenu([line('a'), line('b'), line('a'), line('c')], after, before)).toEqual(['Pancake', 'Soup'])
     expect(leftTheMenu([line('b')], after, before)).toEqual([])
+  })
+  it('takes out the lines that left and follows the line an open edit sheet holds', () => {
+    const cart = [line('a'), line('b'), line('c'), { ...line('b'), qty: 3 }]
+    const after2: PosMenu = { categories: [{ name: 'FOOD', products: [product('b', 'Latte'), product('c', 'Soup')] }] }
+    // editing the Soup (index 2): Pancake left, so the Soup is now index 1
+    expect(pruneAfterRefresh(cart, after2, 2)).toEqual({ lines: [line('b'), line('c'), { ...line('b'), qty: 3 }], index: 1 })
+    expect(pruneAfterRefresh(cart, after2, 3).index).toBe(2)
+    // the edited line itself left: the sheet closes
+    expect(pruneAfterRefresh(cart, after2, 0).index).toBeNull()
+    // no edit sheet (or one adding a new line)
+    expect(pruneAfterRefresh(cart, after2, null).index).toBeNull()
+    // nothing left: same lines, same index
+    expect(pruneAfterRefresh(cart, before, 3)).toEqual({ lines: cart, index: 3 })
+    expect(pruneAfterRefresh([], after, null)).toEqual({ lines: [], index: null })
   })
   it('says so in plain words', () => {
     expect(leftTheMenuNotice(['Pancake'])).toBe('Pancake is not available at this time and was taken out of your order.')

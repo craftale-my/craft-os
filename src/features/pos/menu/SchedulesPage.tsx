@@ -18,6 +18,7 @@ export default function SchedulesPage() {
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)                                           // a second click in the same render is refused too
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({})  // by schedule id; 'deleted' for a delete
+  const okTexts = useRef<Record<string, string>>({})                     // what each row's "Saved, but reloading failed" becomes
 
   const loadSeq = useRef(0)                                               // an older reply never lands last
   const load = useCallback(async () => {
@@ -32,10 +33,10 @@ export default function SchedulesPage() {
       throw e
     }
   }, [])
-  /** Try again: a successful reload turns a "Saved, but reloading failed" notice into plain "Saved". */
+  /** Try again: a successful reload turns a "Saved, but reloading failed" notice into the row's own words ("Moved", "Deleted …"). */
   const retry = () => load().then(
     () => setOutcomes((o) => Object.fromEntries(Object.entries(o).map(([k, v]) =>
-      [k, v.kind === 'error' && v.text.startsWith('Saved, but reloading failed') ? { kind: 'ok' as const, text: 'Saved' } : v]))),
+      [k, v.kind === 'error' && v.text.startsWith('Saved, but reloading failed') ? { kind: 'ok' as const, text: okTexts.current[k] ?? 'Saved' } : v]))),
     (e) => setLoadError(errorText(e)),
   )
   useEffect(() => { load().catch((e) => setLoadError(errorText(e))) }, [load])
@@ -49,6 +50,7 @@ export default function SchedulesPage() {
     setOutcomes((o) => { const n = { ...o }; delete n[key]; return n })
     try {
       await action()
+      okTexts.current[key] = ok
       try {
         await load()
         setOutcomes((o) => ({ ...o, [key]: { kind: 'ok', text: ok } }))
@@ -70,8 +72,9 @@ export default function SchedulesPage() {
   }
   /** Feedme's Delete: the schedule, its windows and its product links go (no order refers to them). */
   const remove = (s: ScheduleSummary) => {
-    const follow = s.productCount === 0 ? 'No product follows it.'
-      : `${s.productCount} product${s.productCount === 1 ? ' follows' : 's follow'} it and then sell${s.productCount === 1 ? 's' : ''} at any time, unless another schedule says otherwise.`
+    const n = s.linkCount                                                // every link the delete removes, switched-off and add-on products too
+    const follow = n === 0 ? 'No product follows it.'
+      : `${n} product${n === 1 ? ' follows' : 's follow'} it and then sell${n === 1 ? 's' : ''} at any time, unless another schedule says otherwise.`
     if (!window.confirm(`Delete ${s.name}? ${follow} This cannot be undone.`)) return
     void run('deleted', () => deleteSchedule(s.id), `Deleted ${s.name}`)
   }

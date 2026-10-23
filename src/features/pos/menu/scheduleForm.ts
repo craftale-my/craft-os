@@ -82,6 +82,12 @@ export function scheduleFormDirty(f: ScheduleForm, loaded: ScheduleForm | null):
   return loaded === null || JSON.stringify(f) !== JSON.stringify(loaded)
 }
 
+/** Whether leaving would lose something: a saved schedule changed since it was loaded, or a new
+ *  one changed in any way from the empty form (a window, a day, a product — not only a name). */
+export function scheduleFormUnsaved(f: ScheduleForm, loaded: ScheduleForm | null): boolean {
+  return loaded !== null ? scheduleFormDirty(f, loaded) : JSON.stringify(f) !== JSON.stringify(emptyScheduleForm())
+}
+
 /** What menu_save_schedule takes. Windows are always sent whole; for a saved schedule the
  *  product list only when it changed, so a save never undoes a link made meanwhile in a
  *  product's editor. */

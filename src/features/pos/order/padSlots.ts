@@ -24,6 +24,18 @@ export function menuWindows(json: MenuWindowsJson, receivedAt: number): MenuWind
 /** The server's time, from this iPad's clock and the offset measured at the last read. */
 export const serverNow = (w: MenuWindows, deviceNow: number): Date => new Date(deviceNow + w.offsetMs)
 
+/** How far past the server's minute the pad's clock ticks: enough that a small change of the
+ *  measured offset between two reads never lands the tick just before the minute. */
+export const TICK_MARGIN_MS = 250
+
+/** Milliseconds from `deviceNow` until just after the next minute begins on the server's clock
+ *  (time slots open and close on the server's minute, not this iPad's). Always more than the
+ *  margin and at most a minute plus the margin. */
+export function msUntilServerMinute(deviceNow: number, offsetMs: number, marginMs = TICK_MARGIN_MS): number {
+  const intoMinute = (((deviceNow + offsetMs) % 60_000) + 60_000) % 60_000
+  return 60_000 - intoMinute + marginMs
+}
+
 /** A tile's words while the product is outside its slots ("Available 08:00–11:30"); null = on sale. */
 export const tileSlotLabel = (w: MenuWindows, productId: string, at: Date): string | null =>
   slotLabel(w.byProduct.get(productId) ?? [], at)

@@ -21,7 +21,13 @@ export default function TimeSlotsSection({ productId }: { productId: string }) {
 
   const load = useCallback(async () => {
     const seq = ++loadSeq.current                                  // a reply to an older load is dropped
-    const [list, extras] = await Promise.all([fetchSchedules(), fetchProductExtras(productId)])
+    let list: ScheduleSummary[], extras: Awaited<ReturnType<typeof fetchProductExtras>>
+    try {
+      [list, extras] = await Promise.all([fetchSchedules(), fetchProductExtras(productId)])
+    } catch (e) {
+      if (seq !== loadSeq.current) return                          // a newer load answers for it: never lock on a stale failure
+      throw e
+    }
     if (seq !== loadSeq.current) return
     setSchedules(list)
     setTicked([...extras.scheduleIds].sort())
@@ -29,6 +35,11 @@ export default function TimeSlotsSection({ productId }: { productId: string }) {
     setLoadError(null)
   }, [productId])
   useEffect(() => { load().catch((e) => setLoadError(errorText(e))) }, [load])
+  /** Try again: a successful reload turns "Saved, but reloading failed" into the plain outcome. */
+  const retry = () => load().then(
+    () => setOutcome((o) => (o?.kind === 'error' && o.text.startsWith('Saved, but reloading failed') ? { kind: 'ok', text: 'Time slots saved' } : o)),
+    (e) => setLoadError(errorText(e)),
+  )
 
   const dirty = ticked.join() !== loaded.join()
   useUnsavedWarning(dirty && !saving)
@@ -45,6 +56,7 @@ export default function TimeSlotsSection({ productId }: { productId: string }) {
     setOutcome(null)
     try {
       await setProductSchedules(productId, ticked)
+      setLoaded(ticked)                                            // saved: not dirty, even if the reload below fails
       try {
         await load()
         setOutcome({ kind: 'ok', text: 'Time slots saved' })
@@ -67,7 +79,7 @@ export default function TimeSlotsSection({ productId }: { productId: string }) {
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
-          <button className="text-sm underline" disabled={saving} onClick={() => { load().catch((e) => setLoadError(errorText(e))) }}>Try again</button>
+          <button className="text-sm underline" disabled={saving} onClick={() => void retry()}>Try again</button>
         </div>
       )}
       {schedules === null && !loadError && <p className="text-sm">Loading…</p>}
@@ -76,13 +88,15 @@ export default function TimeSlotsSection({ productId }: { productId: string }) {
       )}
       <fieldset disabled={saving || !!loadError} className="m-0 min-w-0 space-y-1 border-0 p-0">
         {shown.map((s) => (
-          <label key={s.id} className="flex items-start gap-2 text-sm">
-            <input type="checkbox" className="mt-1" checked={ticked.includes(s.id)} onChange={(e) => tick(s.id, e.target.checked)} />
+          <div key={s.id} className="flex items-start gap-2 text-sm">
+            <input id={`slot-${s.id}`} type="checkbox" className="mt-1" aria-label={s.name}
+              checked={ticked.includes(s.id)} onChange={(e) => tick(s.id, e.target.checked)} />
             <span>
-              <Link to={`/menu/schedules/${s.id}`} className="hover:underline">{s.name}</Link>
-              <span className="block text-xs text-brown-muted">{s.windows.map(windowLabel).join('; ')}</span>
+              {/* outside the checkbox's label, and in a new tab: following it here would drop unsaved ticks */}
+              <Link to={`/menu/schedules/${s.id}`} target="_blank" rel="noopener" className="hover:underline">{s.name}</Link>
+              <label htmlFor={`slot-${s.id}`} className="block text-xs text-brown-muted">{s.windows.map(windowLabel).join('; ')}</label>
             </span>
-          </label>
+          </div>
         ))}
       </fieldset>
       <div className="flex flex-wrap items-center gap-3">

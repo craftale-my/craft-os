@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { qrClient } from './qrClient'
-import { tokenFromLocation, addLine, replaceLine, removeLine, leftTheMenu, leftTheMenuNotice } from './qrState'
+import { tokenFromLocation, addLine, replaceLine, removeLine, leftTheMenu, leftTheMenuNotice, pruneAfterRefresh } from './qrState'
 import {
   cartKey, cartSubtotalSen, findProduct, formatSen, lineLabel, linePriceSen, posMenuFromQr,
   type OrderLine, type PosMenu, type PosProduct, type QrMenuJson,
@@ -39,6 +39,7 @@ export default function QrApp() {
   useEffect(() => { linesRef.current = lines }, [lines])
   const menuRef = useRef<PosMenu | null>(null)
   useEffect(() => { menuRef.current = screen.kind === 'ready' ? screen.menu : null }, [screen])
+  const refreshSeq = useRef(0)                                       // a slow reply never lands after a newer one
 
   const loadState = async () => {
     const { data } = await qrClient.rpc('qr_table_state', { p_token: token })
@@ -60,24 +61,32 @@ export default function QrApp() {
 
   // M3: read the menu again every minute while the page is in view, and when it comes back into
   // view, quietly: products whose time slot ends leave the menu (and the cart, with a notice; an
-  // open product sheet for one closes), products whose slot starts appear. A failed read keeps the
-  // menu on screen; nothing changes while an order is being sent; the server refuses anything out
-  // of its slot anyway.
+  // open product sheet for one closes; a sheet editing another line follows that line), products
+  // whose slot starts appear. A failed read keeps the menu on screen; nothing changes while an
+  // order is being sent; the server refuses anything out of its slot anyway.
   const ready = screen.kind === 'ready'
   useEffect(() => {
     if (!ready || !token) return
     const refresh = () => {
       if (document.visibilityState !== 'visible' || sendingRef.current) return
+      const mine = ++refreshSeq.current
       qrClient.rpc('qr_menu', { p_token: token }).then(({ data, error }) => {
-        if (error || !data || !menuRef.current || sendingRef.current) return
+        if (mine !== refreshSeq.current || error || !data || !menuRef.current || sendingRef.current) return
         const info = data as QrMenuJson
         const menu = posMenuFromQr(info, photoUrl)
-        const gone = leftTheMenu(linesRef.current, menu, menuRef.current)
+        const cart = linesRef.current
+        const gone = leftTheMenu(cart, menu, menuRef.current)
         setScreen({ kind: 'ready', info, menu })
         setCategory((c) => (c && info.categories.some((x) => x.name === c) ? c : info.categories[0]?.name ?? null))
-        setSheet((s) => (s && findProduct(menu, s.product.id) ? s : null))
+        // the sheet's line index points into the cart before the refresh: follow that line, or close
+        setSheet((s) => {
+          if (!s || !findProduct(menu, s.product.id)) return null
+          if (s.index === null) return s
+          const { index } = pruneAfterRefresh(cart, menu, s.index)
+          return index === null ? null : { ...s, index }
+        })
         if (gone.length > 0) {
-          setLines((ls) => ls.filter((l) => findProduct(menu, l.productId)))
+          setLines(pruneAfterRefresh(cart, menu, null).lines)
           setNotice(leftTheMenuNotice(gone))
         }
       }, () => { /* offline for a moment: try again next minute */ })
@@ -116,7 +125,7 @@ export default function QrApp() {
       const { error } = await qrClient.rpc('place_table_order', { p_token: token, p_pax: paxNum, p_items: lines, p_client_order_id: pending.current.id })
       if (error) throw new Error(error.message)
       pending.current = null
-      setLines([]); setPlaced(true)
+      setLines([]); setPlaced(true); setNotice(null)
       await loadState()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -151,7 +160,7 @@ export default function QrApp() {
             className={`whitespace-nowrap rounded-full px-3 py-1 text-sm ${category === c.name ? 'bg-brown-btn text-white' : 'border border-border bg-card'}`}>{c.name}</button>
         ))}
       </div>
-      <div className={`space-y-2 px-3 ${lines.length > 0 ? 'pb-[50vh]' : 'pb-24'}`}>
+      <div className={`space-y-2 px-3 ${lines.length > 0 ? 'pb-[50vh]' : notice ? 'pb-48' : 'pb-24'}`}>
         {products.filter((p) => p.variants.length > 0).map((p) => (
           <button key={p.id} disabled={p.soldOut} onClick={() => setSheet({ product: p, index: null })}
             className="flex w-full items-start gap-3 rounded-xl border border-border bg-card p-3 text-left disabled:opacity-50">

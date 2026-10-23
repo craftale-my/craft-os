@@ -7,7 +7,6 @@ import type { QueuedOrder } from '../offline/orderQueue'
 import type { SubmitResult } from './useOrderQueue'
 import LineSheet from './LineSheet'
 import ProductTiles from './ProductTiles'
-import { serverNow, slotProblem } from './padSlots'
 import { usePadWindows } from './usePadWindows'
 
 export type PadMode = ({ orderType: 'dine_in'; tableId: string; needsPax: boolean; initialPax?: number } | { orderType: 'takeaway' })
@@ -134,10 +133,10 @@ export default function OrderPad({
       const problem = p ? validateLine(p, l) : 'Item is no longer on the menu'
       if (problem) { setError(problem); return }
     }
-    const late = slotProblem(slots.windows, lines, (id) => findProduct(menu, id)?.name ?? 'An item', serverNow(slots.windows, Date.now()))
-    if (late) { setError(late); return }                     // the server would refuse it with the same words
     setSending(true)
     try {
+      const late = await slots.check(lines, (id) => findProduct(menu, id)?.name ?? 'An item')
+      if (late) { setError(late); return }                   // the server would refuse it with the same words
       const res = await submit(newQueuedOrder(mode.orderType, mode.orderType === 'dine_in' ? mode.tableId : null, paxNum, lines,
         Date.now(), crypto.randomUUID(), catalogId))
       if (res.rejectedReason) { setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); await load(); return }
@@ -189,7 +188,7 @@ export default function OrderPad({
             </p>
           )}
           {!menu && !error && !noCatalog && !(catalogs === null && catalogsError) && <p className="text-brown-muted">Loading menu…</p>}
-          <ProductTiles products={products} windows={slots.windows} now={slots.now} onTap={(p, outOfSlot) => void tap(p, outOfSlot)} />
+          <ProductTiles products={products} windows={slots.windows} now={slots.now} soldOutMode={soldOutMode} onTap={(p, outOfSlot) => void tap(p, outOfSlot)} />
         </div>
       </div>
 

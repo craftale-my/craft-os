@@ -23,7 +23,7 @@ export function imageTypeFromName(name: string): string {
 
 /** Why a picked file cannot become a product photo, or null. */
 export function photoInputProblem(file: { type: string; size: number }): string | null {
-  if (!file.type.startsWith('image/')) return 'Choose an image file (JPEG, PNG, WebP or HEIC)'
+  if (!file.type.startsWith('image/')) return 'Choose an image file (JPEG, PNG or WebP; HEIC on Safari only)'
   if (file.size >= PHOTO_MAX_INPUT_BYTES) return 'The photo is too large (at most 10 MB)'
   if (file.size === 0) return 'The photo file is empty'
   return null

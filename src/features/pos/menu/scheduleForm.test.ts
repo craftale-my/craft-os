@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  addWindow, emptyScheduleForm, removeWindow, scheduleFormDirty, scheduleFormFromDetail, schedulePayload, scheduleProblems,
+  addWindow, emptyScheduleForm, removeWindow, scheduleFormDirty, scheduleFormFromDetail, scheduleFormUnsaved, schedulePayload, scheduleProblems,
   setProduct, toggleDay, updateWindow,
 } from './scheduleForm'
 
@@ -16,6 +16,18 @@ describe('scheduleForm', () => {
     expect(f.windows).toEqual([{ key: 'w1', days: [1, 2, 3, 4, 5, 6, 7], start: '', end: '' }])
     expect(f.productIds).toEqual([])
     expect(scheduleFormDirty(f, null)).toBe(true)
+  })
+
+  it('warns before leaving a new schedule only once something was entered, a name or not', () => {
+    const f = emptyScheduleForm()
+    expect(scheduleFormUnsaved(f, null)).toBe(false)
+    expect(scheduleFormUnsaved(updateWindow(f, 'w1', { start: '08:00' }), null)).toBe(true)
+    expect(scheduleFormUnsaved(toggleDay(f, 'w1', 7), null)).toBe(true)
+    expect(scheduleFormUnsaved(setProduct(f, 'p1', true), null)).toBe(true)
+    expect(scheduleFormUnsaved({ ...f, name: 'B' }, null)).toBe(true)
+    const loaded = scheduleFormFromDetail(detail)
+    expect(scheduleFormUnsaved(loaded, loaded)).toBe(false)
+    expect(scheduleFormUnsaved({ ...loaded, name: 'Brunch' }, loaded)).toBe(true)
   })
 
   it('edits windows: add, times, days in Monday-first order, remove', () => {

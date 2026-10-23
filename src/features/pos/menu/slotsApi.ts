@@ -14,6 +14,8 @@ export interface ScheduleSummary {
   windows: SlotWindow[]
   /** products on sale that follow it (add-on items are not counted) */
   productCount: number
+  /** every product that follows it, switched-off ones and add-on items too (what a delete unlinks) */
+  linkCount: number
 }
 /** menu_schedule_detail */
 export interface ScheduleDetail { id: string; name: string; windows: SlotWindow[]; productIds: string[] }
