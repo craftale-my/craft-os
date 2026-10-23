@@ -31,7 +31,12 @@ export interface ApproveRegistrationInput {
   phone?: string | null
 }
 
-type Result = { ok: true; staffId: string } | { ok: false; error: string }
+/** alreadyExisted: approve found an existing staff account for the request's
+ *  email. Its password and profile were left untouched, so the password the
+ *  manager typed was NOT applied — the UI must not present it as a login. */
+type Result =
+  | { ok: true; staffId: string; alreadyExisted?: boolean; message?: string }
+  | { ok: false; error: string }
 
 async function call(body: Record<string, unknown>): Promise<Result> {
   const { data, error } = await supabase.functions.invoke('provision-staff', { body })
@@ -54,7 +59,12 @@ async function call(body: Record<string, unknown>): Promise<Result> {
 
   if (data?.error) return { ok: false, error: data.error }
   if (!data?.staffId) return { ok: false, error: 'Unexpected response from provision-staff' }
-  return { ok: true, staffId: data.staffId }
+  return {
+    ok: true,
+    staffId: data.staffId,
+    alreadyExisted: data.alreadyExisted === true,
+    message: typeof data.message === 'string' ? data.message : undefined,
+  }
 }
 
 export function createStaff(input: CreateStaffInput) {

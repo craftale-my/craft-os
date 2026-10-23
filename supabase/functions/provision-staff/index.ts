@@ -160,6 +160,37 @@ function resolveSecretKey(): string | null {
     ?? null
 }
 
+/** 与前端 DEPT_STORE(src/shared/types/index.ts)同构:把老申请里残留的
+ *  部门展示字串转回 slug;新申请本来就是 slug,原样返回。 */
+const DEPT_STORE: Record<string, string> = {
+  'Barista (Full Time)': 'barista',
+  'Service Crew':        'service crew',
+  'Bakery':              'bakery',
+  'Kitchen':             'kitchen',
+  'Other':               'other',
+}
+function normaliseDepartment(dept: string | null): string | null {
+  if (!dept) return null
+  return DEPT_STORE[dept] ?? dept
+}
+
+/**
+ * 把仍是 pending 的申请标成 approved,并清掉 phone(号码此刻已在 staff_private,
+ * 而 registration_requests 对 supervisor 可读,supervisor 不是电话的读者)。
+ * 返回错误字串;成功返回 null。0 行 = 申请已不是 pending(并发审批),也算失败。
+ */
+async function markApproved(admin: SupabaseClient, requestId: string, callerId: string): Promise<string | null> {
+  const { data, error } = await admin.from('registration_requests').update({
+    status: 'approved',
+    reviewed_by: callerId,
+    reviewed_at: new Date().toISOString(),
+    phone: null,
+  }).eq('id', requestId).eq('status', 'pending').select('id')
+  if (error) return `The account is ready, but the request could not be marked approved: ${error.message}`
+  if (!data || data.length === 0) return 'The account is ready, but the request was no longer pending and was not marked approved.'
+  return null
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
@@ -238,22 +269,52 @@ Deno.serve(async (req) => {
   }
 
   // ── approve ───────────────────────────────────────────────────────────────
+  //
+  // 安全要点(2026-10-23 final review):以前 requestId / email 全由前端传入,
+  // 申请行从不读取;若该 email 已有 auth 用户,就把它的密码重设成调用者给的值,
+  // 再把 staff 行 upsert 回 trainee/staff —— 任何有 manage_staff 的 supervisor/hr
+  // 都能借 service role 接管或降级任何帐号(包括 owner),DB guard 也拦不住。
+  // 现在:
+  //   - 申请行由服务端按 requestId 读取,必须存在且 status = 'pending';
+  //   - email / 姓名 / 电话一律取自申请行;body 的 email 若与申请不符就拒绝;
+  //   - 只有"auth 用户存在但没有 staff 行"(真正被中断的审批)才接管并重设密码;
+  //   - staff 行已存在:绝不重设密码、绝不覆盖 staff 行,只在 staff_private 电话
+  //     为空时补上,标记申请已批准,并回传 alreadyExisted 让前端说明;
+  //   - staff 行只用 insert 建立,不 upsert。
   if (body.action === 'approve') {
     const requestId = String(body.requestId ?? '')
-    const email = String(body.email ?? '').trim()
-    const fullName = String(body.fullName ?? '').trim()
     const password = String(body.password ?? '')
-    const branch = (body.branch as string) || null
-    const department = (body.department as string) || null
-    const employmentType = (body.employmentType as string) || null
-    const phone = (body.phone as string) || null
-
-    if (!requestId || !email || password.length < 6) {
-      return json({ error: 'Request id, email, and a 6+ character password are required.' }, 400)
+    if (!requestId || password.length < 6) {
+      return json({ error: 'Request id and a 6+ character password are required.' }, 400)
     }
 
-    // 建 auth 用户 —— 或者接管一个被中断的审批遗留下来的用户,否则半途失败过一次的
-    // 邮箱会永远卡在 "already been registered" 上。
+    const { data: reg, error: regErr } = await admin.from('registration_requests')
+      .select('id, full_name, email, phone, branch, department, employment_type, status')
+      .eq('id', requestId)
+      .maybeSingle()
+    if (regErr) return json({ error: `Could not load the registration request: ${regErr.message}` }, 500)
+    if (!reg) return json({ error: 'Registration request not found.' }, 404)
+    if (reg.status !== 'pending') {
+      return json({ error: `This registration request is already ${reg.status}.` }, 409)
+    }
+
+    const email = String(reg.email ?? '').trim()
+    const fullName = String(reg.full_name ?? '').trim()
+    if (!email || !fullName) {
+      return json({ error: 'The registration request has no email or name.' }, 400)
+    }
+    const bodyEmail = String(body.email ?? '').trim()
+    if (bodyEmail && bodyEmail.toLowerCase() !== email.toLowerCase()) {
+      return json({ error: 'The email does not match the registration request.' }, 400)
+    }
+    const phone: string | null = (reg.phone as string | null) || null
+    // 非敏感栏位:申请行有就用申请行,没有才用 body。
+    const branch = (reg.branch as string | null) || (body.branch as string) || null
+    const department = normaliseDepartment(reg.department as string | null) || (body.department as string) || null
+    const employmentType = (reg.employment_type as string | null) || (body.employmentType as string) || null
+
+    // 建 auth 用户 —— 或者接管一个被中断的审批遗留下来的用户(auth 用户在、
+    // staff 行不在),否则半途失败过一次的邮箱会永远卡在 "already been registered" 上。
     let userId: string
     let createdNow = false
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
@@ -267,13 +328,41 @@ Deno.serve(async (req) => {
       const existing = list?.users.find((u) => u.email?.toLowerCase() === email.toLowerCase())
       if (!existing) return json({ error: createErr.message }, 400)
       userId = existing.id
-      // 重设密码,让交给经理的那串临时密码确实可用。
-      await admin.auth.admin.updateUserById(userId, { password, email_confirm: true })
+
+      const { data: staffRow, error: staffErr } = await admin.from('staff')
+        .select('id').eq('id', userId).maybeSingle()
+      if (staffErr) return json({ error: `Could not check for an existing staff profile: ${staffErr.message}` }, 500)
+
+      if (staffRow) {
+        // 已是现有员工:不动密码、不动 staff 行。只补空着的电话,然后结案。
+        if (phone) {
+          const { error: privErr } = await admin.from('staff_private')
+            .update({ contact_number: phone, updated_at: new Date().toISOString() })
+            .eq('staff_id', userId)
+            .is('contact_number', null)
+          if (privErr) {
+            return json({ error: `The account already exists, but the phone number was not saved: ${privErr.message}` }, 400)
+          }
+        }
+        const marked = await markApproved(admin, requestId, auth.callerId)
+        if (marked) return json({ error: marked }, 500)
+        return json({
+          ok: true,
+          staffId: userId,
+          alreadyExisted: true,
+          message: 'An account for this email already existed. Its password and profile were not changed; the request is marked approved.',
+        })
+      }
+
+      // 真正被中断的审批:重设密码,让交给经理的那串临时密码确实可用。
+      const { error: pwErr } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true })
+      if (pwErr) return json({ error: pwErr.message }, 400)
     } else {
       return json({ error: createErr?.message ?? 'Failed to create user' }, 400)
     }
 
-    const { error: profileErr } = await admin.from('staff').upsert({
+    // insert,不是 upsert:任何情况下都不覆盖一行已存在的 staff。
+    const { error: profileErr } = await admin.from('staff').insert({
       id: userId,
       name: fullName,
       email,
@@ -284,7 +373,7 @@ Deno.serve(async (req) => {
       employment_type: employmentType,
       onboarding_completed: false,
       joined_at: today(),
-    }, { onConflict: 'id' })
+    })
     if (profileErr) {
       if (createdNow) await admin.auth.admin.deleteUser(userId)
       return json({ error: profileErr.message }, 400)
@@ -292,9 +381,9 @@ Deno.serve(async (req) => {
 
     // 电话属于 staff_private(本人 + hr/manager/admin/owner 可读),不再写进 staff。
     // staff_private 那一行由 staff insert trigger 保证存在;这里 upsert 只为写入电话,
-    // 所以没有电话就整段跳过 —— 否则重复审批会用 null 盖掉已经存在的号码。
-    // 重复审批同一位也安全。失败时不回滚 auth/staff,也不把申请标成 approved
-    // —— 帐号本身是好的,申请留在 pending,经理重新按一次审批就会补上电话。
+    // 所以没有电话就整段跳过。失败时不回滚 auth/staff,也不把申请标成 approved
+    // —— 帐号本身是好的,申请留在 pending;经理再按一次审批会走上面的
+    // "已存在"分支,只补空着的电话并结案,不会重设密码。
     if (phone) {
       const { error: privErr } = await admin.from('staff_private')
         .upsert({ staff_id: userId, contact_number: phone }, { onConflict: 'staff_id' })
@@ -305,14 +394,8 @@ Deno.serve(async (req) => {
 
     await assignJobTitle(admin, userId, 'trainee', department)
 
-    // phone 一并清空:号码此刻已在 staff_private,申请表不该再留一份
-    // (registration_requests 对 supervisor 可读,而 supervisor 不是电话的读者)。
-    await admin.from('registration_requests').update({
-      status: 'approved',
-      reviewed_by: auth.callerId,
-      reviewed_at: new Date().toISOString(),
-      phone: null,
-    }).eq('id', requestId)
+    const marked = await markApproved(admin, requestId, auth.callerId)
+    if (marked) return json({ error: marked }, 500)
 
     return json({ ok: true, staffId: userId })
   }
