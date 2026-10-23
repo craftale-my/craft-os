@@ -5,7 +5,7 @@ import { useAuth } from '../auth/AuthContext'
 import { ErrorBoundary } from '../../shared/components/ErrorBoundary'
 import { StarRating } from '../../shared/components/StarRating'
 import { ScoreChart } from '../../shared/components/ScoreChart'
-import type { Staff, Mission, MissionCompletion, SkillRating, VerificationType, MonthlyReview, ProbationReview, Role } from '../../shared/types'
+import type { Staff, StaffPrivate, Mission, MissionCompletion, SkillRating, VerificationType, MonthlyReview, ProbationReview, Role } from '../../shared/types'
 import {
   SKILL_CATEGORIES, MISSION_CATEGORY_LABELS, RANK_LABELS, getProbationDay,
   VERIFICATION_CONFIG,
@@ -14,7 +14,8 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import type { Option } from '../../shared/lib/lookups'
-import { canReviewStaff } from '../../shared/lib/permissions'
+import { canReviewStaff, canReadStaffPrivate } from '../../shared/lib/permissions'
+import { fetchStaffPrivate, saveStaffPrivate, fetchManagerNotes, saveManagerNotes } from './privateApi'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
@@ -53,6 +54,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
   const staffId = selfView ? currentStaff?.id : id
 
   const [staff, setStaff]           = useState<Staff | null>(null)
+  const [priv, setPriv]             = useState<StaffPrivate | null>(null)
   const [missions, setMissions]     = useState<Mission[]>([])
   const [completions, setCompletions] = useState<MissionCompletion[]>([])
   const [skills, setSkills]         = useState<SkillRating[]>([])
@@ -65,6 +67,8 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
   const isSelf       = selfView || staffId === currentStaff?.id
   const isManager    = currentStaff?.rank === 'manager'
+  // hr/manager/admin/owner (or rank manager): may read staff_private and manager notes.
+  const canSeePrivate = canReadStaffPrivate(currentStaff)
   // Scope-aware review permission: mirrors canReviewStaff (manager tier is
   // unconditionally true; supervisor tier requires same branch+department
   // and a target rank below supervisor). Gates review scoring + skill
@@ -85,7 +89,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
     async function load() {
       try {
-        const [staffRes, missionRes, completionRes, skillRes, reviewRes, probationRes] = await Promise.all([
+        const [staffRes, missionRes, completionRes, skillRes, reviewRes, probationRes, privRow] = await Promise.all([
           supabase.from('staff').select('*').eq('id', staffId!).single(),
           supabase.from('missions').select('*').order('created_at'),
           supabase.from('mission_completions').select('*, mission:missions(*)').eq('staff_id', staffId!),
@@ -96,6 +100,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
           supabase.from('probation_reviews').select('*')
             .eq('staff_id', staffId!).is('overall_result', null)
             .order('created_at', { ascending: false }).limit(1).maybeSingle(),
+          fetchStaffPrivate(staffId!),
         ])
         if (cancelled) return
         if (!staffRes.data) { setNotFound(true) }
@@ -105,6 +110,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         setSkills((skillRes.data ?? []) as SkillRating[])
         setPendingReviewStatus(reviewRes.data?.status ?? null)
         setProbation((probationRes.data ?? null) as ProbationReview | null)
+        setPriv(privRow)
       } catch (err) {
         if (!cancelled) setFetchError(err instanceof Error ? err.message : 'Failed to load profile.')
       } finally {
@@ -118,13 +124,15 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
   async function refreshAll() {
     if (!staffId) return
     try {
-      const [staffRes, completionRes, reviewRes] = await Promise.all([
+      const [staffRes, completionRes, reviewRes, privRow] = await Promise.all([
         supabase.from('staff').select('*').eq('id', staffId).single(),
         supabase.from('mission_completions').select('*, mission:missions(*)').eq('staff_id', staffId),
         supabase.from('monthly_reviews').select('status')
           .eq('staff_id', staffId).eq('month', CURRENT_MONTH).eq('year', CURRENT_YEAR).maybeSingle(),
+        fetchStaffPrivate(staffId),
       ])
       if (staffRes.data) setStaff(staffRes.data as Staff)
+      setPriv(privRow)
       setCompletions((completionRes.data ?? []) as MissionCompletion[])
       setPendingReviewStatus(reviewRes.data?.status ?? null)
       if (isSelf) await refreshStaff()
@@ -296,6 +304,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         {tab === 'personal' && (
           <PersonalInfoTab
             staff={staff}
+            priv={priv}
             isSelf={isSelf}
             isManager={isManager}
             email={staff.email ?? (isSelf ? (user?.email ?? '') : '')}
@@ -314,12 +323,14 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         )}
         {tab === 'history' && <HistoryTab completions={completions} />}
 
-        {/* Manager-only sections */}
-        {isManager && !isSelf && (
+        {/* Notes: hr/manager/admin/owner. Status + danger zone: rank manager (unchanged). */}
+        {(canSeePrivate || isManager) && !isSelf && (
           <div className="mt-6 space-y-4">
-            <ManagerNotesCard staff={staff} onSaved={refreshAll} />
-            <EmploymentStatusCard staff={staff} onSetStatus={handleSetStatus} />
-            <DangerZoneCard staff={staff} onReset={handleReset} />
+            {canSeePrivate && currentStaff && (
+              <ManagerNotesCard staffId={staff.id} actorId={currentStaff.id} />
+            )}
+            {isManager && <EmploymentStatusCard staff={staff} onSetStatus={handleSetStatus} />}
+            {isManager && <DangerZoneCard staff={staff} onReset={handleReset} />}
           </div>
         )}
       </div>
@@ -1145,11 +1156,14 @@ export function supervisorOptions(allStaff: SupervisorCandidate[], staff: Pick<S
 }
 
 export function PersonalInfoTab({
-  staff, isSelf, isManager, email, authEmail, onSaved,
+  staff, priv, isSelf, isManager, email, authEmail, onSaved,
 }: {
-  staff: Staff; isSelf: boolean; isManager: boolean; email: string; authEmail: string; onSaved: () => void
+  staff: Staff; priv: StaffPrivate | null; isSelf: boolean; isManager: boolean; email: string; authEmail: string; onSaved: () => void
 }) {
   const canEdit = isSelf || (isManager && !isSelf)
+  // null ⇒ RLS hid this staff member's private row from the viewer.
+  const restricted = priv === null
+  const privValue = (v: string | null | undefined) => (restricted ? 'Restricted' : (v ?? '—'))
   const { departmentOptions, deptName, employmentTypeOptions } = useLookups()
   const deptDisplay = deptName(staff.department)   // slug → display label
   const [editing, setEditing]   = useState(false)
@@ -1158,7 +1172,7 @@ export function PersonalInfoTab({
 
   const [form, setForm] = useState<PersonalFormData>({
     fullName: staff.name ?? '', nickname: staff.nickname ?? '', gender: staff.gender ?? '',
-    contactNumber: staff.contact_number ?? '', address: staff.address ?? '',
+    contactNumber: priv?.contact_number ?? '', address: priv?.address ?? '',
     branch: staff.branch ?? '', department: staff.department ?? '',   // store the slug
     employmentType: staff.employment_type ?? '', workingExperience: staff.working_experience ?? '',
     education: staff.education ?? '', rank: staff.rank, level: String(staff.level),
@@ -1201,7 +1215,6 @@ export function PersonalInfoTab({
     try {
       const payload: Record<string, unknown> = {
         name: form.fullName, nickname: form.nickname || null, gender: form.gender || null,
-        contact_number: form.contactNumber || null, address: form.address || null,
         branch: form.branch || null,
         department: form.department || null,   // already a department slug
         employment_type: form.employmentType || null,
@@ -1216,6 +1229,11 @@ export function PersonalInfoTab({
       }
       const { error } = await supabase.from('staff').update(payload).eq('id', staff.id)
       if (error) throw error
+      const nextContact = form.contactNumber || null
+      const nextAddress = form.address || null
+      if (priv && (nextContact !== priv.contact_number || nextAddress !== priv.address)) {
+        await saveStaffPrivate(staff.id, { contact_number: nextContact, address: nextAddress })
+      }
       // Job title changed → create the skill records for its career path
       // (idempotent RPC; no-op if the title has no active path).
       if (isManager && !isSelf && form.jobTitleId && form.jobTitleId !== (staff.job_title_id ?? '')) {
@@ -1228,7 +1246,7 @@ export function PersonalInfoTab({
 
   function cancel() {
     setForm({ fullName: staff.name ?? '', nickname: staff.nickname ?? '', gender: staff.gender ?? '',
-      contactNumber: staff.contact_number ?? '', address: staff.address ?? '', branch: staff.branch ?? '',
+      contactNumber: priv?.contact_number ?? '', address: priv?.address ?? '', branch: staff.branch ?? '',
       department: staff.department ?? '', employmentType: staff.employment_type ?? '',
       workingExperience: staff.working_experience ?? '', education: staff.education ?? '',
       rank: staff.rank, level: String(staff.level), jobTitleId: staff.job_title_id ?? '',
@@ -1337,8 +1355,8 @@ export function PersonalInfoTab({
               <PIInputRow label="Full Name" value={form.fullName} onChange={v => update('fullName', v)} />
               <PIInputRow label="Nickname"  value={form.nickname} onChange={v => update('nickname', v)} placeholder="Optional" />
             </div>
-            <InfoRow label="IC Number"     value={staff.ic_number ?? '—'}    note="Cannot be changed" />
-            <InfoRow label="Date of Birth" value={staff.date_of_birth ?? '—'} note="Cannot be changed" />
+            <InfoRow label="IC Number"     value={privValue(priv?.ic_number)}     note="Cannot be changed" />
+            <InfoRow label="Date of Birth" value={privValue(priv?.date_of_birth)} note="Cannot be changed" />
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <p className={labelCls}>Gender</p>
@@ -1353,21 +1371,25 @@ export function PersonalInfoTab({
                   ))}
                 </div>
               </div>
-              <PIInputRow label="Contact Number" type="tel" value={form.contactNumber} onChange={v => update('contactNumber', v)} />
+              {!restricted && (
+                <PIInputRow label="Contact Number" type="tel" value={form.contactNumber} onChange={v => update('contactNumber', v)} />
+              )}
             </div>
             <InfoRow label="Email" value={email} note="From your account" />
-            <PITextareaRow label="Address" value={form.address} onChange={v => update('address', v)} />
+            {!restricted && (
+              <PITextareaRow label="Address" value={form.address} onChange={v => update('address', v)} />
+            )}
           </div>
         ) : (
           <div className="space-y-2">
             <InfoRow label="Full Name"     value={staff.name} />
             <InfoRow label="Nickname"      value={staff.nickname ?? '—'} />
-            <InfoRow label="IC Number"     value={staff.ic_number ?? '—'} />
-            <InfoRow label="Date of Birth" value={staff.date_of_birth ?? '—'} />
+            <InfoRow label="IC Number"     value={privValue(priv?.ic_number)} />
+            <InfoRow label="Date of Birth" value={privValue(priv?.date_of_birth)} />
             <InfoRow label="Gender"        value={staff.gender ?? '—'} />
-            <InfoRow label="Contact"       value={staff.contact_number ?? '—'} />
+            <InfoRow label="Contact"       value={privValue(priv?.contact_number)} />
             <InfoRow label="Email"         value={email} />
-            <InfoRow label="Address"       value={staff.address ?? '—'} multiline />
+            <InfoRow label="Address"       value={privValue(priv?.address)} multiline />
           </div>
         )}
       </div>
@@ -1562,29 +1584,42 @@ function ChangePasswordCard({ email }: { email: string }) {
 
 // ─── Manager Cards ────────────────────────────────────────────────────────────
 
-function ManagerNotesCard({ staff, onSaved }: { staff: Staff; onSaved: () => void }) {
-  const [notes, setNotes]   = useState(staff.manager_notes ?? '')
+function ManagerNotesCard({ staffId, actorId }: { staffId: string; actorId: string }) {
+  const [notes, setNotes]   = useState('')
+  const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved]   = useState(false)
+  const [error, setError]   = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetchManagerNotes(staffId)
+      .then(n => { if (!cancelled) { setNotes(n ?? ''); setLoaded(true) } })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load notes.') })
+    return () => { cancelled = true }
+  }, [staffId])
 
   async function save() {
-    setSaving(true)
+    setSaving(true); setError('')
     try {
-      await supabase.from('staff').update({ manager_notes: notes || null }).eq('id', staff.id)
-      setSaved(true); setTimeout(() => setSaved(false), 2000); onSaved()
-    } catch { /* silent */ } finally { setSaving(false) }
+      await saveManagerNotes(staffId, notes || null, actorId)
+      setSaved(true); setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save notes.')
+    } finally { setSaving(false) }
   }
 
   return (
     <div className="bg-white rounded-xl shadow-card p-5">
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest">Manager Notes</p>
-        <span className="text-xs text-brown-faint italic">Private — only visible to managers</span>
+        <span className="text-xs text-brown-faint italic">Private — only visible to HR and managers</span>
       </div>
-      <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
+      {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3">{error}</p>}
+      <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} disabled={!loaded}
         placeholder="Performance notes, observations, development feedback…"
         className={`${inputCls} resize-none mb-3`} />
-      <button onClick={save} disabled={saving}
+      <button onClick={save} disabled={saving || !loaded}
         className={`text-xs px-3 py-1.5 rounded-lg border transition-colors font-medium ${
           saved ? 'bg-[#EBF5EE] text-[#3D7A50] border-[#5B9E6A30]'
                 : 'border-[#8B634440] text-[#8B6344] bg-[#8B634408] hover:bg-[#8B634418]'
