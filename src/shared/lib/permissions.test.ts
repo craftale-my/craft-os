@@ -7,7 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('../../features/auth/AuthContext', () => ({ useAuth: () => ({ staff: null }) }))
 vi.mock('./lookups', () => ({ useLookups: () => ({ roleCaps: {} }) }))
 
-import { canReviewStaff } from './permissions'
+import { canReviewStaff, canReadStaffPrivate } from './permissions'
 import type { Rank, SystemRole, Staff } from '../types'
 
 type Me = Pick<Staff, 'rank' | 'system_role' | 'department' | 'branch' | 'branch_id'>
@@ -97,5 +97,30 @@ describe('canReviewStaff', () => {
   it('hr system_role (rank trainee) is false', () => {
     const m = me({ rank: 'trainee', system_role: 'hr' as SystemRole })
     expect(canReviewStaff(m, target())).toBe(false)
+  })
+})
+
+describe('canReadStaffPrivate', () => {
+  const who = (rank: Rank, system_role: SystemRole) => ({ rank, system_role })
+
+  it('allows hr, manager, admin and owner system roles regardless of rank', () => {
+    expect(canReadStaffPrivate(who('trainee', 'hr'))).toBe(true)
+    expect(canReadStaffPrivate(who('trainee', 'manager'))).toBe(true)
+    expect(canReadStaffPrivate(who('junior', 'admin'))).toBe(true)
+    expect(canReadStaffPrivate(who('senior', 'owner'))).toBe(true)
+  })
+
+  it('allows rank manager even when system_role lags behind', () => {
+    expect(canReadStaffPrivate(who('manager', 'staff'))).toBe(true)
+  })
+
+  it('denies supervisors and plain staff', () => {
+    expect(canReadStaffPrivate(who('supervisor', 'supervisor'))).toBe(false)
+    expect(canReadStaffPrivate(who('senior', 'staff'))).toBe(false)
+  })
+
+  it('denies when there is no signed-in staff', () => {
+    expect(canReadStaffPrivate(null)).toBe(false)
+    expect(canReadStaffPrivate(undefined)).toBe(false)
   })
 })

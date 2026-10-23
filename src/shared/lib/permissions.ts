@@ -84,3 +84,18 @@ export function useCan() {
     ownBranchOnly: !can('all_branches'),
   }
 }
+
+/**
+ * Frontend mirror of SQL can_read_staff_private(): who may read colleagues'
+ * IC / DOB / phone / address (staff_private) and manager notes
+ * (staff_manager_notes). Same set as the salary tier. Supervisors are
+ * deliberately excluded. UI gate only — RLS is the real boundary.
+ */
+export function canReadStaffPrivate(
+  staff: Pick<Staff, 'rank' | 'system_role'> | null | undefined,
+): boolean {
+  if (!staff) return false
+  if (staff.rank === 'manager') return true
+  return staff.system_role === 'hr' || staff.system_role === 'manager'
+      || staff.system_role === 'admin' || staff.system_role === 'owner'
+}

@@ -136,6 +136,17 @@ export interface Staff {
   last_level_up_at: string | null
 }
 
+/** staff_private row — IC, DOB, phone, address. RLS: self + hr/manager/admin/owner.
+ *  A reader without permission gets no row at all (not nulls). */
+export interface StaffPrivate {
+  staff_id: string
+  ic_number: string | null
+  date_of_birth: string | null
+  contact_number: string | null
+  address: string | null
+  updated_at: string
+}
+
 export interface Mission {
   id: string
   title: string
