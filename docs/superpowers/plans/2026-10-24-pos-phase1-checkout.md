@@ -10,15 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-23-pos-checkout-design.md` (every section). Builds on Sub-plan 2: `docs/superpowers/plans/2026-10-23-pos-phase1-ordering.md` (executed, reviewed; ledger `.superpowers/sdd/progress.md`). Feedme reference: `docs/superpowers/research/2026-10-23-feedme-back-office-teardown.md` (§2.3 payment types, §2.4 reason template, §2.8 service charge, §2.10 receipt template, §3.2 Close up, §6 role permissions).
 
-## Decisions still marked [CONFIRM] in the design (confirm before Task 1 starts)
+## Owner's answers (2026-10-24)
 
-Each one is built the way the design says; the line after "If not" is the whole change if the owner answers differently.
+The five decisions the design marked [CONFIRM] are answered; the design doc now records them as "Confirmed by the owner 2026-10-24".
 
-- **[CONFIRM] Takeaway service charge.** The dev seed has one rule: 10 %, dine-in, all tables, all products — takeaway pays none (vector "takeaway: packaging fee per unit, no service charge"). *If not:* tick Takeaway on that rule in POS settings (no code change; vector "takeaway rule: service charge, SST and packaging fee together" already covers it).
-- **[CONFIRM] SST and service charge per rate group, not per line.** `pos_compute_bill` / `computeBill` round once per rate (vector "SST per rate group, not per line…" gives 1.39 where per-line gives 1.38). *If not:* change `groups()` in `bill.ts` and the `sc` / `sst` CTEs in `pos_compute_bill` to sum per-line rounded amounts, and update that one vector in both copies.
-- **[CONFIRM] Packaging fee is not taxed.** Feedme shows "Packaging Fee 1.06" (looks like 1.00 + 6 % SST). We charge the snapshotted `takeaway_fee_sen` with no SST and no service charge. *If not:* add the fee to the SST base of its line's rate in both totals functions and in the two takeaway vectors.
-- **[CONFIRM] Whole-bill 5-sen rounding for every payment method** (receipt #87846 prints "Bill rounding" for a Touch 'n Go payment). *If not:* round only when every payment is cash — a change in `checkout_bill` (rounding then depends on the payments, so `pos_bill_totals` would take the payment kinds) and in the checkout sheet.
-- **[CONFIRM] One capability `pos_supervise` is enough for the pilot** (Feedme's role matrix is finer: discount %, change price, waive service charge, change payment type). *If not:* nothing in this plan changes; finer capabilities come with discounts in a later sub-plan.
+1. **Takeaway service charge: none.** Kept as designed — the dev seed's one rule is 10 %, dine-in, all tables, all products; a branch can still add a takeaway rule on POS settings.
+2. **SST and service charge are rounded per rate group, not per line.** Kept (vector "SST per rate group, not per line…": 1.39, where per-line rounding would give 1.38).
+3. **The takeaway packaging fee carries SST** (Feedme's "Packaging Fee 1.06" = 1.00 + 6 %). **Changed:** on a takeaway bill each line's `takeaway_fee_sen × qty` joins the SST base of that line's `sst_rate_bp` group before the per-rate rounding; the fee of a 0 %-SST item stays untaxed; the fee never carries service charge; a branch that is not SST-registered charges no SST at all. Implemented in `computeBill` (Task 6) and `pos_compute_bill` (Task 2), pinned by three takeaway vectors, the verify script's takeaway totals and the receipt test (the Charges summary's SST base includes the fee).
+4. **Whole-bill 5-sen rounding for every payment method.** Kept.
+5. **One capability `pos_supervise` is enough for the pilot.** Kept; finer permissions come with discounts in a later sub-plan.
 
 ## Open points for the owner (choices made while planning, 2026-10-24 — each can be changed later)
 
@@ -49,8 +49,9 @@ Each one is built the way the design says; the line after "If not" is the whole 
 
 ## Spec deltas (decided while planning, 2026-10-24)
 
+- **Packaging fee and SST (owner's answer 3).** On a takeaway bill a line's packaging fee is added to the SST base of that line's rate group (so `sstGroups[].baseSen` and the receipt's Charges summary include it); no service charge on the fee.
 - **Totals function shape.** The design's `pos_bill_totals` is split in two: `pos_compute_bill(p_input jsonb) returns jsonb` (pure, `immutable`, the exact twin of `computeBill(input)`) and `pos_bill_totals(p_bill_id uuid) returns jsonb` (reads the bill, its items, the branch settings and active rules, then calls the pure one). This is what lets the verify script run the very same vectors as Vitest. Output: `{ subtotalSen, serviceChargeSen, sstSen, takeawayFeeSen, beforeRoundingSen, roundingSen, totalSen, sstGroups[], serviceChargeGroups[] }`, groups = `{ rateBp, baseSen, amountSen }` for non-zero rates, ascending.
-- **Vectors.** One file `src/features/pos/checkout/billVectors.json` (21 vectors: #87846, takeaway with packaging fee, 0 % SST item, the nine rounding endings 1–9 plus rounding off, voided line, two table/product-limited rules, per-group SST, a half-sen, not SST-registered, takeaway service-charge rule, fee ignored on dine-in). The verify script carries a byte-for-byte copy between `$vectors$` markers and `bill.test.ts` fails if they differ.
+- **Vectors.** One file `src/features/pos/checkout/billVectors.json` (22 vectors: #87846, takeaway with an SST-able packaging fee, 0 % SST item, the nine rounding endings 1–9 plus rounding off, voided line, two table/product-limited rules, per-group SST, a half-sen, not SST-registered, takeaway service-charge rule (service charge on the item, SST on item + fee), untaxed fee of a 0 % SST takeaway item, fee ignored on dine-in). The verify script carries a byte-for-byte copy (the line after the opening `$vectors$` marker up to the closing one) and `bill.test.ts` fails if they differ.
 - **Wrong PIN = `{ok:false}`** (Open point 3). Protected RPCs (`void_order_item`, `void_bill`, `refund_bill`, `set_my_pos_pin`) return `jsonb`: `{"ok": true, …}` or `{"ok": false, "error": "Wrong PIN — 4 tries left"}`. The client's `unwrapAction` throws the error text.
 - **Receipt payload kinds.** `print_jobs.kind` keeps its two values; a receipt is `kind = 'receipt'` with `payload.kind = 'receipt'`, a refund slip is `kind = 'receipt'` with `payload.kind = 'refund'`, a void ticket is `kind = 'ticket'` with `payload.void = true`. Hosts dispatch on `payload.kind`.
 - **`bills.totals`** keeps the totals object fixed at checkout, so a reprint shows the same charges summary even after the rules change.
@@ -396,7 +397,9 @@ revoke all on function pos_my_branch() from public, anon, authenticated;
 -- output: { subtotalSen, serviceChargeSen, sstSen, takeawayFeeSen, beforeRoundingSen, roundingSen, totalSen,
 --           sstGroups: [{ rateBp, baseSen, amountSen }], serviceChargeGroups: [...] }   (non-zero rates, ascending)
 -- Service charge and SST are both on the line amounts (SST is not charged on the
--- service charge — receipt #87846), rounded half-up per rate group.
+-- service charge — receipt #87846), rounded half-up per rate group. On a takeaway
+-- bill a line's packaging fee joins the SST base of that line's rate (owner,
+-- 2026-10-24); the fee never carries service charge.
 create or replace function pos_compute_bill(p_input jsonb) returns jsonb
 language sql immutable security invoker set search_path = public, pg_temp as $$
   with lines as (
@@ -424,9 +427,13 @@ language sql immutable security invoker set search_path = public, pg_temp as $$
     select sc_bp as rate_bp, sum(amount) as base, round(sum(amount) * sc_bp / 10000.0) as amt
       from rated where sc_bp > 0 group by sc_bp
   ),
-  sst as (
-    select sst_bp as rate_bp, sum(amount) as base, round(sum(amount) * sst_bp / 10000.0) as amt
+  taxed as (
+    select sst_bp, amount + case when p_input->>'orderType' = 'takeaway' then fee else 0 end as base_part
       from lines
+  ),
+  sst as (
+    select sst_bp as rate_bp, sum(base_part) as base, round(sum(base_part) * sst_bp / 10000.0) as amt
+      from taxed
      where sst_bp > 0 and coalesce((p_input->>'sstRegistered')::boolean, true)
      group by sst_bp
   ),
@@ -1730,14 +1737,14 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Tasks 1–4; the dev test login `76cbcf9f-905e-450d-9f5e-1c9e72a9373d` (owner, Demo branch) and the Demo branch from `seed-2026-10-23-pos-demo-branch.sql`.
-- Produces: the vectors file Task 6 tests against (`{ name, input: BillInput, expected: BillTotals }[]`, 21 entries); on dev, the three migrations applied and the Demo branch's checkout settings (receipt route `Bar`, 10 % dine-in rule, methods Cash / Maybank Terminal / DuitNow QR / Touch 'n Go, reason templates). The verify script's expected error messages are the ones Tasks 9–12 show to users.
+- Produces: the vectors file Task 6 tests against (`{ name, input: BillInput, expected: BillTotals }[]`, 22 entries); on dev, the three migrations applied and the Demo branch's checkout settings (receipt route `Bar`, 10 % dine-in rule, methods Cash / Maybank Terminal / DuitNow QR / Touch 'n Go, reason templates). The verify script's expected error messages are the ones Tasks 9–12 show to users.
 
-- [ ] **Step 1: Write the vectors file** `src/features/pos/checkout/billVectors.json` (one vector per line; the numbers are worked out in the design's §2 rules — e.g. #87846: 8000 + 800 + 480 = 9280):
+- [ ] **Step 1: Write the vectors file** `src/features/pos/checkout/billVectors.json` (one vector per line; the numbers are worked out by hand from the design's §2 rules — e.g. #87846: 8000 + 800 + 480 = 9280; the first takeaway vector: SST 6 % of (38.50 + 3.00 fee) = 2.49, 38.50 + 2.49 + 3.00 = 43.99, rounded +0.01 to 44.00):
 
 ```json
 [
   {"name": "receipt #87846: dine-in, 10% service charge, 6% SST", "input": {"orderType": "dine_in", "tableId": "t-7", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-b", "unitPriceSen": 2500, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-c", "unitPriceSen": 1800, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-d", "unitPriceSen": 1300, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 8000, "serviceChargeSen": 800, "sstSen": 480, "takeawayFeeSen": 0, "beforeRoundingSen": 9280, "roundingSen": 0, "totalSen": 9280, "sstGroups": [{"rateBp": 600, "baseSen": 8000, "amountSen": 480}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 8000, "amountSen": 800}]}},
-  {"name": "takeaway: packaging fee per unit, no service charge, rounds 4381 down to 4380", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-latte", "unitPriceSen": 1300, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}, {"productId": "p-cake", "unitPriceSen": 1250, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 3850, "serviceChargeSen": 0, "sstSen": 231, "takeawayFeeSen": 300, "beforeRoundingSen": 4381, "roundingSen": -1, "totalSen": 4380, "sstGroups": [{"rateBp": 600, "baseSen": 3850, "amountSen": 231}], "serviceChargeGroups": []}},
+  {"name": "takeaway: packaging fee per unit carries SST, no service charge, rounds 4399 up to 4400", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-latte", "unitPriceSen": 1300, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}, {"productId": "p-cake", "unitPriceSen": 1250, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 3850, "serviceChargeSen": 0, "sstSen": 249, "takeawayFeeSen": 300, "beforeRoundingSen": 4399, "roundingSen": 1, "totalSen": 4400, "sstGroups": [{"rateBp": 600, "baseSen": 4150, "amountSen": 249}], "serviceChargeGroups": []}},
   {"name": "0% SST item pays service charge but no SST", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-keychain", "unitPriceSen": 3500, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 5900, "serviceChargeSen": 590, "sstSen": 144, "takeawayFeeSen": 0, "beforeRoundingSen": 6634, "roundingSen": 1, "totalSen": 6635, "sstGroups": [{"rateBp": 600, "baseSen": 2400, "amountSen": 144}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 5900, "amountSen": 590}]}},
   {"name": "rounding: 1001 sen -> 1000 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1001, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1001, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1001, "roundingSen": -1, "totalSen": 1000, "sstGroups": [], "serviceChargeGroups": []}},
   {"name": "rounding: 1002 sen -> 1000 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1002, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1002, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1002, "roundingSen": -2, "totalSen": 1000, "sstGroups": [], "serviceChargeGroups": []}},
@@ -1755,7 +1762,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   {"name": "SST per rate group, not per line: 2 x 11.55 at 6% is 1.39 (per line would be 1.38)", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1155, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-b", "unitPriceSen": 1155, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-c", "unitPriceSen": 990, "qty": 1, "sstRateBp": 800, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 3300, "serviceChargeSen": 330, "sstSen": 218, "takeawayFeeSen": 0, "beforeRoundingSen": 3848, "roundingSen": 2, "totalSen": 3850, "sstGroups": [{"rateBp": 600, "baseSen": 2310, "amountSen": 139}, {"rateBp": 800, "baseSen": 990, "amountSen": 79}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 3300, "amountSen": 330}]}},
   {"name": "half a sen rounds up: 24.75 x 6% = 1.485 -> 1.49", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-a", "unitPriceSen": 2475, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 2475, "serviceChargeSen": 0, "sstSen": 149, "takeawayFeeSen": 0, "beforeRoundingSen": 2624, "roundingSen": 1, "totalSen": 2625, "sstGroups": [{"rateBp": 600, "baseSen": 2475, "amountSen": 149}], "serviceChargeGroups": []}},
   {"name": "branch not SST-registered: no SST", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": false, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 2400, "serviceChargeSen": 240, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 2640, "roundingSen": 0, "totalSen": 2640, "sstGroups": [], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 2400, "amountSen": 240}]}},
-  {"name": "takeaway rule: service charge, SST and packaging fee together", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in", "takeaway"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 1000, "serviceChargeSen": 100, "sstSen": 60, "takeawayFeeSen": 100, "beforeRoundingSen": 1260, "roundingSen": 0, "totalSen": 1260, "sstGroups": [{"rateBp": 600, "baseSen": 1000, "amountSen": 60}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 1000, "amountSen": 100}]}},
+  {"name": "takeaway rule: service charge on the item only, SST on item + fee", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in", "takeaway"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 1000, "serviceChargeSen": 100, "sstSen": 66, "takeawayFeeSen": 100, "beforeRoundingSen": 1266, "roundingSen": -1, "totalSen": 1265, "sstGroups": [{"rateBp": 600, "baseSen": 1100, "amountSen": 66}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 1000, "amountSen": 100}]}},
+  {"name": "takeaway: the fee of a 0% SST item is untaxed", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}, {"productId": "p-keychain", "unitPriceSen": 2000, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 50, "voided": false}]}, "expected": {"subtotalSen": 3000, "serviceChargeSen": 0, "sstSen": 66, "takeawayFeeSen": 150, "beforeRoundingSen": 3216, "roundingSen": -1, "totalSen": 3215, "sstGroups": [{"rateBp": 600, "baseSen": 1100, "amountSen": 66}], "serviceChargeGroups": []}},
   {"name": "packaging fee is ignored on a dine-in bill", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 2, "sstRateBp": 0, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 2000, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 2000, "roundingSen": 0, "totalSen": 2000, "sstGroups": [], "serviceChargeGroups": []}}
 ]
 ```
@@ -1775,7 +1783,7 @@ declare
   v_vectors jsonb := $vectors$
 [
   {"name": "receipt #87846: dine-in, 10% service charge, 6% SST", "input": {"orderType": "dine_in", "tableId": "t-7", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-b", "unitPriceSen": 2500, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-c", "unitPriceSen": 1800, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-d", "unitPriceSen": 1300, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 8000, "serviceChargeSen": 800, "sstSen": 480, "takeawayFeeSen": 0, "beforeRoundingSen": 9280, "roundingSen": 0, "totalSen": 9280, "sstGroups": [{"rateBp": 600, "baseSen": 8000, "amountSen": 480}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 8000, "amountSen": 800}]}},
-  {"name": "takeaway: packaging fee per unit, no service charge, rounds 4381 down to 4380", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-latte", "unitPriceSen": 1300, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}, {"productId": "p-cake", "unitPriceSen": 1250, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 3850, "serviceChargeSen": 0, "sstSen": 231, "takeawayFeeSen": 300, "beforeRoundingSen": 4381, "roundingSen": -1, "totalSen": 4380, "sstGroups": [{"rateBp": 600, "baseSen": 3850, "amountSen": 231}], "serviceChargeGroups": []}},
+  {"name": "takeaway: packaging fee per unit carries SST, no service charge, rounds 4399 up to 4400", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-latte", "unitPriceSen": 1300, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}, {"productId": "p-cake", "unitPriceSen": 1250, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 3850, "serviceChargeSen": 0, "sstSen": 249, "takeawayFeeSen": 300, "beforeRoundingSen": 4399, "roundingSen": 1, "totalSen": 4400, "sstGroups": [{"rateBp": 600, "baseSen": 4150, "amountSen": 249}], "serviceChargeGroups": []}},
   {"name": "0% SST item pays service charge but no SST", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-keychain", "unitPriceSen": 3500, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 5900, "serviceChargeSen": 590, "sstSen": 144, "takeawayFeeSen": 0, "beforeRoundingSen": 6634, "roundingSen": 1, "totalSen": 6635, "sstGroups": [{"rateBp": 600, "baseSen": 2400, "amountSen": 144}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 5900, "amountSen": 590}]}},
   {"name": "rounding: 1001 sen -> 1000 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1001, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1001, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1001, "roundingSen": -1, "totalSen": 1000, "sstGroups": [], "serviceChargeGroups": []}},
   {"name": "rounding: 1002 sen -> 1000 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1002, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1002, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1002, "roundingSen": -2, "totalSen": 1000, "sstGroups": [], "serviceChargeGroups": []}},
@@ -1793,7 +1801,8 @@ declare
   {"name": "SST per rate group, not per line: 2 x 11.55 at 6% is 1.39 (per line would be 1.38)", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1155, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-b", "unitPriceSen": 1155, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-c", "unitPriceSen": 990, "qty": 1, "sstRateBp": 800, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 3300, "serviceChargeSen": 330, "sstSen": 218, "takeawayFeeSen": 0, "beforeRoundingSen": 3848, "roundingSen": 2, "totalSen": 3850, "sstGroups": [{"rateBp": 600, "baseSen": 2310, "amountSen": 139}, {"rateBp": 800, "baseSen": 990, "amountSen": 79}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 3300, "amountSen": 330}]}},
   {"name": "half a sen rounds up: 24.75 x 6% = 1.485 -> 1.49", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-a", "unitPriceSen": 2475, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 2475, "serviceChargeSen": 0, "sstSen": 149, "takeawayFeeSen": 0, "beforeRoundingSen": 2624, "roundingSen": 1, "totalSen": 2625, "sstGroups": [{"rateBp": 600, "baseSen": 2475, "amountSen": 149}], "serviceChargeGroups": []}},
   {"name": "branch not SST-registered: no SST", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": false, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 2400, "serviceChargeSen": 240, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 2640, "roundingSen": 0, "totalSen": 2640, "sstGroups": [], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 2400, "amountSen": 240}]}},
-  {"name": "takeaway rule: service charge, SST and packaging fee together", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in", "takeaway"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 1000, "serviceChargeSen": 100, "sstSen": 60, "takeawayFeeSen": 100, "beforeRoundingSen": 1260, "roundingSen": 0, "totalSen": 1260, "sstGroups": [{"rateBp": 600, "baseSen": 1000, "amountSen": 60}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 1000, "amountSen": 100}]}},
+  {"name": "takeaway rule: service charge on the item only, SST on item + fee", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in", "takeaway"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 1000, "serviceChargeSen": 100, "sstSen": 66, "takeawayFeeSen": 100, "beforeRoundingSen": 1266, "roundingSen": -1, "totalSen": 1265, "sstGroups": [{"rateBp": 600, "baseSen": 1100, "amountSen": 66}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 1000, "amountSen": 100}]}},
+  {"name": "takeaway: the fee of a 0% SST item is untaxed", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}, {"productId": "p-keychain", "unitPriceSen": 2000, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 50, "voided": false}]}, "expected": {"subtotalSen": 3000, "serviceChargeSen": 0, "sstSen": 66, "takeawayFeeSen": 150, "beforeRoundingSen": 3216, "roundingSen": -1, "totalSen": 3215, "sstGroups": [{"rateBp": 600, "baseSen": 1100, "amountSen": 66}], "serviceChargeGroups": []}},
   {"name": "packaging fee is ignored on a dine-in bill", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 2, "sstRateBp": 0, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 2000, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 2000, "roundingSen": 0, "totalSen": 2000, "sstGroups": [], "serviceChargeGroups": []}}
 ]
 $vectors$;
@@ -1877,7 +1886,7 @@ begin
   end loop;
 
   -- ── B. totals: the shared vectors ─────────────────────────────────────────
-  if jsonb_array_length(v_vectors) <> 21 then raise exception 'FAIL vectors: expected 21, got %', jsonb_array_length(v_vectors); end if;
+  if jsonb_array_length(v_vectors) <> 22 then raise exception 'FAIL vectors: expected 22, got %', jsonb_array_length(v_vectors); end if;
   for r in select v from jsonb_array_elements(v_vectors) v loop
     if pos_compute_bill(r.v->'input') <> r.v->'expected' then
       raise exception 'FAIL vector "%": got %', r.v->>'name', pos_compute_bill(r.v->'input');
@@ -1979,8 +1988,9 @@ begin
   select b.* into v_bill2 from bills b join orders o on o.bill_id = b.id where o.id = v_order;
   if (select takeaway_fee_sen from order_items where order_id = v_order) <> 100 then raise exception 'FAIL fee: takeaway not snapshotted'; end if;
   v_res := pos_bill_totals(v_bill2.id);
-  -- 4000 + SST 240 + fee 200, no service charge on takeaway (the rule is dine-in only)
-  if (v_res->>'takeawayFeeSen')::int <> 200 or (v_res->>'serviceChargeSen')::int <> 0 or (v_res->>'totalSen')::int <> 4440 then
+  -- 4000 + fee 200 + SST 6% of (4000 + 200) = 252 → 4452, rounded to 4450; no service charge on takeaway (dine-in rule)
+  if (v_res->>'takeawayFeeSen')::int <> 200 or (v_res->>'serviceChargeSen')::int <> 0 or (v_res->>'sstSen')::int <> 252
+     or (v_res->>'totalSen')::int <> 4450 then
     raise exception 'FAIL takeaway totals: %', v_res;
   end if;
 
@@ -2263,7 +2273,7 @@ rollback;
 node --input-type=module -e 'import { readFileSync } from "node:fs"; const v = JSON.parse(readFileSync("src/features/pos/checkout/billVectors.json", "utf8")); const m = readFileSync("supabase/migration-2026-10-24-pos-checkout-verify.sql", "utf8").match(/\$vectors\$([\s\S]*?)\$vectors\$/); console.log(v.length, JSON.stringify(JSON.parse(m[1])) === JSON.stringify(v))'
 ```
 
-Expected: `21 true`.
+Expected: `22 true`.
 
 - [ ] **Step 4: Write the dev seed** (dev only — never on prod):
 
@@ -2366,7 +2376,7 @@ const all = vectors as Vector[]
 
 describe('computeBill — shared vectors (same numbers as the SQL verify script)', () => {
   it('has the vectors the design asks for', () => {
-    expect(all).toHaveLength(21)
+    expect(all).toHaveLength(22)
     expect(all[0].expected.totalSen).toBe(9280) // receipt #87846
   })
   for (const v of all) {
@@ -2421,7 +2431,7 @@ export interface BillLineInput {
   unitPriceSen: number // variant + modifiers, already
   qty: number
   sstRateBp: number
-  takeawayFeeSen: number // snapshotted on the order item; counted only on takeaway bills
+  takeawayFeeSen: number // snapshotted on the order item; counted only on takeaway bills, taxed at the line's SST rate
   voided: boolean
 }
 
@@ -2493,15 +2503,18 @@ export function computeBill(input: BillInput): BillTotals {
   }
   const serviceChargeGroups = groups(scBases)
 
+  // SST base per rate: the line amount plus, on a takeaway bill, its packaging fee (owner, 2026-10-24)
+  const takeaway = input.orderType === 'takeaway'
+  const fee = (l: BillLineInput) => (takeaway ? l.takeawayFeeSen * l.qty : 0)
   const sstBases = new Map<number, number>()
   if (input.sstRegistered) {
-    for (const l of live) if (l.sstRateBp > 0) sstBases.set(l.sstRateBp, (sstBases.get(l.sstRateBp) ?? 0) + amount(l))
+    for (const l of live) if (l.sstRateBp > 0) sstBases.set(l.sstRateBp, (sstBases.get(l.sstRateBp) ?? 0) + amount(l) + fee(l))
   }
   const sstGroups = groups(sstBases)
 
   const serviceChargeSen = serviceChargeGroups.reduce((n, g) => n + g.amountSen, 0)
   const sstSen = sstGroups.reduce((n, g) => n + g.amountSen, 0)
-  const takeawayFeeSen = input.orderType === 'takeaway' ? live.reduce((n, l) => n + l.takeawayFeeSen * l.qty, 0) : 0
+  const takeawayFeeSen = live.reduce((n, l) => n + fee(l), 0)
   const beforeRoundingSen = subtotalSen + serviceChargeSen + sstSen + takeawayFeeSen
   const roundingSen = input.cashRounding === 'nearest_5_sen' ? roundingDeltaSen(beforeRoundingSen) : 0
   return {
@@ -2523,7 +2536,7 @@ export function formatRate(bp: number): string {
 }
 ```
 
-- [ ] **Step 4: Run the tests.** Run: `npx vitest run src/features/pos/checkout/bill.test.ts` — Expected: PASS (25 tests: 21 vectors, the count, the SQL copy, rounding, formatRate). Then `npx tsc -b` — Expected: no output.
+- [ ] **Step 4: Run the tests.** Run: `npx vitest run src/features/pos/checkout/bill.test.ts` — Expected: PASS (26 tests: 22 vectors, the count, the SQL copy, rounding, formatRate). Then `npx tsc -b` — Expected: no output.
 
 - [ ] **Step 5: Commit**
 
@@ -2657,7 +2670,7 @@ describe('renderReceiptLines', () => {
     ])
   })
 
-  it('takeaway cash reprint: banner, no table, packaging fee, negative rounding, tendered and change', () => {
+  it('takeaway cash reprint: banner, no table, taxed packaging fee, rounding, tendered and change', () => {
     const out = renderReceiptLines({
       ...r87846, reprint: true, tableLabel: null, pax: null,
       items: [
@@ -2665,20 +2678,23 @@ describe('renderReceiptLines', () => {
         { qty: 1, name: 'Burnt Cheesecake', unitSen: 1250, amountSen: 1250, mods: [] },
       ],
       itemCount: 3, subtotalSen: 3850,
-      sstGroups: [{ rateBp: 600, baseSen: 3850, amountSen: 231 }], serviceChargeGroups: [],
-      takeawayFeeSen: 300, roundingSen: -1, totalSen: 4380,
-      payments: [{ name: 'Cash', kind: 'cash', amountSen: 4380, tenderedSen: 5000, reference: null }],
-      changeSen: 620,
+      // the packaging fee is taxed with its line (owner, 2026-10-24): SST base 38.50 + 3.00
+      sstGroups: [{ rateBp: 600, baseSen: 4150, amountSen: 249 }], serviceChargeGroups: [],
+      takeawayFeeSen: 300, roundingSen: 1, totalSen: 4400,
+      payments: [{ name: 'Cash', kind: 'cash', amountSen: 4400, tenderedSen: 5000, reference: null }],
+      changeSen: 600,
     }, 48)
     expect(out[0]).toBe('                *** REPRINT ***')
     expect(out).toContain('                    TAKEAWAY')
     expect(out).not.toContain('Table pax                                      4')
     expect(out).toContain('2 Coffee Latte (COLD) (13.00/ea)           26.00')
     expect(out).toContain('Takeaway packaging                          3.00')
-    expect(out).toContain('Bill rounding                              -0.01')
-    expect(out).toContain('Total (MYR)                                43.80')
+    expect(out).toContain('SST (6%)                                    2.49')
+    expect(out).toContain('Bill rounding                               0.01')
+    expect(out).toContain('Total (MYR)                                44.00')
     expect(out).toContain('Cash                                       50.00')
-    expect(out).toContain('Change                                      6.20')
+    expect(out).toContain('Change                                      6.00')
+    expect(out).toContain('SST 6%                          41.50       2.49')
     expect(out).not.toContain('SERVICE CHARGE 10%              80.00       8.00')
   })
 
@@ -3969,7 +3985,7 @@ interface Handlers {
       })
 ```
 
-- [ ] **Step 7: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run src/features/pos` — Expected: PASS (162 tests in 22 files).
+- [ ] **Step 7: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run src/features/pos` — Expected: PASS (163 tests in 22 files).
 
 - [ ] **Step 8: Commit**
 
@@ -5621,7 +5637,7 @@ No printers set — see POS settings.
 — set them in POS settings.
 ```
 
-- [ ] **Step 7: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run` — Expected: all pass (670 tests at the time of writing; `nav.test.ts` checks ids, not labels). Run: `grep -rn "Tables & [Pp]rinters" src` — Expected: no output.
+- [ ] **Step 7: Gates.** Run: `npx tsc -b` — Expected: no output. Run: `npx vitest run` — Expected: all pass (671 tests at the time of writing; `nav.test.ts` checks ids, not labels). Run: `grep -rn "Tables & [Pp]rinters" src` — Expected: no output.
 
 - [ ] **Step 8 (controller, craft-os-dev — browser and SQL; the implementer does not touch the database):** Browser `/pos/settings` (dev, test login): **Receipt** shows the seeded title `Craft Cafe - Demo` and route `Bar`; change the phone and **Save receipt settings** → "Receipt settings saved" and `select phone from branches where name = 'Demo'` shows it; choose route "No receipt printer" → save → a checkout says "No receipt printer is set…"; set `Bar` back. **Service charge** lists `10% · Dine-in · All tables · All products`; **Add rule** 5 %, Takeaway, Only these products → search `latte` → tick one → **Save rule** → a takeaway bill with that product shows `Service charge (5%)` in the bill panel and in checkout; remove the rule. **Payment methods**: add `Grab` (other) → **Save** → it appears in the checkout sheet; untick Active → gone. **Reasons**: untick "Allow Other" for Void item → **Save** → the void dialog has no Other box and the server refuses a typed reason. **Approvers** lists the test login with "PIN set"; **Clear PIN** → "no PIN yet" (set it again under My PIN). Sign in as a non-manager staff login (if one exists on dev) → `/pos/settings` is not reachable (route guard), and a direct `save_receipt_settings` call is refused with "Only a manager can change the receipt settings" (verified in Task 5's script).
 
@@ -5643,12 +5659,12 @@ No code. Extends Sub-plan 2's Task 13 (do that one first if it has not run: tick
 - [ ] **Step 1: Server and agent.** Start `pos-dev-lan` (Sub-plan 2 Task 13 Step 1) and the agent (`node --env-file=tools/print-agent/.env tools/print-agent/agent.ts` → `routes: Bar, Kitchen`, `realtime: SUBSCRIBED`). On `/menu` make sure the items used below have print routes (drinks `Bar`, food `Kitchen`; the ledger says only PASTA had one).
 - [ ] **Step 2: Settings.** On the iPad open **POS → POS Settings**: fill the receipt header with the real Craft Cafe details (title, company, REG NO, SST NO, address, phone, email), receipt printer `Bar`, SST registered on, rounding "Nearest 5 sen", save. Each approver signs in once and sets **My PIN**.
 - [ ] **Step 3: The #87846 comparison.** Owner brings Feedme receipt #87846 (or rings the same four items in Feedme today and keeps that receipt). On our POS: table `T1`, the same four items, the same pax → **Checkout** → pay the same way (Touch 'n Go, total) → our receipt prints on the ZY301 within 2 s. Lay both side by side and tick, line by line: title/company/REG NO/SST NO/address/phone/email · Invoice no · Date · Cashier · Table pax · ORDER T1 · each item `qty name (unit/ea) amount` and modifiers · Item count · Subtotal 80.00 · SST (6%) 4.80 · SERVICE CHARGE (10%) 8.00 · Bill rounding · Total (MYR) 92.80 · payment · Change · Charges summary (Base Amt 80.00 / Amount) · footer. Photograph both; every difference goes in the ledger as a fix task or an accepted difference (the owner decides).
-- [ ] **Step 4: Cash, split and rounding.** Takeaway order whose total does not end in 0 or 5 → checkout with Cash, RM 50 → the receipt shows `Takeaway packaging`, `Bill rounding` (−0.02…+0.02), `Cash 50.00`, `Change`. A dine-in bill paid half Touch 'n Go, half Cash → both payments on the receipt in that order. If the owner has a Feedme **cash** receipt with non-zero rounding and a **takeaway** receipt, compare them too: they answer the [CONFIRM] questions on rounding and takeaway service charge.
+- [ ] **Step 4: Cash, split and rounding.** Takeaway order whose total does not end in 0 or 5 → checkout with Cash, RM 50 → the receipt shows `Takeaway packaging`, an SST line whose Charges-summary base includes the fee, `Bill rounding` (−0.02…+0.02), `Cash 50.00`, `Change`; compare with a Feedme takeaway receipt for the same items (the fee should match Feedme's "Packaging Fee" incl. SST). A dine-in bill paid half Touch 'n Go, half Cash → both payments on the receipt in that order. If the owner has a Feedme **cash** receipt with non-zero rounding, compare it too (the owner's answers of 2026-10-24 say the rounding and the takeaway rules should match).
 - [ ] **Step 5: Voids, move, merge.** Void one item with a supervisor's PIN → a `*** VOID ***` ticket prints on that item's route. Wrong PIN five times → "locked for 10 minutes" (then `update staff_pos_pins set locked_until = null where staff_id = '<id>'` on dev to continue). Move `T2` → `T6`: no reprint. Merge a takeaway into `T6` → one bill. **Void bill** on a test bill → VOID tickets for each route.
 - [ ] **Step 6: Reprint and refund.** **Today's bills** → **Reprint receipt** on the #87846 bill → `*** REPRINT ***` at the top. **Refund** RM 13.00, Cash, "Item not served", supervisor PIN → a refund slip prints (Invoice no, Refund (MYR) 13.00, Paid back by Cash, Approved by …).
 - [ ] **Step 7: QR leak switch.** POS settings → tick "Staff must open a table before customers can order by QR" → phone scans `T7`'s card → ordering says "Please ask our staff to open your table before ordering." → iPad **Open table for QR ordering** on `T7`, guests 2 → the phone orders → checkout `T7` → the phone reloads and sees no previous items. Untick the switch (off for the demo) unless the owner wants it on.
 - [ ] **Step 8: Two iPads.** With `/pos` open on a second device, every checkout, void bill, move and merge on the first shows on the second within 2 s.
-- [ ] **Step 9: Record.** Ledger line with the date, receipt photos, the [CONFIRM] answers learned from the Feedme receipts, timings and anything that failed; failures become fix tasks before the final review.
+- [ ] **Step 9: Record.** Ledger line with the date, receipt photos, any difference from the owner's answers seen on the Feedme receipts, timings and anything that failed; failures become fix tasks before the final review.
 
 ---
 
