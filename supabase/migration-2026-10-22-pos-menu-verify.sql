@@ -20,9 +20,10 @@ begin
     end if;
   end loop;
 
-  -- A2. nobody but RPCs inserts or deletes
+  -- A2. nobody but RPCs inserts or deletes (the six master tables; M1's catalog tables have their own checks)
   if exists (select 1 from pg_policies where schemaname = 'public'
-              and tablename like any (array['menu_%','modifier_%','product_modifier_groups'])
+              and tablename in ('menu_categories','menu_products','menu_variants',
+                                'modifier_groups','modifier_options','product_modifier_groups')
               and cmd in ('INSERT','DELETE','ALL')) then
     raise exception 'FAIL rls: an insert/delete policy exists on a menu table';
   end if;

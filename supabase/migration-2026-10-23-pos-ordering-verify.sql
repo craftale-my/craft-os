@@ -14,6 +14,7 @@ declare
   v_order   uuid; v_order2 uuid;
   v_bill    bills;
   v_items   jsonb;
+  v_catalog uuid;
   n         integer;
   r         record;
 begin
@@ -35,11 +36,11 @@ begin
   for r in select f from unnest(array['place_table_order(text,integer,jsonb,uuid)','qr_menu(text)','qr_table_state(text)']) as f loop
     if not has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon cannot call %', r.f; end if;
   end loop;
-  for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid)','claim_print_job(uuid)',
-                                      'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid)']) as f loop
+  for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid,uuid)','claim_print_job(uuid)',
+                                      'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid,uuid)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
   end loop;
-  if has_function_privilege('authenticated', 'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid)', 'execute') then
+  if has_function_privilege('authenticated', 'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid,uuid)', 'execute') then
     raise exception 'FAIL grants: pos_insert_order must be internal';
   end if;
   if has_column_privilege('authenticated', 'print_jobs', 'payload', 'UPDATE')
@@ -64,6 +65,12 @@ begin
   insert into modifier_groups(feedme_group_id, name, min_select, max_select) values ('verify-o-milk', 'Milk', 0, 1) returning id into v_milk;
   insert into modifier_options(group_id, product_id, name, price_delta_sen) values (v_milk, v_oat, 'Oat milk', 200) returning id into v_opt;
   insert into product_modifier_groups(product_id, group_id) values (v_latte, v_milk);
+  -- M1 (catalogs): the VERIFY branch sells the latte from one catalog for dine-in, takeaway and QR, at the default prices
+  insert into menu_catalogs(name) values ('VERIFY O CATALOG') returning id into v_catalog;
+  insert into catalog_products(catalog_id, product_id, availability) values (v_catalog, v_latte, 'all');
+  insert into catalog_variant_prices(catalog_id, variant_id, price_sen) values (v_catalog, v_hot, 1200), (v_catalog, v_cold, 1300);
+  insert into branch_catalogs(branch_id, role, catalog_id) values
+    (v_branch, 'dine_in', v_catalog), (v_branch, 'takeaway', v_catalog), (v_branch, 'qr', v_catalog);
   update staff set branch_id = v_branch where id = v_owner;
 
   -- A3. any staff may pause a table, only a settings holder may change its QR token
@@ -141,10 +148,10 @@ begin
   begin perform place_table_order(v_table.qr_token, null, jsonb_build_array(jsonb_build_object('productId', v_latte, 'variantId', v_hot)), gen_random_uuid()); raise exception 'FAIL: min_select ignored';
   exception when raise_exception then if sqlerrm <> 'Choose at least 1 for Verify Latte: Milk' then raise; end if; end;
   update modifier_groups set min_select = 0 where id = v_milk;
-  update menu_products set availability = 'counter_only' where id = v_latte;
+  update catalog_products set availability = 'counter_only' where catalog_id = v_catalog and product_id = v_latte;
   begin perform place_table_order(v_table.qr_token, null, jsonb_build_array(jsonb_build_object('productId', v_latte, 'variantId', v_hot)), gen_random_uuid()); raise exception 'FAIL: counter_only sold by QR';
   exception when raise_exception then if sqlerrm <> 'Item is not available: Verify Latte' then raise; end if; end;
-  update menu_products set availability = 'all' where id = v_latte;
+  update catalog_products set availability = 'all' where catalog_id = v_catalog and product_id = v_latte;
   begin perform place_table_order(v_table.qr_token, null, '[]'::jsonb, gen_random_uuid()); raise exception 'FAIL: empty accepted';
   exception when raise_exception then if sqlerrm <> 'Order has no items' then raise; end if; end;
 
@@ -157,7 +164,7 @@ begin
 
   -- C1. counter: takeaway bill, counter_only allowed, placed_by set; no branch → refused
   perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
-  update menu_products set availability = 'counter_only' where id = v_latte;
+  update catalog_products set availability = 'counter_only' where catalog_id = v_catalog and product_id = v_latte;
   v_order := place_counter_order(null, 'takeaway', null, jsonb_build_array(jsonb_build_object('productId', v_latte, 'variantId', v_hot)), '33333333-3333-3333-3333-333333333333');
   select b.* into v_bill from bills b join orders o on o.bill_id = b.id where o.id = v_order;
   if v_bill.order_type <> 'takeaway' or v_bill.table_id is not null or v_bill.bill_no !~ '^\d{6}-002$' then raise exception 'FAIL takeaway bill: %', row_to_json(v_bill); end if;

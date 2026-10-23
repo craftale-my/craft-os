@@ -40,7 +40,7 @@ $vectors$;
   v_far     uuid := 'aaaaaaaa-0000-0000-0000-000000000003';   -- supervisor of another branch
   v_branch  uuid; v_branch2 uuid;
   v_t1 dining_tables; v_t2 dining_tables; v_t3 dining_tables; v_t4 dining_tables;
-  v_cat uuid; v_plate uuid; v_plate_var uuid;
+  v_cat uuid; v_plate uuid; v_plate_var uuid; v_catalog uuid;
   v_cash uuid; v_card uuid; v_tng uuid; v_far_cash uuid;
   v_order uuid; v_bill bills; v_bill2 bills; v_bill3 bills;
   v_item uuid; v_items jsonb; v_res jsonb; v_res2 jsonb; v_job print_jobs;
@@ -106,7 +106,7 @@ begin
       'pos_my_branch()', 'pos_receipt_payload(uuid,boolean)', 'pos_queue_receipt(uuid,boolean)', 'pos_checkout_result(uuid)',
       'staff_has_cap(uuid,text)', 'pos_pin_attempt(uuid,text)', 'pos_check_approver(uuid,uuid,text)',
       'pos_check_reason(uuid,text,text)', 'pos_queue_void_tickets(uuid[])', 'pos_refund_slip_payload(uuid)',
-      'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid)']) as f loop
+      'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid,uuid)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') or has_function_privilege('authenticated', r.f, 'execute') then
       raise exception 'FAIL grants: % must be internal', r.f;
     end if;
@@ -149,6 +149,12 @@ begin
     values ('Verify Plate', v_cat, 'verify-c-plate', 'Bar', 600, 100) returning id into v_plate;
   insert into menu_variants(product_id, feedme_variant_key, name, price_sen) values (v_plate, '', 'Regular', 2000)
     returning id into v_plate_var;
+  -- M1 (catalogs): the VERIFY branch sells the plate from one catalog for dine-in, takeaway and QR, at the default price
+  insert into menu_catalogs(name) values ('VERIFY C CATALOG') returning id into v_catalog;
+  insert into catalog_products(catalog_id, product_id, availability) values (v_catalog, v_plate, 'all');
+  insert into catalog_variant_prices(catalog_id, variant_id, price_sen) values (v_catalog, v_plate_var, 2000);
+  insert into branch_catalogs(branch_id, role, catalog_id) values
+    (v_branch, 'dine_in', v_catalog), (v_branch, 'takeaway', v_catalog), (v_branch, 'qr', v_catalog);
   insert into payment_methods(branch_id, name, kind, needs_reference, sort_order) values (v_branch, 'V Cash', 'cash', false, 1)
     returning id into v_cash;
   insert into payment_methods(branch_id, name, kind, needs_reference, sort_order) values (v_branch, 'V Card', 'card', true, 2)
