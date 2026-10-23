@@ -69,13 +69,16 @@ export function gridProductAfterSave(p: GridProduct, form: GridRowForm): GridPro
 export type GridShow = 'all' | 'in' | 'out'
 export interface GridSection { title: string; products: GridProduct[] }
 
-/** Rows by category in the server's order, filtered by name and by in / out of the catalog. */
-export function gridSections(products: GridProduct[], search: string, show: GridShow): GridSection[] {
+/** Rows by category in the server's order, filtered by name and by in / out of the catalog.
+ *  A product in `kept` (just saved) skips the in / out test so its row, and its "Saved", stay on screen. */
+export function gridSections(
+  products: GridProduct[], search: string, show: GridShow, kept: ReadonlySet<string> = new Set(),
+): GridSection[] {
   const q = search.trim().toLowerCase()
   const out: GridSection[] = []
   for (const p of products) {
     const sells = p.availability !== 'hidden'
-    if ((show === 'in' && !sells) || (show === 'out' && sells)) continue
+    if (!kept.has(p.id) && ((show === 'in' && !sells) || (show === 'out' && sells))) continue
     if (q && !p.name.toLowerCase().includes(q)) continue
     const last = out[out.length - 1]
     if (last && last.title === p.category) last.products.push(p)

@@ -5,6 +5,7 @@ import {
   duplicateCatalog, fetchLookups, reorderCatalogs, saveCatalog, setCatalogActive, type LookupCatalog,
 } from './menuEditorApi'
 import { catalogUseText, copyName, listNameProblem, reorderedIds } from './listAdmin'
+import { cleanName } from './menuForms'
 import MenuTabs from './MenuTabs'
 import { OutcomeLine, btnCls, errorText, inputCls, linkBtnCls, type Outcome } from './editorUi'
 
@@ -23,25 +24,42 @@ export default function CatalogsPage() {
   const loadSeq = useRef(0)                                               // an older reply never lands last
   const load = useCallback(async () => {
     const seq = ++loadSeq.current
-    const l = await fetchLookups()
+    let l: Awaited<ReturnType<typeof fetchLookups>>
+    try {
+      l = await fetchLookups()
+    } catch (e) {
+      if (seq === loadSeq.current) throw e                                 // an older failing load says nothing
+      return
+    }
     if (seq !== loadSeq.current) return
     setCatalogs(l.catalogs)
     setLoadError(null)
   }, [])
   useEffect(() => { load().catch((e) => setLoadError(errorText(e))) }, [load])
+  // While a load has failed the list on screen may be stale (e.g. after a saved action), so every write is locked.
+  const locked = busy || !!loadError
+
+  /** Try again: a successful reload turns a "Saved, but reloading failed" notice into plain "Saved". */
+  const retry = () => load().then(
+    () => setOutcomes((o) => Object.fromEntries(Object.entries(o).map(([k, v]) =>
+      [k, v.kind === 'error' && v.text.startsWith('Saved, but reloading failed') ? { kind: 'ok' as const, text: 'Saved' } : v]))),
+    (e) => setLoadError(errorText(e)),
+  )
 
   /** Runs one action, then reloads; the outcome lands on `key`'s row. */
   const run = async (key: string, action: () => Promise<unknown>, ok: string) => {
-    if (busy) return
+    if (locked) return
     setBusy(true)
     setOutcomes((o) => { const n = { ...o }; delete n[key]; return n })
     try {
       await action()
-      setEditing(null)
+      setEditing((cur) => (cur && cur.id === key ? null : cur))
       try {
         await load()
         setOutcomes((o) => ({ ...o, [key]: { kind: 'ok', text: ok } }))
       } catch (e) {
+        // the list on screen is now stale: lock every write until a fresh load succeeds
+        setLoadError(errorText(e))
         setOutcomes((o) => ({ ...o, [key]: { kind: 'error', text: `Saved, but reloading failed: ${errorText(e)}` } }))
       }
     } catch (e) {
@@ -62,7 +80,7 @@ export default function CatalogsPage() {
     const problem = listNameProblem('Catalog', editing.name, catalogs ?? [], editing.mode === 'rename' ? c.id : null)
     if (problem) return fail(c.id, problem)
     if (editing.mode === 'rename') void run(c.id, () => saveCatalog(c.id, editing.name), 'Renamed')
-    else void run(c.id, () => duplicateCatalog(c.id, editing.name), `Copied to ${editing.name.trim()}`)
+    else void run(c.id, () => duplicateCatalog(c.id, editing.name), `Copied to ${cleanName(editing.name)}`)
   }
   const move = (index: number, delta: number) => {
     const ids = catalogs && reorderedIds(catalogs, index, delta)
@@ -85,14 +103,14 @@ export default function CatalogsPage() {
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
-          <button className="text-sm underline" onClick={() => load().catch((e) => setLoadError(errorText(e)))}>Try again</button>
+          <button className="text-sm underline" onClick={() => void retry()}>Try again</button>
         </div>
       )}
       <div className="space-y-2 rounded-xl border border-border bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <input className={`${inputCls} w-64`} placeholder="New catalog name" value={newName} disabled={busy}
+          <input className={`${inputCls} w-64`} placeholder="New catalog name" value={newName} disabled={locked}
             onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && create()} />
-          <button className={btnCls} disabled={busy} onClick={create}>Create catalog</button>
+          <button className={btnCls} disabled={locked} onClick={create}>Create catalog</button>
         </div>
         <OutcomeLine outcome={outcomes.new ?? null} />
       </div>
@@ -114,20 +132,20 @@ export default function CatalogsPage() {
                 )}
               </div>
               <Link to={`/menu/catalogs/${c.id}`} className={linkBtnCls}>Products and prices</Link>
-              <button className={linkBtnCls} disabled={busy} onClick={() => setEditing({ id: c.id, mode: 'rename', name: c.name })}>Rename</button>
-              <button className={linkBtnCls} disabled={busy}
+              <button className={linkBtnCls} disabled={locked} onClick={() => setEditing({ id: c.id, mode: 'rename', name: c.name })}>Rename</button>
+              <button className={linkBtnCls} disabled={locked}
                 onClick={() => setEditing({ id: c.id, mode: 'duplicate', name: copyName(c.name, catalogs) })}>Duplicate</button>
-              <button className={linkBtnCls} disabled={busy || i === 0} aria-label="Move up" onClick={() => move(i, -1)}>↑</button>
-              <button className={linkBtnCls} disabled={busy || i === catalogs.length - 1} aria-label="Move down" onClick={() => move(i, 1)}>↓</button>
-              <button className={linkBtnCls} disabled={busy} onClick={() => toggle(c)}>{c.isActive ? 'Switch off' : 'Switch on'}</button>
+              <button className={linkBtnCls} disabled={locked || i === 0} aria-label="Move up" onClick={() => move(i, -1)}>↑</button>
+              <button className={linkBtnCls} disabled={locked || i === catalogs.length - 1} aria-label="Move down" onClick={() => move(i, 1)}>↓</button>
+              <button className={linkBtnCls} disabled={locked} onClick={() => toggle(c)}>{c.isActive ? 'Switch off' : 'Switch on'}</button>
             </div>
             {editing?.id === c.id && (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm">{editing.mode === 'rename' ? 'New name' : 'Name of the copy'}</span>
-                <input className={`${inputCls} w-64`} value={editing.name} autoFocus disabled={busy}
+                <input className={`${inputCls} w-64`} value={editing.name} autoFocus readOnly={locked}
                   onChange={(e) => setEditing({ ...editing, name: e.target.value })}
                   onKeyDown={(e) => e.key === 'Enter' && confirmEdit(c)} />
-                <button className={btnCls} disabled={busy} onClick={() => confirmEdit(c)}>
+                <button className={btnCls} disabled={locked} onClick={() => confirmEdit(c)}>
                   {editing.mode === 'rename' ? 'Save name' : 'Duplicate with products and prices'}
                 </button>
                 <button className="text-sm underline" onClick={() => setEditing(null)}>Cancel</button>

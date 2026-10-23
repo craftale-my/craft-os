@@ -14,6 +14,7 @@ export default function CatalogGridPage({ catalogId }: { catalogId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [show, setShow] = useState<GridShow>('all')
+  const [kept, setKept] = useState<ReadonlySet<string>>(new Set())   // saved rows stay listed until the filter changes
   const loadSeq = useRef(0)
 
   const load = useCallback(() => {
@@ -25,10 +26,11 @@ export default function CatalogGridPage({ catalogId }: { catalogId: string }) {
   }, [catalogId])
   useEffect(() => { load() }, [load])
 
-  const sections = useMemo(() => gridSections(grid?.products ?? [], search, show), [grid, search, show])
+  const sections = useMemo(() => gridSections(grid?.products ?? [], search, show, kept), [grid, search, show, kept])
   const sold = grid?.products.filter((p) => p.availability !== 'hidden').length ?? 0
   const onSaved = useCallback((p: GridProduct) => {
     setGrid((g) => (g ? { ...g, products: g.products.map((x) => (x.id === p.id ? p : x)) } : g))
+    setKept((k) => new Set(k).add(p.id))
   }, [])
 
   return (
@@ -51,7 +53,7 @@ export default function CatalogGridPage({ catalogId }: { catalogId: string }) {
         <>
           <div className="flex flex-wrap items-center gap-3">
             <input className={`${inputCls} w-56`} placeholder="Search products" value={search} onChange={(e) => setSearch(e.target.value)} />
-            <select className={inputCls} value={show} onChange={(e) => setShow(e.target.value as GridShow)}>
+            <select className={inputCls} value={show} onChange={(e) => { setShow(e.target.value as GridShow); setKept(new Set()) }}>
               <option value="all">All products</option>
               <option value="in">In this catalog</option>
               <option value="out">Not in this catalog</option>

@@ -50,7 +50,7 @@ export default function GridRow({ product, catalogId, catalogName, onSaved }: {
     <tr className="border-t border-border align-top">
       <td className="px-3 py-2"><Link to={`/menu/products/${product.id}`} className="hover:underline">{product.name}</Link></td>
       <td className="px-3 py-2">
-        <select className={inputCls} value={form.availability} disabled={saving}
+        <select className={inputCls} value={form.availability} disabled={saving} aria-label={`${product.name} availability`}
           onChange={(e) => change(setGridAvailability(form, product, e.target.value as Availability))}>
           {(Object.keys(CATALOG_AVAILABILITY_LABELS) as Availability[]).map((a) => (
             <option key={a} value={a}>{CATALOG_AVAILABILITY_LABELS[a]}</option>
@@ -61,7 +61,7 @@ export default function GridRow({ product, catalogId, catalogName, onSaved }: {
         <div className="flex flex-wrap gap-2">
           {variants.map((v) => (
             <label key={v.id} className="text-xs">{variants.length > 1 ? v.name : 'Price'}
-              <input className={`${inputCls} ml-1 w-20`} inputMode="decimal" disabled={!sells || saving}
+              <input className={`${inputCls} ml-1 w-20`} inputMode="decimal" aria-label={`${product.name}${variants.length > 1 ? ` ${v.name}` : ''} price (RM)`} disabled={!sells || saving}
                 placeholder={(v.defaultSen / 100).toFixed(2)} value={form.prices[v.id] ?? ''}
                 onChange={(e) => change({ ...form, prices: { ...form.prices, [v.id]: e.target.value } })} />
             </label>

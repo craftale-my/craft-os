@@ -63,4 +63,14 @@ describe('gridSections', () => {
     expect(gridSections([latte, toast], '', 'out').map((s) => s.title)).toEqual(['FOOD'])
     expect(gridSections([latte, toast], 'KAYA', 'all').map((s) => s.title)).toEqual(['FOOD'])
   })
+
+  it('keeps a just-saved product visible under the in / out filter, but search still applies', () => {
+    const ids = (show: 'in' | 'out', kept?: Set<string>, q = '') =>
+      gridSections([latte, toast], q, show, kept).flatMap((s) => s.products.map((p) => p.id))
+    expect(ids('in')).toEqual(['p-latte'])
+    expect(ids('in', new Set(['p-toast']))).toEqual(['p-latte', 'p-toast'])      // saved out of the catalog, still listed
+    expect(ids('out')).toEqual(['p-toast'])
+    expect(ids('out', new Set(['p-latte']))).toEqual(['p-latte', 'p-toast'])     // saved into the catalog, still listed
+    expect(ids('in', new Set(['p-toast']), 'latte')).toEqual(['p-latte'])        // search still applies to kept ids
+  })
 })
