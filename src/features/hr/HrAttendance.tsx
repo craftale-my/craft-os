@@ -25,6 +25,15 @@ function daysInMonth(year: number, month: number): number {
   return new Date(year, month, 0).getDate()
 }
 
+/**
+ * Resigned staff stay out of the team views unless they have something on
+ * record for the period being viewed: a month they actually worked still
+ * needs their row, the months after they left do not.
+ */
+export function hideIdleResigned(staff: Staff[], withRecords: Set<string>): Staff[] {
+  return staff.filter(s => s.status !== 'resigned' || withRecords.has(s.id))
+}
+
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', hour12: true })
 }
@@ -112,7 +121,9 @@ export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; manage
   }
 
   async function markAllPresent() {
-    const rows = visibleStaff.map(s => ({
+    // A resigned row is only on screen because of an existing record; never
+    // overwrite it with a fresh "present".
+    const rows = visibleStaff.filter(s => s.status !== 'resigned').map(s => ({
       staff_id: s.id,
       date,
       status: 'present' as const,
@@ -153,7 +164,7 @@ export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; manage
     else { setRosterError(null); load() }
   }
 
-  const visibleStaff = allStaff.filter(s => {
+  const visibleStaff = hideIdleResigned(allStaff, new Set(Object.keys(records))).filter(s => {
     if (filterBranch && s.branch !== filterBranch) return false
     if (filterDept && s.department !== filterDept) return false
     return true
@@ -376,6 +387,7 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
     if (!map[r.staff_id]) map[r.staff_id] = {}
     map[r.staff_id][day] = r
   })
+  const gridStaff = hideIdleResigned(allStaff, new Set(Object.keys(map)))
 
   async function exportCSV() {
     setExporting(true)
@@ -409,7 +421,7 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
             </tr>
           </thead>
           <tbody>
-            {allStaff.map((s, i) => (
+            {gridStaff.map((s, i) => (
               <tr key={s.id} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
                 <td className="px-3 py-1.5 font-medium text-brown-dark sticky left-0 bg-white whitespace-nowrap">{s.name}</td>
                 {days.map(d => {
@@ -765,7 +777,10 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
   // `now` decides which rostered days have had their chance to be worked — a
   // shift still in progress is not a missed clock-in. Passed explicitly so the
   // dependency on the clock is visible at the call site.
+  const withRecords = new Set([...attendance.map(a => a.staff_id), ...shifts.map(sh => sh.staff_id)])
+  const shownIds = new Set(hideIdleResigned(visibleStaff, withRecords).map(s => s.id))
   const summaries = buildStaffReport(staffIds, attendance, breaks, shifts, new Date())
+    .filter(s => shownIds.has(s.staffId))
   const staffName = (id: string) => allStaff.find(s => s.id === id)?.name ?? id
 
   // A CSV outlives the screen it came from: it gets mailed to payroll with no
@@ -845,7 +860,7 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       <div className="flex flex-wrap items-center gap-2">
         <select className={selectCls} value={filterStaff} onChange={e => setFilterStaff(e.target.value)}>
           <option value="">All staff</option>
-          {scopeStaff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          {scopeStaff.map(s => <option key={s.id} value={s.id}>{s.status === 'resigned' ? `${s.name} (resigned)` : s.name}</option>)}
         </select>
         <select
           className={selectCls}
