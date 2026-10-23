@@ -122,17 +122,12 @@ export interface Staff {
   // onboarding fields
   onboarding_completed: boolean | null
   nickname: string | null
-  ic_number: string | null
-  address: string | null
   gender: string | null
-  date_of_birth: string | null
-  contact_number: string | null
   branch: string | null
   employment_type: string | null
   working_experience: string | null
   education: string | null
   // management fields
-  manager_notes: string | null
   last_level_up_at: string | null
 }
 
