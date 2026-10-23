@@ -153,7 +153,17 @@ export default function PosPage() {
             onPick={pick} onTakeaway={() => setPad({ orderType: 'takeaway' })} onPickBill={(billId) => setSelection({ kind: 'bill', billId })} />
         </div>
         {(selectedTable || selectedBill) && (
-          <BillPanel table={selectedTable} bill={selectedBill} refreshKey={refreshKey} billing={billing} onChanged={() => void reload()}
+          <BillPanel branchId={branchId} table={selectedTable} bill={selectedBill} refreshKey={refreshKey} billing={billing}
+            moveTargets={cards.filter((c) => c.state === 'empty').map((c) => ({ id: c.id, label: c.label }))}
+            // a takeaway bill only takes in other takeaways; a table's bill takes in anything (merge_bills refuses the rest)
+            mergeSources={bills.filter((b) => b.id !== selectedBill?.id
+              && !(selectedBill?.order_type === 'takeaway' && b.order_type === 'dine_in')).map((b) => ({
+              id: b.id,
+              label: b.table_id ? `Table ${tables.find((t) => t.id === b.table_id)?.label ?? '?'}` : 'Takeaway',
+              detail: `Bill ${b.bill_no}`,
+            }))}
+            onChanged={() => { setRefreshKey((k) => k + 1); void reload() }}
+            onMoved={(tableId) => setSelection({ kind: 'table', tableId })}
             onCheckout={() => { if (selectedBill) { loadBilling(); setCheckout(selectedBill) } }}
             onAddItems={() => {
               if (selectedTable) setPad({ orderType: 'dine_in', tableId: selectedTable.id, needsPax: !selectedBill?.pax })

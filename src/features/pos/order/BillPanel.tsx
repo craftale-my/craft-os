@@ -2,28 +2,39 @@ import { useEffect, useState } from 'react'
 import { fetchBillItems, setTablePaused, type BillItemRow, type OpenBillRow, type TableRow } from './posApi'
 import { formatSen } from './cart'
 import { computeBill, formatRate } from '../checkout/bill'
-import type { BillingConfig } from '../checkout/checkoutApi'
+import { mergeBills, moveBill, openTable, voidBill, voidItem, type BillingConfig } from '../checkout/checkoutApi'
+import ApprovalDialog from '../checkout/ApprovalDialog'
+import PickerSheet, { type PickOption } from '../checkout/BillPickers'
 
-export default function BillPanel({ table, bill, refreshKey, billing, onAddItems, onCheckout, onChanged }: {
+type Dialog = { kind: 'void_item'; item: BillItemRow } | { kind: 'void_bill' } | { kind: 'move' } | { kind: 'merge' } | null
+const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+export default function BillPanel({ branchId, table, bill, refreshKey, billing, moveTargets, mergeSources, onAddItems, onCheckout, onChanged, onMoved }: {
+  branchId: string
   table: TableRow | null          // null = takeaway bill
   bill: OpenBillRow | null        // null = empty table
   refreshKey: number              // bump to refetch (a new order arrived)
   billing: BillingConfig | null   // settings + service-charge rules, for the instant totals
+  moveTargets: PickOption[]       // empty tables this bill can move to
+  mergeSources: PickOption[]      // other open bills that can be merged into this one
   onAddItems: () => void
   onCheckout: () => void
-  onChanged?: () => void          // called after a successful pause toggle
+  onChanged?: () => void          // after a pause toggle, void, merge or open table
+  onMoved?: (tableId: string) => void
 }) {
   const [items, setItems] = useState<BillItemRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [paused, setPaused] = useState(table?.qr_paused ?? false)
+  const [dialog, setDialog] = useState<Dialog>(null)
+  const [localKey, setLocalKey] = useState(0)
   useEffect(() => { setPaused(table?.qr_paused ?? false) }, [table?.id, table?.qr_paused])
   useEffect(() => {
     if (!bill) { setItems([]); return }
     let alive = true
     fetchBillItems(bill.id).then((rows) => { if (alive) { setItems(rows); setError(null) } }, (e) => { if (alive) setError(e.message) })
     return () => { alive = false }
-  }, [bill?.id, refreshKey])
-  useEffect(() => { setItems([]); setError(null) }, [bill?.id])
+  }, [bill?.id, refreshKey, localKey])
+  useEffect(() => { setItems([]); setError(null); setDialog(null) }, [bill?.id])
 
   const live = items.filter((i) => !i.voided_at)
   // Instant preview with the same rules as the server (pos_bill_totals); checkout shows the server's numbers.
@@ -34,30 +45,63 @@ export default function BillPanel({ table, bill, refreshKey, billing, onAddItems
                                takeawayFeeSen: i.takeaway_fee_sen, voided: i.voided_at !== null })),
   }) : null
   const orders = [...new Map(items.map((i) => [i.order_id, i.orders])).entries()]
+  const changed = () => { setDialog(null); setLocalKey((k) => k + 1); onChanged?.() }
+
+  const run = async (fn: () => Promise<void>) => {
+    try { await fn(); changed() } catch (e) { setDialog(null); setError(msg(e)) }
+  }
 
   const togglePause = async () => {
     if (!table) return
     const next = !paused
     setPaused(next)
-    try { await setTablePaused(table.id, next); onChanged?.() } catch (e) { setPaused(!next); setError(e instanceof Error ? e.message : String(e)) }
+    try { await setTablePaused(table.id, next); onChanged?.() } catch (e) { setPaused(!next); setError(msg(e)) }
+  }
+
+  const voidWholeBill = () => {
+    if (!bill) return
+    if (live.length > 0) { setDialog({ kind: 'void_bill' }); return }
+    if (!window.confirm(`Close bill ${bill.bill_no}? It has nothing on it.`)) return
+    void run(() => voidBill(bill.id, { reason: '', approverId: null, pin: null }))
+  }
+
+  const open = () => {
+    if (!table) return
+    const answer = window.prompt(`Guests at table ${table.label}?`, '2')
+    if (answer === null) return
+    const pax = Number(answer)
+    if (!Number.isInteger(pax) || pax < 1 || pax > 99) { setError('Enter the number of guests (1–99)'); return }
+    void run(async () => { await openTable(table.id, pax) })
   }
 
   return (
     <div className="flex h-full flex-col rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between border-b border-border p-3">
-        <div>
-          <div className="text-lg font-semibold">{table ? `Table ${table.label}` : 'Takeaway'}</div>
-          <div className="text-xs text-brown-muted">
-            {bill ? `Bill ${bill.bill_no}${bill.pax ? ` · ${bill.pax} pax` : ''}` : 'No open bill'}
+      <div className="border-b border-border p-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-lg font-semibold">{table ? `Table ${table.label}` : 'Takeaway'}</div>
+            <div className="text-xs text-brown-muted">
+              {bill ? `Bill ${bill.bill_no}${bill.pax ? ` · ${bill.pax} pax` : ''}` : 'No open bill'}
+            </div>
           </div>
+          {table && (
+            <button onClick={() => void togglePause()} className="rounded border border-border px-3 py-1 text-xs">
+              {paused ? 'Resume QR' : 'Pause QR'}
+            </button>
+          )}
         </div>
-        {table && (
-          <button onClick={() => void togglePause()} className="rounded border border-border px-3 py-1 text-xs">
-            {paused ? 'Resume QR' : 'Pause QR'}
-          </button>
+        {bill && (
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            {bill.order_type === 'dine_in' && <button onClick={() => setDialog({ kind: 'move' })} className="rounded border border-border px-2 py-1">Move table</button>}
+            <button onClick={() => setDialog({ kind: 'merge' })} className="rounded border border-border px-2 py-1">Merge with…</button>
+            <button onClick={voidWholeBill} className="rounded border border-red-300 px-2 py-1 text-red-700">{live.length > 0 ? 'Void bill' : 'Close empty bill'}</button>
+          </div>
+        )}
+        {!bill && table && billing?.settings.qrRequiresOpenBill && (
+          <button onClick={open} className="mt-2 rounded border border-brown-btn px-2 py-1 text-xs">Open table for QR ordering</button>
         )}
       </div>
-      {error && <p className="m-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {error && <p className="m-3 rounded bg-red-50 p-2 text-sm text-red-700">{error} <button className="underline" onClick={() => setError(null)}>OK</button></p>}
       <div className="flex-1 overflow-y-auto p-3 text-sm">
         {orders.map(([orderId, o]) => (
           <div key={orderId} className="mb-3">
@@ -69,7 +113,10 @@ export default function BillPanel({ table, bill, refreshKey, billing, onAddItems
                   {i.modifiers_snapshot.map((m, k) => <div key={k} className="pl-4 text-xs text-brown-muted">+ {m.name}</div>)}
                   {i.note && <div className="pl-4 text-xs italic text-brown-muted">* {i.note}</div>}
                 </div>
-                <div>{formatSen(i.unit_price_sen * i.qty)}</div>
+                <div className="text-right">
+                  <div>{formatSen(i.unit_price_sen * i.qty)}</div>
+                  {!i.voided_at && <button onClick={() => setDialog({ kind: 'void_item', item: i })} className="text-xs text-red-700 underline">Void</button>}
+                </div>
               </div>
             ))}
           </div>
@@ -103,6 +150,31 @@ export default function BillPanel({ table, bill, refreshKey, billing, onAddItems
           </button>
         </div>
       </div>
+
+      {bill && dialog?.kind === 'void_item' && (
+        <ApprovalDialog branchId={branchId} action="void_item" title="Void item"
+          summary={`${dialog.item.qty} × ${dialog.item.name_snapshot} · ${formatSen(dialog.item.unit_price_sen * dialog.item.qty)} — the kitchen gets a VOID ticket`}
+          onApprove={(a) => voidItem(dialog.item.id, a)} onClose={() => setDialog(null)} onDone={changed} />
+      )}
+      {bill && dialog?.kind === 'void_bill' && (
+        <ApprovalDialog branchId={branchId} action="void_bill" title="Void bill"
+          summary={`Bill ${bill.bill_no} · ${live.length} item${live.length === 1 ? '' : 's'} · ${formatSen(totals?.totalSen ?? 0)} — every item is voided and the table is freed`}
+          onApprove={(a) => voidBill(bill.id, a)} onClose={() => setDialog(null)} onDone={changed} />
+      )}
+      {bill && dialog?.kind === 'move' && (
+        <PickerSheet title={`Move bill ${bill.bill_no}`} hint="Pick an empty table. Nothing is reprinted." options={moveTargets}
+          empty="No empty table." onClose={() => setDialog(null)}
+          onPick={(tableId) => void run(async () => { await moveBill(bill.id, tableId); onMoved?.(tableId) })} />
+      )}
+      {bill && dialog?.kind === 'merge' && (
+        <PickerSheet title={`Merge into bill ${bill.bill_no}`} hint="Every order of the bill you pick moves onto this bill, and its table becomes empty."
+          options={mergeSources} empty="No other open bill." onClose={() => setDialog(null)}
+          onPick={(fromBillId) => {
+            const from = mergeSources.find((o) => o.id === fromBillId)
+            if (!window.confirm(`Move everything from ${from?.label ?? 'that bill'} onto bill ${bill.bill_no}?`)) return
+            void run(() => mergeBills(fromBillId, bill.id))
+          }} />
+      )}
     </div>
   )
 }
