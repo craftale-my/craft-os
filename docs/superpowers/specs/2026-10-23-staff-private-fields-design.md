@@ -238,6 +238,14 @@ alter table staff
   - **先认领再动手。** 条件式 update(pending、未被认领或认领逾 5 分钟)认领申请,0 行回 409;
     什么都没建成的失败会释放认领以便重试;建好帐号之后的失败会明说"帐号已建好、请把画面上的密码交给对方"。
     审批途中被 reject 会以 approve/reject 竞态的讯息回报。
+  - **fix round 5。** app_metadata 存、比对的是资料库那一行的 `reg.id`。"帐号已存在"分支补电话的
+    条件放宽为:调用者是读者,**或**该帐号正是本申请建出且从未登入(`registration_request_id` 对得上且
+    `last_sign_in_at` 为空)—— 这样 supervisor 在"电话写失败、请再审批一次"之后重试也能补上;只看 metadata
+    不够,因为 supervisor 能把旧的已批准申请改回 pending 并改电话。仍只补空着的 `contact_number`。
+    metadata 对得上时 message 另加"本申请的帐号由先前的审批建立;若密码没交出去,请 admin 重设"。
+    电话没复制时明说"已从申请移除,请 HR 或本人补上"。审批途中被 reject:说明帐号已是 trainee、若维持
+    reject 请经理把它标为 Resigned,不叫经理交密码。帐号建好之后的失败回传 `accountCreated: true`,
+    Directory 的审批视窗随即锁住密码栏、隐藏 Regenerate。
 - **provision-staff create 的 system_role 由 rank 推出(接受的行为)。** `create` 建号时
   `system_role = rankToSystemRole(rank)`:manager-tier 建 rank supervisor / manager 时会连带得到
   system_role supervisor / manager。D1 的"system_role 只有 owner 能改"指的是**改**既有员工的角色
@@ -245,6 +253,11 @@ alter table staff
   而非 supervisor/hr 能触及的路径(他们只能建 trainee/junior/senior,推出的一律是 `staff`)。
 - **后续事项(本分支不做):** supervisor / hr 仍能改**别人**的 `status`(例如把 owner 标成 resigned,
   对方随即被挡在 app 外)。用户这次的决定是 status 维持原样;日后应比照 rank,把改别人 status 收到 manager-tier。
+- **后续事项:`listUsers` 分页。** approve 找既有 auth 用户只看第一页 1000 人;用户数超过后可能找不到
+  本该接管 / 判定为已存在的帐号(只会回错,不会误接管),共用后端加入 POS / 顾客帐号后需改成按 email 查询或分页。
+- **后续事项:`registration_requests` RLS。** `registration_requests_manage` 让 supervisor/hr 能 UPDATE
+  任何申请(改 email、改电话、把已批准改回 pending),本分支靠 provision-staff 的服务端检查兜住;
+  日后应收紧成只能改 status/审核栏位,并只允许 pending → approved/rejected。
 - **上线顺序改为先上 DB。** 第一段 + authority guard + VERIFY 在合并前就在 prod 跑完(第一段只加不删,
   旧版网站照常);接着部署新 provision-staff;再合并、部署前端、跑第一段补漏、跑第二段。第二段自带闸门:锁 `staff`、删同步 trigger、
   核对查询差异不为 0 或仍有对象依赖五栏就整笔 rollback。VERIFY 改为每个身份一行 `pass`、加总 `all_pass`。
