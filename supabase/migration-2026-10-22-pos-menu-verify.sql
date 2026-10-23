@@ -168,6 +168,9 @@ begin
       ('staff', 'manager', false)) as m(role, rank, expected) loop  -- rank is not consulted
     v_id := gen_random_uuid();
     insert into auth.users (id) values (v_id);  -- staff.id references auth.users
+    -- staff_guard (feature/staff-private, on dev since 2026-10-24): only an owner may create a
+    -- staff row with a system role, so the fixture rows are created as the dev owner
+    perform set_config('request.jwt.claims', json_build_object('sub', '76cbcf9f-905e-450d-9f5e-1c9e72a9373d', 'role', 'authenticated')::text, true);
     insert into staff (id, name, rank, onboarding_completed, joined_at, system_role)
     values (v_id, 'verify ' || r.role || '/' || r.rank, r.rank, true, current_date, r.role);
     perform set_config('request.jwt.claims', json_build_object('sub', v_id, 'role', 'authenticated')::text, true);
@@ -183,6 +186,9 @@ begin
   for r in select * from (values ('manager', false), ('hr', true)) as m(role, expected) loop
     v_id := gen_random_uuid();
     insert into auth.users (id) values (v_id);
+    -- staff_guard (feature/staff-private, on dev since 2026-10-24): only an owner may create a
+    -- staff row with a system role, so the fixture rows are created as the dev owner
+    perform set_config('request.jwt.claims', json_build_object('sub', '76cbcf9f-905e-450d-9f5e-1c9e72a9373d', 'role', 'authenticated')::text, true);
     insert into staff (id, name, rank, onboarding_completed, joined_at, system_role)
     values (v_id, 'verify override ' || r.role, 'trainee', true, current_date, r.role);
     perform set_config('request.jwt.claims', json_build_object('sub', v_id, 'role', 'authenticated')::text, true);
