@@ -13,6 +13,8 @@
 -- changed. Re-running one of those files afterwards brings the old body back (for
 -- pos_insert_order / place_counter_order as a second, old-signature function next
 -- to the new one) — re-run this file afterwards.
+-- M3 re-creates pos_insert_order and qr_menu once more: after re-running THIS file,
+-- re-run migration-2026-10-24-pos-slots-photos-fn.sql too (time slots, QR photos).
 -- ============================================================================
 
 do $$ begin

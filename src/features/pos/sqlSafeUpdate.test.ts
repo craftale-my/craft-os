@@ -118,6 +118,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-24-pos-catalogs-fn.sql',
       'migration-2026-10-24-pos-checkout-fn.sql',
       'migration-2026-10-24-pos-menu-editor-fn.sql',
+      'migration-2026-10-24-pos-slots-photos-fn.sql',
     ]))
   })
 
@@ -142,6 +143,15 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'menu_save_product', 'menu_save_group', 'menu_save_catalog', 'menu_duplicate_catalog', 'menu_reorder_catalogs',
       'menu_set_catalog_active', 'menu_save_catalog_row', 'menu_save_category', 'menu_reorder_categories',
       'menu_set_category_active',
+    ]))
+  })
+
+  it('scans every write function of time slots and photos (M3)', () => {
+    const sql = readFileSync(new URL('migration-2026-10-24-pos-slots-photos-fn.sql', SUPABASE), 'utf8')
+    const names = functionBodies(sql).map((b) => b.name)
+    expect(names).toEqual(expect.arrayContaining([
+      'menu_save_schedule', 'menu_reorder_schedules', 'menu_delete_schedule', 'menu_set_product_schedules',
+      'menu_set_product_image', 'pos_insert_order', 'qr_menu',
     ]))
   })
 })
