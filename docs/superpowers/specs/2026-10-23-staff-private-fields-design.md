@@ -215,10 +215,26 @@ alter table staff
 - **备注本人不可见(F6)。** `staff_manager_notes_all` 的 USING 与 WITH CHECK 都加上
   `staff_id <> auth.uid()`:即使本人是 hr/manager/admin/owner,也读不到、写不了关于自己的备注。
 - **provision-staff approve 不回滚。** 与上文第 5 节"失败时回滚(删 auth user)"不同:`staff_private`
-  电话写入失败时回 400,auth user 与 staff 行保留,申请留在 pending;经理再按一次审批即可补上。
-  phone 为空时整段跳过(行由 insert trigger 保证),重复审批不会用 null 盖掉已有号码。
+  电话写入失败时回 400,auth user 与 staff 行保留,申请留在 pending;经理再按一次审批会走"帐号已存在"
+  分支,只补空着的电话并结案,不重设密码。phone 为空时整段跳过(行由 insert trigger 保证)。
+- **provision-staff approve 帐号接管漏洞(main 上既有,属 D1 范围)。** 以前 `requestId` / `email`
+  全由前端传入、申请行从不读取;email 已有 auth 用户时,函数把它的密码重设成调用者给的值,再把 staff 行
+  upsert 回 trainee/staff —— 任何 supervisor/hr 都能借 service role 接管或降级任何帐号(包括 owner),
+  DB guard 拦不住。现在:申请行由服务端按 `requestId` 读取,必须存在且 `status = 'pending'`
+  (否则 404 / 409);email、姓名、电话一律取自申请行,body 的 email 不符就 400;只有"auth 用户在、
+  staff 行不在"(真正被中断的审批)才接管并重设密码;staff 行已存在时绝不重设密码、绝不覆盖 staff 行,
+  只在 `staff_private.contact_number` 为空时补上电话、标记申请 approved,并回传 `alreadyExisted: true`,
+  Directory 显示 "Account Already Existed" 而不是一组从未生效的登入资料;staff 行一律 insert,不 upsert;
+  最后标记申请的 update 也检查结果(0 行或出错都回错)。
+- **provision-staff create 的 system_role 由 rank 推出(接受的行为)。** `create` 建号时
+  `system_role = rankToSystemRole(rank)`:manager-tier 建 rank supervisor / manager 时会连带得到
+  system_role supervisor / manager。D1 的"system_role 只有 owner 能改"指的是**改**既有员工的角色
+  (以及直接 insert 非 `staff` 的值);经 service role 的 create 依 rank 推出初始角色是有意保留的行为,
+  而非 supervisor/hr 能触及的路径(他们只能建 trainee/junior/senior,推出的一律是 `staff`)。
+- **后续事项(本分支不做):** supervisor / hr 仍能改**别人**的 `status`(例如把 owner 标成 resigned,
+  对方随即被挡在 app 外)。用户这次的决定是 status 维持原样;日后应比照 rank,把改别人 status 收到 manager-tier。
 - **上线顺序改为先上 DB。** 第一段 + authority guard + VERIFY 在合并前就在 prod 跑完(第一段只加不删,
-  旧版网站照常);再合并、部署、跑第一段补漏、跑第二段。第二段自带闸门:锁 `staff`、删同步 trigger、
+  旧版网站照常);接着部署新 provision-staff;再合并、部署前端、跑第一段补漏、跑第二段。第二段自带闸门:锁 `staff`、删同步 trigger、
   核对查询差异不为 0 或仍有对象依赖五栏就整笔 rollback。VERIFY 改为每个身份一行 `pass`、加总 `all_pass`。
 
 ## 验收
