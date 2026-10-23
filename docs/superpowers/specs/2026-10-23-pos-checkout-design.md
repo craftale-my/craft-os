@@ -7,6 +7,7 @@ Decisions taken overnight without the owner were marked for confirmation; the ow
 **Owner decisions 2026-10-24 (after the build review):**
 - **Refunds go back the original route.** A refund may only go back by a payment method the bill was actually paid with, and never more than was paid by that method less what was already refunded by it. A bill paid Touch 'n Go 20.00 + Cash 22.90 can refund at most 20.00 by Touch 'n Go and 22.90 by Cash (cash counts the payment's amount, after change, not what was tendered). The method need not still be active at the branch. See §5 Refund.
 - **Anyone at a shared iPad may set an account's first PIN.** `set_my_pos_pin` sets the signed-in account's PIN without a current PIN when it has none, so whoever is holding a signed-in iPad could set it first. Accepted for the pilot.
+- **A supervisor may approve their own voids and refunds.** The approver can be the signed-in cashier; the PIN is still required. Kept as built.
 
 ## 1. Scope
 
