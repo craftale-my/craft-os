@@ -73,14 +73,14 @@ export default function CatalogsPage() {
   const create = () => {
     const problem = listNameProblem('Catalog', newName, catalogs ?? [], null)
     if (problem) return fail('new', problem)
-    void run('new', async () => { await saveCatalog(null, newName); setNewName('') }, 'Catalog created — open it to choose its products and prices')
+    void run('new', async () => { await saveCatalog(null, cleanName(newName)); setNewName('') }, 'Catalog created — open it to choose its products and prices')
   }
   const confirmEdit = (c: LookupCatalog) => {
     if (!editing) return
     const problem = listNameProblem('Catalog', editing.name, catalogs ?? [], editing.mode === 'rename' ? c.id : null)
     if (problem) return fail(c.id, problem)
-    if (editing.mode === 'rename') void run(c.id, () => saveCatalog(c.id, editing.name), 'Renamed')
-    else void run(c.id, () => duplicateCatalog(c.id, editing.name), `Copied to ${cleanName(editing.name)}`)
+    if (editing.mode === 'rename') void run(c.id, () => saveCatalog(c.id, cleanName(editing.name)), 'Renamed')
+    else void run(c.id, () => duplicateCatalog(c.id, cleanName(editing.name)), `Copied to ${cleanName(editing.name)}`)
   }
   const move = (index: number, delta: number) => {
     const ids = catalogs && reorderedIds(catalogs, index, delta)

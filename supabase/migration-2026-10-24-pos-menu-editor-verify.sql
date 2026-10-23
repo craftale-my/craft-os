@@ -424,6 +424,13 @@ begin
   perform pg_temp.expect_error(format('select menu_save_catalog(null, %L)', 'verify m2 new'),
     'A catalog called verify m2 new already exists', 'F1 duplicate name');
   perform pg_temp.expect_error(format('select menu_save_catalog(null, %L)', '  '), 'Catalog name is required', 'F1 blank');
+  -- a pasted no-break space or tab is a space like any other: it cannot hide a duplicate or survive at the ends
+  perform pg_temp.expect_error(format('select menu_save_catalog(null, %L)', E'\u00a0verify\tm2\u00a0\u00a0new\t'),
+    'A catalog called verify m2 new already exists', 'F1 duplicate with NBSP and tab');
+  perform pg_temp.expect_error(format('select menu_save_catalog(null, %L)', E'\u00a0\t\u3000'), 'Catalog name is required', 'F1 blank NBSP');
+  if menu_clean_name(E'\u00a0\tVERIFY\u00a0 M2\t\tNew\n', 'Catalog', 60) <> 'VERIFY M2 New' then
+    raise exception 'FAIL F1: menu_clean_name must turn NBSP, tab and newline into single spaces and trim them';
+  end if;
   perform pg_temp.expect_error(format('select menu_save_catalog(null, %L)', repeat('x', 61)),
     'Catalog name is too long (at most 60 characters)', 'F1 long');
   perform menu_save_catalog(c_new, 'VERIFY M2 Renamed');
@@ -519,6 +526,8 @@ begin
   perform pg_temp.expect_error(format('select menu_save_category(null, %L)', 'verify m2 drinks'),
     'A category called verify m2 drinks already exists', 'G1 duplicate');
   perform pg_temp.expect_error(format('select menu_save_category(null, %L)', ''), 'Category name is required', 'G1 blank');
+  perform pg_temp.expect_error(format('select menu_save_category(null, %L)', E'\u00a0verify\tm2 drinks\u00a0'),
+    'A category called verify m2 drinks already exists', 'G1 duplicate with NBSP and tab');
   perform menu_save_category(v_newcat, 'VERIFY M2 RENAMED');
   perform pg_temp.expect_error(format('select menu_save_category(%L, %L)', gen_random_uuid(), 'VERIFY M2 GHOST'),
     'Category not found — refresh and try again', 'G1 rename unknown');

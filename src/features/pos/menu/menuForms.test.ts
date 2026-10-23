@@ -5,6 +5,12 @@ describe('names', () => {
   it('trims and collapses spaces like the server', () => {
     expect(cleanName('  Iced   Latte ')).toBe('Iced Latte')
   })
+  it('treats a pasted no-break space, tab, newline and other Unicode spaces as plain spaces', () => {
+    expect(cleanName('Drinks\u00a0')).toBe('Drinks')
+    expect(cleanName('\u00a0\tDrinks\n')).toBe('Drinks')
+    expect(cleanName('Iced\u00a0\u00a0Latte\tLarge\u3000Cold\u202fBrew\ufeff')).toBe('Iced Latte Large Cold Brew')
+    expect(nameProblem('Catalog', '\u00a0\t \u3000', 60)).toBe('Catalog name is required')
+  })
   it('uses the server\'s words for a blank or long name', () => {
     expect(nameProblem('Variant', '   ', 60)).toBe('Variant name is required')
     expect(nameProblem('Catalog', 'x'.repeat(61), 60)).toBe('Catalog name is too long (at most 60 characters)')

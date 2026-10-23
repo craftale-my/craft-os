@@ -9,7 +9,7 @@ export const IMPORT_CONFIRM_WORD = 'IMPORT'
 export const MASTER_WARNING_INTRO =
   'Craft OS is the master of the menu. Importing again resets everything that came from Feedme back to Feedme\'s version:'
 export const MASTER_WARNING_LOSSES: readonly string[] = [
-  'Every imported product\'s name, description, internal name, category, takeaway fee and order are overwritten, and imported products you switched off come back on.',
+  'Every imported product\'s name, description, internal name, category, add-on flag, takeaway fee and order are overwritten, and imported products you switched off come back on.',
   'Every variant name and price Feedme lists is overwritten (switched-off ones come back on); variants of an imported product that you added here are switched off.',
   'Categories are matched by name: a category you renamed here comes back under its Feedme name and the imported products move back into it; categories\' order is reset and categories you switched off come back on.',
   'Imported add-on groups get their name, minimum, maximum and stackable setting overwritten, and groups you switched off come back on.',

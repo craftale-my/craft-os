@@ -37,12 +37,15 @@ begin
 end $$;
 revoke all on function menu_require_editor() from public, anon, authenticated;
 
--- A name as the editor shows it: trimmed, inner spaces collapsed. Same words as
--- nameProblem() in src/features/pos/menu/menuForms.ts.
+-- A name as the editor shows it: every run of whitespace (tab, newline, no-break space and the
+-- other Unicode spaces, the same set as JavaScript's \s) becomes one space, then the ends are
+-- trimmed. Same words and same cleaning as cleanName()/nameProblem() in
+-- src/features/pos/menu/menuForms.ts, so the duplicate-name check cannot be slipped past.
 create or replace function menu_clean_name(p_name text, p_what text, p_max integer) returns text
 language plpgsql immutable set search_path = public, pg_temp as $$
 declare
-  v text := regexp_replace(trim(coalesce(p_name, '')), '\s+', ' ', 'g');
+  v text := trim(regexp_replace(coalesce(p_name, ''),
+              '[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+', ' ', 'g'));
 begin
   if v = '' then raise exception '% name is required', p_what; end if;
   if length(v) > p_max then raise exception '% name is too long (at most % characters)', p_what, p_max; end if;
@@ -994,5 +997,8 @@ begin
 end $$;
 revoke all on function pos_menu_rows(uuid) from public, anon;
 grant execute on function pos_menu_rows(uuid) to authenticated;
+
+-- PostgREST picks up the new functions now, not at its next poll
+notify pgrst, 'reload schema';
 
 select 'menu editor functions applied' as result;

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchLookups, reorderCategories, saveCategory, setCategoryActive, type LookupCategory } from './menuEditorApi'
 import { listNameProblem, reorderedIds } from './listAdmin'
+import { cleanName } from './menuForms'
 import MenuTabs from './MenuTabs'
 import { OutcomeLine, btnCls, errorText, inputCls, linkBtnCls, type Outcome } from './editorUi'
 
@@ -32,7 +33,12 @@ export default function CategoriesPage() {
       throw e
     }
   }, [])
-  const retry = () => load().catch((e) => setLoadError(errorText(e)))
+  /** Try again: a successful reload turns a "Saved, but reloading failed" notice into plain "Saved". */
+  const retry = () => load().then(
+    () => setOutcomes((o) => Object.fromEntries(Object.entries(o).map(([k, v]) =>
+      [k, v.kind === 'error' && v.text.startsWith('Saved, but reloading failed') ? { kind: 'ok' as const, text: 'Saved' } : v]))),
+    (e) => setLoadError(errorText(e)),
+  )
   useEffect(() => { load().catch((e) => setLoadError(errorText(e))) }, [load])
 
   const locked = busy || loadError !== null || categories === null
@@ -50,6 +56,7 @@ export default function CategoriesPage() {
         setOutcomes((o) => ({ ...o, [key]: { kind: 'ok', text: ok } }))
       } catch (e) {
         setLoadError(`Saved, but reloading failed: ${errorText(e)}`)       // locks every write until a reload works
+        setOutcomes((o) => ({ ...o, [key]: { kind: 'error', text: `Saved, but reloading failed: ${errorText(e)}` } }))
       }
     } catch (e) {
       setOutcomes((o) => ({ ...o, [key]: { kind: 'error', text: errorText(e) } }))
@@ -64,13 +71,13 @@ export default function CategoriesPage() {
     if (locked) return
     const problem = listNameProblem('Category', newName, categories ?? [], null)
     if (problem) return fail('new', problem)
-    void run('new', async () => { await saveCategory(null, newName); setNewName('') }, 'Category created')
+    void run('new', async () => { await saveCategory(null, cleanName(newName)); setNewName('') }, 'Category created')
   }
   const rename = (c: LookupCategory) => {
     if (!renaming || locked) return
     const problem = listNameProblem('Category', renaming.name, categories ?? [], c.id)
     if (problem) return fail(c.id, problem)
-    void run(c.id, () => saveCategory(c.id, renaming.name), 'Renamed')
+    void run(c.id, () => saveCategory(c.id, cleanName(renaming.name)), 'Renamed')
   }
   const move = (index: number, delta: number) => {
     const ids = categories && reorderedIds(categories, index, delta)

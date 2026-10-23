@@ -18,7 +18,7 @@ describe('MASTER_WARNING', () => {
   it('names everything a re-import overwrites, deletes or resets', () => {
     for (const part of [
       // imported products
-      'name, description, internal name, category, takeaway fee and order are overwritten',
+      'name, description, internal name, category, add-on flag, takeaway fee and order are overwritten',
       'imported products you switched off come back on',
       // variants
       'variant name and price Feedme lists is overwritten',

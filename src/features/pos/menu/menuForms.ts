@@ -4,8 +4,10 @@
  *  whether the page or the server finds it. */
 import { parseRinggit } from '../checkout/tender'
 
-/** A name as the server stores it: trimmed, inner spaces collapsed (menu_clean_name). */
-export const cleanName = (raw: string): string => raw.replace(/\s+/g, ' ').trim()
+/** A name as the server stores it (menu_clean_name): every run of whitespace — tab, newline, a
+ *  pasted no-break space and the other Unicode spaces — becomes one space, then the ends are trimmed.
+ *  JavaScript's \s is exactly the set the server's regular expression lists. */
+export const cleanName = (raw: string): string => raw.replace(/[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g, ' ').trim()
 
 /** menu_clean_name's words, e.g. "Variant name is required". */
 export function nameProblem(what: string, raw: string, max: number): string | null {
