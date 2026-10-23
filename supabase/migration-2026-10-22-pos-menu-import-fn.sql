@@ -3,6 +3,15 @@
 -- migration-2026-10-22-pos-menu.sql. Idempotent.
 -- One transaction: the whole Feedme import lands or none of it does.
 -- ============================================================================
+-- STOP guard (M1): after the menu catalogs are applied, menu_import lives in
+-- migration-2026-10-24-pos-catalogs-fn.sql (manage_menu, not granted to staff);
+-- re-running this file would bring back the access_settings version with a grant.
+do $$ begin
+  if to_regprocedure('pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid,uuid)') is not null then
+    raise exception 'STOP: menu catalogs (M1) are applied — re-run migration-2026-10-24-pos-catalogs-fn.sql instead of this file';
+  end if;
+end $$;
+
 create or replace function menu_import(p_payload jsonb) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
