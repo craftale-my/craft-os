@@ -79,9 +79,10 @@ steps) so pre-existing bad data cannot hang it. Error message in English:
 `Supervisor would create a reporting loop`.
 
 Both live in one idempotent migration file
-`supabase/migration-2026-10-23-org-chart.sql`, mirrored into `schema.sql` and
-`FRESH_BUILD_full.sql` the way previous migrations were. Run on `craft-os-dev`
-first, then prod.
+`supabase/migration-2026-10-23-org-chart.sql`. `schema.sql` and
+`FRESH_BUILD_full.sql` are not touched: neither carries `supervisor_id` today,
+and a parallel session is editing `schema.sql`. Run on `craft-os-dev` first,
+then prod.
 
 ## Tree logic — `src/features/orgchart/orgTree.ts` (pure, unit-tested)
 
@@ -131,7 +132,14 @@ Top to bottom:
    collapse toggle with the count (`▾ 4` / `▸ 4`). Default expansion: roots
    plus two levels below. The viewer's own card carries a `You` badge, and
    the cards along their reporting line get a subtle accent. Managers clicking
-   a card go to `/staff/:id`. For everyone else, cards are not links.
+   a card go to `/staff/:id`. For everyone else, cards are not links. The
+   viewer's own reporting line is expanded on load, so their card is visible.
+5. **Not connected to the owner yet** (everyone): below the main tree, the top
+   of each unassigned chain renders as its own small tree (collapsed), so
+   nobody disappears from the chart while their chain is broken.
+
+`shortenBranch()` moves out of `Directory.tsx` into
+`src/shared/lib/branches.ts` so the chart and the Directory share it.
 
 Styling follows existing pages (brown palette, Archivo / STIX). It must work at
 phone width; the tree scrolls sideways and the top sections stack.
