@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   fetchCatalogEntries, fetchCatalogs, fetchMenu, setCatalogAvailability, updateProducts,
@@ -36,8 +36,20 @@ export default function MenuPage() {
     load()
   }, [load])
 
+  // the catalog currently chosen; a load that resolves after the manager switched away is dropped
+  const catalogIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    catalogIdRef.current = catalogId
+  }, [catalogId])
   const loadEntries = useCallback((id: string) => {
-    fetchCatalogEntries(id).then(setEntries, (e) => setError(msg(e)))
+    fetchCatalogEntries(id).then(
+      (e) => {
+        if (catalogIdRef.current === id) setEntries(e)
+      },
+      (e) => {
+        if (catalogIdRef.current === id) setError(msg(e))
+      },
+    )
   }, [])
   useEffect(() => {
     if (catalogId) loadEntries(catalogId)
@@ -63,14 +75,25 @@ export default function MenuPage() {
 
   const setAvailability = async (productId: string, availability: Availability) => {
     if (!shown) return
-    const before = shown
-    setEntries({ ...shown, availability: new Map(shown.availability).set(productId, availability) })
+    const writtenTo = shown.catalogId
+    const had = shown.availability.has(productId)
+    const previous = shown.availability.get(productId)
+    const patchRow = (value: Availability | undefined) =>
+      setEntries((cur) => {
+        if (!cur || cur.catalogId !== writtenTo) return cur
+        const next = new Map(cur.availability)
+        if (value === undefined) next.delete(productId)
+        else next.set(productId, value)
+        return { ...cur, availability: next }
+      })
+    patchRow(availability)
     try {
-      await setCatalogAvailability(shown.catalogId, productId, availability)
+      await setCatalogAvailability(writtenTo, productId, availability)
       setError(null)
-      loadEntries(shown.catalogId)          // a product put in has its prices pre-filled on the server
+      // a product put in has its prices pre-filled on the server; reload whichever catalog is chosen now
+      if (catalogIdRef.current) loadEntries(catalogIdRef.current)
     } catch (e) {
-      setEntries(before)
+      patchRow(had ? previous : undefined)   // roll back only this product's row
       setError(msg(e))
     }
   }
