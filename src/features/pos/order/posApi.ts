@@ -8,7 +8,7 @@ import {
   buildPosMenu, type CatalogProductRow, type GroupRow, type LinkRow, type OptionPriceRow, type PosMenu, type ProductRow,
   type SoldOutRow, type VariantPriceRow,
 } from './cart'
-import type { BranchCatalogRow, BranchCatalogs, CatalogRow } from './catalogs'
+import type { BranchCatalogRow, BranchCatalogSettings, BranchCatalogs, CatalogRow } from './catalogs'
 
 const SEND_TIMEOUT_MS = 8000
 
@@ -78,6 +78,12 @@ export async function fetchBranchCatalogs(branchId: string): Promise<BranchCatal
   if (c.error) fail(c.error)
   if (a.error) fail(a.error)
   return { catalogs: (c.data ?? []) as CatalogRow[], assignments: (a.data ?? []) as BranchCatalogRow[] }
+}
+
+/** POS settings → Menu catalogs, for the caller's own branch (save_branch_catalogs checks access_settings). */
+export async function saveBranchCatalogs(s: BranchCatalogSettings): Promise<void> {
+  const { error } = await supabase.rpc('save_branch_catalogs', { p: s })
+  if (error) fail(error)
 }
 
 export async function fetchTables(branchId: string): Promise<TableRow[]> {

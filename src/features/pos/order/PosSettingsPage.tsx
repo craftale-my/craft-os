@@ -10,6 +10,7 @@ import { qrLink, newQrToken } from './qrLink'
 import { PRINT_ROUTES } from '../menu/menuView'
 import { addTableAction, friendlyDbMessage, openBillMessage, renameConflict } from './tableAdmin'
 import CheckoutSettings from '../checkout/CheckoutSettings'
+import MenuCatalogsSection from './MenuCatalogsSection'
 
 const KINDS: PrinterKind[] = ['agent', 'epson-epos', 'star-webprnt']
 
@@ -166,6 +167,8 @@ export default function PosSettingsPage() {
           )
         })}
       </section>
+
+      <MenuCatalogsSection branchId={branchId} />
 
       <CheckoutSettings branchId={branchId} routes={routes.map((r) => r.route)} tables={tables} />
 
