@@ -64,6 +64,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
   const [loading, setLoading]       = useState(true)
   const [notFound, setNotFound]     = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey]   = useState(0)
 
   const isSelf       = selfView || staffId === currentStaff?.id
   const isManager    = currentStaff?.rank === 'manager'
@@ -119,20 +120,23 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
     }
     load()
     return () => { cancelled = true }
-  }, [staffId])
+  }, [staffId, reloadKey])
 
   async function refreshAll() {
     if (!staffId) return
     try {
-      const [staffRes, completionRes, reviewRes, privRow] = await Promise.all([
+      const [staffRes, completionRes, reviewRes, privResult] = await Promise.all([
         supabase.from('staff').select('*').eq('id', staffId).single(),
         supabase.from('mission_completions').select('*, mission:missions(*)').eq('staff_id', staffId),
         supabase.from('monthly_reviews').select('status')
           .eq('staff_id', staffId).eq('month', CURRENT_MONTH).eq('year', CURRENT_YEAR).maybeSingle(),
-        fetchStaffPrivate(staffId),
+        // A failed private fetch must not discard the other results, and must
+        // not read as "Restricted" (null) — so it is caught here and the
+        // previous priv is kept.
+        fetchStaffPrivate(staffId).then(row => ({ row }), () => null),
       ])
       if (staffRes.data) setStaff(staffRes.data as Staff)
-      setPriv(privRow)
+      if (privResult) setPriv(privResult.row)
       setCompletions((completionRes.data ?? []) as MissionCompletion[])
       setPendingReviewStatus(reviewRes.data?.status ?? null)
       if (isSelf) await refreshStaff()
@@ -203,7 +207,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         <p className="text-2xl mb-2">⚠️</p>
         <p className="text-brown-dark font-semibold mb-1">Could not load profile</p>
         <p className="text-brown-muted text-sm mb-4">{fetchError}</p>
-        <Button variant="dark" onClick={() => { setFetchError(null); setLoading(true) }}>Retry</Button>
+        <Button variant="dark" onClick={() => { setFetchError(null); setLoading(true); setReloadKey(k => k + 1) }}>Retry</Button>
       </div>
     )
   }

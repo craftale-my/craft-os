@@ -105,7 +105,10 @@ describe('PersonalInfoTab private fields', () => {
     renderTab({ priv: PRIV, isSelf: true, isManager: false })
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
     fireEvent.click(screen.getByRole('button', { name: /Save Changes/i }))
-    await waitFor(() => expect(h.writes.some(w => w.table === 'staff')).toBe(true))
+    // Edit mode exiting means save() ran to completion, so the negative
+    // assertion below cannot pass just because save() hadn't finished yet.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy())
+    expect(h.writes.some(w => w.table === 'staff')).toBe(true)
     expect(h.saveStaffPrivate).not.toHaveBeenCalled()
   })
 })
