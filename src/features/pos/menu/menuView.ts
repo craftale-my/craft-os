@@ -1,5 +1,6 @@
 import type { Availability } from './feedmeExport'
 import type { MenuProductRow, MenuVariantRow } from './menuApi'
+import type { CatalogRow } from '../order/catalogs'
 
 /** Feedme's print routes at Craft Cafe (portal → Menu → Print route, 2026-10-22). */
 export const PRINT_ROUTES = ['Bar', 'Kitchen', 'Bakery', 'Front House'] as const
@@ -15,6 +16,15 @@ export const CATALOG_AVAILABILITY_LABELS: Record<Availability, string> = {
 }
 
 export interface MenuSection { title: string; products: MenuProductRow[] }
+
+/** The shop's own catalog, which /menu opens on so an owner never edits another
+ *  catalog (Dino Meal, Grab Food…) by mistake. */
+export const SHOP_CATALOG_NAME = 'Craft Cafe'
+
+/** /menu's first catalog: Craft Cafe if it exists, else the first active one, else the first. */
+export function initialCatalogId(catalogs: Pick<CatalogRow, 'id' | 'name' | 'is_active'>[]): string | null {
+  return (catalogs.find((c) => c.name === SHOP_CATALOG_NAME) ?? catalogs.find((c) => c.is_active) ?? catalogs[0])?.id ?? null
+}
 
 const rm = (sen: number) => (sen / 100).toFixed(2)
 

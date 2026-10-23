@@ -6,6 +6,7 @@ import {
 } from './menuApi'
 import {
   CATALOG_AVAILABILITY_LABELS, PRINT_ROUTES, SST_CHOICES, catalogAvailability, formatCatalogPrice, formatPrice, groupMenu,
+  initialCatalogId,
 } from './menuView'
 import type { Availability } from './feedmeExport'
 import type { CatalogRow } from '../order/catalogs'
@@ -27,7 +28,7 @@ export default function MenuPage() {
       .then(([r, c]) => {
         setRows(r)
         setCatalogs(c)
-        setCatalogId((cur) => cur ?? c.find((x) => x.is_active)?.id ?? c[0]?.id ?? null)
+        setCatalogId((cur) => cur ?? initialCatalogId(c))
         setError(null)
       })
       .catch((e) => setError(msg(e)))

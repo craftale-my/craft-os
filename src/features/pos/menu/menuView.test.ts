@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { catalogAvailability, formatCatalogPrice, formatPrice, groupMenu } from './menuView'
+import { catalogAvailability, formatCatalogPrice, formatPrice, groupMenu, initialCatalogId } from './menuView'
 import type { MenuProductRow } from './menuApi'
 
 function row(over: Partial<MenuProductRow>): MenuProductRow {
@@ -56,5 +56,17 @@ describe('groupMenu', () => {
     const s = groupMenu(rows, { showAddons: false, search: 'duck' })
     expect(s).toHaveLength(1)
     expect(s[0].products[0].name).toBe('Smoked Duck DON')
+  })
+})
+
+describe('initialCatalogId', () => {
+  const cat = (id: string, name: string, is_active = true) => ({ id, name, is_active })
+  it('opens on Craft Cafe even when another catalog sorts first', () => {
+    expect(initialCatalogId([cat('d', 'Dino Meal'), cat('c', 'Craft Cafe'), cat('g', 'Grab Food')])).toBe('c')
+  })
+  it('falls back to the first active catalog, then the first, then none', () => {
+    expect(initialCatalogId([cat('x', 'Old', false), cat('d', 'Dino Meal')])).toBe('d')
+    expect(initialCatalogId([cat('x', 'Old', false)])).toBe('x')
+    expect(initialCatalogId([])).toBeNull()
   })
 })

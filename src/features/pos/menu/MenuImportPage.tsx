@@ -104,7 +104,7 @@ export default function MenuImportPage() {
           <p role="alert" className="rounded bg-amber-50 p-3 text-sm text-amber-900">{MASTER_WARNING}</p>
           {stage.existingCatalogs > 0 && (
             <label className="block text-sm">
-              {stage.existingCatalogs} catalog{stage.existingCatalogs === 1 ? '' : 's'} already exist. Type <b>{IMPORT_CONFIRM_WORD}</b> to overwrite them.
+              {stage.existingCatalogs === 1 ? '1 catalog already exists' : `${stage.existingCatalogs} catalogs already exist`}. Type <b>{IMPORT_CONFIRM_WORD}</b> to overwrite them.
               <input className="ml-2 rounded border border-border px-2 py-1" value={typed} onChange={(e) => setTyped(e.target.value)} />
             </label>
           )}

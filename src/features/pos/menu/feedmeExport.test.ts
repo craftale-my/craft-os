@@ -261,6 +261,17 @@ describe('buildCatalogsImport', () => {
     expect(warnings).toContain('Staff Meal: no add-on price sheet — add-ons use their default prices')
   })
 
+  it('takes the first of a repeated default add-on option as its default price, as menu_import keeps the first', () => {
+    const f = catalogFiles()
+    const egg = (price: string) => groupRow('group_sauce', 'Sauce | Choose One', '1', '1', 'item_egg', 'Salted Egg', price)
+    f.addonGroup['Default AddonGroup'] = [GROUP_HEADER, egg('0'), egg('2')]
+    f.addonGroup['Grab Food'] = [GROUP_HEADER, egg('2')]           // equal to the LAST duplicate, not the default
+    const r = buildCatalogsImport(f)
+    expect(r.payload.catalogs.find((c) => c.name === 'Grab Food')!.optionPrices)
+      .toEqual([{ groupFeedmeId: 'group_sauce', productFeedmeId: 'item_egg', variantKey: '', priceSen: 200 }])
+    expect(r.payload.catalogs.find((c) => c.name === 'Craft Cafe')!.optionPrices).toEqual([])
+  })
+
   it('reports catalog link columns that differ from the Default Catalog', () => {
     expect(warnings).toContain('Grab Food: 1 add-on link differs from the Default Catalog — Craft OS uses the Default Catalog links for every catalog')
   })

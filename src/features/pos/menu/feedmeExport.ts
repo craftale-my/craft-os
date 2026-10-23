@@ -297,7 +297,12 @@ export function buildCatalogsImport(files: FeedmeFiles): { payload: CatalogsImpo
   const { payload: master, warnings } = buildMenuImport(files, MASTER_MENU_SHEET, MASTER_ADDON_SHEET)
   const products = new Map(master.products.map((p) => [p.feedmeId, p]))
   const optionDefaults = new Map<string, number>()            // "group|item|variant" → default price
-  for (const g of master.groups) for (const o of g.options) optionDefaults.set(`${g.feedmeId}|${o.productFeedmeId}|${o.variantKey}`, o.priceSen)
+  for (const g of master.groups) {
+    for (const o of g.options) {
+      const k = `${g.feedmeId}|${o.productFeedmeId}|${o.variantKey}`
+      if (!optionDefaults.has(k)) optionDefaults.set(k, o.priceSen)   // first wins, as menu_import's "on conflict do nothing"
+    }
+  }
   const names = Object.keys(files.menu).filter((n) => n !== MASTER_MENU_SHEET)
   if (names.length === 0) throw new Error('The menu file has no catalog sheets — is this a Feedme menu export?')
   const catalogs = names.map((name, sortOrder) => readCatalog(files, name, sortOrder, products, optionDefaults, warnings))

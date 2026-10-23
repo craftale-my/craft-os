@@ -39,7 +39,12 @@ export default function MenuCatalogsSection({ branchId }: { branchId: string }) 
     setSaving(true)
     try {
       await saveBranchCatalogs(settingsToSave(form, catalogs))     // a ticked catalog switched off since is dropped
-      await load()
+      try {
+        await load()
+      } catch (e) {
+        setOutcome({ kind: 'error', text: `Saved, but reloading failed: ${msg(e)}` })
+        return
+      }
       setOutcome({ kind: 'ok', text: 'Menu catalogs saved' })
     } catch (e) {
       setOutcome({ kind: 'error', text: msg(e) })
