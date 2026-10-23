@@ -59,7 +59,10 @@ function rankToSystemRole(rank: Rank | null | undefined): SystemRole {
 async function authorize(
   admin: SupabaseClient,
   authHeader: string | null,
-): Promise<{ ok: true; callerId: string } | { ok: false; status: number; error: string }> {
+): Promise<
+  | { ok: true; callerId: string; callerRole: SystemRole; callerRank: Rank | null }
+  | { ok: false; status: number; error: string }
+> {
   if (!authHeader) return { ok: false, status: 401, error: 'Missing Authorization header' }
 
   const token = authHeader.replace(/^Bearer\s+/i, '')
@@ -88,8 +91,17 @@ async function authorize(
   const allowed = typeof override === 'boolean' ? override : MANAGE_STAFF_DEFAULT[role]
 
   if (!allowed) return { ok: false, status: 403, error: 'You do not have permission to create staff accounts' }
-  return { ok: true, callerId }
+  return { ok: true, callerId, callerRole: role, callerRank: (caller.rank ?? null) as Rank | null }
 }
+
+/** 与 SQL staff_guard_authority_update() 的 manager-tier 同一条判断:
+ *  rank 'manager',或 system_role ∈ manager/admin/owner。 */
+function isManagerTier(role: SystemRole, rank: Rank | null): boolean {
+  return rank === 'manager' || role === 'manager' || role === 'admin' || role === 'owner'
+}
+
+/** 非 manager-tier(supervisor、hr)只能建这三个 rank。 */
+const LOW_RANKS: readonly Rank[] = ['trainee', 'junior', 'senior']
 
 /**
  * 岗位自动匹配 + 技能清单初始化。尽力而为:匹配不到唯一岗位就先不设,
@@ -183,6 +195,16 @@ Deno.serve(async (req) => {
 
     if (!name || !email || password.length < 6) {
       return json({ error: 'Name, email, and a 6+ character password are required.' }, 400)
+    }
+
+    // manage_staff 只说明"能建号",不说明"能建多高"。supervisor / hr 也有
+    // manage_staff,若不拦,就能直接建一个 rank manager(连带 system_role
+    // manager)的帐号。真正的边界是 DB 的 staff_guard_authority_update()
+    // (migration-2026-10-23-staff-authority-guard.sql);但本函数用 service
+    // role 写入,那个 trigger 对 auth.uid() 为空的调用一律放行,所以这里必须
+    // 自己拦,并给出清楚的错误。
+    if (!isManagerTier(auth.callerRole, auth.callerRank) && !LOW_RANKS.includes(rank)) {
+      return json({ error: 'Only a manager can create staff at supervisor rank or above.' }, 403)
     }
 
     const { data: authData, error: authErr } = await admin.auth.admin.createUser({
