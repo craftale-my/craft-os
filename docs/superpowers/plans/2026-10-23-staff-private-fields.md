@@ -45,11 +45,11 @@
 **Final-review refinements (2026-10-23, after Tasks 1–7; user decisions D1–D3):**
 - **D1 — escalation closed in this branch.** New `supabase/migration-2026-10-23-staff-authority-guard.sql` replaces `staff_guard_authority_update()` and runs it BEFORE INSERT OR UPDATE on `staff`: `system_role` is owner-only (change, or insert anything but `staff`); non-manager-tier callers (supervisor, hr) may only move ranks within trainee/junior/senior and only insert rows at those ranks; own-row rank/system_role/status protection is unchanged; `auth.uid() is null` passes. provision-staff `create` returns 403 "Only a manager can create staff at supervisor rank or above." for the same case. Without this, a supervisor could promote anyone to manager and so into the `staff_private` reader set.
 - **D2 — temporary sync trigger** (`staff_private_sync_legacy_trg`, phase 1) copies old-bundle writes of the five columns into the new tables during the deploy window, only when a value actually changed and only for writers the new tables' rules allow. Phase 2 drops it before the columns. This reverses the spec's "不额外加同步 trigger".
-- **D3 — `registration_requests.phone` is kept only while a request is pending.** provision-staff approve and Directory reject clear it; phase 1 clears existing non-pending rows (it runs twice, so it also catches old-function approvals in the window).
+- **D3 — `registration_requests.phone` is kept only while a request is pending.** provision-staff approve and Directory reject clear it; phase 1 clears existing non-pending rows without ever destroying the only copy: approved phones are first copied into empty `staff_private.contact_number`, and a phone is cleared only when it is in staff_private or belongs to a rejected request with no staff row (it runs twice, so it also catches old-function approvals in the window).
 - **Notes subject exclusion.** `staff_manager_notes_all` adds `staff_id <> auth.uid()` to USING and WITH CHECK, so an hr/manager/admin/owner never reads or writes notes about themselves.
 - **Approve without rollback.** If the `staff_private` phone write fails, approve returns 400 and leaves the request pending (auth user and staff row are kept); approving again repairs it. A null phone skips that write entirely (the insert trigger guarantees the row).
 - **Phase 1 runs on any state** (fresh build, after phase 2): every read of the old columns is dynamic SQL behind an `information_schema` check. **Phase 2 is self-gating:** it locks `staff`, drops the sync trigger, and raises before the drop on any loss-check hit or remaining dependency. **VERIFY is a go/no-go gate** with a `pass` column per persona and `all_pass`.
-- **Rollout order:** phase 1 + authority guard + VERIFY run on prod before the merge (Task 8).
+- **Rollout order:** phase 1 + authority guard + VERIFY run on prod before the merge, then the new provision-staff is deployed, still before the merge (Task 8).
 
 ---
 
@@ -1341,7 +1341,7 @@ This task touches production and must be run by the main session, not a subagent
 
 **Prerequisites (ask the user if missing):** a valid `~/.supabase-access-token`, or a signed-in Supabase tab in Chrome. A Supabase CLI login to the Craft-OS account, for deploying the Edge Function. A Vercel CLI login to scope `craftalemy-4209s-projects`.
 
-Order (revised 2026-10-23, final review F9): the database changes go to prod **before** the merge. Phase 1 is additive and safe with the old bundle still live, and the authority guard only blocks writes the old bundle never makes legitimately, so the new frontend ships onto a database that already has its tables, its policies and a passing VERIFY.
+Order (revised 2026-10-23, final review F9): the database changes go to prod **before** the merge. Phase 1 is additive and safe with the old bundle still live, and the authority guard only blocks writes the old bundle never makes legitimately, so the new frontend ships onto a database that already has its tables, its policies and a passing VERIFY. The new provision-staff is deployed right after VERIFY, before the merge (fix round 2): it closes the old function's create escalation as early as possible, and it is safe with the old frontend (see Step 4).
 
 - [ ] **Step 1: Pre-flight on the branch (do not merge yet)**
 
@@ -1350,19 +1350,19 @@ Open the PR from `feature/staff-private` to `main` for review, but do not merge.
 - [ ] **Step 2: Phase 1 and the authority guard on prod**
 
 Run `supabase/migration-2026-10-23-staff-private.sql`.
-Expected last result: `staff_rows = private_rows` (61 at the time of writing), and `notes_rows` equal to the number of staff with notes. Before running it, optionally run the commented registration_requests pre-check in that file: it lists approved requests whose phone exists nowhere else, which the file's one-time cleanup would clear.
+Expected last result: `staff_rows = private_rows` (61 at the time of writing), and `notes_rows` equal to the number of staff with notes. The registration_requests phone cleanup first copies approved requests' phones into empty `staff_private.contact_number`, then clears only numbers that are safely in staff_private (or rejected requests with no staff row). If it raises a NOTICE that some requests keep their phone, review those rows by hand; nothing was lost.
 
 This also creates the TEMPORARY sync trigger `staff_private_sync_legacy_trg`, which copies old-bundle writes of the five columns into the new tables until phase 2 drops it.
 
 Then run `supabase/migration-2026-10-23-staff-authority-guard.sql` (independent of phase 1; either order).
 Expected last result: two rows, `INSERT` and `UPDATE`, both `BEFORE`.
 
-Until Step 5 deploys the new provision-staff, the OLD function still lets a supervisor create a supervisor/manager account through `create` (it writes as service role, which the guard lets through). Keep this window short.
+Until Step 4 deploys the new provision-staff, the OLD function still lets a supervisor create a supervisor/manager account through `create` (it writes as service role, which the guard lets through). Go straight on to Steps 3 and 4.
 
 - [ ] **Step 3: VERIFY by persona — go/no-go**
 
 Run `supabase/VERIFY-2026-10-23-staff-private.sql`.
-Expected: `all_pass = true` on every row. trainee, supervisor and owner must be `ok` (missing = FAIL); hr, rank-manager and admin may be `SKIPPED`. If `all_pass` is false, stop: read the failing row's columns against the table at the top of the file, fix, re-run. Do not merge.
+Expected: `all_pass = true` on every row. trainee, supervisor and owner must be `ok` (missing = FAIL); hr, rank-manager and admin may be `SKIPPED`. If `all_pass` is false, stop: read the failing row's columns against the table at the top of the file, fix, re-run. Do not deploy the function or merge.
 
 Then the anon probe from a shell:
 
@@ -1372,36 +1372,43 @@ KEY=$(grep '^VITE_SUPABASE_ANON_KEY=' /Users/USER/Desktop/Craft_OS/.env.local | 
 
 Expected: each returns `[]`, or a 401/403 permission error (anon has no grant). Neither may return any row.
 
-- [ ] **Step 4: Merge to main**
+- [ ] **Step 4: Deploy the new provision-staff (before the merge)**
+
+From this worktree at the reviewed branch head: `supabase functions deploy provision-staff --project-ref yfsoesxzurzjdwstszru`. If the PR changes `supabase/functions/provision-staff/` after this, deploy again after the merge.
+
+Why this is safe now: the new function depends only on `staff_private` and `staff_private_ensure_row_trg`, both created by phase 1 in Step 2 (the authority guard does not affect it: it writes as service role). The old frontend calls it with the same request bodies (`src/shared/lib/provision.ts` is unchanged on this branch) and reads the same response. Behaviour differences with the old frontend still live:
+- create: a supervisor/hr asking for supervisor or manager rank gets a 403 with "Only a manager can create staff at supervisor rank or above.", which the old Directory shows as the error (that is the point).
+- approve: the phone goes to `staff_private` only, and the request's phone is cleared. The old bundle reads `staff.contact_number`, so a staff member approved in this window shows an empty phone in the old UI until Step 6. Nothing is lost: the number is in `staff_private`, and the sync trigger only copies old-column changes old → new, so an old-bundle save that resends the empty value is not a change and copies nothing.
+
+- [ ] **Step 5: Merge to main**
 
 Merge the PR. Run `npx vitest run && npm run build` on the merged main.
 
-- [ ] **Step 5: Deploy frontend and Edge Function**
+- [ ] **Step 6: Deploy the frontend**
 
 From a detached worktree of `origin/main` with `.vercel/` copied in: `vercel deploy --prod --yes`. Confirm the live bundle hash matches the local build: `curl -s https://craft-os-tale.vercel.app/ | grep -oE 'assets/index-[^"]+\.js'`.
-Then: `supabase functions deploy provision-staff --project-ref yfsoesxzurzjdwstszru`.
 
-- [ ] **Step 6: Catch-up backfill**
+- [ ] **Step 7: Catch-up backfill**
 
-Re-run `supabase/migration-2026-10-23-staff-private.sql`. It is idempotent. It fills anything the sync trigger could not copy, and clears phones on registration requests the old function approved between Step 2 and Step 5.
+Re-run `supabase/migration-2026-10-23-staff-private.sql`. It is idempotent. It fills anything the sync trigger could not copy, and handles phones on registration requests decided by the old frontend between Step 2 and Step 6.
 
-- [ ] **Step 7: Drop old columns (confirm first)**
+- [ ] **Step 8: Drop old columns (confirm first)**
 
 Optionally run the commented LOSS CHECK in `migration-2026-10-23-staff-private-drop-columns.sql` on its own first (expect `lost = 0`). The file enforces it anyway.
 
 Tell the user in one line: "Dropping staff.ic_number, address, date_of_birth, contact_number, manager_notes on prod. Their data is in staff_private / staff_manager_notes; the drop file re-checks for loss and dependencies and aborts if either fails." Then run the whole file. It locks `staff`, drops the sync trigger, raises (and rolls back everything) if the loss check is not 0 or anything still depends on the columns, and only then drops them. If it raises: stop and investigate; do not edit the checks to get past them.
 Verify with the phase-2 queries at the bottom of `VERIFY-2026-10-23-staff-private.sql`: no old columns, no sync trigger.
 
-- [ ] **Step 8: Live walkthrough on craft-os-tale.vercel.app**
+- [ ] **Step 9: Live walkthrough on craft-os-tale.vercel.app**
 
 - Own profile → Personal: IC / DOB / phone / address visible. Edit the phone, save, reload: the new value persists.
 - A supervisor account opens a colleague's profile: the four rows show `Restricted`, and there is no Manager Notes card.
 - An HR or owner account opens a colleague: the four values are visible, and the Manager Notes card loads, saves and survives a reload.
 - If a test registration is available, approve it and check that its phone appears in `staff_private` and is cleared from `registration_requests`.
-- If a supervisor login is available: Directory → Add Staff at rank Supervisor is refused with "Only a manager can create staff at supervisor rank or above."
+- If a supervisor login is available: Directory → Add Staff offers only Trainee / Junior / Senior in the Rank list.
 
 If no supervisor login is available, record that these steps were covered by the SQL persona check in Step 3 instead.
 
-- [ ] **Step 9: Push and record**
+- [ ] **Step 10: Push and record**
 
 `git push origin main`. Update memory `staff-table-public-read.md` to mark the second tier resolved, with the commit hash.

@@ -203,8 +203,15 @@ alter table staff
   盖掉新版刚写的值;且只同步新表规则允许的写入者(私人栏位:本人 / `can_read_staff_private()`;
   备注:`can_read_staff_private()` 且不是本人)。第二段删栏前先删这个 trigger。
 - **D3 — `registration_requests.phone` 只在 pending 时保留。** approve 标记 approved 时一并清空,
-  Directory reject 也清空;第一段 SQL 一次性清掉现有非 pending 的号码(第一段会跑两次,
-  也补上旧版 function 在部署窗口内批准的申请)。上文"范围外:`registration_requests.phone` 维持原样"作废。
+  Directory reject 也清空;第一段 SQL 一次性清理现有非 pending 的号码(第一段会跑两次,
+  也补上旧版 function 在部署窗口内批准的申请),但**绝不销毁唯一一份**:先把 approved 申请的号码
+  补进对应员工(按 `lower(email)` 配对)还空着的 `staff_private.contact_number`;之后只清掉
+  号码已在该员工 `staff_private` 里的申请,或没有任何 staff 行对应的 rejected 申请;其余保留并以
+  NOTICE 提示人工检查。上文"范围外:`registration_requests.phone` 维持原样"作废。
+- **Add Staff 只列可建的 rank。** 非 manager-tier 在 Directory 的 Add Staff 只看到
+  Trainee / Junior / Senior(`creatableRanks()`,`src/shared/lib/permissions.ts`)。
+- **provision-staff 提前部署。** 新 function 只依赖第一段建的 `staff_private` 与 insert trigger,
+  且与旧前端兼容,所以在第一段 + guard + VERIFY 之后、合并前就部署,缩短旧 function 可建 manager 的窗口。
 - **备注本人不可见(F6)。** `staff_manager_notes_all` 的 USING 与 WITH CHECK 都加上
   `staff_id <> auth.uid()`:即使本人是 hr/manager/admin/owner,也读不到、写不了关于自己的备注。
 - **provision-staff approve 不回滚。** 与上文第 5 节"失败时回滚(删 auth user)"不同:`staff_private`
