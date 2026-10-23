@@ -74,3 +74,8 @@
 .org-tree > ul > li { padding-top: 0; }
 .org-tree > ul > li::before,
 .org-tree > ul > li::after { display: none; }
+/* A column of reports without teams of their own; the rail runs behind the
+   cards so the gaps between them read as one connected line. */
+.org-tree .org-stack { display: flex; flex-direction: column; align-items: center; gap: 8px; position: relative; }
+.org-tree .org-stack::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; border-left: 1px solid #D4C5B0; }
+.org-tree .org-stack > * { position: relative; }

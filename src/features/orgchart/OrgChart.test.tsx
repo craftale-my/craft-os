@@ -96,3 +96,40 @@ describe('OrgChartPage — manager viewer', () => {
     await waitFor(() => expect(h.updates).toEqual([{ staffId: 'ula', supervisorId: 'sam' }]))
   })
 })
+
+describe('OrgChartPage — compact layout', () => {
+  // Mei has one report with a team of their own (Sam) and three without
+  // (the kitchen crew). Only the people without reports stack.
+  const WIDE: OrgPerson[] = [
+    p('boss', { name: 'Boss', system_role: 'owner', rank: 'manager' }),
+    p('mei', { name: 'Mei', rank: 'manager', supervisor_id: 'boss' }),
+    p('sam', { name: 'Sam', rank: 'supervisor', supervisor_id: 'mei' }),
+    p('eve', { name: 'Eve', supervisor_id: 'sam' }),
+    p('k1', { name: 'Kai', supervisor_id: 'mei' }),
+    p('k2', { name: 'Kim', supervisor_id: 'mei' }),
+    p('k3', { name: 'Kit', supervisor_id: 'mei' }),
+  ]
+
+  beforeEach(() => { h.rows = WIDE; h.me = { id: 'eve', rank: 'junior' } })
+
+  it('stacks reports who have no team of their own into one column', async () => {
+    renderPage()
+    const stack = await screen.findByTestId('org-stack-mei')
+    const ids = within(stack).getAllByTestId(/^org-card-/).map(el => el.dataset.testid)
+    expect(ids).toEqual(['org-card-k1', 'org-card-k2', 'org-card-k3'])
+  })
+
+  it('keeps reports who lead a team in the branching row, outside the stack', async () => {
+    renderPage()
+    const stack = await screen.findByTestId('org-stack-mei')
+    expect(within(stack).queryByTestId('org-card-sam')).toBeNull()
+    expect(screen.getByTestId('org-card-sam')).toBeTruthy()
+  })
+
+  it('stacks a supervisor whose reports are all individual staff', async () => {
+    renderPage()
+    const stack = await screen.findByTestId('org-stack-sam')
+    expect(within(stack).getByTestId('org-card-eve')).toBeTruthy()
+    expect(within(screen.getByTestId('org-card-eve')).getByText('You')).toBeTruthy()
+  })
+})

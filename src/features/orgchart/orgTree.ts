@@ -160,3 +160,13 @@ export function searchPeople(tree: OrgTree, query: string, limit = 8): OrgPerson
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, limit)
 }
+
+/** The scrollLeft that puts a card's centre in the middle of a horizontally
+ *  scrolling container. Both rects are viewport coordinates (getBoundingClientRect). */
+export function scrollLeftToCenter(
+  container: { left: number; scrollLeft: number; clientWidth: number },
+  card: { left: number; width: number },
+): number {
+  const cardCentre = card.left - container.left + container.scrollLeft + card.width / 2
+  return Math.max(0, Math.round(cardCentre - container.clientWidth / 2))
+}

@@ -5,7 +5,7 @@ import { useAuth } from '../auth/AuthContext'
 import { Card, PageHeader } from '../../shared/components/ui'
 import { RANK_LABELS } from '../../shared/types'
 import { shortenBranch } from '../../shared/lib/branches'
-import { buildOrgTree, chainOf, initialExpanded, searchPeople, type OrgPerson } from './orgTree'
+import { buildOrgTree, chainOf, initialExpanded, scrollLeftToCenter, searchPeople, type OrgPerson } from './orgTree'
 import { fetchOrgChart } from './api'
 import { ReportingLine } from './ReportingLine'
 import { UnassignedPanel } from './UnassignedPanel'
@@ -47,6 +47,25 @@ export default function OrgChartPage() {
     for (const p of chain) open.add(p.id)
     setExpanded(open)
   }, [tree, chain])
+
+  // Once the first expansion has rendered, scroll the tree sideways so the
+  // owner is in view. A wide tree centres the owner far to the right, and the
+  // page used to open on an empty stretch of connector lines.
+  const treeBox = useRef<HTMLDivElement>(null)
+  const centred = useRef(false)
+  useEffect(() => {
+    if (!tree || centred.current || expanded.size === 0 || tree.roots.length === 0) return
+    const box = treeBox.current
+    const card = document.getElementById(`org-node-${tree.roots[0].id}`)
+    if (!box || !card) return
+    centred.current = true
+    const b = box.getBoundingClientRect()
+    const c = card.getBoundingClientRect()
+    box.scrollLeft = scrollLeftToCenter(
+      { left: b.left, scrollLeft: box.scrollLeft, clientWidth: box.clientWidth },
+      { left: c.left, width: c.width },
+    )
+  }, [tree, expanded])
 
   useEffect(() => {
     if (!highlightId) return
@@ -143,7 +162,7 @@ export default function OrgChartPage() {
               </Card>
             )}
 
-            <div className="overflow-x-auto pb-4 -mx-4 px-4">
+            <div ref={treeBox} className="overflow-x-auto pb-4 -mx-4 px-4">
               <OrgTreeView roots={tree.roots} ctx={ctx} />
             </div>
 
