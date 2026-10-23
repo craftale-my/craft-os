@@ -101,7 +101,7 @@ returns text language sql security definer stable as $$
 $$;
 
 -- Staff policies
-create policy "staff_select" on staff for select using (true);
+create policy "staff_select" on staff for select to authenticated using (true);
 create policy "staff_insert" on staff for insert
   with check (current_rank() in ('manager'));
 -- Supervisors need staff updates too: probation hire/eliminate writes
@@ -110,7 +110,7 @@ create policy "staff_update" on staff for update
   using (id = auth.uid() or current_rank() in ('supervisor','manager'));
 
 -- Mission policies
-create policy "missions_select" on missions for select using (true);
+create policy "missions_select" on missions for select to authenticated using (true);
 create policy "missions_insert" on missions for insert
   with check (current_rank() = 'manager');
 create policy "missions_update" on missions for update
@@ -127,7 +127,7 @@ create policy "completions_update" on mission_completions for update
   using (current_rank() in ('supervisor','manager'));
 
 -- Skill rating policies
-create policy "skills_select" on skill_ratings for select using (true);
+create policy "skills_select" on skill_ratings for select to authenticated using (true);
 create policy "skills_insert" on skill_ratings for insert
   with check (current_rank() in ('supervisor','manager'));
 create policy "skills_update" on skill_ratings for update
