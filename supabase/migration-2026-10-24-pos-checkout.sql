@@ -182,4 +182,46 @@ revoke all on staff_pos_pins from public, anon, authenticated;
 do $$ begin alter publication supabase_realtime add table bills;
 exception when duplicate_object then null; end $$;
 
+-- ── Capability pos_supervise ("Approve POS voids & refunds") ─────────────────
+-- Both functions mirror buildRoleCaps (src/shared/lib/lookups.tsx) over
+-- DEFAULT_SYSTEM_ROLE_CAPS (src/shared/types/index.ts): the Owner's setting in
+-- system_role_permissions wins over the default; rank is not consulted.
+-- Change the three places together (the verify script checks the two SQL ones agree).
+create or replace function has_menu_cap(p_cap text) returns boolean
+language sql security definer stable set search_path = public, pg_temp as $$
+  select coalesce((
+    select coalesce(
+      (select (srp.permissions ->> p_cap)::boolean
+         from system_role_permissions srp
+        where srp.system_role = s.system_role),
+      case p_cap
+        when 'access_settings' then s.system_role in ('owner','admin','manager')
+        when 'pos_supervise'   then s.system_role in ('owner','admin','manager','supervisor')
+        else false
+      end)
+    from staff s
+    where s.id = auth.uid()
+  ), false)
+$$;
+
+-- The same rule for any staff member: the approver of a void or refund is not
+-- the signed-in cashier. Internal — called only by the POS RPCs.
+create or replace function staff_has_cap(p_staff_id uuid, p_cap text) returns boolean
+language sql security definer stable set search_path = public, pg_temp as $$
+  select coalesce((
+    select coalesce(
+      (select (srp.permissions ->> p_cap)::boolean
+         from system_role_permissions srp
+        where srp.system_role = s.system_role),
+      case p_cap
+        when 'access_settings' then s.system_role in ('owner','admin','manager')
+        when 'pos_supervise'   then s.system_role in ('owner','admin','manager','supervisor')
+        else false
+      end)
+    from staff s
+    where s.id = p_staff_id
+  ), false)
+$$;
+revoke all on function staff_has_cap(uuid, text) from public, anon, authenticated;
+
 select 'checkout schema applied' as result;
