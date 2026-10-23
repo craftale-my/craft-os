@@ -1,30 +1,53 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { fetchMenu, updateProducts, type MenuProductRow, type ProductPatch } from './menuApi'
-import { AVAILABILITY_LABELS, PRINT_ROUTES, SST_CHOICES, formatPrice, groupMenu } from './menuView'
+import {
+  fetchCatalogEntries, fetchCatalogs, fetchMenu, setCatalogAvailability, updateProducts,
+  type CatalogEntries, type MenuProductRow, type ProductPatch,
+} from './menuApi'
+import {
+  CATALOG_AVAILABILITY_LABELS, PRINT_ROUTES, SST_CHOICES, catalogAvailability, formatCatalogPrice, formatPrice, groupMenu,
+} from './menuView'
 import type { Availability } from './feedmeExport'
+import type { CatalogRow } from '../order/catalogs'
 
 const select = 'rounded border border-border bg-card px-2 py-1 text-sm'
+const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export default function MenuPage() {
   const [rows, setRows] = useState<MenuProductRow[] | null>(null)
+  const [catalogs, setCatalogs] = useState<CatalogRow[]>([])
+  const [catalogId, setCatalogId] = useState<string | null>(null)
+  const [entries, setEntries] = useState<CatalogEntries | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [showAddons, setShowAddons] = useState(false)
 
   const load = useCallback(() => {
-    fetchMenu()
-      .then((r) => {
+    Promise.all([fetchMenu(), fetchCatalogs()])
+      .then(([r, c]) => {
         setRows(r)
+        setCatalogs(c)
+        setCatalogId((cur) => cur ?? c.find((x) => x.is_active)?.id ?? c[0]?.id ?? null)
         setError(null)
       })
-      .catch((e: Error) => setError(e.message))
+      .catch((e) => setError(msg(e)))
   }, [])
   useEffect(() => {
     load()
   }, [load])
 
+  const loadEntries = useCallback((id: string) => {
+    fetchCatalogEntries(id).then(setEntries, (e) => setError(msg(e)))
+  }, [])
+  useEffect(() => {
+    if (catalogId) loadEntries(catalogId)
+  }, [catalogId, loadEntries])
+
   const sections = useMemo(() => groupMenu(rows ?? [], { showAddons, search }), [rows, showAddons, search])
+  // entries of a catalog that is no longer the chosen one are never shown
+  const shown = entries && entries.catalogId === catalogId ? entries : null
+  const current = catalogs.find((c) => c.id === catalogId) ?? null
+  const inCatalog = shown ? [...shown.availability.values()].filter((a) => a !== 'hidden').length : 0
 
   const save = async (ids: string[], patch: ProductPatch) => {
     const before = rows
@@ -34,7 +57,21 @@ export default function MenuPage() {
       setError(null)
     } catch (e) {
       setRows(before)
-      setError(e instanceof Error ? e.message : String(e))
+      setError(msg(e))
+    }
+  }
+
+  const setAvailability = async (productId: string, availability: Availability) => {
+    if (!shown) return
+    const before = shown
+    setEntries({ ...shown, availability: new Map(shown.availability).set(productId, availability) })
+    try {
+      await setCatalogAvailability(shown.catalogId, productId, availability)
+      setError(null)
+      loadEntries(shown.catalogId)          // a product put in has its prices pre-filled on the server
+    } catch (e) {
+      setEntries(before)
+      setError(msg(e))
     }
   }
 
@@ -46,7 +83,9 @@ export default function MenuPage() {
         <div>
           <h1 className="text-2xl font-semibold">Menu</h1>
           <p className="text-sm text-gray-500">
-            {rows?.length ?? 0} products. Names, prices, add-ons and availability come from Feedme — importing again resets them. SST and print route are set here and survive a re-import.
+            {rows?.length ?? 0} products. Each catalog decides which products it sells and on which channel; SST and print
+            route apply in every catalog. Editing names, prices and add-ons here comes in the next menu update — until then
+            they change only by importing from Feedme.
           </p>
         </div>
         <Link to="/menu/import" className="rounded bg-brown-btn px-4 py-2 text-sm text-white hover:bg-brown-btn-hover">
@@ -57,6 +96,15 @@ export default function MenuPage() {
       {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 
       <div className="flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-sm">
+          Catalog
+          <select className={select} value={catalogId ?? ''} onChange={(e) => setCatalogId(e.target.value || null)}>
+            {catalogs.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}{c.is_active ? '' : ' (inactive)'}</option>
+            ))}
+          </select>
+        </label>
+        {current && shown && <span className="text-sm text-gray-500">{inCatalog} products in {current.name}</span>}
         <input
           className="w-64 rounded border border-border px-3 py-2 text-sm"
           placeholder="Search products"
@@ -103,60 +151,68 @@ export default function MenuPage() {
             <thead className="text-left text-gray-500">
               <tr>
                 <th className="px-4 py-2">Product</th>
-                <th className="px-4 py-2">Price</th>
-                <th className="px-4 py-2">Availability</th>
+                <th className="px-4 py-2">Price{current ? ` in ${current.name}` : ''}</th>
+                <th className="px-4 py-2">In {current?.name ?? 'catalog'}</th>
                 <th className="px-4 py-2">SST</th>
                 <th className="px-4 py-2">Print route</th>
               </tr>
             </thead>
             <tbody>
-              {section.products.map((p) => (
-                <tr key={p.id} className="border-t border-border">
-                  <td className="px-4 py-2">
-                    {p.name}
-                    {p.menu_variants.filter((v) => v.is_active).length > 1 && (
-                      <span className="ml-2 text-xs text-gray-500">
-                        {p.menu_variants.filter((v) => v.is_active).map((v) => v.name).join(' / ')}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 whitespace-nowrap">{formatPrice(p.menu_variants)}</td>
-                  <td className="px-4 py-2">
-                    <select
-                      className={select}
-                      value={p.availability}
-                      onChange={(e) => void save([p.id], { availability: e.target.value as Availability })}
-                    >
-                      {(Object.keys(AVAILABILITY_LABELS) as Availability[]).map((a) => (
-                        <option key={a} value={a}>{AVAILABILITY_LABELS[a]}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-4 py-2">
-                    <select
-                      className={select}
-                      value={p.sst_rate_bp}
-                      onChange={(e) => void save([p.id], { sst_rate_bp: Number(e.target.value) })}
-                    >
-                      {SST_CHOICES.map((c) => (
-                        <option key={c.bp} value={c.bp}>{c.label}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-4 py-2">
-                    <select
-                      className={select}
-                      value={p.print_route ?? ''}
-                      onChange={(e) => void save([p.id], { print_route: e.target.value || null })}
-                    >
-                      <option value="">Not printed</option>
-                      {PRINT_ROUTES.map((r) => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  </td>
-                </tr>
-              ))}
+              {section.products.map((p) => {
+                const availability = shown ? catalogAvailability(shown.availability, p.id) : null
+                return (
+                  <tr key={p.id} className="border-t border-border">
+                    <td className="px-4 py-2">
+                      {p.name}
+                      {p.menu_variants.filter((v) => v.is_active).length > 1 && (
+                        <span className="ml-2 text-xs text-gray-500">
+                          {p.menu_variants.filter((v) => v.is_active).map((v) => v.name).join(' / ')}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap">
+                      {shown && availability !== 'hidden'
+                        ? formatCatalogPrice(p.menu_variants, shown.prices)
+                        : <span className="text-gray-400">Default {formatPrice(p.menu_variants)}</span>}
+                    </td>
+                    <td className="px-4 py-2">
+                      <select
+                        className={select}
+                        disabled={!shown}
+                        value={availability ?? 'hidden'}
+                        onChange={(e) => void setAvailability(p.id, e.target.value as Availability)}
+                      >
+                        {(Object.keys(CATALOG_AVAILABILITY_LABELS) as Availability[]).map((a) => (
+                          <option key={a} value={a}>{CATALOG_AVAILABILITY_LABELS[a]}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <select
+                        className={select}
+                        value={p.sst_rate_bp}
+                        onChange={(e) => void save([p.id], { sst_rate_bp: Number(e.target.value) })}
+                      >
+                        {SST_CHOICES.map((c) => (
+                          <option key={c.bp} value={c.bp}>{c.label}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <select
+                        className={select}
+                        value={p.print_route ?? ''}
+                        onChange={(e) => void save([p.id], { print_route: e.target.value || null })}
+                      >
+                        <option value="">Not printed</option>
+                        {PRINT_ROUTES.map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </section>

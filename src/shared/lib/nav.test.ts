@@ -51,13 +51,15 @@ describe('visibleNav', () => {
     expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'pos', 'settings'])
   })
 
-  it('POS groups the register, menu and tables & printers; staff see only the register', () => {
+  it('POS groups the register, menu and POS settings; staff see only the register', () => {
     const pos = (can: (c: Capability) => boolean) => {
       const g = visibleNav(can).find(e => e.id === 'pos')
       return g && isGroup(g) ? g.children.map(c => c.id) : []
     }
     expect(pos(canWith())).toEqual(['pos-register'])
-    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'menu', 'pos-settings'])
+    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'pos-settings'])
+    expect(pos(canWith('manage_menu'))).toEqual(['pos-register', 'menu'])
+    expect(pos(canWith('access_settings', 'manage_menu'))).toEqual(['pos-register', 'menu', 'pos-settings'])
   })
 
   it('不修改原始 NAV', () => {

@@ -7,10 +7,11 @@ export const SST_CHOICES = [
   { bp: 600, label: '6%' },
   { bp: 0, label: '0%' },
 ] as const
-export const AVAILABILITY_LABELS: Record<Availability, string> = {
+/** A product in one catalog; 'hidden' = the catalog does not sell it. */
+export const CATALOG_AVAILABILITY_LABELS: Record<Availability, string> = {
+  hidden: 'Not in this catalog',
   all: 'Counter + QR',
   counter_only: 'Counter only',
-  hidden: 'Hidden',
 }
 
 export interface MenuSection { title: string; products: MenuProductRow[] }
@@ -23,6 +24,16 @@ export function formatPrice(variants: Pick<MenuVariantRow, 'price_sen' | 'is_act
   const lo = Math.min(...prices)
   const hi = Math.max(...prices)
   return lo === hi ? `RM ${rm(lo)}` : `RM ${rm(lo)} – ${rm(hi)}`
+}
+
+/** No row in the catalog reads as not in it. */
+export function catalogAvailability(entries: Map<string, Availability>, productId: string): Availability {
+  return entries.get(productId) ?? 'hidden'
+}
+
+/** The catalog's prices of the active variants it prices ('—' when none). */
+export function formatCatalogPrice(variants: Pick<MenuVariantRow, 'id' | 'is_active'>[], prices: Map<string, number>): string {
+  return formatPrice(variants.filter((v) => prices.has(v.id)).map((v) => ({ price_sen: prices.get(v.id) as number, is_active: v.is_active })))
 }
 
 export function groupMenu(rows: MenuProductRow[], opts: { showAddons: boolean; search: string }): MenuSection[] {

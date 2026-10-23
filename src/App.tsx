@@ -265,7 +265,7 @@ function AppRoutes() {
       <Route
         path="/menu"
         element={
-          <ProtectedRoute requireCap="access_settings">
+          <ProtectedRoute requireCap="manage_menu">
             <AppLayout><MenuPage /></AppLayout>
           </ProtectedRoute>
         }
@@ -274,7 +274,7 @@ function AppRoutes() {
       <Route
         path="/menu/import"
         element={
-          <ProtectedRoute requireCap="access_settings">
+          <ProtectedRoute requireCap="manage_menu">
             <AppLayout><MenuImportPage /></AppLayout>
           </ProtectedRoute>
         }

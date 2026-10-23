@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { formatPrice, groupMenu } from './menuView'
+import { catalogAvailability, formatCatalogPrice, formatPrice, groupMenu } from './menuView'
 import type { MenuProductRow } from './menuApi'
 
 function row(over: Partial<MenuProductRow>): MenuProductRow {
   return {
-    id: over.name ?? 'x', name: 'x', availability: 'all', is_addon: false, sst_rate_bp: 600, print_route: null,
+    id: over.name ?? 'x', name: 'x', is_addon: false, sst_rate_bp: 600, print_route: null,
     takeaway_fee_sen: 0, sort_order: 0, category: { name: 'TEA', sort_order: 0 }, menu_variants: [], ...over,
   }
 }
@@ -15,6 +15,21 @@ describe('formatPrice', () => {
     expect(formatPrice([v(1000)])).toBe('RM 10.00')
     expect(formatPrice([v(1000), v(1150), v(900, false)])).toBe('RM 10.00 – 11.50')
     expect(formatPrice([v(900, false)])).toBe('—')
+  })
+})
+
+describe('catalog columns', () => {
+  it('reads a product with no row in the catalog as not in it', () => {
+    const entries = new Map([['p1', 'counter_only' as const]])
+    expect(catalogAvailability(entries, 'p1')).toBe('counter_only')
+    expect(catalogAvailability(entries, 'p2')).toBe('hidden')
+  })
+
+  it('shows the catalog\'s prices of active variants only', () => {
+    const variants = [{ id: 'a', is_active: true }, { id: 'b', is_active: true }, { id: 'c', is_active: false }, { id: 'd', is_active: true }]
+    const prices = new Map([['a', 1000], ['b', 1250], ['c', 1]])
+    expect(formatCatalogPrice(variants, prices)).toBe('RM 10.00 – 12.50')
+    expect(formatCatalogPrice(variants, new Map())).toBe('—')
   })
 })
 
