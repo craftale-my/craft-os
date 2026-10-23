@@ -1,9 +1,9 @@
-import type { TicketPayload } from './ticket'
+import type { JobPayload } from './printJob'
 
 export interface PrintJob {
   id: string
   route: string
-  payload: TicketPayload
+  payload: JobPayload
   status: string
 }
 

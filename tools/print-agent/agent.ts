@@ -2,7 +2,7 @@
 // Sends raw ESC/POS bytes to the printer on TCP 9100.
 // Run:  node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
 import { createClient } from '@supabase/supabase-js'
-import { renderTicketLines } from '../../src/features/pos/print/ticket.ts'
+import { renderJobLines } from '../../src/features/pos/print/printJob.ts'
 import { encodeEscPos } from '../../src/features/pos/print/escpos.ts'
 import { processJob, type PrintHostDeps, type PrintJob } from '../../src/features/pos/print/printHost.ts'
 import { assertDevDatabase } from '../../src/features/pos/guard.ts'
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
         if (error) throw error
       },
       print: async (j) => {
-        await sendInTurn(addressOf.get(j.route)!, encodeEscPos(renderTicketLines(j.payload, cols)))
+        await sendInTurn(addressOf.get(j.route)!, encodeEscPos(renderJobLines(j.payload, cols)))
         printed = true
       },
     }

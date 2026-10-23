@@ -77,4 +77,10 @@ describe('renderTicketLines', () => {
       '    * less ice',
     ])
   })
+
+  it('puts a VOID banner above a void ticket and keeps the rest unchanged', () => {
+    const out = renderTicketLines({ ...base, void: true }, 32)
+    expect(out[0]).toBe('*** VOID ***')
+    expect(out.slice(1)).toEqual(renderTicketLines(base, 32))
+  })
 })

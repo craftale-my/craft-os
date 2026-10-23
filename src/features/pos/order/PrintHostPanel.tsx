@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { processJob, type PrintJob } from '../print/printHost'
 import { printFromBrowser, type PrintRoute } from '../print/adapter'
+import { jobLabel } from '../print/printJob'
 import { claimJob, fetchMenuRoutes, fetchPrintJobs, fetchRoutes, finishJob, insertTestPrint, requeueJob, type PrintJobRow } from './posApi'
 import { usePosRealtime } from './usePosRealtime'
 import { classifyJobs, formatAge, routesWithoutPrinter, type PrintProblem } from './printProblems'
@@ -88,7 +89,7 @@ export default function PrintHostPanel({ branchId }: { branchId: string }) {
           {problems.length === 0 && <p className="text-xs text-brown-muted">All tickets printed.</p>}
           {problems.map(({ job: j, kind, ageMs }) => (
             <div key={j.id} className="mb-2 rounded bg-red-50 p-2">
-              <div className="font-medium">{j.route} · {j.payload.orderNo}{j.payload.tableLabel ? ` · ${j.payload.tableLabel}` : ' · takeaway'}</div>
+              <div className="font-medium">{j.route} · {jobLabel(j.payload)}</div>
               {kind === 'waiting' ? (
                 <>
                   <div className="text-xs text-red-700">Waiting — no printer is picking this up (route {j.route}). Is the print agent running? · {formatAge(ageMs)}</div>

@@ -15,6 +15,7 @@ export interface TicketPayload {
   source: 'qr' | 'counter' | 'test'
   placedAt: string // ISO, UTC
   lines: TicketLine[]
+  void?: true // a void ticket: the kitchen stops these lines
 }
 
 const MYT = new Intl.DateTimeFormat('en-GB', {
@@ -58,6 +59,7 @@ export function renderTicketLines(t: TicketPayload, cols: number): string[] {
     ...(l.note ? wrap(`* ${l.note}`, cols - 4, '  ').map((s) => `    ${s}`) : []),
   ])
   return [
+    ...(t.void ? ['*** VOID ***'] : []),
     `${t.route.toUpperCase()} TICKET`,
     t.tableLabel ? `Table: ${t.tableLabel}` : 'TAKEAWAY',
     `Order: ${t.orderNo} (${t.source.toUpperCase()})`,

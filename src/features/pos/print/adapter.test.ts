@@ -4,6 +4,7 @@ import { buildEposXml, eposEndpoint } from './epson'
 import { buildStarXml, starEndpoint } from './star'
 import { printFromBrowser, type PrintRoute } from './adapter'
 import type { TicketPayload } from './ticket'
+import type { ReceiptPayload } from './receipt'
 
 const payload: TicketPayload = {
   kind: 'ticket',
@@ -88,6 +89,20 @@ describe('printFromBrowser', () => {
     }) as unknown as typeof fetch
     await expect(printFromBrowser(star, payload, f)).rejects.toThrow('timed out')
     expect(vi.mocked(f).mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('prints a receipt through the job dispatcher', async () => {
+    const receipt: ReceiptPayload = {
+      kind: 'receipt', route: 'Bar', reprint: false,
+      header: { title: 'Craft Cafe', legalName: null, registrationNo: null, sstNo: null, address: null, phone: null, email: null },
+      billNo: '261024-001', closedAt: '2026-10-24T05:00:00.000Z', cashier: 'Aina', tableLabel: 'T1', pax: 2,
+      items: [{ qty: 1, name: 'Latte', unitSen: 1300, amountSen: 1300, mods: [] }], itemCount: 1,
+      subtotalSen: 1300, sstGroups: [], serviceChargeGroups: [], takeawayFeeSen: 0, roundingSen: 0, totalSen: 1300,
+      payments: [{ name: 'Cash', kind: 'cash', amountSen: 1300, tenderedSen: null, reference: null }], changeSen: 0, footer: 'Thanks',
+    }
+    const f = fakeFetch(200, '<response success="true" code="" status="251658262"/>')
+    await printFromBrowser(epson, receipt, f)
+    expect(String(vi.mocked(f).mock.calls[0][1]?.body)).toContain('Total (MYR)')
   })
 
   it('refuses routes that belong to the print agent', async () => {
