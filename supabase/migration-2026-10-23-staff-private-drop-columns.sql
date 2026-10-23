@@ -19,8 +19,8 @@
 -- trigger stays in place. The registration_requests.phone cleanup (decision
 -- D3) lives in phase 1, which runs twice; see the note there.
 --
--- Re-running after a successful run is a no-op (the checks are skipped when
--- the columns are already gone).
+-- Re-running after a successful run is a clean no-op: the loss check and
+-- both dependency checks are skipped when the columns are already gone.
 
 -- ── LOSS CHECK (optional manual pre-run; the transaction below repeats it) ──
 -- A value is "lost" if staff still holds it but the new table has nothing.
@@ -82,7 +82,9 @@ begin
   $q$ into v_lost;
 
   if v_lost > 0 then
-    raise exception 'LOSS CHECK failed: % staff row(s) hold a value the new tables do not. Re-run migration-2026-10-23-staff-private.sql, then retry.', v_lost;
+    -- Do not "fix" this by re-running phase 1: its coalesce backfill would
+    -- copy back old values that someone deliberately cleared in the new UI.
+    raise exception 'LOSS CHECK failed: % staff row(s) hold a value the new tables do not. Inspect these rows (the LOSS CHECK query at the top of this file lists the condition) and decide per row before retrying.', v_lost;
   end if;
 end
 $do$;
@@ -96,6 +98,15 @@ declare
   -- it is listed so a manual re-order of this file cannot trip on it.
   v_allow constant text[] := array['staff_private_ensure_row','staff_private_sync_legacy'];
 begin
+  -- Re-run after a successful drop: nothing left to check (and the "address"
+  -- scan could otherwise trip on an unrelated function). Clean no-op.
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'staff'
+                   and column_name in ('ic_number','date_of_birth','contact_number','address','manager_notes')) then
+    raise notice 'Old staff columns already gone: dependency checks skipped.';
+    return;
+  end if;
+
   -- Catalog dependencies on the five columns: views, policies, indexes,
   -- constraints, column-list triggers …
   select string_agg(distinct pg_describe_object(d.classid, d.objid, d.objsubid), '; ')

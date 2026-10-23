@@ -251,7 +251,7 @@ $do$;
 -- It never destroys the only copy of a number:
 --   1. An approved request's phone is first copied into the matching staff
 --      member's staff_private.contact_number when that is still empty
---      (request → staff by lower(email)).
+--      (request → staff by lower(trim(email)) on both sides).
 --   2. A non-pending request's phone is then cleared only if
 --        - that exact number is now in the matching staff member's
 --          staff_private row, or
@@ -259,7 +259,9 @@ $do$;
 --          belongs to no staff member).
 --      Everything else keeps its phone — an approved request whose staff row
 --      cannot be matched (email null or changed), or whose staff member now
---      has a different number — and is counted in a NOTICE for manual review.
+--      has a different number — and is counted in a NOTICE and in the
+--      kept_reg_phones column of the sanity select at the end of this file
+--      (the SQL editor may not show NOTICEs).
 -- Idempotent. Skipped (with a notice) if registration_requests.phone or
 -- staff.email is absent.
 do $do$
@@ -279,7 +281,7 @@ begin
        set contact_number = r.phone,
            updated_at     = now()
       from staff s
-      join registration_requests r on lower(r.email) = lower(s.email)
+      join registration_requests r on lower(trim(r.email)) = lower(trim(s.email))
      where p.staff_id = s.id
        and r.status = 'approved'
        and r.phone is not null
@@ -295,10 +297,10 @@ begin
              exists (select 1
                        from staff s
                        join staff_private p on p.staff_id = s.id
-                      where lower(s.email) = lower(r.email)
+                      where lower(trim(s.email)) = lower(trim(r.email))
                         and p.contact_number = r.phone)
           or (r.status = 'rejected'
-              and not exists (select 1 from staff s where lower(s.email) = lower(r.email)))
+              and not exists (select 1 from staff s where lower(trim(s.email)) = lower(trim(r.email))))
            )
   $q$;
 
@@ -315,7 +317,13 @@ $do$;
 
 commit;
 
--- Sanity (expect private_rows = staff_rows):
+-- Sanity (expect private_rows = staff_rows). kept_reg_phones = non-pending
+-- registration requests that still hold a phone because no safe copy exists
+-- in staff_private; if not 0, review them:
+--   select id, email, status, phone from registration_requests
+--   where status <> 'pending' and phone is not null;
 select (select count(*) from staff) as staff_rows,
        (select count(*) from staff_private) as private_rows,
-       (select count(*) from staff_manager_notes) as notes_rows;
+       (select count(*) from staff_manager_notes) as notes_rows,
+       (select count(*) from registration_requests
+         where status <> 'pending' and phone is not null) as kept_reg_phones;
