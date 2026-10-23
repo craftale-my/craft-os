@@ -50,11 +50,15 @@
 --   staff column, then reads the new table AS POSTGRES inside the probe:
 --   s_own_phone         own staff.contact_number        copied for everyone (self may write)
 --   s_other_phone       another person's staff.contact_number
---                                                       reader: copied   else unchanged / rls-0-rows
+--                                                       reader: copied   supervisor: unchanged
+--                                                       trainee: rls-0-rows
 --   s_other_notes       another person's staff.manager_notes
---                                                       reader: copied   else unchanged / rls-0-rows
+--                                                       reader: copied   supervisor: unchanged
+--                                                       trainee: rls-0-rows
 --                       (supervisor: staff_update lets the old-column write
---                       through, so `unchanged` proves the trigger refused it)
+--                       through, so `unchanged` proves the trigger refused it.
+--                       `rls-0-rows` there would mean the trigger was never
+--                       exercised, so it fails instead of passing quietly.)
 -- Outcome words: allowed = the write landed; denied = raised 42501 (RLS or
 -- the guard); rls-0-rows = RLS hid the target row (UPDATE matched 0 rows);
 -- passed-rls / passed = got past RLS and the guard, then failed the FK or a
@@ -416,10 +420,12 @@ begin
                else v_g_demote in ('denied','rls-0-rows') end
       and case when not v_legacy then v_s_own = 'n/a' and v_s_phone = 'n/a' and v_s_notes = 'n/a'
                else v_s_own = 'copied'
-                and case when p.reader then v_s_phone = 'copied'
-                         else v_s_phone in ('unchanged','rls-0-rows') end
-                and case when p.reader then v_s_notes = 'copied'
-                         else v_s_notes in ('unchanged','rls-0-rows') end
+                and v_s_phone = case when p.reader then 'copied'
+                                     when p.persona = 'supervisor' then 'unchanged'
+                                     else 'rls-0-rows' end
+                and v_s_notes = case when p.reader then 'copied'
+                                     when p.persona = 'supervisor' then 'unchanged'
+                                     else 'rls-0-rows' end
           end;
 
     insert into _sp_verify values (
