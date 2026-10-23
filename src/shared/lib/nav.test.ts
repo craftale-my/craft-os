@@ -10,7 +10,12 @@ const ids = (entries: ReturnType<typeof visibleNav>) => entries.map(e => e.id)
 describe('visibleNav', () => {
   it('无任何 capability 的店员只看到 Profile 与 Time & Pay', () => {
     const nav = visibleNav(canWith())
-    expect(ids(nav)).toEqual(['profile', 'time-pay'])
+    expect(ids(nav)).toEqual(['profile', 'org-chart', 'time-pay'])
+  })
+
+  it('shows Org Chart to staff with no capabilities at all', () => {
+    // 组织图人人可看:不放在需要 view_team 的 Team 组里。
+    expect(ids(visibleNav(canWith()))).toContain('org-chart')
   })
 
   it('店员的 Time & Pay 保留全部五项', () => {
@@ -44,11 +49,11 @@ describe('visibleNav', () => {
 
   it('子项被 capability 全部过滤掉时整个大类消失', () => {
     // view_team 是 Team 组本身的 cap;没有它,组不出现
-    expect(ids(visibleNav(canWith('conduct_reviews')))).toEqual(['profile', 'time-pay'])
+    expect(ids(visibleNav(canWith('conduct_reviews')))).toEqual(['profile', 'org-chart', 'time-pay'])
   })
 
   it('access_settings 控制 Settings 叶子项', () => {
-    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'settings'])
+    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'org-chart', 'time-pay', 'settings'])
   })
 
   it('不修改原始 NAV', () => {
@@ -75,6 +80,7 @@ describe('activeEntry', () => {
 
   it('顶层叶子项没有 groupId', () => {
     expect(activeEntry(full, '/profile')).toEqual({ leafId: 'profile', groupId: null })
+    expect(activeEntry(full, '/org-chart')).toEqual({ leafId: 'org-chart', groupId: null })
   })
 
   it('/team/projects 命中 Projects,不会误点亮 Directory', () => {

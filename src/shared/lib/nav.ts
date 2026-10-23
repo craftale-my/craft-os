@@ -30,6 +30,7 @@ export function isGroup(entry: NavEntry): entry is NavGroup {
 
 export const NAV: NavEntry[] = [
   { id: 'profile', label: 'Profile', to: '/profile' },
+  { id: 'org-chart', label: 'Org Chart', to: '/org-chart' },
   {
     id: 'team',
     label: 'Team',
