@@ -3,6 +3,8 @@
 -- Run on craft-os-dev after migration-2026-10-24-pos-checkout.sql, -checkout-fn.sql
 -- and -bill-actions-fn.sql. Idempotent — safe to re-run.
 -- Review: .superpowers/sdd/s3-final-review.md (I1, I2)
+-- Owner decision 2026-10-24 (end of file): refunds go back the original route —
+-- pos_refundable_methods, and refund_bill redefined once more.
 --
 -- This file is now the canonical definition of has_menu_cap, staff_has_cap and
 -- refund_bill. Re-running an older migration that also defines them
@@ -139,6 +141,140 @@ begin
   if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
   insert into refunds(id, bill_id, branch_id, amount_sen, method_id, method_name, reason, approved_by, created_by)
   values (p_refund_id, v_bill.id, v_branch, p_amount_sen, v_m.id, v_m.name, v_reason, p_approver_id, auth.uid());
+  update bills set refunded_sen = refunded_sen + p_amount_sen where id = v_bill.id;
+  select s.receipt_route into v_route from branch_pos_settings s where s.branch_id = v_branch;
+  if v_route is not null then
+    insert into print_jobs(branch_id, route, kind, payload)
+    values (v_branch, v_route, 'receipt', pos_refund_slip_payload(p_refund_id));
+    update refunds set slip_queued = true where id = p_refund_id;
+  end if;
+  return jsonb_build_object('ok', true, 'amountSen', p_amount_sen, 'refundedSen', v_bill.refunded_sen + p_amount_sen,
+                            'slipQueued', v_route is not null);
+end $$;
+revoke all on function refund_bill(uuid, uuid, integer, uuid, text, uuid, text) from public, anon;
+grant execute on function refund_bill(uuid, uuid, integer, uuid, text, uuid, text) to authenticated;
+
+-- ── Owner decision 2026-10-24: refunds go back the original route ──────────
+-- A refund may only go back by a payment method the bill was actually paid with,
+-- and never more than was paid by that method less what was already refunded by
+-- it. Cash counts its payment's amount_sen (after change), not what was tendered.
+
+-- What each of the bill's payment methods can still give back. One row per method
+-- the bill was paid with, in the order the payments were taken; method_name and
+-- kind are the payment's snapshot (the first payment line of that method).
+create or replace function pos_refundable_methods(p_bill_id uuid)
+returns table(method_id uuid, method_name text, kind text, paid_sen integer, refunded_sen integer, left_sen integer)
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+#variable_conflict use_column
+declare
+  v_branch uuid := pos_my_branch();
+begin
+  if not exists (select 1 from bills b where b.id = p_bill_id and b.branch_id = v_branch) then
+    raise exception 'Bill not found';
+  end if;
+  return query
+    with firsts as (
+      select distinct on (p.method_id) p.method_id, p.method_name, p.kind, p.line_no
+        from payments p
+       where p.bill_id = p_bill_id and p.method_id is not null
+       order by p.method_id, p.line_no
+    ), paid as (
+      select p.method_id, sum(p.amount_sen)::integer as amount
+        from payments p
+       where p.bill_id = p_bill_id and p.method_id is not null
+       group by p.method_id
+    ), back as (
+      select r.method_id, sum(r.amount_sen)::integer as amount
+        from refunds r
+       where r.bill_id = p_bill_id and r.method_id is not null
+       group by r.method_id
+    )
+    select f.method_id, f.method_name, f.kind, pd.amount,
+           coalesce(bk.amount, 0), pd.amount - coalesce(bk.amount, 0)
+      from firsts f
+      join paid pd on pd.method_id = f.method_id
+      left join back bk on bk.method_id = f.method_id
+     order by f.line_no;
+end $$;
+revoke all on function pos_refundable_methods(uuid) from public, anon;
+grant execute on function pos_refundable_methods(uuid) to authenticated;
+
+-- refund_bill, canonical from here on. The replay branches are exactly the I2
+-- version above; only a NEW refund changed: the method must be one the bill was
+-- paid with (it need not still be active at the branch), the amount is capped by
+-- what that method has left on this bill, and the refund row's method_name is the
+-- payment's snapshot (so the slip says what the receipt said).
+create or replace function refund_bill(p_refund_id uuid, p_bill_id uuid, p_amount_sen integer, p_method_id uuid,
+                                       p_reason text, p_approver_id uuid, p_pin text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch      uuid := pos_my_branch();
+  v_bill        bills;
+  v_existing    refunds;
+  v_method_name text;
+  v_paid        integer;
+  v_back        integer;
+  v_reason      text;
+  v_err         text;
+  v_route       text;
+begin
+  if p_refund_id is null then raise exception 'Refund id is missing'; end if;
+  -- a resend of a refund that already went through gets the same reply as the first time
+  select * into v_existing from refunds where id = p_refund_id;
+  if found then
+    if v_existing.branch_id <> v_branch then
+      raise exception 'This refund id belongs to another bill';
+    end if;
+    if v_existing.bill_id <> p_bill_id or v_existing.amount_sen is distinct from p_amount_sen
+       or v_existing.method_id is distinct from p_method_id then
+      return jsonb_build_object('ok', false, 'error',
+        format('This refund was already recorded as RM %s by %s — close and reopen to refund more',
+               to_char(v_existing.amount_sen / 100.0, 'FM999999990.00'), v_existing.method_name));
+    end if;
+    return jsonb_build_object('ok', true, 'amountSen', v_existing.amount_sen,
+                              'refundedSen', (select refunded_sen from bills where id = p_bill_id),
+                              'slipQueued', v_existing.slip_queued);
+  end if;
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  select * into v_existing from refunds where id = p_refund_id;        -- the same refund won while we waited
+  if found then
+    if v_existing.bill_id <> p_bill_id or v_existing.amount_sen is distinct from p_amount_sen
+       or v_existing.method_id is distinct from p_method_id then
+      return jsonb_build_object('ok', false, 'error',
+        format('This refund was already recorded as RM %s by %s — close and reopen to refund more',
+               to_char(v_existing.amount_sen / 100.0, 'FM999999990.00'), v_existing.method_name));
+    end if;
+    return jsonb_build_object('ok', true, 'amountSen', v_existing.amount_sen, 'refundedSen', v_bill.refunded_sen,
+                              'slipQueued', v_existing.slip_queued);
+  end if;
+  if v_bill.status <> 'paid' then raise exception 'Only a paid bill can be refunded'; end if;
+  if p_amount_sen is null or p_amount_sen <= 0 then raise exception 'Invalid refund amount'; end if;
+  if p_amount_sen > v_bill.total_sen - v_bill.refunded_sen then
+    raise exception 'Refund is more than what is left on this bill (RM %)',
+      to_char((v_bill.total_sen - v_bill.refunded_sen) / 100.0, 'FM999999990.00');
+  end if;
+  -- the original route: a method this bill was paid with, up to what it has left
+  -- (the bill row is locked above, so two refunds of one bill cannot both pass)
+  select p.method_name into v_method_name
+    from payments p where p.bill_id = v_bill.id and p.method_id = p_method_id
+   order by p.line_no limit 1;
+  if not found then
+    raise exception 'Refunds go back the way the bill was paid — choose one of its payment methods';
+  end if;
+  select coalesce(sum(p.amount_sen), 0)::integer into v_paid
+    from payments p where p.bill_id = v_bill.id and p.method_id = p_method_id;
+  select coalesce(sum(r.amount_sen), 0)::integer into v_back
+    from refunds r where r.bill_id = v_bill.id and r.method_id = p_method_id;
+  if p_amount_sen > v_paid - v_back then
+    raise exception 'Refund is more than was paid by % on this bill (RM % left)',
+      v_method_name, to_char(greatest(v_paid - v_back, 0) / 100.0, 'FM999999990.00');
+  end if;
+  v_reason := pos_check_reason(v_branch, 'refund', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  insert into refunds(id, bill_id, branch_id, amount_sen, method_id, method_name, reason, approved_by, created_by)
+  values (p_refund_id, v_bill.id, v_branch, p_amount_sen, p_method_id, v_method_name, v_reason, p_approver_id, auth.uid());
   update bills set refunded_sen = refunded_sen + p_amount_sen where id = v_bill.id;
   select s.receipt_route into v_route from branch_pos_settings s where s.branch_id = v_branch;
   if v_route is not null then

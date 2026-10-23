@@ -45,6 +45,10 @@ $vectors$;
   v_order uuid; v_bill bills; v_bill2 bills; v_bill3 bills;
   v_item uuid; v_items jsonb; v_res jsonb; v_res2 jsonb; v_job print_jobs;
   v_refund uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
+  v_refund2 uuid := 'bbbbbbbb-0000-0000-0000-000000000002';
+  v_refund3 uuid := 'bbbbbbbb-0000-0000-0000-000000000003';
+  v_refund4 uuid := 'bbbbbbbb-0000-0000-0000-000000000004';
+  v_left text;
   v_checkout uuid := 'cccccccc-0000-0000-0000-000000000001';
   n integer; r record; v_role text;
 begin
@@ -93,7 +97,7 @@ begin
       'save_receipt_settings(jsonb)', 'pos_approvers()', 'set_my_pos_pin(text,text)', 'clear_pos_pin(uuid)',
       'void_order_item(uuid,text,uuid,text)', 'void_bill(uuid,text,uuid,text)', 'move_bill(uuid,uuid)',
       'merge_bills(uuid,uuid)', 'refund_bill(uuid,uuid,integer,uuid,text,uuid,text)', 'open_table(uuid,integer)',
-      'pos_caller_branch()']) as f loop
+      'pos_caller_branch()', 'pos_refundable_methods(uuid)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
     if not has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL grants: staff cannot call %', r.f; end if;
   end loop;
@@ -117,7 +121,8 @@ begin
               'pos_receipt_payload','pos_queue_receipt','pos_checkout_result','checkout_bill','reprint_receipt',
               'save_receipt_settings','has_menu_cap','staff_has_cap','pos_approvers','pos_pin_attempt','set_my_pos_pin',
               'clear_pos_pin','pos_check_approver','pos_check_reason','pos_queue_void_tickets','void_order_item',
-              'void_bill','move_bill','merge_bills','pos_refund_slip_payload','refund_bill','open_table','pos_caller_branch'])
+              'void_bill','move_bill','merge_bills','pos_refund_slip_payload','refund_bill','open_table','pos_caller_branch',
+              'pos_refundable_methods'])
               and not coalesce(p.proconfig @> array['search_path=public, pg_temp'], false) loop
     raise exception 'FAIL search_path: % does not pin search_path = public, pg_temp', r.proname;
   end loop;
@@ -477,6 +482,89 @@ begin
   end if;
   begin perform refund_bill(gen_random_uuid(), v_bill.id, 8000, v_cash, 'x', v_sup, '1234'); raise exception 'FAIL: refund cap';
   exception when raise_exception then if sqlerrm <> 'Refund is more than what is left on this bill (RM 79.80)' then raise; end if; end;
+
+  -- ── K2. refunds go back the original route (owner decision 2026-10-24) ────
+  -- the bill was paid V TnG 50.00 + V Cash 42.80 (tendered 50.00, change 7.20); V Cash 13.00 is refunded
+  -- already. Cash counts what it paid (42.80), not what was tendered.
+  select string_agg(m.method_name || ':' || m.kind || ':' || m.paid_sen || ':' || m.refunded_sen || ':' || m.left_sen, ',' order by m.n)
+    into v_left
+    from pos_refundable_methods(v_bill.id) with ordinality as m(method_id, method_name, kind, paid_sen, refunded_sen, left_sen, n);
+  if v_left is distinct from 'V TnG:ewallet:5000:0:5000,V Cash:cash:4280:1300:2980' then
+    raise exception 'FAIL refundable methods after a refund: %', v_left;
+  end if;
+  -- a method the bill was not paid with is refused, even one active at this branch (and one of another branch)
+  begin perform refund_bill(gen_random_uuid(), v_bill.id, 500, v_card, 'Item not served', v_sup, '1234');
+    raise exception 'FAIL: refund by a method the bill was not paid with';
+  exception when raise_exception then
+    if sqlerrm <> 'Refunds go back the way the bill was paid — choose one of its payment methods' then raise; end if;
+  end;
+  begin perform refund_bill(gen_random_uuid(), v_bill.id, 500, v_far_cash, 'Item not served', v_sup, '1234');
+    raise exception 'FAIL: refund by another branch''s method';
+  exception when raise_exception then
+    if sqlerrm <> 'Refunds go back the way the bill was paid — choose one of its payment methods' then raise; end if;
+  end;
+  begin perform refund_bill(gen_random_uuid(), v_bill.id, 500, null, 'Item not served', v_sup, '1234');
+    raise exception 'FAIL: refund with no method';
+  exception when raise_exception then
+    if sqlerrm <> 'Refunds go back the way the bill was paid — choose one of its payment methods' then raise; end if;
+  end;
+  -- above what that method has left is refused, though the bill as a whole still has 79.80 left
+  begin perform refund_bill(gen_random_uuid(), v_bill.id, 2981, v_cash, 'Item not served', v_sup, '1234');
+    raise exception 'FAIL: cash refund above what cash paid less what it gave back';
+  exception when raise_exception then
+    if sqlerrm <> 'Refund is more than was paid by V Cash on this bill (RM 29.80 left)' then raise; end if;
+  end;
+  begin perform refund_bill(gen_random_uuid(), v_bill.id, 5001, v_tng, 'Item not served', v_sup, '1234');
+    raise exception 'FAIL: e-wallet refund above what the e-wallet paid';
+  exception when raise_exception then
+    if sqlerrm <> 'Refund is more than was paid by V TnG on this bill (RM 50.00 left)' then raise; end if;
+  end;
+  if (select refunded_sen from bills where id = v_bill.id) <> 1300 or (select count(*) from refunds where bill_id = v_bill.id) <> 1 then
+    raise exception 'FAIL: a refused route refund wrote something';
+  end if;
+  -- the successes paired with those refusals, called as a signed-in client (a missing grant fails here):
+  -- a split refund, TnG 20.00 and the last 29.80 of cash; a method switched off since still takes its money back
+  update payment_methods set is_active = false where id = v_tng;
+  set local role authenticated;
+  v_res := refund_bill(v_refund2, v_bill.id, 2000, v_tng, 'Item not served', v_sup, '1234');
+  if not (v_res->>'ok')::boolean or (v_res->>'amountSen')::int <> 2000 or (v_res->>'refundedSen')::int <> 3300 then
+    raise exception 'FAIL route refund by TnG: %', v_res;
+  end if;
+  v_res := refund_bill(v_refund3, v_bill.id, 2980, v_cash, 'Item not served', v_sup, '1234');
+  if not (v_res->>'ok')::boolean or (v_res->>'amountSen')::int <> 2980 or (v_res->>'refundedSen')::int <> 6280 then
+    raise exception 'FAIL route refund of the cash left: %', v_res;
+  end if;
+  select string_agg(m.method_name || ':' || m.kind || ':' || m.paid_sen || ':' || m.refunded_sen || ':' || m.left_sen, ',' order by m.n)
+    into v_left
+    from pos_refundable_methods(v_bill.id) with ordinality as m(method_id, method_name, kind, paid_sen, refunded_sen, left_sen, n);
+  reset role;
+  update payment_methods set is_active = true where id = v_tng;
+  if v_left is distinct from 'V TnG:ewallet:5000:2000:3000,V Cash:cash:4280:4280:0' then
+    raise exception 'FAIL refundable methods after a split refund: %', v_left;
+  end if;
+  if (select string_agg(method_name || ':' || amount_sen, ',' order by created_at, amount_sen) from refunds
+       where id in (v_refund2, v_refund3)) is distinct from 'V TnG:2000,V Cash:2980' then
+    raise exception 'FAIL route refund rows: the method name must be the payment''s';
+  end if;
+  -- cash has nothing left now, though the bill still has 30.00
+  begin perform refund_bill(gen_random_uuid(), v_bill.id, 1, v_cash, 'Item not served', v_sup, '1234');
+    raise exception 'FAIL: cash refunded twice over';
+  exception when raise_exception then
+    if sqlerrm <> 'Refund is more than was paid by V Cash on this bill (RM 0.00 left)' then raise; end if;
+  end;
+  -- another branch's bill: neither listed nor refunded; this branch's staff still see it
+  perform set_config('request.jwt.claims', json_build_object('sub', v_far, 'role', 'authenticated')::text, true);
+  begin perform * from pos_refundable_methods(v_bill.id); raise exception 'FAIL: another branch listed this bill''s methods';
+  exception when raise_exception then if sqlerrm <> 'Bill not found' then raise; end if; end;
+  begin perform refund_bill(v_refund4, v_bill.id, 100, v_tng, 'Item not served', v_far, '9999');
+    raise exception 'FAIL: another branch refunded this bill';
+  exception when raise_exception then if sqlerrm <> 'Bill not found' then raise; end if; end;
+  if exists (select 1 from refunds where id = v_refund4) then raise exception 'FAIL: another branch wrote a refund'; end if;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_staff, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  select count(*) into n from pos_refundable_methods(v_bill.id);
+  reset role;
+  if n <> 2 then raise exception 'FAIL: this branch cannot list its own bill''s methods (% rows)', n; end if;
 
   -- ── L. QR open-bill switch; a paid table shows nothing to the next party ──
   update branch_pos_settings set qr_requires_open_bill = true where branch_id = v_branch;
