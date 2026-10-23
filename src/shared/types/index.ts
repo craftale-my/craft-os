@@ -110,6 +110,7 @@ export interface Staff {
   system_role: SystemRole
   job_title_id: string | null
   branch_id: string | null
+  supervisor_id: string | null
   is_active: boolean
   status: StaffStatus
   level: number
@@ -576,6 +577,11 @@ export interface Attendance {
   clock_out: string | null
   status: AttendanceStatus
   late_minutes: number
+  late_reason_code: string | null
+  late_reason: string | null
+  late_excused: boolean
+  late_excused_by: string | null
+  late_excused_at: string | null
   notes: string | null
   recorded_by: string | null
   created_at: string
@@ -597,6 +603,19 @@ export interface Attendance {
   scheduled_shift_id: string | null   // the missed shift, when auto-marked absent
   marked_by: string | null            // 'system' for auto-marks, acting staff id for manual marks
   staff?: Staff
+}
+
+export interface AppNotification {
+  id: string
+  recipient_id: string
+  event_type: string
+  title: string
+  body: string | null
+  link: string | null
+  subject_staff_id: string | null
+  subject_date: string | null
+  read_at: string | null
+  created_at: string
 }
 
 export interface SalaryRecord {
