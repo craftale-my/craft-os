@@ -82,10 +82,10 @@ Every save reports its outcome next to the section that made it (the Sub-plan 3 
 
 `/menu/import` reads **every** catalog sheet:
 - `Default Catalog` → master products and default prices; `Default AddonGroup` → groups and default option prices.
-- Each other sheet → a catalog (matched by `feedme_catalog_name`): rows present = included products, `Order from` → availability, `Selling price` → variant prices; the catalog's `addonGroup` sheet → `catalog_option_prices` where the price differs from the default.
+- Each other sheet → a catalog (matched by `feedme_catalog_name`). **Every sheet lists all 409 products** (verified on the real export 2026-10-24); a product is in the catalog when its base row's `Order from` is `ALL` or `POS_ONLY` (→ `all` / `counter_only`), and left out when it is `NONE`. `Selling price` → variant prices; the catalog's `addonGroup` sheet → `catalog_option_prices` where the price differs from the default. Included base products per sheet: Craft Cafe 248, Staff Meal 251, Grab Mart 130, Grab Mart Puchong 118, Delivery express 95, Craftale Bar 85, Grab Food 66, Grab Food Puchong 65, Craftale 55, Dino Meal 24 (Feedme's own "Catalog usage" counts are lower because they leave out add-on-only items).
 - Product–group links stay global and are taken from the `Default Catalog` column of `itemLinkedAddon`; the import report lists links that differ in other catalogs.
 - Branch assignments are **not** imported (set on POS settings).
-- **Unverified:** that `Default Catalog` holds all 409 master products with sensible default prices. M1's first step reads the real export (`~/Downloads/books_22-10-2026_19-36.zip`) and records the sheet sizes and columns; if `Default Catalog` is incomplete, master products are the union of all sheets and the default price is the `Craft Cafe` price, else the first catalog's.
+- `Default Catalog` holds all 409 master products (526 rows with variants), never a blank price, and the same columns as the catalog sheets (verified 2026-10-24). Its `Order from` is not a catalog of ours; it only sets the master `menu_products.availability`, which nothing reads after M1.
 
 Because Craft OS is now the master, the page warns "Craft OS is the master of the menu. Importing again overwrites names, prices and catalogs you changed here." and asks for a typed confirmation when any catalog already exists.
 
