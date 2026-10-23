@@ -260,13 +260,22 @@ Deno.serve(async (req) => {
       branch,
       department,
       employment_type: employmentType,
-      contact_number: phone,
       onboarding_completed: false,
       joined_at: today(),
     }, { onConflict: 'id' })
     if (profileErr) {
       if (createdNow) await admin.auth.admin.deleteUser(userId)
       return json({ error: profileErr.message }, 400)
+    }
+
+    // 电话属于 staff_private(本人 + hr/manager/admin/owner 可读),不再写进 staff。
+    // staff_private 那一行由 staff insert trigger 保证存在;这里 upsert 只为写入电话,
+    // 重复审批同一位也安全。失败时不回滚 auth/staff —— 帐号本身是好的,
+    // 经理重新按一次审批就会补上电话。
+    const { error: privErr } = await admin.from('staff_private')
+      .upsert({ staff_id: userId, contact_number: phone }, { onConflict: 'staff_id' })
+    if (privErr) {
+      return json({ error: `Staff created, but the phone number was not saved: ${privErr.message}` }, 400)
     }
 
     await assignJobTitle(admin, userId, 'trainee', department)
