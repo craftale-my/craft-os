@@ -184,21 +184,24 @@ function normaliseDepartment(dept: string | null): string | null {
 /**
  * 把由本次调用认领(reviewed_at = claimAt)、仍是 pending 的申请标成 approved,
  * 并清掉 phone(registration_requests 对 supervisor 可读,supervisor 不是电话的读者)。
- * 返回一段可接在句子后面的错误片段;成功返回 null。
- * 0 行 = 申请在审批途中被别人 reject 或处理掉了(approve/reject 竞态)。
+ * 成功返回 null;失败返回 { race, text }:text 是可接在句子后面的片段,
+ * race = 0 行,即申请在审批途中被别人 reject 或处理掉了(approve/reject 竞态)。
  */
 async function markApproved(
   admin: SupabaseClient, requestId: string, callerId: string, claimAt: string,
-): Promise<string | null> {
+): Promise<{ race: boolean; text: string } | null> {
   const { data, error } = await admin.from('registration_requests').update({
     status: 'approved',
     reviewed_by: callerId,
     reviewed_at: new Date().toISOString(),
     phone: null,
   }).eq('id', requestId).eq('status', 'pending').eq('reviewed_at', claimAt).select('id')
-  if (error) return `the request could not be marked approved: ${error.message}`
+  if (error) return { race: false, text: `the request could not be marked approved: ${error.message}` }
   if (!data || data.length === 0) {
-    return 'the request was rejected or decided by someone else while this approval was running (an approve/reject race), so it was not marked approved.'
+    return {
+      race: true,
+      text: 'the request was rejected or decided by someone else while this approval was running (an approve/reject race), so it was not marked approved.',
+    }
   }
   return null
 }
@@ -328,6 +331,8 @@ Deno.serve(async (req) => {
       return json({ error: 'This request is already being processed or was decided. If it is still pending in a few minutes, try again.' }, 409)
     }
     const reg = claimed[0]
+    // 写进 / 比对 app_metadata 一律用资料库那一行的 id,不用 body 原样传来的字串。
+    const regId = String(reg.id)
 
     // 释放本次的认领(只动自己认领、仍 pending 的那一行)。尽力而为。
     const release = async () => {
@@ -335,9 +340,9 @@ Deno.serve(async (req) => {
         .update({ reviewed_by: null, reviewed_at: null })
         .eq('id', requestId).eq('status', 'pending').eq('reviewed_at', claimAt)
     }
-    const fail = async (status: number, error: string) => {
+    const fail = async (status: number, error: string, extra: Record<string, unknown> = {}) => {
       await release()
-      return json({ error }, status)
+      return json({ error, ...extra }, status)
     }
 
     // 2. 资料一律取自申请行。
@@ -359,7 +364,7 @@ Deno.serve(async (req) => {
     let createdNow = false
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
       email, password, email_confirm: true,
-      app_metadata: { provisioned_by: 'provision-staff', registration_request_id: requestId },
+      app_metadata: { provisioned_by: 'provision-staff', registration_request_id: regId },
     })
     if (created?.user) {
       userId = created.user.id
@@ -374,11 +379,19 @@ Deno.serve(async (req) => {
         .select('id').eq('id', userId).maybeSingle()
       if (staffErr) return fail(500, `Could not check for an existing staff profile: ${staffErr.message}`)
 
+      const meta = (existing.app_metadata ?? {}) as Record<string, unknown>
+      const fromThisRequest = meta.registration_request_id === regId
+
       if (staffRow) {
-        // 已是现有员工:不动密码、不动 staff 行。电话只有读者才能补。
+        // 已是现有员工:不动密码、不动 staff 行。
+        // 电话:读者可补;或者这个帐号正是本申请建出、从未登入过的那一个
+        // (前一次审批建好帐号、电话写失败,supervisor 按"再审批一次"来补)。
+        // 只看 metadata 不够:supervisor 能把一张旧的已批准申请改回 pending、改掉
+        // 电话再审批,所以还要求从未登入。两种情况都只补空着的 contact_number。
+        const ownFreshAccount = fromThisRequest && !existing.last_sign_in_at
         let phoneNote = ''
         if (phone) {
-          if (canReadPrivate(auth.callerRole, auth.callerRank)) {
+          if (canReadPrivate(auth.callerRole, auth.callerRank) || ownFreshAccount) {
             const { error: privErr } = await admin.from('staff_private')
               .update({ contact_number: phone, updated_at: new Date().toISOString() })
               .eq('staff_id', userId)
@@ -387,22 +400,25 @@ Deno.serve(async (req) => {
               return fail(400, `The account already exists, but the phone number was not saved: ${privErr.message}`)
             }
           } else {
-            phoneNote = ' The phone number on the request was not copied: only HR or a manager can add personal details.'
+            phoneNote = ' The phone number on the request was not copied and has been removed from the request: only HR or a manager can add personal details. Ask HR or the staff member to add it.'
           }
         }
+        const earlierAttemptNote = fromThisRequest
+          ? ' This request\'s account was created by an earlier approval attempt; if its password was not handed over, ask an admin to reset it.'
+          : ''
         const marked = await markApproved(admin, requestId, auth.callerId, claimAt)
-        if (marked) return fail(500, `An account for this email already existed (its password and profile were not changed), but ${marked}`)
+        if (marked) return fail(500, `An account for this email already existed (its password and profile were not changed), but ${marked.text}`)
         return json({
           ok: true,
           staffId: userId,
           alreadyExisted: true,
-          message: 'An account for this email already existed. Its password and profile were not changed; the request is marked approved.' + phoneNote,
+          message: 'An account for this email already existed. Its password and profile were not changed; the request is marked approved.'
+            + earlierAttemptNote + phoneNote,
         })
       }
 
       // 没有 staff 行:只接管"本申请"被中断的审批留下的用户。
-      const meta = (existing.app_metadata ?? {}) as Record<string, unknown>
-      if (meta.registration_request_id !== requestId) {
+      if (!fromThisRequest) {
         return fail(409, 'This email belongs to an existing login that is not a staff account. Ask an admin.')
       }
       const { error: pwErr } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true })
@@ -442,12 +458,19 @@ Deno.serve(async (req) => {
       const { error: privErr } = await admin.from('staff_private')
         .upsert({ staff_id: userId, contact_number: phone }, { onConflict: 'staff_id' })
       if (privErr) {
-        return fail(400, `${createdMsg} But the phone number was not saved (${privErr.message}); approve the request again to finish it.`)
+        return fail(400, `${createdMsg} But the phone number was not saved (${privErr.message}); approve the request again to finish it.`,
+          { accountCreated: true })
       }
     }
 
     const marked = await markApproved(admin, requestId, auth.callerId, claimAt)
-    if (marked) return fail(500, `${createdMsg} But ${marked}`)
+    if (marked?.race) {
+      // 申请在途中被 reject:帐号已经是 trainee,但不该叫经理去交密码。
+      return fail(409,
+        `The account for ${email} was created as a trainee, but ${marked.text} If the rejection stands, ask a manager to mark that account Resigned on its staff profile.`,
+        { accountCreated: true })
+    }
+    if (marked) return fail(500, `${createdMsg} But ${marked.text}`, { accountCreated: true })
 
     return json({ ok: true, staffId: userId })
   }

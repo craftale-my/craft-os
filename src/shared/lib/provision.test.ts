@@ -29,4 +29,10 @@ describe('approveRegistration', () => {
     h.invoke.mockResolvedValue({ data: null, error: { message: 'Edge Function returned a non-2xx status code', context } })
     expect(await approveRegistration(INPUT)).toEqual({ ok: false, error: 'This registration request is already approved.' })
   })
+
+  it('flags accountCreated when approve failed after creating the account', async () => {
+    const context = { json: async () => ({ error: 'The account for a@b.c was created with the password shown — share it with them. But …', accountCreated: true }) }
+    h.invoke.mockResolvedValue({ data: null, error: { message: 'Edge Function returned a non-2xx status code', context } })
+    expect(await approveRegistration(INPUT)).toMatchObject({ ok: false, accountCreated: true })
+  })
 })

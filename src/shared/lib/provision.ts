@@ -36,7 +36,9 @@ export interface ApproveRegistrationInput {
  *  manager typed was NOT applied — the UI must not present it as a login. */
 type Result =
   | { ok: true; staffId: string; alreadyExisted?: boolean; message?: string }
-  | { ok: false; error: string }
+  /** accountCreated: approve failed AFTER the account was created with the
+   *  password the manager is looking at — that password is now live. */
+  | { ok: false; error: string; accountCreated?: boolean }
 
 async function call(body: Record<string, unknown>): Promise<Result> {
   const { data, error } = await supabase.functions.invoke('provision-staff', { body })
@@ -45,16 +47,18 @@ async function call(body: Record<string, unknown>): Promise<Result> {
     // 函数返回非 2xx 时,真正的原因在响应体里而不是 error.message
     // (后者一律是 "Edge Function returned a non-2xx status code")。
     let detail = error.message
+    let accountCreated = false
     const ctx = (error as { context?: Response }).context
     if (ctx && typeof ctx.json === 'function') {
       try {
         const parsed = await ctx.json()
         if (parsed?.error) detail = parsed.error
+        accountCreated = parsed?.accountCreated === true
       } catch {
         // 响应体不是 JSON,保留原始 message
       }
     }
-    return { ok: false, error: detail }
+    return accountCreated ? { ok: false, error: detail, accountCreated } : { ok: false, error: detail }
   }
 
   if (data?.error) return { ok: false, error: data.error }

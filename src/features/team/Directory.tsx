@@ -187,6 +187,9 @@ function ApproveRegModal({
   const [password, setPassword] = useState(genTempPassword())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // Once the server says the account was created with this password, it is
+  // live: freeze it so a retry or a Regenerate can't make the shown one wrong.
+  const [passwordLocked, setPasswordLocked] = useState(false)
 
   async function handleApprove() {
     if (password.length < 6) {
@@ -216,6 +219,7 @@ function ApproveRegModal({
 
     if (!result.ok) {
       setError(result.error)
+      if (result.accountCreated) setPasswordLocked(true)
       setSaving(false)
       return
     }
@@ -248,15 +252,19 @@ function ApproveRegModal({
               <input
                 className={inputCls}
                 value={password}
+                readOnly={passwordLocked}
+                aria-readonly={passwordLocked}
                 onChange={e => setPassword(e.target.value)}
               />
-              <button
-                type="button"
-                onClick={() => setPassword(genTempPassword())}
-                className="px-3 py-2 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors flex-shrink-0"
-              >
-                Regenerate
-              </button>
+              {!passwordLocked && (
+                <button
+                  type="button"
+                  onClick={() => setPassword(genTempPassword())}
+                  className="px-3 py-2 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors flex-shrink-0"
+                >
+                  Regenerate
+                </button>
+              )}
             </div>
             <p className="text-xs text-brown-faint mt-1">Share this with {request.full_name.split(' ')[0]} after approving.</p>
           </div>
