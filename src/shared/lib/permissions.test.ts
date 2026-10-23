@@ -7,7 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('../../features/auth/AuthContext', () => ({ useAuth: () => ({ staff: null }) }))
 vi.mock('./lookups', () => ({ useLookups: () => ({ roleCaps: {} }) }))
 
-import { canReviewStaff, canReadStaffPrivate } from './permissions'
+import { canReviewStaff, canReadStaffPrivate, isManagerTier, creatableRanks } from './permissions'
 import type { Rank, SystemRole, Staff } from '../types'
 
 type Me = Pick<Staff, 'rank' | 'system_role' | 'department' | 'branch' | 'branch_id'>
@@ -122,5 +122,31 @@ describe('canReadStaffPrivate', () => {
   it('denies when there is no signed-in staff', () => {
     expect(canReadStaffPrivate(null)).toBe(false)
     expect(canReadStaffPrivate(undefined)).toBe(false)
+  })
+})
+
+describe('isManagerTier / creatableRanks', () => {
+  const who = (rank: Rank, system_role: SystemRole) => ({ rank, system_role })
+
+  it('treats rank manager and system_role manager/admin/owner as manager-tier', () => {
+    expect(isManagerTier(who('manager', 'staff'))).toBe(true)
+    expect(isManagerTier(who('senior', 'manager'))).toBe(true)
+    expect(isManagerTier(who('trainee', 'admin'))).toBe(true)
+    expect(isManagerTier(who('trainee', 'owner'))).toBe(true)
+  })
+
+  it('does not treat supervisor, hr or staff as manager-tier', () => {
+    expect(isManagerTier(who('supervisor', 'supervisor'))).toBe(false)
+    expect(isManagerTier(who('senior', 'hr'))).toBe(false)
+    expect(isManagerTier(who('trainee', 'staff'))).toBe(false)
+    expect(isManagerTier(null)).toBe(false)
+  })
+
+  it('offers every rank to manager-tier and only trainee/junior/senior otherwise', () => {
+    expect(creatableRanks(who('manager', 'manager'))).toEqual(['trainee', 'junior', 'senior', 'supervisor', 'manager'])
+    expect(creatableRanks(who('trainee', 'owner'))).toEqual(['trainee', 'junior', 'senior', 'supervisor', 'manager'])
+    expect(creatableRanks(who('supervisor', 'supervisor'))).toEqual(['trainee', 'junior', 'senior'])
+    expect(creatableRanks(who('senior', 'hr'))).toEqual(['trainee', 'junior', 'senior'])
+    expect(creatableRanks(null)).toEqual(['trainee', 'junior', 'senior'])
   })
 })

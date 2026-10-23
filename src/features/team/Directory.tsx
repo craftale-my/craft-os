@@ -9,7 +9,7 @@ import {
   MONTHS_FULL,
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
-import { useCan } from '../../shared/lib/permissions'
+import { useCan, creatableRanks } from '../../shared/lib/permissions'
 import { Avatar } from '../../shared/components/Avatar'
 import { useTeamData } from './useTeamData'
 
@@ -56,7 +56,12 @@ export function formatTimeAgo(ts: string): string {
 
 // ─── AddStaffModal ────────────────────────────────────────────────────────────
 
-function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function AddStaffModal({ creator, onClose, onCreated }: {
+  creator: Pick<Staff, 'rank' | 'system_role'> | null; onClose: () => void; onCreated: () => void
+}) {
+  // Supervisor / hr may only create trainee, junior or senior staff (provision-
+  // staff and the DB guard refuse the rest); don't offer what will be refused.
+  const ranks = creatableRanks(creator)
   const [form, setForm] = useState({
     name: '', email: '', password: '', rank: 'trainee', branch: '', department: '',
   })
@@ -126,7 +131,7 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
             <div>
               <label className={labelCls}>Rank</label>
               <select className={inputCls} value={form.rank} onChange={set('rank')}>
-                {(['trainee', 'junior', 'senior', 'supervisor', 'manager'] as const).map(r => (
+                {ranks.map(r => (
                   <option key={r} value={r}>{RANK_LABELS[r]}</option>
                 ))}
               </select>
@@ -609,7 +614,7 @@ export default function DirectoryPage() {
   return (
     <div className="min-h-screen bg-cream-light">
       {showAddModal && (
-        <AddStaffModal onClose={() => setShowAddModal(false)} onCreated={reloadAll} />
+        <AddStaffModal creator={currentStaff} onClose={() => setShowAddModal(false)} onCreated={reloadAll} />
       )}
       {approveTarget && (
         <ApproveRegModal
