@@ -14,6 +14,8 @@ import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
 import CheckoutSheet from '../checkout/CheckoutSheet'
 import { fetchBillingConfig, type BillingConfig } from '../checkout/checkoutApi'
+import TodayBillsDrawer from '../checkout/TodayBillsDrawer'
+import MyPinDialog from '../checkout/MyPinDialog'
 
 export type Selection = { kind: 'table'; tableId: string } | { kind: 'bill'; billId: string } | null
 
@@ -33,6 +35,7 @@ export default function PosPage() {
   const [stuckMenu, setStuckMenu] = useState<PosMenu | null>(null)
   const [billing, setBilling] = useState<BillingConfig | null>(null)
   const [checkout, setCheckout] = useState<OpenBillRow | null>(null)
+  const [drawer, setDrawer] = useState<'bills' | 'pin' | null>(null)
   const queue = useOrderQueue()
   const reqId = useRef(0)
   const selectedBillIdRef = useRef<string | null>(null)
@@ -118,6 +121,8 @@ export default function PosPage() {
         <div className="font-semibold">Craft POS · {branchName ?? staff.branch ?? 'Branch'}</div>
         <div className="flex items-center gap-3 text-xs text-brown-muted">
           <PrintHostPanel branchId={branchId} />
+          <button onClick={() => setDrawer('bills')} className="rounded border border-border px-3 py-1">Today's bills</button>
+          <button onClick={() => setDrawer('pin')} className="rounded border border-border px-3 py-1">My PIN</button>
           <span>Live: {rtStatus}</span>
           {can('access_settings') && <Link to="/pos/settings" className="underline">Tables & printers</Link>}
           <Link to="/profile" className="underline">Exit</Link>
@@ -175,6 +180,8 @@ export default function PosPage() {
         <OrderPad branchId={branchId} mode={pad} initialLines={padLines} submit={submitFromPad} onClose={closePad}
           onSent={() => { closePad(); setRefreshKey((k) => k + 1); void reload() }} />
       )}
+      {drawer === 'bills' && <TodayBillsDrawer branchId={branchId} onClose={() => setDrawer(null)} />}
+      {drawer === 'pin' && <MyPinDialog onClose={() => setDrawer(null)} />}
       {checkout && (
         <CheckoutSheet branchId={branchId} bill={checkout}
           title={checkout.table_id ? `Table ${tables.find((t) => t.id === checkout.table_id)?.label ?? '?'}` : 'Takeaway'}

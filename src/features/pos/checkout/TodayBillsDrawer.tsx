@@ -1,0 +1,107 @@
+import { useEffect, useRef, useState } from 'react'
+import { formatSen } from '../order/cart'
+import { fetchClosedBillsSince, fetchPaymentMethods, refundBill, reprintReceipt, type ClosedBillRow, type PaymentMethodRow } from './checkoutApi'
+import ApprovalDialog from './ApprovalDialog'
+import { mytDayStartIso, refundableSen, STATUS_LABEL } from './todayBills'
+import { parseRinggit } from './tender'
+
+const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const time = (iso: string) => new Date(iso).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kuala_Lumpur' })
+const where = (b: ClosedBillRow) => (b.dining_tables ? `Table ${b.dining_tables.label}` : b.order_type === 'takeaway' ? 'Takeaway' : '—')
+
+/** Today's closed bills (Malaysia day): reprint a receipt, refund a paid bill. */
+export default function TodayBillsDrawer({ branchId, onClose }: { branchId: string; onClose: () => void }) {
+  const [bills, setBills] = useState<ClosedBillRow[] | null>(null)
+  const [methods, setMethods] = useState<PaymentMethodRow[]>([])
+  const [note, setNote] = useState<string | null>(null)
+  const [refunding, setRefunding] = useState<ClosedBillRow | null>(null)
+  const [amountText, setAmountText] = useState('')
+  const [methodId, setMethodId] = useState('')
+  const refundId = useRef<string>('')
+
+  const load = async () => {
+    try { setBills(await fetchClosedBillsSince(branchId, mytDayStartIso(Date.now()))) } catch (e) { setNote(msg(e)) }
+  }
+  useEffect(() => {
+    void load()
+    fetchPaymentMethods(branchId, true).then(setMethods, (e) => setNote(msg(e)))
+  }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const reprint = async (b: ClosedBillRow) => {
+    try { await reprintReceipt(b.id); setNote(`Receipt ${b.bill_no} sent to the printer`) } catch (e) { setNote(msg(e)) }
+  }
+
+  const startRefund = (b: ClosedBillRow) => {
+    refundId.current = crypto.randomUUID()          // one id per refund: a retry can never refund twice
+    setAmountText((refundableSen(b) / 100).toFixed(2))
+    setMethodId(methods.find((m) => m.kind === 'cash')?.id ?? methods[0]?.id ?? '')
+    setRefunding(b)
+  }
+
+  const amountSen = parseRinggit(amountText)
+  const refundProblem = !refunding ? null
+    : amountSen === null || amountSen <= 0 ? 'Enter the refund amount'
+    : amountSen > refundableSen(refunding) ? `At most ${formatSen(refundableSen(refunding))} can be refunded`
+    : !methodId ? 'Choose how the money goes back'
+    : null
+
+  return (
+    <>
+      <div className="fixed inset-0 z-30 flex justify-end bg-black/30" onClick={onClose}>
+        <div className="flex h-full w-full max-w-xl flex-col bg-card" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center justify-between border-b border-border p-4">
+            <h2 className="text-lg font-semibold">Today's bills</h2>
+            <div className="flex gap-2">
+              <button onClick={() => void load()} className="rounded border border-border px-3 py-1 text-sm">Refresh</button>
+              <button onClick={onClose} className="rounded border border-border px-3 py-1 text-sm">Close</button>
+            </div>
+          </div>
+          {note && <p className="m-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{note}</p>}
+          <div className="flex-1 overflow-y-auto p-3 text-sm">
+            {bills === null && <p className="text-brown-muted">Loading…</p>}
+            {bills?.length === 0 && <p className="text-brown-muted">No closed bills yet today.</p>}
+            {bills?.map((b) => (
+              <div key={b.id} className="mb-2 flex items-center justify-between rounded-lg border border-border p-2">
+                <div>
+                  <div className="font-medium">{b.bill_no} · {where(b)}</div>
+                  <div className="text-xs text-brown-muted">
+                    {time(b.closed_at)} · {STATUS_LABEL[b.status] ?? b.status}
+                    {b.total_sen !== null && ` · ${formatSen(b.total_sen)}`}
+                    {b.refunded_sen > 0 && ` · refunded ${formatSen(b.refunded_sen)}`}
+                  </div>
+                </div>
+                {b.status === 'paid' && (
+                  <div className="flex gap-2">
+                    <button onClick={() => void reprint(b)} className="rounded border border-border px-2 py-1 text-xs">Reprint receipt</button>
+                    <button onClick={() => startRefund(b)} disabled={refundableSen(b) === 0}
+                      className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 disabled:opacity-40">Refund</button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      {refunding && (
+        <ApprovalDialog branchId={branchId} action="refund" title={`Refund bill ${refunding.bill_no}`}
+          summary={`Paid ${formatSen(refunding.total_sen ?? 0)}${refunding.refunded_sen ? `, already refunded ${formatSen(refunding.refunded_sen)}` : ''}`}
+          extra={
+            <div className="space-y-2 text-sm">
+              <label className="block">Amount (RM)
+                <input inputMode="decimal" className="ml-2 w-32 rounded border border-border p-2" value={amountText} onChange={(e) => setAmountText(e.target.value)} />
+              </label>
+              <label className="block">Paid back by
+                <select className="ml-2 rounded border border-border p-2" value={methodId} onChange={(e) => setMethodId(e.target.value)}>
+                  {methods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              </label>
+            </div>
+          }
+          extraProblem={refundProblem}
+          onApprove={(a) => refundBill(refundId.current, refunding.id, amountSen ?? 0, methodId, a)}
+          onClose={() => setRefunding(null)}
+          onDone={() => { setNote(`Refunded ${formatSen(amountSen ?? 0)} on ${refunding.bill_no}`); setRefunding(null); void load() }} />
+      )}
+    </>
+  )
+}
