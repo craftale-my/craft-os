@@ -1,5 +1,6 @@
 -- Self-check for the POS checkout migrations (Sub-plan 3). Run on craft-os-dev after
--- migration-2026-10-24-pos-checkout.sql, -checkout-fn.sql and -bill-actions-fn.sql.
+-- migration-2026-10-24-pos-checkout.sql, -checkout-fn.sql, -bill-actions-fn.sql and
+-- -checkout-fixes.sql.
 -- Everything is rolled back. Success = a result row "VERIFY OK".
 -- The vectors below are a byte-for-byte copy of src/features/pos/checkout/billVectors.json
 -- (bill.test.ts fails if the two differ).
@@ -42,7 +43,7 @@ $vectors$;
   v_cat uuid; v_plate uuid; v_plate_var uuid;
   v_cash uuid; v_card uuid; v_tng uuid; v_far_cash uuid;
   v_order uuid; v_bill bills; v_bill2 bills; v_bill3 bills;
-  v_item uuid; v_items jsonb; v_res jsonb; v_job print_jobs;
+  v_item uuid; v_items jsonb; v_res jsonb; v_res2 jsonb; v_job print_jobs;
   v_refund uuid := 'bbbbbbbb-0000-0000-0000-000000000001';
   v_checkout uuid := 'cccccccc-0000-0000-0000-000000000001';
   n integer; r record; v_role text;
@@ -65,6 +66,14 @@ begin
               and cmd in ('INSERT','UPDATE','DELETE','ALL')) then
     raise exception 'FAIL rls: payments/refunds/branch_pos_settings must be written only by RPCs';
   end if;
+  -- settings tables: written only by a live manager of the row's own branch (fixes I1)
+  for r in select t from unnest(array['service_charge_rules','payment_methods','reason_templates']) as t loop
+    if not exists (select 1 from pg_policies where tablename = r.t and policyname = r.t || '_manage' and cmd = 'ALL'
+                    and qual like '%pos_caller_branch()%' and qual like '%has_menu_cap%'
+                    and with_check like '%pos_caller_branch()%' and with_check like '%has_menu_cap%') then
+      raise exception 'FAIL rls: %_manage is not limited to the caller''s branch', r.t;
+    end if;
+  end loop;
   if exists (select 1 from pg_policies where tablename = 'staff_pos_pins')
      or has_table_privilege('authenticated', 'staff_pos_pins', 'SELECT')
      or has_table_privilege('anon', 'staff_pos_pins', 'SELECT') then
@@ -83,7 +92,8 @@ begin
       'pos_compute_bill(jsonb)', 'pos_bill_totals(uuid)', 'checkout_bill(uuid,jsonb,uuid)', 'reprint_receipt(uuid)',
       'save_receipt_settings(jsonb)', 'pos_approvers()', 'set_my_pos_pin(text,text)', 'clear_pos_pin(uuid)',
       'void_order_item(uuid,text,uuid,text)', 'void_bill(uuid,text,uuid,text)', 'move_bill(uuid,uuid)',
-      'merge_bills(uuid,uuid)', 'refund_bill(uuid,uuid,integer,uuid,text,uuid,text)', 'open_table(uuid,integer)']) as f loop
+      'merge_bills(uuid,uuid)', 'refund_bill(uuid,uuid,integer,uuid,text,uuid,text)', 'open_table(uuid,integer)',
+      'pos_caller_branch()']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
     if not has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL grants: staff cannot call %', r.f; end if;
   end loop;
@@ -107,7 +117,7 @@ begin
               'pos_receipt_payload','pos_queue_receipt','pos_checkout_result','checkout_bill','reprint_receipt',
               'save_receipt_settings','has_menu_cap','staff_has_cap','pos_approvers','pos_pin_attempt','set_my_pos_pin',
               'clear_pos_pin','pos_check_approver','pos_check_reason','pos_queue_void_tickets','void_order_item',
-              'void_bill','move_bill','merge_bills','pos_refund_slip_payload','refund_bill','open_table'])
+              'void_bill','move_bill','merge_bills','pos_refund_slip_payload','refund_bill','open_table','pos_caller_branch'])
               and not coalesce(p.proconfig @> array['search_path=public, pg_temp'], false) loop
     raise exception 'FAIL search_path: % does not pin search_path = public, pg_temp', r.proname;
   end loop;
@@ -442,10 +452,28 @@ begin
                    and payload->>'approvedBy' = 'Verify Supervisor') then
     raise exception 'FAIL refund slip';
   end if;
+  if (v_res->>'amountSen')::int is distinct from 1300 then raise exception 'FAIL refund reply has no amountSen: %', v_res; end if;
   if refund_bill(v_refund, v_bill.id, 1300, v_cash, 'Item not served', v_sup, '1234') <> v_res
      or (select refunded_sen from bills where id = v_bill.id) <> 1300
      or (select count(*) from refunds where bill_id = v_bill.id) <> 1 then
     raise exception 'FAIL refund replay: the reply must equal the first one';
+  end if;
+  -- a resend after a lost reply with another amount or method is refused with what was recorded (fixes I2)
+  v_res2 := refund_bill(v_refund, v_bill.id, 2300, v_cash, 'Item not served', v_sup, '1234');
+  if (v_res2->>'ok')::boolean
+     or v_res2->>'error' is distinct from 'This refund was already recorded as RM 13.00 by V Cash — close and reopen to refund more' then
+    raise exception 'FAIL refund replay with another amount: %', v_res2;
+  end if;
+  v_res2 := refund_bill(v_refund, v_bill.id, 1300, v_tng, 'Item not served', v_sup, '1234');
+  if (v_res2->>'ok')::boolean
+     or v_res2->>'error' is distinct from 'This refund was already recorded as RM 13.00 by V Cash — close and reopen to refund more' then
+    raise exception 'FAIL refund replay with another method: %', v_res2;
+  end if;
+  if (select refunded_sen from bills where id = v_bill.id) <> 1300
+     or (select count(*) from refunds where bill_id = v_bill.id) <> 1
+     or (select count(*) from print_jobs where branch_id = v_branch and payload->>'kind' = 'refund'
+                                           and payload->>'billNo' = v_bill.bill_no) <> 1 then
+    raise exception 'FAIL refund replay with other values wrote something';
   end if;
   begin perform refund_bill(gen_random_uuid(), v_bill.id, 8000, v_cash, 'x', v_sup, '1234'); raise exception 'FAIL: refund cap';
   exception when raise_exception then if sqlerrm <> 'Refund is more than what is left on this bill (RM 79.80)' then raise; end if; end;
@@ -485,6 +513,89 @@ begin
      or not exists (select 1 from branch_pos_settings where branch_id = v_branch and not sst_registered and cash_rounding = 'none'
                       and receipt_footer = 'Thanks!' and qr_requires_open_bill) then
     raise exception 'FAIL save_receipt_settings';
+  end if;
+
+  -- ── N. settings tables: own branch only, live managers only (fixes I1) ─────
+  -- RLS is the only gate on service_charge_rules, payment_methods and reason_templates.
+  -- The DO block's role bypasses RLS, so the writes below run as `authenticated`;
+  -- each refused write has a positive control showing the same write is allowed
+  -- where it should be (so a missing grant cannot pass for a policy).
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  update staff set system_role = 'manager' where id in (v_sup, v_far);     -- a manager here, and a manager of VERIFY2
+  -- N1. a manager of another branch cannot touch this branch's settings
+  perform set_config('request.jwt.claims', json_build_object('sub', v_far, 'role', 'authenticated')::text, true);
+  if pos_caller_branch() is distinct from v_branch2 or not has_menu_cap('access_settings') then
+    raise exception 'FAIL fixture: VERIFY2''s manager is not a live manager of VERIFY2';
+  end if;
+  set local role authenticated;
+  begin
+    insert into payment_methods(branch_id, name, kind) values (v_branch, 'Far Sneak', 'cash');
+    raise exception 'FAIL rls: a manager of another branch added a payment method here';
+  exception when insufficient_privilege then if sqlerrm not like '%row-level security%' then raise; end if; end;
+  begin
+    insert into service_charge_rules(branch_id, rate_bp, order_types) values (v_branch, 10000, array['dine_in']);
+    raise exception 'FAIL rls: a manager of another branch added a service charge here';
+  exception when insufficient_privilege then if sqlerrm not like '%row-level security%' then raise; end if; end;
+  begin
+    insert into reason_templates(branch_id, action, reasons) values (v_branch, 'refund', array['Far reason']);
+    raise exception 'FAIL rls: a manager of another branch added reasons here';
+  exception when insufficient_privilege then if sqlerrm not like '%row-level security%' then raise; end if; end;
+  update payment_methods set is_active = false where branch_id = v_branch;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL rls: a manager of another branch switched off % payment methods here', n; end if;
+  update service_charge_rules set rate_bp = 10000 where branch_id = v_branch;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL rls: a manager of another branch changed % service charges here', n; end if;
+  update reason_templates set compulsory = false where branch_id = v_branch;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL rls: a manager of another branch changed % reason lists here', n; end if;
+  delete from payment_methods where branch_id = v_branch;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL rls: a manager of another branch deleted % payment methods here', n; end if;
+  -- positive control: the same person still manages their own branch
+  insert into payment_methods(branch_id, name, kind) values (v_branch2, 'X Card', 'card');
+  update payment_methods set sort_order = 9 where id = v_far_cash;
+  get diagnostics n = row_count;
+  if n <> 1 then raise exception 'FAIL rls: a manager could not edit their own branch''s payment methods'; end if;
+  reset role;
+  -- N2. a live manager of this branch can; once resigned, nothing
+  perform set_config('request.jwt.claims', json_build_object('sub', v_sup, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  update payment_methods set sort_order = sort_order where id = v_cash;
+  get diagnostics n = row_count;
+  if n <> 1 then raise exception 'FAIL rls: a live manager could not edit their own branch''s payment methods'; end if;
+  reset role;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  update staff set status = 'resigned' where id = v_sup;                  -- is_active stays true, as in real life
+  perform set_config('request.jwt.claims', json_build_object('sub', v_sup, 'role', 'authenticated')::text, true);
+  if has_menu_cap('access_settings') or has_menu_cap('pos_supervise') then raise exception 'FAIL cap: a resigned manager holds has_menu_cap'; end if;
+  if staff_has_cap(v_sup, 'access_settings') or staff_has_cap(v_sup, 'pos_supervise') then
+    raise exception 'FAIL cap: a resigned manager holds staff_has_cap';
+  end if;
+  if pos_caller_branch() is not null then raise exception 'FAIL: pos_caller_branch answers for a resigned person'; end if;
+  set local role authenticated;
+  update payment_methods set is_active = false where id = v_cash;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL rls: a resigned manager switched off a payment method'; end if;
+  begin
+    insert into service_charge_rules(branch_id, rate_bp, order_types) values (v_branch, 10000, array['dine_in']);
+    raise exception 'FAIL rls: a resigned manager added a service charge';
+  exception when insufficient_privilege then if sqlerrm not like '%row-level security%' then raise; end if; end;
+  reset role;
+  -- N3. is_active = false ends it too
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  update staff set status = 'active', is_active = false where id = v_sup;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_sup, 'role', 'authenticated')::text, true);
+  if has_menu_cap('access_settings') or staff_has_cap(v_sup, 'access_settings') or staff_has_cap(v_sup, 'pos_supervise')
+     or pos_caller_branch() is not null then
+    raise exception 'FAIL cap: an inactive manager still holds a capability';
+  end if;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  update staff set is_active = true where id = v_sup;
+  if not staff_has_cap(v_sup, 'access_settings') then raise exception 'FAIL cap: a reactivated manager lost access_settings'; end if;
+  if (select is_active from payment_methods where id = v_cash) is not true
+     or (select rate_bp from service_charge_rules where branch_id = v_branch) <> 1000 then
+    raise exception 'FAIL rls: a refused write changed the settings';
   end if;
 
   raise notice 'VERIFY OK';
