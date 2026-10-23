@@ -1,6 +1,6 @@
 // src/features/pos/order/cart.ts
 /** Pure order model shared by the staff POS and the customer QR page. The
- *  rules here mirror pos_insert_order (migration-2026-10-23-pos-ordering-fn.sql)
+ *  rules here mirror pos_insert_order (migration-2026-10-24-pos-catalogs-fn.sql)
  *  so a line the client accepts is one the server accepts, with the same words.
  *  Prices here are a preview only — the server re-prices every line. */
 
@@ -30,16 +30,17 @@ export interface PosCategory { name: string; products: PosProduct[] }
 export interface PosMenu { categories: PosCategory[] }
 
 // ── flat rows as posApi.fetchPosMenu returns them ──────────────────────────
+/** The master product. Its availability and default prices are not read here:
+ *  the order's catalog decides both (CatalogRows). */
 export interface ProductRow {
   id: string
   name: string
   description: string | null
-  availability: Availability
   is_addon: boolean
   is_active: boolean
   sort_order: number
   category: { name: string; sort_order: number } | null
-  menu_variants: { id: string; name: string; price_sen: number; is_active: boolean; sort_order: number; feedme_variant_key: string }[]
+  menu_variants: { id: string; name: string; is_active: boolean; sort_order: number; feedme_variant_key: string }[]
 }
 export interface GroupRow {
   id: string
@@ -52,23 +53,39 @@ export interface GroupRow {
 }
 export interface LinkRow { product_id: string; group_id: string; sort_order: number }
 export interface SoldOutRow { product_id: string; is_sold_out: boolean }
+/** One catalog's rows: which products it sells on which channel, in which order,
+ *  at which variant prices, and the add-on prices it overrides. */
+export interface CatalogProductRow { product_id: string; availability: Availability; sort_order: number }
+export interface VariantPriceRow { variant_id: string; price_sen: number }
+export interface OptionPriceRow { option_id: string; price_delta_sen: number }
+export interface CatalogRows { products: CatalogProductRow[]; prices: VariantPriceRow[]; optionPrices: OptionPriceRow[] }
 
 const allowed = (mode: OrderMode, a: Availability) => a === 'all' || (mode === 'counter' && a === 'counter_only')
 const byName = <T extends { name: string }>(a: T, b: T) => a.name.localeCompare(b.name)
 const bySort = <T extends { sort_order: number; name: string }>(a: T, b: T) => a.sort_order - b.sort_order || byName(a, b)
 
 export function buildPosMenu(
-  products: ProductRow[], groups: GroupRow[], links: LinkRow[], soldOut: SoldOutRow[], mode: OrderMode,
+  products: ProductRow[], groups: GroupRow[], links: LinkRow[], soldOut: SoldOutRow[], mode: OrderMode, catalog: CatalogRows,
 ): PosMenu {
   const soldOutIds = new Set(soldOut.filter((s) => s.is_sold_out).map((s) => s.product_id))
+  const inCatalog = new Map(catalog.products.map((c) => [c.product_id, c]))
+  const priceOf = new Map(catalog.prices.map((p) => [p.variant_id, p.price_sen]))
+  const optionPriceOf = new Map(catalog.optionPrices.map((o) => [o.option_id, o.price_delta_sen]))
   const groupById = new Map(groups.filter((g) => g.is_active).map((g) => [g.id, g]))
   const linksByProduct = new Map<string, LinkRow[]>()
   for (const l of links) linksByProduct.set(l.product_id, [...(linksByProduct.get(l.product_id) ?? []), l])
 
+  // the catalog's products this channel may sell, in the catalog's order (as qr_menu sorts them)
+  const visible = products
+    .flatMap((row) => {
+      const c = inCatalog.get(row.id)
+      return c && row.is_active && !row.is_addon && allowed(mode, c.availability) ? [{ row, sort: c.sort_order }] : []
+    })
+    .sort((a, b) => a.sort - b.sort || a.row.name.localeCompare(b.row.name))
   const cats = new Map<string, { sort: number; products: PosProduct[] }>()
-  for (const row of [...products].sort(bySort)) {
-    if (!row.is_active || row.is_addon || !allowed(mode, row.availability)) continue
-    const variants = row.menu_variants.filter((v) => v.is_active).sort(bySort)
+  for (const { row } of visible) {
+    // a variant the catalog has no price for is not for sale in it (the server refuses it too)
+    const variants = row.menu_variants.filter((v) => v.is_active && priceOf.has(v.id)).sort(bySort)
     if (variants.length === 0) continue
     const posGroups: PosGroup[] = (linksByProduct.get(row.id) ?? [])
       .sort((a, b) => a.sort_order - b.sort_order)
@@ -81,14 +98,14 @@ export function buildPosMenu(
             .filter((o) => o.availability !== 'hidden')
             .sort(bySort)
             .map((o) => ({
-              id: o.id, name: o.name.trim(), priceDeltaSen: o.price_delta_sen, isDefault: o.is_default,
+              id: o.id, name: o.name.trim(), priceDeltaSen: optionPriceOf.get(o.id) ?? o.price_delta_sen, isDefault: o.is_default,
               available: allowed(mode, o.availability) && !(o.product_id !== null && soldOutIds.has(o.product_id)),
             })),
         }]
       })
     const product: PosProduct = {
       id: row.id, name: row.name.trim(), description: row.description, soldOut: soldOutIds.has(row.id),
-      variants: variants.map((v) => ({ id: v.id, name: v.name.trim(), priceSen: v.price_sen, isBase: v.feedme_variant_key === '' })),
+      variants: variants.map((v) => ({ id: v.id, name: v.name.trim(), priceSen: priceOf.get(v.id) as number, isBase: v.feedme_variant_key === '' })),
       groups: posGroups,
     }
     const catName = row.category?.name ?? 'Uncategorised'
@@ -96,7 +113,7 @@ export function buildPosMenu(
     cat.products.push(product)
     cats.set(catName, cat)
   }
-  // products were visited in sort_order/name order (as qr_menu sorts them); categories by sort then name
+  // categories by sort then name
   return {
     categories: [...cats.entries()]
       .sort((a, b) => a[1].sort - b[1].sort || a[0].localeCompare(b[0]))

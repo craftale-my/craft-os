@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { fetchPosMenu, setSoldOut } from './posApi'
 import { cartSubtotalSen, findProduct, formatSen, lineLabel, linePriceSen, validateLine, defaultLine, type OrderLine, type PosMenu, type PosProduct } from './cart'
+import { noCatalogMessage } from './catalogs'
 import { newQueuedOrder } from '../offline/orderQueue'
 import type { QueuedOrder } from '../offline/orderQueue'
 import type { SubmitResult } from './useOrderQueue'
@@ -9,8 +10,11 @@ import LineSheet from './LineSheet'
 export type PadMode = ({ orderType: 'dine_in'; tableId: string; needsPax: boolean; initialPax?: number } | { orderType: 'takeaway' })
 type Mode = PadMode
 
-export default function OrderPad({ branchId, mode, initialLines, submit, onClose, onSent }: {
-  branchId: string; mode: Mode; initialLines?: OrderLine[]
+export default function OrderPad({ branchId, mode, catalogId, catalogsLoaded, initialLines, submit, onClose, onSent }: {
+  branchId: string; mode: Mode
+  /** The branch's catalog for this order type; null = none set (or not loaded yet). */
+  catalogId: string | null; catalogsLoaded: boolean
+  initialLines?: OrderLine[]
   submit: (o: QueuedOrder) => Promise<SubmitResult>
   onClose: () => void; onSent: () => void
 }) {
@@ -27,9 +31,11 @@ export default function OrderPad({ branchId, mode, initialLines, submit, onClose
   useEffect(() => { setError(null) }, [lines, pax])
 
   const load = async () => {
-    try { setMenu(await fetchPosMenu(branchId)); setError(null) } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    if (!catalogId) { setMenu(null); return }
+    try { setMenu(await fetchPosMenu(branchId, catalogId)); setError(null) } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
-  useEffect(() => { void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load() }, [branchId, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const noCatalog = catalogsLoaded && !catalogId
 
   const products = useMemo(() => {
     if (!menu) return []
@@ -89,7 +95,8 @@ export default function OrderPad({ branchId, mode, initialLines, submit, onClose
         </div>
         {error && <p className="m-2 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
         <div className="grid flex-1 grid-cols-4 content-start gap-2 overflow-y-auto p-2">
-          {!menu && !error && <p className="text-brown-muted">Loading menu…</p>}
+          {noCatalog && <p className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">{noCatalogMessage(mode.orderType)}</p>}
+          {!menu && !error && !noCatalog && <p className="text-brown-muted">Loading menu…</p>}
           {products.map((p) => (
             <button key={p.id} onClick={() => void tap(p)}
               className={`min-h-20 rounded-xl border p-2 text-left text-sm ${p.soldOut ? 'border-red-300 bg-red-50 text-red-700' : 'border-border bg-card'}`}>

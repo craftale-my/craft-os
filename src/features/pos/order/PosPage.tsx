@@ -2,18 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../../auth/AuthContext'
 import { useCan } from '../../../shared/lib/permissions'
-import { fetchBranchName, fetchOpenBills, fetchPosMenu, fetchTables, type OpenBillRow, type TableRow } from './posApi'
+import { fetchBranchCatalogs, fetchBranchName, fetchOpenBills, fetchTables, type OpenBillRow, type TableRow } from './posApi'
 import { tableCards, takeawayBills } from './tableStatus'
 import { usePosRealtime, type OrderInsert } from './usePosRealtime'
 import TablesGrid from './TablesGrid'
 import BillPanel from './BillPanel'
 import OrderPad, { type PadMode } from './OrderPad'
-import { findProduct, type OrderLine, type PosMenu } from './cart'
+import type { OrderLine } from './cart'
+import { defaultCatalogId, type BranchCatalogs } from './catalogs'
 import PrintHostPanel from './PrintHostPanel'
 import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
 import CheckoutSheet from '../checkout/CheckoutSheet'
-import { fetchBillingConfig, type BillingConfig } from '../checkout/checkoutApi'
+import { fetchBillingConfig, fetchProductNames, type BillingConfig } from '../checkout/checkoutApi'
 import TodayBillsDrawer from '../checkout/TodayBillsDrawer'
 import MyPinDialog from '../checkout/MyPinDialog'
 
@@ -32,7 +33,8 @@ export default function PosPage() {
   const [pad, setPad] = useState<PadMode | null>(null)
   const [padLines, setPadLines] = useState<OrderLine[] | undefined>(undefined)
   const [branchName, setBranchName] = useState<string | null>(null)
-  const [stuckMenu, setStuckMenu] = useState<PosMenu | null>(null)
+  const [stuckNames, setStuckNames] = useState<Map<string, string> | null>(null)
+  const [branchCatalogs, setBranchCatalogs] = useState<BranchCatalogs | null>(null)
   const [billing, setBilling] = useState<BillingConfig | null>(null)
   const [checkout, setCheckout] = useState<OpenBillRow | null>(null)
   const [drawer, setDrawer] = useState<'bills' | 'pin' | null>(null)
@@ -59,8 +61,14 @@ export default function PosPage() {
   useEffect(() => { loadBilling() }, [loadBilling])
   const hasStuck = queue.stuck.length > 0
   useEffect(() => {
-    if (hasStuck && branchId && !stuckMenu) fetchPosMenu(branchId).then(setStuckMenu, () => undefined)
-  }, [hasStuck, branchId, stuckMenu])
+    if (hasStuck && !stuckNames) fetchProductNames().then((rows) => setStuckNames(new Map(rows.map((r) => [r.id, r.name]))), () => undefined)
+  }, [hasStuck, stuckNames])
+  // the branch's catalogs: once on open, and again every time the order pad opens
+  const loadCatalogs = useCallback(() => {
+    if (branchId) fetchBranchCatalogs(branchId).then(setBranchCatalogs, (e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [branchId])
+  useEffect(() => { loadCatalogs() }, [loadCatalogs])
+  useEffect(() => { if (pad) loadCatalogs() }, [pad, loadCatalogs])
 
   const onOrder = useCallback((row: OrderInsert) => {
     if (row.source === 'qr' && row.bill_id !== selectedBillIdRef.current) setNewBillIds((s) => new Set(s).add(row.bill_id))
@@ -139,7 +147,7 @@ export default function PosPage() {
           {queue.stuck.map((o) => {
             const n = o.items.reduce((sum, l) => sum + l.qty, 0)
             const where = o.tableId ? `Table ${tables.find((t) => t.id === o.tableId)?.label ?? '?'}` : 'Takeaway'
-            const names = o.items.map((l) => `${l.qty} × ${(stuckMenu && findProduct(stuckMenu, l.productId)?.name) || 'Unknown item'}`).join(', ')
+            const names = o.items.map((l) => `${l.qty} × ${stuckNames?.get(l.productId) || 'Unknown item'}`).join(', ')
             return (
               <p key={o.clientOrderId} className="text-red-700">
                 Rejected: {o.failedReason} · {where} · {n} item{n === 1 ? '' : 's'} ({names}){' '}
@@ -178,6 +186,8 @@ export default function PosPage() {
       </div>
       {pad && (
         <OrderPad branchId={branchId} mode={pad} initialLines={padLines} submit={submitFromPad} onClose={closePad}
+          catalogId={branchCatalogs ? defaultCatalogId(branchCatalogs.assignments, pad.orderType) : null}
+          catalogsLoaded={branchCatalogs !== null}
           onSent={() => { closePad(); setRefreshKey((k) => k + 1); void reload() }} />
       )}
       {drawer === 'bills' && <TodayBillsDrawer branchId={branchId} onClose={() => setDrawer(null)} />}

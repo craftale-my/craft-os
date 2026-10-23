@@ -4,7 +4,11 @@ import { writeOutcome } from '../../../shared/lib/db-write'
 import type { PrintJob } from '../print/printHost'
 import type { PrintRoute } from '../print/adapter'
 import { toSendResult, type QueuedOrder, type SendResult, type OrderType } from '../offline/orderQueue'
-import { buildPosMenu, type GroupRow, type LinkRow, type PosMenu, type ProductRow, type SoldOutRow } from './cart'
+import {
+  buildPosMenu, type CatalogProductRow, type GroupRow, type LinkRow, type OptionPriceRow, type PosMenu, type ProductRow,
+  type SoldOutRow, type VariantPriceRow,
+} from './cart'
+import type { BranchCatalogRow, BranchCatalogs, CatalogRow } from './catalogs'
 
 const SEND_TIMEOUT_MS = 8000
 
@@ -36,27 +40,44 @@ export interface PrintJobRow extends PrintJob {
   created_at: string
 }
 
-/** Three flat reads (RLS menu_read) shaped by the pure builder. */
-export async function fetchPosMenu(branchId: string): Promise<PosMenu> {
-  const [p, g, l, s] = await Promise.all([
+/** The counter menu of one catalog: flat reads (RLS menu_read) shaped by the pure
+ *  builder. Products and prices come from the catalog, never from the master list. */
+export async function fetchPosMenu(branchId: string, catalogId: string): Promise<PosMenu> {
+  const [p, g, l, s, cp, vp, op] = await Promise.all([
     supabase.from('menu_products')
-      .select('id, name, description, availability, is_addon, is_active, sort_order, category:menu_categories(name, sort_order), ' +
-              'menu_variants(id, name, price_sen, is_active, sort_order, feedme_variant_key)')
+      .select('id, name, description, is_addon, is_active, sort_order, category:menu_categories(name, sort_order), ' +
+              'menu_variants(id, name, is_active, sort_order, feedme_variant_key)')
       .eq('is_active', true).order('sort_order').order('name'),
     supabase.from('modifier_groups')
       .select('id, name, min_select, max_select, is_active, sort_order, ' +
               'modifier_options(id, name, price_delta_sen, is_default, availability, sort_order, product_id)'),
     supabase.from('product_modifier_groups').select('product_id, group_id, sort_order'),
     supabase.from('branch_menu_status').select('product_id, is_sold_out').eq('branch_id', branchId),
+    supabase.from('catalog_products').select('product_id, availability, sort_order').eq('catalog_id', catalogId),
+    supabase.from('catalog_variant_prices').select('variant_id, price_sen').eq('catalog_id', catalogId),
+    supabase.from('catalog_option_prices').select('option_id, price_delta_sen').eq('catalog_id', catalogId),
   ])
-  if (p.error) fail(p.error)
-  if (g.error) fail(g.error)
-  if (l.error) fail(l.error)
-  if (s.error) fail(s.error)
+  for (const r of [p, g, l, s, cp, vp, op]) if (r.error) fail(r.error)
   return buildPosMenu(
     (p.data ?? []) as unknown as ProductRow[], (g.data ?? []) as unknown as GroupRow[],
     (l.data ?? []) as LinkRow[], (s.data ?? []) as SoldOutRow[], 'counter',
+    {
+      products: (cp.data ?? []) as CatalogProductRow[],
+      prices: (vp.data ?? []) as VariantPriceRow[],
+      optionPrices: (op.data ?? []) as OptionPriceRow[],
+    },
   )
+}
+
+/** Every catalog (for names) and this branch's assignments. */
+export async function fetchBranchCatalogs(branchId: string): Promise<BranchCatalogs> {
+  const [c, a] = await Promise.all([
+    supabase.from('menu_catalogs').select('id, name, is_active, sort_order').order('sort_order').order('name'),
+    supabase.from('branch_catalogs').select('role, catalog_id').eq('branch_id', branchId),
+  ])
+  if (c.error) fail(c.error)
+  if (a.error) fail(a.error)
+  return { catalogs: (c.data ?? []) as CatalogRow[], assignments: (a.data ?? []) as BranchCatalogRow[] }
 }
 
 export async function fetchTables(branchId: string): Promise<TableRow[]> {
