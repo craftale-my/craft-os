@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatPrice, groupMenu, menuTab, soldIn, type MenuFilter } from './menuView'
+import { UNCATEGORISED, formatPrice, groupMenu, menuTab, soldIn, type MenuFilter } from './menuView'
 import type { MenuProductRow } from './menuApi'
 
 function row(over: Partial<MenuProductRow>): MenuProductRow {
@@ -71,5 +71,11 @@ describe('groupMenu', () => {
     expect(groupMenu(rows, { ...all, categoryId: 'don' }).map((x) => x.title)).toEqual(['DONBURI'])
     expect(groupMenu(rows, { ...all, catalogId: 'grab' }).flatMap((x) => x.products.map((p) => p.name)))
       .toEqual(['Lychee Rose', 'Smoked Duck DON'])
+  })
+
+  it('filters to products with no category', () => {
+    const s = groupMenu(rows, { ...all, categoryId: UNCATEGORISED })
+    expect(s.map((x) => x.title)).toEqual(['Uncategorised'])
+    expect(s[0].products.map((p) => p.name)).toEqual(['Mystery'])
   })
 })

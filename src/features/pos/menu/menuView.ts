@@ -14,7 +14,7 @@ export const CATALOG_AVAILABILITY_LABELS: Record<Availability, string> = {
   counter_only: 'Counter only',
 }
 
-/** The /menu sub-navigation. `match` decides which tab a path belongs to. */
+/** The /menu sub-navigation. `menuTab()` decides which tab a path belongs to. */
 export type MenuTab = 'products' | 'catalogs' | 'groups' | 'categories' | 'import'
 export const MENU_TABS: { id: Exclude<MenuTab, 'import'>; label: string; to: string }[] = [
   { id: 'products', label: 'Products', to: '/menu' },
@@ -32,10 +32,13 @@ export function menuTab(pathname: string): MenuTab {
 }
 
 export interface MenuSection { title: string; products: MenuProductRow[] }
+/** MenuFilter.categoryId value for products that have no category. */
+export const UNCATEGORISED = 'none'
 export interface MenuFilter {
   search: string
   showAddons: boolean
   showInactive: boolean
+  /** a category id, UNCATEGORISED, or null for every category */
   categoryId: string | null
   /** only the products this catalog sells */
   catalogId: string | null
@@ -65,7 +68,7 @@ export function groupMenu(rows: MenuProductRow[], f: MenuFilter): MenuSection[] 
   for (const r of rows) {
     if (!f.showAddons && r.is_addon) continue
     if (!f.showInactive && !r.is_active) continue
-    if (f.categoryId && r.category_id !== f.categoryId) continue
+    if (f.categoryId === UNCATEGORISED ? r.category_id !== null : f.categoryId && r.category_id !== f.categoryId) continue
     if (f.catalogId && !r.catalog_ids.includes(f.catalogId)) continue
     if (q && !r.name.toLowerCase().includes(q)) continue
     const title = r.category?.name ?? 'Uncategorised'

@@ -29,17 +29,21 @@ export async function fetchMenu(): Promise<MenuProductRow[]> {
   return (data ?? []) as MenuProductRow[]
 }
 
-/** One patch for many products (e.g. a whole category's print route). */
+/** One patch for many products (e.g. a whole category's print route), written in
+ *  chunks of at most 100 ids so the request URL stays short. A chunk that fails
+ *  stops the rest; chunks already written stay written. */
 export async function updateProducts(ids: string[], patch: ProductPatch): Promise<void> {
-  if (ids.length === 0) return
-  const res = await supabase
-    .from('menu_products')
-    .update({ ...patch, updated_at: new Date().toISOString() })
-    .in('id', ids)
-    .select('id')
-  const outcome = writeOutcome(res)
-  if (!outcome.ok) throw new Error(`Menu change failed: ${outcome.reason}`)
-  if ((res.data ?? []).length !== ids.length) throw new Error('Some products were not updated — refresh and try again.')
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100)
+    const res = await supabase
+      .from('menu_products')
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .in('id', chunk)
+      .select('id')
+    const outcome = writeOutcome(res)
+    if (!outcome.ok) throw new Error(`Menu change failed: ${outcome.reason}`)
+    if ((res.data ?? []).length !== chunk.length) throw new Error('Some products were not updated — refresh and try again.')
+  }
 }
 
 /** What menu_import_catalogs answers. */

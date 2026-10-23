@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { buildCatalogsImport, readFeedmeExport, type CatalogsImport } from './feedmeExport'
 import { countCatalogs, importFeedme, type ImportReport } from './menuApi'
-import { IMPORT_CONFIRM_WORD, MASTER_WARNING, canImport, catalogSummary } from './importView'
+import { IMPORT_CONFIRM_WORD, MASTER_WARNING_INTRO, MASTER_WARNING_KEPT, MASTER_WARNING_LOSSES, canImport, catalogSummary } from './importView'
 import MenuTabs from './MenuTabs'
 
 type Stage =
@@ -61,8 +61,9 @@ export default function MenuImportPage() {
       <p className="text-sm text-gray-500">
         In the Feedme portal go to Menu → Products → Export and choose the downloaded <code>books_….zip</code>.
         The import loads every product from the “Default Catalog” sheet and every Feedme catalog with its own products
-        and prices. SST and print routes set in Craft OS are kept, and nothing is deleted: a product a catalog no longer
-        sells is hidden in it. Branch assignments are not imported — choose each branch’s catalogs in POS settings.
+        and prices. SST and print routes set in Craft OS are kept. Importing again resets the menu to Feedme’s version —
+        the warning before you import lists exactly what is overwritten — and the options of every imported add-on group
+        are deleted and recreated. A product a catalog no longer sells is hidden in it, not deleted. Branch assignments are not imported — choose each branch’s catalogs in POS settings.
       </p>
 
       {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
@@ -102,7 +103,13 @@ export default function MenuImportPage() {
               </ul>
             </details>
           )}
-          <p role="alert" className="rounded bg-amber-50 p-3 text-sm text-amber-900">{MASTER_WARNING}</p>
+          <div role="alert" className="space-y-2 rounded bg-amber-50 p-3 text-sm text-amber-900">
+            <p>{MASTER_WARNING_INTRO}</p>
+            <ul className="list-disc space-y-1 pl-5">
+              {MASTER_WARNING_LOSSES.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+            <p>{MASTER_WARNING_KEPT}</p>
+          </div>
           {stage.existingCatalogs > 0 && (
             <label className="block text-sm">
               {stage.existingCatalogs === 1 ? '1 catalog already exists' : `${stage.existingCatalogs} catalogs already exist`}. Type <b>{IMPORT_CONFIRM_WORD}</b> to overwrite them.

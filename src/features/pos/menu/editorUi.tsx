@@ -1,7 +1,7 @@
 // src/features/pos/menu/editorUi.tsx
 /** Small pieces every /menu page shares: the look of inputs and buttons, and the
  *  outcome line a save shows next to the section that made it. */
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 export const inputCls = 'rounded border border-border bg-card px-2 py-1 text-sm'
@@ -28,12 +28,13 @@ export function useUnsavedWarning(dirty: boolean) {
   }, [dirty])
 }
 
-/** The "saved" message a create passes on through navigation state, read once: it is
- *  then cleared, so a reload does not show it again. */
+/** The "saved" message a create passes on through navigation state, captured once on
+ *  first render: the state is then cleared from the history entry (so a reload does
+ *  not show it again) while the message stays on screen. */
 export function useSavedNotice(): string | null {
   const location = useLocation()
   const navigate = useNavigate()
-  const saved = (location.state as { saved?: string } | null)?.saved ?? null
+  const [saved] = useState(() => (location.state as { saved?: string } | null)?.saved ?? null)
   useEffect(() => {
     if (saved) navigate(location.pathname, { replace: true, state: null })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps

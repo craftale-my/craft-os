@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchMenu, updateProducts, type MenuProductRow, type ProductPatch } from './menuApi'
 import { fetchLookups, type MenuLookups } from './menuEditorApi'
-import { PRINT_ROUTES, SST_CHOICES, formatPrice, groupMenu, soldIn, type MenuFilter } from './menuView'
+import { PRINT_ROUTES, SST_CHOICES, UNCATEGORISED, formatPrice, groupMenu, soldIn, type MenuFilter } from './menuView'
 import MenuTabs from './MenuTabs'
 import { OutcomeLine, btnCls, errorText, inputCls, type Outcome } from './editorUi'
 
@@ -33,16 +33,22 @@ export default function ProductListPage() {
 
   /** A quick edit of one or more products; the outcome shows on the section that made it. */
   const save = async (section: string, ids: string[], patch: ProductPatch) => {
-    if (ids.length === 0 || ids.some((id) => busy.has(id))) return
-    const before = rows
+    if (ids.length === 0) return
+    if (ids.some((id) => busy.has(id))) {
+      setOutcomes((o) => ({ ...o, [section]: { kind: 'error', text: 'Another save is still running — try again in a moment.' } }))
+      return
+    }
+    // only the rows this save touches are put back on failure; other edits stay as they are
+    const before = new Map((rows ?? []).filter((r) => ids.includes(r.id)).map((r) => [r.id, r]))
     setBusy((b) => new Set([...b, ...ids]))
-    setRows((rs) => rs?.map((r) => (ids.includes(r.id) ? { ...r, ...patch } : r)) ?? rs)
+    setRows((rs) => rs?.map((r) => (before.has(r.id) ? { ...r, ...patch } : r)) ?? rs)
     try {
       await updateProducts(ids, patch)
       setOutcomes((o) => ({ ...o, [section]: { kind: 'ok', text: ids.length === 1 ? 'Saved' : `Saved for ${ids.length} products` } }))
     } catch (e) {
-      setRows(before)
+      setRows((rs) => rs?.map((r) => before.get(r.id) ?? r) ?? rs)
       setOutcomes((o) => ({ ...o, [section]: { kind: 'error', text: errorText(e) } }))
+      if (ids.length > 100) load()                    // earlier chunks may have been written: show what the database holds
     } finally {
       setBusy((b) => new Set([...b].filter((id) => !ids.includes(id))))
     }
@@ -77,6 +83,7 @@ export default function ProductListPage() {
           onChange={(e) => set({ search: e.target.value })} />
         <select className={inputCls} value={filter.categoryId ?? ''} onChange={(e) => set({ categoryId: e.target.value || null })}>
           <option value="">All categories</option>
+          <option value={UNCATEGORISED}>Uncategorised</option>
           {lookups?.categories.map((c) => <option key={c.id} value={c.id}>{c.name}{c.isActive ? '' : ' (off)'}</option>)}
         </select>
         <select className={inputCls} value={filter.catalogId ?? ''} onChange={(e) => set({ catalogId: e.target.value || null })}>
@@ -106,9 +113,10 @@ export default function ProductListPage() {
             <label className="flex items-center gap-2 text-sm">
               Print whole category to
               <select className={inputCls} value=""
+                disabled={section.products.some((p) => busy.has(p.id))}
                 onChange={(e) => void save(section.title,
-                  // the whole category, not just the rows the filters are showing
-                  (rows ?? []).filter((r) => (r.category?.name ?? 'Uncategorised') === section.title).map((p) => p.id),
+                  // only the products the filters show in this section
+                  section.products.map((p) => p.id),
                   { print_route: e.target.value || null })}>
                 <option value="" disabled>Choose…</option>
                 {PRINT_ROUTES.map((r) => <option key={r} value={r}>{r}</option>)}
