@@ -170,11 +170,11 @@ alter table staff drop constraint if exists staff_department_check;
 -- Add onboarding + HR fields to staff
 alter table staff add column if not exists onboarding_completed boolean not null default false;
 alter table staff add column if not exists nickname            text;
-alter table staff add column if not exists ic_number          text;
-alter table staff add column if not exists address            text;
+-- IC number, address, date of birth, phone and manager notes are NOT staff
+-- columns: they live in staff_private / staff_manager_notes with their own
+-- RLS. See migration-2026-10-23-staff-private.sql (run after
+-- migration-2026-07-06-rbac.sql, which it depends on).
 alter table staff add column if not exists gender             text;
-alter table staff add column if not exists date_of_birth      date;
-alter table staff add column if not exists contact_number     text;
 alter table staff add column if not exists branch             text;
 alter table staff add column if not exists employment_type    text;
 alter table staff add column if not exists working_experience text;
@@ -189,7 +189,6 @@ update staff set onboarding_completed = true where rank = 'manager';
 -- =============================================
 
 -- Manager notes and level-up tracking
-alter table staff add column if not exists manager_notes    text;
 alter table staff add column if not exists last_level_up_at timestamptz;
 
 -- =============================================
