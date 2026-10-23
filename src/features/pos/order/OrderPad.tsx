@@ -41,6 +41,10 @@ export default function OrderPad({
   const [carry, setCarry] = useState<{ lines: OrderLine[]; to: string } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const loadSeq = useRef(0)
+  // load() is also called after awaits (sold-out toggle, rejected send) from a closure of an
+  // older render, so it reads the catalog from here and never from its own closure.
+  const catalogIdRef = useRef(catalogId)
+  useEffect(() => { catalogIdRef.current = catalogId }, [catalogId])
 
   useEffect(() => { setError(null) }, [lines, pax])
 
@@ -61,9 +65,10 @@ export default function OrderPad({
 
   const load = async () => {
     const seq = ++loadSeq.current                // a slow reply for the previous catalog must not win
-    if (!catalogId) { setMenu(null); return }
+    const id = catalogIdRef.current
+    if (!id) { setMenu(null); return }
     try {
-      const m = await fetchPosMenu(branchId, catalogId)
+      const m = await fetchPosMenu(branchId, id)
       if (seq === loadSeq.current) { setMenu(m); setError(null) }
     } catch (e) {
       if (seq === loadSeq.current) setError(e instanceof Error ? e.message : String(e))
@@ -72,15 +77,19 @@ export default function OrderPad({
   useEffect(() => { void load() }, [branchId, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const current = catalogs?.find((c) => c.id === catalogId) ?? null
-  const noCatalog = catalogs !== null && catalogId === null
+  const noCatalog = catalogs !== null && catalogId === null && !catalogs.some((c) => c.isDefault)
 
   // One order = one catalog: switching starts the cart again. Leaving the catalog of an
   // edited order that the branch no longer offers keeps what the new catalog also sells.
   const switchCatalog = (id: string) => {
     if (!id || id === catalogId) return
-    if (lines.length > 0 && current && !current.offered) setCarry({ lines, to: id })
-    else if (lines.length > 0 && !window.confirm(SWITCH_CATALOG_CONFIRM)) return
-    setLines([]); setSheet(null); setMenu(null); setCategory(null); setNotice(null); setCatalogId(id)
+    const carrying = lines.length > 0 && !!current && !current.offered
+    if (!carrying && lines.length > 0 && !window.confirm(SWITCH_CATALOG_CONFIRM)) return
+    // A carry waits for its own catalog's menu: the cart stays untouched until then (and for
+    // good if that menu fails to load); any other switch drops a carry still pending.
+    setCarry(carrying ? { lines, to: id } : null)
+    if (!carrying) setLines([])
+    setSheet(null); setMenu(null); setCategory(null); setNotice(null); setCatalogId(id)
   }
   useEffect(() => {
     if (!carry || !menu || carry.to !== catalogId) return
@@ -139,7 +148,7 @@ export default function OrderPad({
         <div className="flex items-center gap-2 border-b border-border bg-card p-2">
           <button onClick={onClose} className="rounded-lg border border-border px-3 py-2">← Tables</button>
           {catalogs && catalogs.length > 0 && (
-            <select aria-label="Catalog" value={catalogId ?? ''} onChange={(e) => switchCatalog(e.target.value)}
+            <select aria-label="Catalog" value={catalogId ?? ''} disabled={sending} onChange={(e) => switchCatalog(e.target.value)}
               className={`rounded-lg border p-2 text-sm ${current && !current.isDefault ? 'border-amber-500 bg-amber-50' : 'border-border'}`}>
               {catalogId === null && <option value="" disabled>Choose a catalog…</option>}
               {catalogs.map((c) => <option key={c.id} value={c.id}>{c.name}{c.offered ? '' : ' (no longer offered)'}</option>)}
@@ -190,7 +199,8 @@ export default function OrderPad({
           {current && <span className={`ml-2 text-sm font-normal ${current.isDefault ? 'text-brown-muted' : 'text-amber-700'}`}>· {current.name}</span>}
         </div>
         <div className="flex-1 overflow-y-auto p-3 text-sm">
-          {lines.map((l, i) => {
+          {carry && !menu && !error && <p className="text-brown-muted">Loading menu…</p>}
+          {!(carry && !menu && !error) && lines.map((l, i) => {
             const p = menu ? findProduct(menu, l.productId) : undefined
             if (!p) return (
               <div key={i} className="mb-2 flex justify-between text-red-700">
