@@ -9,6 +9,7 @@ import {
   MONTHS_FULL,
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
+import { shortenBranch } from '../../shared/lib/branches'
 import { useCan } from '../../shared/lib/permissions'
 import { Avatar } from '../../shared/components/Avatar'
 import { useTeamData } from './useTeamData'
@@ -34,14 +35,6 @@ function genTempPassword(): string {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function shortenBranch(branch: string | null): string {
-  if (!branch) return '—'
-  if (branch.includes('Connaught')) return 'Cheras'
-  if (branch.includes('Puteri')) return 'Puchong'
-  if (branch.includes('Usahawan')) return 'Kepong'
-  return branch
-}
 
 /** Reviews 页也要用,所以对外导出。 */
 export function formatTimeAgo(ts: string): string {

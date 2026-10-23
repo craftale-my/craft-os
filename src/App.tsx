@@ -25,6 +25,7 @@ import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
 import HrClaimsPage from './features/hr/HrClaims'
 import SchedulePage from './features/schedule/Schedule'
+import OrgChartPage from './features/orgchart/OrgChart'
 
 function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -187,6 +188,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout><StaffProfilePage selfView /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/org-chart"
+        element={
+          <ProtectedRoute>
+            <AppLayout><OrgChartPage /></AppLayout>
           </ProtectedRoute>
         }
       />

@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, CheckSquare, ClipboardList, FolderKanban,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
-  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays,
+  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -20,6 +20,7 @@ import { NotificationBell } from '../../features/notifications/NotificationBell'
 // 图标的位置,和下面子项的标签对不齐。
 const ICONS: Record<string, LucideIcon> = {
   profile: User,
+  'org-chart': Network,
   team: Users,
   'time-pay': Clock,
   directory: BookUser,
