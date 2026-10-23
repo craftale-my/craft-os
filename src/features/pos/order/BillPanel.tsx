@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fetchBillItems, setTablePaused, type BillItemRow, type OpenBillRow, type TableRow } from './posApi'
 import { formatSen } from './cart'
 import { computeBill, formatRate } from '../checkout/bill'
@@ -19,36 +19,49 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
   mergeSources: PickOption[]      // other open bills that can be merged into this one
   onAddItems: () => void
   onCheckout: () => void
-  onChanged?: () => void          // after a pause toggle, void, merge or open table
+  onChanged?: () => void | Promise<void>   // after a pause toggle, void, merge or open table; a promise lets a move wait for the reload
   onMoved?: (tableId: string) => void
 }) {
-  const [items, setItems] = useState<BillItemRow[]>([])
+  const [items, setItems] = useState<BillItemRow[] | null>(null)   // null = not loaded yet for this bill
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)   // synchronous guard: state alone would let a fast double tap through
   const [error, setError] = useState<string | null>(null)
   const [paused, setPaused] = useState(table?.qr_paused ?? false)
   const [dialog, setDialog] = useState<Dialog>(null)
   const [localKey, setLocalKey] = useState(0)
   useEffect(() => { setPaused(table?.qr_paused ?? false) }, [table?.id, table?.qr_paused])
   useEffect(() => {
-    if (!bill) { setItems([]); return }
+    if (!bill) { setItems(null); return }
     let alive = true
-    fetchBillItems(bill.id).then((rows) => { if (alive) { setItems(rows); setError(null) } }, (e) => { if (alive) setError(e.message) })
+    fetchBillItems(bill.id).then((rows) => { if (alive) { setItems(rows); setLoadFailed(false); setError(null) } }, (e) => { if (alive) { setLoadFailed(true); setError(e.message) } })
     return () => { alive = false }
   }, [bill?.id, refreshKey, localKey])
-  useEffect(() => { setItems([]); setError(null); setDialog(null) }, [bill?.id])
+  useEffect(() => { setItems(null); setLoadFailed(false); setError(null); setDialog(null) }, [bill?.id])
 
-  const live = items.filter((i) => !i.voided_at)
+  const rows = items ?? []
+  const loaded = items !== null && !loadFailed   // only then do we know whether the bill is empty
+  const live = rows.filter((i) => !i.voided_at)
   // Instant preview with the same rules as the server (pos_bill_totals); checkout shows the server's numbers.
   const totals = bill && billing ? computeBill({
     orderType: bill.order_type, tableId: bill.table_id,
     sstRegistered: billing.settings.sstRegistered, cashRounding: billing.settings.cashRounding, rules: billing.rules,
-    lines: items.map((i) => ({ productId: i.product_id, unitPriceSen: i.unit_price_sen, qty: i.qty, sstRateBp: i.sst_rate_bp,
-                               takeawayFeeSen: i.takeaway_fee_sen, voided: i.voided_at !== null })),
+    lines: rows.map((i) => ({ productId: i.product_id, unitPriceSen: i.unit_price_sen, qty: i.qty, sstRateBp: i.sst_rate_bp,
+                              takeawayFeeSen: i.takeaway_fee_sen, voided: i.voided_at !== null })),
   }) : null
-  const orders = [...new Map(items.map((i) => [i.order_id, i.orders])).entries()]
-  const changed = () => { setDialog(null); setLocalKey((k) => k + 1); onChanged?.() }
+  const orders = [...new Map(rows.map((i) => [i.order_id, i.orders])).entries()]
+  const changed = () => { setDialog(null); setLocalKey((k) => k + 1); void onChanged?.() }
 
-  const run = async (fn: () => Promise<void>) => {
-    try { await fn(); changed() } catch (e) { setDialog(null); setError(msg(e)) }
+  // One bill-level action at a time. `then` runs after the write succeeded and the parent has reloaded.
+  const run = async (fn: () => Promise<void>, then?: () => void) => {
+    if (busyRef.current) return
+    busyRef.current = true; setBusy(true)
+    try {
+      try { await fn() } catch (e) { setDialog(null); setError(msg(e)); return }
+      setDialog(null); setLocalKey((k) => k + 1)
+      await onChanged?.()
+      then?.()
+    } finally { busyRef.current = false; setBusy(false) }
   }
 
   const togglePause = async () => {
@@ -59,14 +72,14 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
   }
 
   const voidWholeBill = () => {
-    if (!bill) return
+    if (!bill || !loaded || busyRef.current) return
     if (live.length > 0) { setDialog({ kind: 'void_bill' }); return }
     if (!window.confirm(`Close bill ${bill.bill_no}? It has nothing on it.`)) return
     void run(() => voidBill(bill.id, { reason: '', approverId: null, pin: null }))
   }
 
   const open = () => {
-    if (!table) return
+    if (!table || busyRef.current) return
     const answer = window.prompt(`Guests at table ${table.label}?`, '2')
     if (answer === null) return
     const pax = Number(answer)
@@ -92,13 +105,13 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
         </div>
         {bill && (
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
-            {bill.order_type === 'dine_in' && <button onClick={() => setDialog({ kind: 'move' })} className="rounded border border-border px-2 py-1">Move table</button>}
-            <button onClick={() => setDialog({ kind: 'merge' })} className="rounded border border-border px-2 py-1">Merge with…</button>
-            <button onClick={voidWholeBill} className="rounded border border-red-300 px-2 py-1 text-red-700">{live.length > 0 ? 'Void bill' : 'Close empty bill'}</button>
+            {bill.order_type === 'dine_in' && <button onClick={() => setDialog({ kind: 'move' })} disabled={busy} className="rounded border border-border px-2 py-1 disabled:opacity-40">Move table</button>}
+            <button onClick={() => setDialog({ kind: 'merge' })} disabled={busy} className="rounded border border-border px-2 py-1 disabled:opacity-40">Merge with…</button>
+            <button onClick={voidWholeBill} disabled={!loaded || busy} className="rounded border border-red-300 px-2 py-1 text-red-700 disabled:opacity-40">{loaded && live.length === 0 ? 'Close empty bill' : 'Void bill'}</button>
           </div>
         )}
         {!bill && table && billing?.settings.qrRequiresOpenBill && (
-          <button onClick={open} className="mt-2 rounded border border-brown-btn px-2 py-1 text-xs">Open table for QR ordering</button>
+          <button onClick={open} disabled={busy} className="mt-2 rounded border border-brown-btn px-2 py-1 text-xs disabled:opacity-40">Open table for QR ordering</button>
         )}
       </div>
       {error && <p className="m-3 rounded bg-red-50 p-2 text-sm text-red-700">{error} <button className="underline" onClick={() => setError(null)}>OK</button></p>}
@@ -106,7 +119,7 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
         {orders.map(([orderId, o]) => (
           <div key={orderId} className="mb-3">
             <div className="text-xs text-brown-muted">{o.order_no} · {o.source.toUpperCase()} · {new Date(o.placed_at).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit' })}</div>
-            {items.filter((i) => i.order_id === orderId).map((i) => (
+            {rows.filter((i) => i.order_id === orderId).map((i) => (
               <div key={i.id} className={`flex justify-between py-1 ${i.voided_at ? 'line-through opacity-50' : ''}`}>
                 <div>
                   {i.qty} × {i.name_snapshot}
@@ -121,7 +134,8 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
             ))}
           </div>
         ))}
-        {bill && items.length === 0 && !error && <p className="text-brown-muted">Loading…</p>}
+        {bill && items === null && !error && <p className="text-brown-muted">Loading…</p>}
+        {bill && items !== null && items.length === 0 && !error && <p className="text-brown-muted">No items yet.</p>}
       </div>
       <div className="border-t border-border p-3 text-sm">
         {totals ? (
@@ -164,14 +178,20 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
       {bill && dialog?.kind === 'move' && (
         <PickerSheet title={`Move bill ${bill.bill_no}`} hint="Pick an empty table. Nothing is reprinted." options={moveTargets}
           empty="No empty table." onClose={() => setDialog(null)}
-          onPick={(tableId) => void run(async () => { await moveBill(bill.id, tableId); onMoved?.(tableId) })} />
+          onPick={(tableId) => {
+            if (busyRef.current) return
+            setDialog(null)
+            void run(() => moveBill(bill.id, tableId), () => onMoved?.(tableId))
+          }} />
       )}
       {bill && dialog?.kind === 'merge' && (
         <PickerSheet title={`Merge into bill ${bill.bill_no}`} hint="Every order of the bill you pick moves onto this bill, and its table becomes empty."
           options={mergeSources} empty="No other open bill." onClose={() => setDialog(null)}
           onPick={(fromBillId) => {
+            if (busyRef.current) return
             const from = mergeSources.find((o) => o.id === fromBillId)
             if (!window.confirm(`Move everything from ${from?.label ?? 'that bill'} onto bill ${bill.bill_no}?`)) return
+            setDialog(null)
             void run(() => mergeBills(fromBillId, bill.id))
           }} />
       )}

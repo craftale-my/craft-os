@@ -162,7 +162,7 @@ export default function PosPage() {
               label: b.table_id ? `Table ${tables.find((t) => t.id === b.table_id)?.label ?? '?'}` : 'Takeaway',
               detail: `Bill ${b.bill_no}`,
             }))}
-            onChanged={() => { setRefreshKey((k) => k + 1); void reload() }}
+            onChanged={() => { setRefreshKey((k) => k + 1); return reload() }}
             onMoved={(tableId) => setSelection({ kind: 'table', tableId })}
             onCheckout={() => { if (selectedBill) { loadBilling(); setCheckout(selectedBill) } }}
             onAddItems={() => {
