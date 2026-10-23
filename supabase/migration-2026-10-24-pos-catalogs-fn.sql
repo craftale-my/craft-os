@@ -701,7 +701,9 @@ begin
     on conflict (feedme_catalog_name) do update set sort_order = excluded.sort_order, is_active = true
     returning id into v_id;
 
-    delete from pg_temp._imp_cat;
+    -- "where true": Supabase's API role runs pg-safeupdate, which refuses a DELETE without
+    -- WHERE even inside a function (the SQL editor does not, so the verify script missed it)
+    delete from pg_temp._imp_cat where true;
     insert into pg_temp._imp_cat(product_id, availability, sort_order, prices)
     select mp.id, x.availability, x."sortOrder", x.prices
       from jsonb_to_recordset(v_cat.products) as x("feedmeId" text, availability text, "sortOrder" integer, prices jsonb)
