@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { qrClient } from './qrClient'
-import { tokenFromLocation, addLine, replaceLine, removeLine } from './qrState'
+import { tokenFromLocation, addLine, replaceLine, removeLine, leftTheMenu, leftTheMenuNotice } from './qrState'
 import {
   cartKey, cartSubtotalSen, findProduct, formatSen, lineLabel, linePriceSen, posMenuFromQr,
   type OrderLine, type PosMenu, type PosProduct, type QrMenuJson,
@@ -16,6 +16,10 @@ interface TableState {
 }
 type Screen = { kind: 'loading' } | { kind: 'invalid' } | { kind: 'error' } | { kind: 'ready'; info: QrMenuJson; menu: PosMenu }
 
+/** M3: a photo path in the public menu-images bucket → its URL (no request is made). */
+const photoUrl = (path: string) => qrClient.storage.from('menu-images').getPublicUrl(path).data.publicUrl
+const REFRESH_MS = 60_000
+
 export default function QrApp() {
   const token = tokenFromLocation(window.location.pathname, window.location.search)
   const [screen, setScreen] = useState<Screen>({ kind: 'loading' })
@@ -27,8 +31,14 @@ export default function QrApp() {
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [placed, setPlaced] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const sendingRef = useRef(false)
   const pending = useRef<{ id: string; key: string } | null>(null)   // one client_order_id per distinct cart
+  // M3: the minute refresh reads these, not a stale closure
+  const linesRef = useRef(lines)
+  useEffect(() => { linesRef.current = lines }, [lines])
+  const menuRef = useRef<PosMenu | null>(null)
+  useEffect(() => { menuRef.current = screen.kind === 'ready' ? screen.menu : null }, [screen])
 
   const loadState = async () => {
     const { data } = await qrClient.rpc('qr_table_state', { p_token: token })
@@ -41,12 +51,41 @@ export default function QrApp() {
       if (error) { setScreen({ kind: 'error' }); return }
       if (!data) { setScreen({ kind: 'invalid' }); return }
       const info = data as QrMenuJson
-      setScreen({ kind: 'ready', info, menu: posMenuFromQr(info) })
+      setScreen({ kind: 'ready', info, menu: posMenuFromQr(info, photoUrl) })
       setCategory(info.categories[0]?.name ?? null)
       void loadState()
     }, () => setScreen({ kind: 'error' }))
   }
   useEffect(() => { loadMenu() }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // M3: read the menu again every minute while the page is in view, and when it comes back into
+  // view, quietly: products whose time slot ends leave the menu (and the cart, with a notice; an
+  // open product sheet for one closes), products whose slot starts appear. A failed read keeps the
+  // menu on screen; nothing changes while an order is being sent; the server refuses anything out
+  // of its slot anyway.
+  const ready = screen.kind === 'ready'
+  useEffect(() => {
+    if (!ready || !token) return
+    const refresh = () => {
+      if (document.visibilityState !== 'visible' || sendingRef.current) return
+      qrClient.rpc('qr_menu', { p_token: token }).then(({ data, error }) => {
+        if (error || !data || !menuRef.current || sendingRef.current) return
+        const info = data as QrMenuJson
+        const menu = posMenuFromQr(info, photoUrl)
+        const gone = leftTheMenu(linesRef.current, menu, menuRef.current)
+        setScreen({ kind: 'ready', info, menu })
+        setCategory((c) => (c && info.categories.some((x) => x.name === c) ? c : info.categories[0]?.name ?? null))
+        setSheet((s) => (s && findProduct(menu, s.product.id) ? s : null))
+        if (gone.length > 0) {
+          setLines((ls) => ls.filter((l) => findProduct(menu, l.productId)))
+          setNotice(leftTheMenuNotice(gone))
+        }
+      }, () => { /* offline for a moment: try again next minute */ })
+    }
+    const timer = setInterval(refresh, REFRESH_MS)
+    document.addEventListener('visibilitychange', refresh)
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', refresh) }
+  }, [ready, token])
 
   if (screen.kind === 'loading') return <Shell><p className="p-6 text-center text-brown-muted">Loading menu…</p></Shell>
   if (screen.kind === 'error') {
@@ -115,8 +154,9 @@ export default function QrApp() {
       <div className={`space-y-2 px-3 ${lines.length > 0 ? 'pb-[50vh]' : 'pb-24'}`}>
         {products.filter((p) => p.variants.length > 0).map((p) => (
           <button key={p.id} disabled={p.soldOut} onClick={() => setSheet({ product: p, index: null })}
-            className="flex w-full items-start justify-between rounded-xl border border-border bg-card p-3 text-left disabled:opacity-50">
-            <div>
+            className="flex w-full items-start gap-3 rounded-xl border border-border bg-card p-3 text-left disabled:opacity-50">
+            {p.imageUrl && <img src={p.imageUrl} alt="" loading="lazy" className="h-16 w-16 shrink-0 rounded-lg object-cover" />}
+            <div className="flex-1">
               <div className="font-medium">{p.name}{p.soldOut && <span className="ml-2 text-xs text-red-700">Sold out</span>}</div>
               {p.description && <div className="text-xs text-brown-muted">{p.description}</div>}
             </div>
@@ -143,6 +183,7 @@ export default function QrApp() {
         {needsPax && lines.length > 0 && (
           <label className="my-1 block">How many people? <input inputMode="numeric" className="ml-2 w-16 rounded border border-border p-1 text-base" value={pax} onChange={(e) => setPax(e.target.value)} /></label>
         )}
+        {notice && <p role="status" className="my-1 rounded bg-amber-50 p-2 text-amber-900">{notice}</p>}
         {error && <p className="my-1 text-red-700">{error}</p>}
         </div>
         <button disabled={lines.length === 0 || sending} onClick={() => void place()}
@@ -154,7 +195,7 @@ export default function QrApp() {
       {sheet && (
         <LineSheet product={sheet.product} initial={sheet.index === null ? undefined : lines[sheet.index]}
           onCancel={() => setSheet(null)}
-          onDone={(line) => { setLines(sheet.index === null ? addLine(lines, line) : replaceLine(lines, sheet.index, line)); setSheet(null); setPlaced(false) }} />
+          onDone={(line) => { setLines(sheet.index === null ? addLine(lines, line) : replaceLine(lines, sheet.index, line)); setSheet(null); setPlaced(false); setNotice(null) }} />
       )}
     </Shell>
   )

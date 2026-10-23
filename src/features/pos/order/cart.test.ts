@@ -162,4 +162,14 @@ describe('posMenuFromQr', () => {
     expect(p.variants[0].isBase).toBe(true)      // the server says which variant is the base (feedme key '')
     expect(defaultLine(p).optionIds).toEqual(['o'])
   })
+
+  it('turns a photo path into its public URL, and no path into none', () => {
+    const product = (imagePath: string | null) => ({ id: 'p', name: 'Tea', description: null, soldOut: false, imagePath,
+      variants: [{ id: 'v', name: 'HOT', priceSen: 1000, isBase: true }], groups: [] })
+    const json = { tableLabel: 'T1', paused: false, needsPax: false,
+      categories: [{ name: 'TEA', products: [product('products/p/abc12345.webp'), { ...product(null), id: 'q' }] }] }
+    const m = posMenuFromQr(json, (path) => `https://cdn.test/${path}`)
+    expect(m.categories[0].products.map((p) => p.imageUrl)).toEqual(['https://cdn.test/products/p/abc12345.webp', null])
+    expect(posMenuFromQr(json).categories[0].products[0].imageUrl).toBeNull()
+  })
 })

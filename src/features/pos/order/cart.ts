@@ -25,6 +25,8 @@ export interface PosProduct {
   soldOut: boolean
   variants: PosVariant[]
   groups: PosGroup[]
+  /** QR only (M3): the photo's public URL; the counter keeps text tiles */
+  imageUrl?: string | null
 }
 export interface PosCategory { name: string; products: PosProduct[] }
 export interface PosMenu { categories: PosCategory[] }
@@ -130,6 +132,8 @@ export interface QrMenuJson {
     name: string
     products: {
       id: string; name: string; description: string | null; soldOut: boolean
+      /** M3: a path in the menu-images bucket, or null */
+      imagePath?: string | null
       variants: { id: string; name: string; priceSen: number; isBase: boolean }[]
       groups: { id: string; name: string; min: number; max: number
         options: { id: string; name: string; priceDeltaSen: number; isDefault: boolean; available: boolean }[] }[]
@@ -137,12 +141,14 @@ export interface QrMenuJson {
   }[]
 }
 
-export function posMenuFromQr(json: QrMenuJson): PosMenu {
+/** `photoUrl` turns a photo path into its public URL (the QR page's storage client). */
+export function posMenuFromQr(json: QrMenuJson, photoUrl?: (path: string) => string): PosMenu {
   return {
     categories: json.categories.map((c) => ({
       name: c.name,
       products: c.products.map((p) => ({
         id: p.id, name: p.name.trim(), description: p.description, soldOut: p.soldOut,
+        imageUrl: p.imagePath && photoUrl ? photoUrl(p.imagePath) : null,
         variants: p.variants.map((v) => ({ id: v.id, name: v.name.trim(), priceSen: v.priceSen, isBase: v.isBase })),
         groups: p.groups.map((g) => ({ id: g.id, name: g.name, min: g.min, max: g.max,
           options: g.options.map((o) => ({ ...o, name: o.name.trim() })) })),
