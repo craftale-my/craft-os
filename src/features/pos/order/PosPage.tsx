@@ -124,7 +124,7 @@ export default function PosPage() {
           <button onClick={() => setDrawer('bills')} className="rounded border border-border px-3 py-1">Today's bills</button>
           <button onClick={() => setDrawer('pin')} className="rounded border border-border px-3 py-1">My PIN</button>
           <span>Live: {rtStatus}</span>
-          {can('access_settings') && <Link to="/pos/settings" className="underline">Tables & printers</Link>}
+          {can('access_settings') && <Link to="/pos/settings" className="underline">POS settings</Link>}
           <Link to="/profile" className="underline">Exit</Link>
         </div>
       </header>

@@ -83,9 +83,9 @@ export default function PrintHostPanel({ branchId }: { branchId: string }) {
               <button key={r.route} onClick={() => insertTestPrint(r.route).catch((e) => setNote(msg(e)))}
                 className="rounded border border-border px-2 py-1 text-xs">Test {r.route} ({r.kind})</button>
             ))}
-            {routes.length === 0 && <span className="text-xs text-brown-muted">No printers set — see Tables & printers.</span>}
+            {routes.length === 0 && <span className="text-xs text-brown-muted">No printers set — see POS settings.</span>}
           </div>
-          {missing.length > 0 && <p className="mb-2 text-xs text-amber-700">No printer set for route(s): {missing.join(', ')} — set them in Tables &amp; printers.</p>}
+          {missing.length > 0 && <p className="mb-2 text-xs text-amber-700">No printer set for route(s): {missing.join(', ')} — set them in POS settings.</p>}
           {problems.length === 0 && <p className="text-xs text-brown-muted">All tickets printed.</p>}
           {problems.map(({ job: j, kind, ageMs }) => (
             <div key={j.id} className="mb-2 rounded bg-red-50 p-2">

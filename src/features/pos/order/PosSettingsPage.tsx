@@ -9,6 +9,7 @@ import type { PrintRoute, PrinterKind } from '../print/adapter'
 import { qrLink, newQrToken } from './qrLink'
 import { PRINT_ROUTES } from '../menu/menuView'
 import { addTableAction, friendlyDbMessage, openBillMessage, renameConflict } from './tableAdmin'
+import CheckoutSettings from '../checkout/CheckoutSettings'
 
 const KINDS: PrinterKind[] = ['agent', 'epson-epos', 'star-webprnt']
 
@@ -116,7 +117,7 @@ export default function PosSettingsPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Tables & printers</h1>
+        <h1 className="text-2xl font-semibold">POS settings</h1>
         <Link to="/pos" className="text-sm underline">Open POS</Link>
       </div>
       {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
@@ -165,6 +166,8 @@ export default function PosSettingsPage() {
           )
         })}
       </section>
+
+      <CheckoutSettings branchId={branchId} routes={routes.map((r) => r.route)} tables={tables} />
 
       {card && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40" onClick={() => setCard(null)}>
