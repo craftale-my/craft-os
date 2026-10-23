@@ -15,18 +15,20 @@ export const CATALOG_AVAILABILITY_LABELS: Record<Availability, string> = {
 }
 
 /** The /menu sub-navigation. `menuTab()` decides which tab a path belongs to. */
-export type MenuTab = 'products' | 'catalogs' | 'groups' | 'categories' | 'import'
+export type MenuTab = 'products' | 'catalogs' | 'groups' | 'categories' | 'schedules' | 'import'
 export const MENU_TABS: { id: Exclude<MenuTab, 'import'>; label: string; to: string }[] = [
   { id: 'products', label: 'Products', to: '/menu' },
   { id: 'catalogs', label: 'Catalogs', to: '/menu/catalogs' },
   { id: 'groups', label: 'Add-on groups', to: '/menu/groups' },
   { id: 'categories', label: 'Categories', to: '/menu/categories' },
+  { id: 'schedules', label: 'Schedules', to: '/menu/schedules' },
 ]
 export function menuTab(pathname: string): MenuTab {
   const rest = pathname.replace(/^\/menu\/?/, '')
   if (rest.startsWith('catalogs')) return 'catalogs'
   if (rest.startsWith('groups')) return 'groups'
   if (rest.startsWith('categories')) return 'categories'
+  if (rest.startsWith('schedules')) return 'schedules'
   if (rest.startsWith('import')) return 'import'
   return 'products'
 }

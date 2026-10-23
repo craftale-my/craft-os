@@ -7,6 +7,8 @@ import CatalogGridPage from './CatalogGridPage'
 import GroupListPage from './GroupListPage'
 import GroupEditorPage from './GroupEditorPage'
 import CategoriesPage from './CategoriesPage'
+import SchedulesPage from './SchedulesPage'
+import ScheduleEditorPage from './ScheduleEditorPage'
 import MenuImportPage from './MenuImportPage'
 
 /** A fresh editor per product: nothing typed for one product can leak into another. */
@@ -18,6 +20,11 @@ function ProductEditorRoute() {
 function CatalogGridRoute() {
   const { id = '' } = useParams<{ id: string }>()
   return <CatalogGridPage key={id} catalogId={id} />
+}
+
+function ScheduleEditorRoute() {
+  const { id } = useParams<{ id: string }>()
+  return <ScheduleEditorPage key={id ?? 'new'} scheduleId={id ?? null} />
 }
 
 function GroupEditorRoute() {
@@ -38,6 +45,9 @@ export default function MenuRoutes() {
       <Route path="groups/new" element={<GroupEditorRoute />} />
       <Route path="groups/:id" element={<GroupEditorRoute />} />
       <Route path="categories" element={<CategoriesPage />} />
+      <Route path="schedules" element={<SchedulesPage />} />
+      <Route path="schedules/new" element={<ScheduleEditorRoute />} />
+      <Route path="schedules/:id" element={<ScheduleEditorRoute />} />
       <Route path="import" element={<MenuImportPage />} />
       <Route path="*" element={<Navigate to="/menu" replace />} />
     </Routes>

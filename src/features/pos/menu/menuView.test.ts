@@ -36,6 +36,8 @@ describe('menuTab', () => {
     expect(menuTab('/menu/catalogs/abc')).toBe('catalogs')
     expect(menuTab('/menu/groups/new')).toBe('groups')
     expect(menuTab('/menu/categories')).toBe('categories')
+    expect(menuTab('/menu/schedules')).toBe('schedules')
+    expect(menuTab('/menu/schedules/abc')).toBe('schedules')
     expect(menuTab('/menu/import')).toBe('import')
   })
 })
