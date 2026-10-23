@@ -6,7 +6,31 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
-vi.mock('../lib/supabase', () => ({ supabase: { from: () => ({}) } }))
+// SidebarContent itself doesn't touch supabase (NotificationBell is mounted
+// once at the <Sidebar> level now, not inside SidebarContent — see the
+// comment there), but this file's module graph still pulls it in statically
+// (Sidebar.tsx imports NotificationBell.tsx, which imports useNotifications,
+// which imports supabase at module scope). vitest loads .env.local, so an
+// unmocked import would build a real client against the PRODUCTION database.
+// This mock needs a chainable query that resolves, plus channel()/
+// removeChannel() for the realtime subscription, or importing this module
+// throws "supabase.from(...).select is not a function".
+vi.mock('../lib/supabase', () => {
+  const query: Record<string, unknown> = {}
+  for (const m of ['select', 'eq', 'is', 'order', 'limit', 'update']) query[m] = () => query
+  query.then = (ok: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(ok)
+  const channel = {
+    on: () => channel,
+    subscribe: (cb?: (s: string) => void) => { cb?.('SUBSCRIBED'); return channel },
+  }
+  return {
+    supabase: {
+      from: () => query,
+      channel: () => channel,
+      removeChannel: vi.fn(),
+    },
+  }
+})
 vi.mock('../../features/auth/AuthContext', () => ({
   useAuth: () => ({ staff: { id: 's1', name: 'Yong', rank: 'manager', avatar: null }, signOut: vi.fn() }),
 }))

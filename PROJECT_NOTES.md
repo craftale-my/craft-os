@@ -139,6 +139,16 @@ Authentication is **Supabase Auth (email/password)** layered over an application
 
 ## 4. Database
 
+> **`schema.sql` is stale for RLS policies.** Several later migrations `drop policy` and
+> recreate policies that still appear in their original form in `schema.sql`, which was never
+> updated to match. `attendance_manage`, `attendance_select_own` and others were replaced by
+> `migration-2026-07-08-rls-system-role.sql` — the live versions also allow
+> `current_system_role() in ('hr','supervisor','manager','admin','owner')`, which the
+> `schema.sql` text does not mention. Before relying on any policy, run
+> `grep -n "<policy_name>" supabase/schema.sql supabase/migration-*.sql` and take the LAST
+> definition, not the one in `schema.sql`. A guard trigger written against the stale text
+> silently under-permits exactly the accounts the RBAC migration exists to serve.
+
 **Source of truth: [`supabase/schema.sql`](supabase/schema.sql)** for everything except
 the seven Tasks & Projects tables below. Those were added by three dated migration
 files under `supabase/` that have been run against production but not folded back into
@@ -161,6 +171,33 @@ files under `supabase/` that have been run against production but not folded bac
 
 Until someone folds these into `schema.sql`, treat the migration files as canonical for
 the tables they touch.
+
+Two further dated migrations add the late-reason and notification feature. **They have
+not been run yet.**
+
+- `migration-2026-09-02-late-reason-notifications.sql` — adds `staff.supervisor_id`, five
+  `late_*` columns on `attendance`, the `notifications` table with its RLS, the
+  `excuse_lateness()` function, and guard triggers. Also seeds a `late_reason_written_threshold`
+  row in `system_rules` and an `attendance_late` row in `notification_settings`.
+- `migration-2026-09-02-notify-late-fn.sql` — adds `notify_late()`, which writes the
+  notification rows, and backfills `staff.supervisor_id` from each person's most recent
+  monthly-review reviewer, falling back to their branch's person-in-charge.
+
+**Run them in that order, and run them BEFORE the code is pushed.** This is a hard gate,
+not a preference: after this feature, every clock-in writes `late_reason_code` and
+`late_reason` — punctual ones included — so deploying the code against a database without
+those columns stops everyone clocking in, not just people arriving late. Pushing to `main`
+deploys automatically, so the push is the point of no return.
+
+One more consequence of running them late rather than early: `countLateDays()` in
+`Reviews.tsx` filters on `late_excused`, and a query against a column that does not exist
+fails. Until the SQL runs, a monthly review will not be able to show a late count.
+
+A third file, `migration-2026-09-02-rejudge-boundary-late.sql`, is optional and separate. It
+re-judges historical attendance rows that the old "any second past the start is late" rule
+flagged, and which the whole-minute rule would not. It is written in three steps — dry run,
+backup table, then the update — and is meant to be read before it is applied.
+
 
 ### Major tables
 

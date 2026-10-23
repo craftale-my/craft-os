@@ -355,9 +355,37 @@ function PromotionReviewModal({
 
 // ─── SupervisorReviewCard (inline review form) ────────────────────────────────
 
+/** Late days that count against a monthly review. An excused lateness stays on
+ *  the record as `late` but must not cost attendance score.
+ *
+ *  Returns `null` on a failed read — an RLS rejection, a transient network
+ *  error, or `late_excused` not existing yet because the migration hasn't
+ *  landed in production. `error` used to be discarded, so any such failure
+ *  came back as `count === null` and was coerced to `0` — indistinguishable
+ *  from "no late days", which silently gave a full attendance score to
+ *  someone the read simply failed for. Same doctrine as `writeOutcome()` in
+ *  db-write.ts, applied to a read: a failure must never look like a clean
+ *  zero, so the caller has to handle `null` explicitly instead of defaulting
+ *  it away here. */
+export async function countLateDays(staffId: string, year: number, month: number): Promise<number | null> {
+  const start = `${year}-${String(month).padStart(2, '0')}-01`
+  const lastDay = new Date(year, month, 0).getDate()
+  const end = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  const { count, error } = await supabase
+    .from('attendance')
+    .select('id', { count: 'exact', head: true })
+    .eq('staff_id', staffId)
+    .eq('status', 'late')
+    .eq('late_excused', false)
+    .gte('date', start)
+    .lte('date', end)
+  if (error) return null
+  return count ?? 0
+}
+
 type RatingKey = 'attitude' | 'efficiency' | 'coffee_skill' | 'service'
 
-function SupervisorReviewCard({
+export function SupervisorReviewCard({
   review,
   reviewerId,
   onComplete,
@@ -367,7 +395,13 @@ function SupervisorReviewCard({
   onComplete: () => void
 }) {
   const [lateCount, setLateCount] = useState(review.late_count ?? 0)
-  const [autoLateCount, setAutoLateCount] = useState<number | null>(null)
+  // Three states, not two: "still loading", "loaded a real number", and
+  // "the read failed" all need different copy — collapsing the last two into
+  // `null` (as this used to) would silently show a confident 0 for a read
+  // that never actually succeeded. See countLateDays()'s doc comment.
+  const [autoLate, setAutoLate] = useState<
+    { status: 'loading' } | { status: 'error' } | { status: 'ok'; count: number }
+  >({ status: 'loading' })
   // Only treat late_count as a deliberate override if a supervisor has already submitted this review before
   // (the column defaults to 0 for fresh rows, so 0 alone doesn't mean "manually set").
   const [lateOverridden, setLateOverridden] = useState(review.sup_submitted_at != null)
@@ -381,21 +415,18 @@ function SupervisorReviewCard({
   const staff = review.staff as Staff | undefined
 
   useEffect(() => {
-    if (!expanded || autoLateCount != null) return
-    const start = `${review.year}-${String(review.month).padStart(2, '0')}-01`
-    const lastDay = new Date(review.year, review.month, 0).getDate()
-    const end = `${review.year}-${String(review.month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
-    supabase
-      .from('attendance')
-      .select('id', { count: 'exact', head: true })
-      .eq('staff_id', review.staff_id)
-      .eq('status', 'late')
-      .gte('date', start)
-      .lte('date', end)
-      .then(({ count }) => {
-        setAutoLateCount(count ?? 0)
-        if (!lateOverridden) setLateCount(count ?? 0)
-      })
+    if (!expanded || autoLate.status !== 'loading') return
+    countLateDays(review.staff_id, review.year, review.month).then(count => {
+      if (count == null) {
+        // Refuse to pre-fill a number we don't actually have — leave
+        // lateCount at whatever it already was (review.late_count, or a
+        // supervisor's earlier override) rather than defaulting to 0.
+        setAutoLate({ status: 'error' })
+        return
+      }
+      setAutoLate({ status: 'ok', count })
+      if (!lateOverridden) setLateCount(count)
+    })
   }, [expanded])
 
   const allRated = Object.values(ratings).every(v => v > 0)
@@ -475,11 +506,13 @@ function SupervisorReviewCard({
           <div className="flex items-center gap-3">
             <div className="flex-1">
               <span className="text-xs font-semibold text-brown-medium">Times Late This Month</span>
-              <p className="text-xs text-brown-faint mt-0.5">
-                {autoLateCount == null
+              <p className={`text-xs mt-0.5 ${autoLate.status === 'error' ? 'text-[#9E4A30] font-medium' : 'text-brown-faint'}`}>
+                {autoLate.status === 'loading'
                   ? 'Checking attendance records…'
+                  : autoLate.status === 'error'
+                  ? 'Could not load attendance records — enter the count manually.'
                   : lateOverridden
-                  ? `Manually set — attendance shows ${autoLateCount}`
+                  ? `Manually set — attendance shows ${autoLate.count}`
                   : `Auto-detected from attendance records`}
               </p>
             </div>
