@@ -51,18 +51,24 @@ export function UnassignedPanel({ tree, onAssigned }: { tree: OrgTree; onAssigne
       {open && (
         <ul className="mt-4 divide-y divide-border">
           {tree.unassigned.map(({ person, reason }) => (
-            <li key={person.id} className="py-3 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+            // lg, not sm: beside the 240px sidebar the main column is only
+            // ~500px at sm/md, and a side-by-side row squeezed names to two letters.
+            <li key={person.id} className="py-3 flex flex-col lg:flex-row lg:items-center gap-2 lg:gap-4">
               <div className="flex items-center gap-3 min-w-0 flex-1">
                 <Avatar name={person.name} avatar={person.avatar} size="sm" />
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-brown-dark truncate">{person.name}</p>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <p className="text-sm font-medium text-brown-dark truncate">{person.name}</p>
+                    <Badge tone={reason === 'none' ? 'neutral' : 'danger'} className="flex-shrink-0 whitespace-nowrap">
+                      {REASON_LABEL[reason]}
+                    </Badge>
+                  </div>
                   <p className="text-xs text-brown-muted">
                     {shortenBranch(person.branch)} · {person.department ? deptName(person.department) : '—'}
                   </p>
                 </div>
-                <Badge tone={reason === 'none' ? 'neutral' : 'danger'}>{REASON_LABEL[reason]}</Badge>
               </div>
-              <div className="sm:w-64">
+              <div className="lg:w-64">
                 <label className="sr-only" htmlFor={`sup-${person.id}`}>Supervisor for {person.name}</label>
                 <select
                   id={`sup-${person.id}`}
