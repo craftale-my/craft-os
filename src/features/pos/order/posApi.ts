@@ -6,6 +6,7 @@ import type { PrintRoute } from '../print/adapter'
 import { counterOrderArgs, toSendResult, type QueuedOrder, type SendResult, type OrderType } from '../offline/orderQueue'
 import { buildPosMenu, type CatalogRows, type GroupRow, type LinkRow, type PosMenu, type ProductRow, type SoldOutRow } from './cart'
 import type { BranchCatalogRow, BranchCatalogSettings, BranchCatalogs, CatalogRow } from './catalogs'
+import { menuWindows, type MenuWindows, type MenuWindowsJson } from './padSlots'
 
 const SEND_TIMEOUT_MS = 8000
 
@@ -54,6 +55,14 @@ export async function fetchPosMenu(catalogId: string): Promise<PosMenu> {
   if (error) fail(error)
   const rows = data as PosMenuRows
   return buildPosMenu(rows.products, rows.groups, rows.links, rows.soldOut, 'counter', rows.catalog)
+}
+
+/** The time slots of one catalog's products, with the server's clock (pos_menu_windows):
+ *  the pad greys out a product outside its slots by the server's time. */
+export async function fetchMenuWindows(catalogId: string): Promise<MenuWindows> {
+  const { data, error } = await supabase.rpc('pos_menu_windows', { p_catalog_id: catalogId })
+  if (error) fail(error)
+  return menuWindows(data as MenuWindowsJson, Date.now())
 }
 
 /** Every catalog (for names) and this branch's assignments. */

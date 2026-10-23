@@ -6,6 +6,9 @@ import { newQueuedOrder } from '../offline/orderQueue'
 import type { QueuedOrder } from '../offline/orderQueue'
 import type { SubmitResult } from './useOrderQueue'
 import LineSheet from './LineSheet'
+import ProductTiles from './ProductTiles'
+import { serverNow, slotProblem } from './padSlots'
+import { usePadWindows } from './usePadWindows'
 
 export type PadMode = ({ orderType: 'dine_in'; tableId: string; needsPax: boolean; initialPax?: number } | { orderType: 'takeaway' })
 type Mode = PadMode
@@ -45,6 +48,7 @@ export default function OrderPad({
   // older render, so it reads the catalog from here and never from its own closure.
   const catalogIdRef = useRef(catalogId)
   useEffect(() => { catalogIdRef.current = catalogId }, [catalogId])
+  const slots = usePadWindows(catalogId)                    // M3: time slots, re-read every minute
 
   useEffect(() => { setError(null) }, [lines, pax])
 
@@ -109,12 +113,12 @@ export default function OrderPad({
     return all.filter((p) => (q ? p.name.toLowerCase().includes(q) : !category || p.category === category))
   }, [menu, category, search])
 
-  const tap = async (p: PosProduct) => {
+  const tap = async (p: PosProduct, outOfSlot: boolean) => {
     if (soldOutMode) {
       try { await setSoldOut(branchId, p.id, !p.soldOut); await load() } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
       return
     }
-    if (p.soldOut) return
+    if (p.soldOut || outOfSlot) return
     if (p.variants.length === 1 && p.groups.length === 0) setLines((ls) => [...ls, defaultLine(p)])
     else setSheet({ product: p, index: null })
   }
@@ -130,6 +134,8 @@ export default function OrderPad({
       const problem = p ? validateLine(p, l) : 'Item is no longer on the menu'
       if (problem) { setError(problem); return }
     }
+    const late = slotProblem(slots.windows, lines, (id) => findProduct(menu, id)?.name ?? 'An item', serverNow(slots.windows, Date.now()))
+    if (late) { setError(late); return }                     // the server would refuse it with the same words
     setSending(true)
     try {
       const res = await submit(newQueuedOrder(mode.orderType, mode.orderType === 'dine_in' ? mode.tableId : null, paxNum, lines,
@@ -183,13 +189,7 @@ export default function OrderPad({
             </p>
           )}
           {!menu && !error && !noCatalog && !(catalogs === null && catalogsError) && <p className="text-brown-muted">Loading menu…</p>}
-          {products.map((p) => (
-            <button key={p.id} onClick={() => void tap(p)}
-              className={`min-h-20 rounded-xl border p-2 text-left text-sm ${p.soldOut ? 'border-red-300 bg-red-50 text-red-700' : 'border-border bg-card'}`}>
-              <div className="font-medium">{p.name}</div>
-              <div className="text-xs text-brown-muted">{p.variants.length > 1 ? `${formatSen(Math.min(...p.variants.map((v) => v.priceSen)))} –` : formatSen(p.variants[0].priceSen)}{p.soldOut && ' · SOLD OUT'}</div>
-            </button>
-          ))}
+          <ProductTiles products={products} windows={slots.windows} now={slots.now} onTap={(p, outOfSlot) => void tap(p, outOfSlot)} />
         </div>
       </div>
 
