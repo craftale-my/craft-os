@@ -99,22 +99,37 @@ commit;
 --          has_function_privilege('anon', 'get_org_chart()', 'execute') as anon_can,
 --          has_function_privilege('authenticated', 'get_org_chart()', 'execute') as auth_can;
 --
--- VERIFY 2 — the trigger rejects a two-step loop. Changes nothing: the final
--- raise rolls the whole block back; read the result from the error message
--- (expect "VERIFY_DONE: loop_blocked=true"):
---   do $$
---   declare a uuid; b uuid; a_old uuid; b_old uuid; blocked boolean := false;
+-- VERIFY 2 — the trigger allows a legal chain and rejects a 2-step loop, a
+-- 3-step loop and a self-reference. Self-contained: it creates three [TEST]
+-- staff (with placeholder auth.users rows, which cannot sign in) and the final
+-- raise rolls the whole block back, so nothing is left behind and it works on
+-- a database with fewer than two staff. Read the result from the error
+-- message; expect:
+--   VERIFY_DONE chain=ok | two_step=Supervisor would create a reporting loop |
+--   three_step=Supervisor would create a reporting loop | self=Supervisor would ...
+--   do $v$
+--   declare a uuid := gen_random_uuid(); b uuid := gen_random_uuid(); c uuid := gen_random_uuid();
+--           two_step text := '(no error)'; three_step text := '(no error)';
+--           self_ref text := '(no error)'; ok_chain text := 'ok';
 --   begin
---     select id, supervisor_id into a, a_old from staff where status = 'active' order by name limit 1;
---     select id, supervisor_id into b, b_old from staff where status = 'active' and id <> a order by name limit 1;
---     update staff set supervisor_id = a where id = b;
+--     insert into auth.users (id, instance_id, aud, role, email) values
+--       (a, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'verify-a@test.invalid'),
+--       (b, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'verify-b@test.invalid'),
+--       (c, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'verify-c@test.invalid');
+--     insert into staff (id, name) values (a, '[TEST] A'), (b, '[TEST] B'), (c, '[TEST] C');
 --     begin
---       update staff set supervisor_id = b where id = a;
---     exception when others then
---       blocked := sqlerrm = 'Supervisor would create a reporting loop';
---     end;
---     raise exception 'VERIFY_DONE: loop_blocked=%', blocked;
---   end $$;
+--       update staff set supervisor_id = a where id = b;   -- c -> b -> a is legal
+--       update staff set supervisor_id = b where id = c;
+--     exception when others then ok_chain := sqlerrm; end;
+--     begin update staff set supervisor_id = b where id = a;   -- a -> b -> a
+--     exception when others then two_step := sqlerrm; end;
+--     begin update staff set supervisor_id = c where id = a;   -- a -> c -> b -> a
+--     exception when others then three_step := sqlerrm; end;
+--     begin update staff set supervisor_id = a where id = a;   -- a -> a
+--     exception when others then self_ref := sqlerrm; end;
+--     raise exception 'VERIFY_DONE chain=% | two_step=% | three_step=% | self=%',
+--       ok_chain, two_step, three_step, self_ref;
+--   end $v$;
 --
 -- VERIFY 3 — get_org_chart() returns exactly the live staff when called by an
 -- active staff member (expect fn_rows = live_rows). Impersonates the first live
