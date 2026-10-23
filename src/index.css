@@ -29,3 +29,28 @@
     background: #B8A890;
   }
 }
+
+/* Brand type roles (Archivo widths: 87.5% = semi-condensed, 75% = condensed). */
+@layer components {
+  /* Logo-style heavy caps: CRAFT wordmark, page titles, staff name. */
+  .type-wordmark {
+    @apply font-brand font-black uppercase leading-none;
+    font-stretch: 87.5%;
+    letter-spacing: 0.01em;
+  }
+  /* Spaced serif caps, like CAFE under the logo: greetings, section labels. */
+  .type-eyebrow {
+    @apply font-label font-bold uppercase;
+    letter-spacing: 0.3em;
+  }
+  /* Narrow menu-style text: meta lines, prices, XP. */
+  .type-condensed {
+    @apply font-brand;
+    font-stretch: 75%;
+    letter-spacing: 0.03em;
+  }
+  .type-semicondensed {
+    @apply font-brand;
+    font-stretch: 87.5%;
+  }
+}

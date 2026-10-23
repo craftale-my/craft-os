@@ -4,6 +4,7 @@ import {
   isStandalone, mobilePlatform, installHintDismissed, dismissInstallHint,
 } from '../lib/pwa'
 import type { MobilePlatform } from '../lib/pwa'
+import { Wordmark } from './ui'
 
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>
@@ -117,7 +118,7 @@ export function AddToHomeScreenLogo() {
 
   const logo = (
     <span className="relative flex-shrink-0">
-      <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-7 h-7 rounded-full object-cover" />
+      <img src="/craft-logo.jpg" alt="" className="w-7 h-7 rounded-full object-cover" />
       {eligible && !dismissed && (
         <span
           className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#C4813A] ring-2 ring-[#4A2E1A]"
@@ -128,7 +129,7 @@ export function AddToHomeScreenLogo() {
   )
 
   const wordmark = (
-    <span className="font-display text-lg font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
+    <Wordmark size="sm" />
   )
 
   // Desktop, or already installed: plain branding, nothing to offer.
