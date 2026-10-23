@@ -39,9 +39,10 @@ end $$;
 -- One window at one instant: the Malaysian day and minute (seconds dropped) inside
 -- start..end, both minutes included. end < start crosses midnight: the window runs
 -- from start on one of `days` to end on the next day.
+-- stable, not immutable: 'at time zone' reads the time zone database (M3 final fixes).
 create or replace function menu_window_open(p_days smallint[], p_start time, p_end time, p_at timestamptz)
 returns boolean
-language sql immutable set search_path = public, pg_temp as $$
+language sql stable set search_path = public, pg_temp as $$
   select case
            when p_start < p_end then c.d = any (p_days) and c.t between p_start and p_end
            else (c.d = any (p_days) and c.t >= p_start)
@@ -103,7 +104,9 @@ end $$;
 revoke all on function menu_days(jsonb) from public, anon, authenticated;
 
 -- ── Reads for the Schedules page and the product editor (Edit menu; one JSON value each) ──
--- Every schedule with its windows and how many products follow it.
+-- Every schedule with its windows and how many products follow it: productCount = products on
+-- sale (the list), linkCount = every product linked, switched-off and add-on ones too (what a
+-- delete unlinks; the Delete confirm counts these — M3 final fixes).
 create or replace function menu_schedule_list() returns jsonb
 language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
@@ -116,7 +119,8 @@ begin
              -- products on sale (add-on items are not on the counter or QR)
              'productCount', (select count(*) from product_schedules ps
                                 join menu_products p on p.id = ps.product_id and p.is_active and not p.is_addon
-                               where ps.schedule_id = s.id))
+                               where ps.schedule_id = s.id),
+             'linkCount', (select count(*) from product_schedules ps where ps.schedule_id = s.id))
            order by s.sort_order, s.name)
       from menu_schedules s), '[]'::jsonb);
 end $$;

@@ -126,6 +126,18 @@ begin
       raise exception 'FAIL storage: no Edit menu % policy on menu-images', r.cmd;
     end if;
   end loop;
+  -- M3 final fixes: the delete policy spares a file a product points at; menu_window_open is stable
+  -- (it reads the time zone database); schedule names are unique whatever their case
+  if not exists (select 1 from pg_policies where schemaname = 'storage' and tablename = 'objects'
+                   and policyname = 'menu_images_delete' and cmd = 'DELETE' and qual like '%image_path%') then
+    raise exception 'FAIL storage: menu_images_delete must refuse a file a product still points at — re-run migration-2026-10-24-pos-slots-photos.sql';
+  end if;
+  if (select provolatile from pg_proc where oid = 'menu_window_open(smallint[],time,time,timestamptz)'::regprocedure) <> 's' then
+    raise exception 'FAIL: menu_window_open must be stable — re-run migration-2026-10-24-pos-slots-photos-fn.sql';
+  end if;
+  if to_regclass('public.menu_schedules_name_lower_idx') is null then
+    raise exception 'FAIL: no case-insensitive unique index on schedule names — re-run migration-2026-10-24-pos-slots-photos.sql';
+  end if;
 
   -- ── B. the time maths: the shared vectors ─────────────────────────────────
   if jsonb_array_length(v_vectors) <> 19 then raise exception 'FAIL vectors: expected 19, got %', jsonb_array_length(v_vectors); end if;
@@ -218,6 +230,29 @@ begin
   end if;
   perform pg_temp.expect_error(format('select menu_save_schedule(%L::jsonb)', jsonb_set(v_s, '{name}', '"verify m3 LATE night"')),
     'A schedule called verify m3 LATE night already exists', 'D2 twin name');
+  -- D2b. two names differing only in case are refused by the table too (two saves at the same
+  --      moment both pass the function's check; the index stops the second)
+  begin
+    insert into menu_schedules(name) values ('VERIFY M3 LATE NIGHT');
+    raise exception 'FAIL D2b: the table accepted a name differing only in case';
+  exception when unique_violation then
+    null;
+  end;
+  begin
+    insert into menu_schedules(name) values ('Verify M3 Case'), ('verify m3 case');
+    raise exception 'FAIL D2b: the table accepted two names differing only in case';
+  exception when unique_violation then
+    null;
+  end;
+  if exists (select 1 from menu_schedules where lower(name) = 'verify m3 case') then
+    raise exception 'FAIL D2b: a refused name was written';
+  end if;
+  -- renaming a schedule to its own name in another case is allowed (same row)
+  perform menu_save_schedule(jsonb_set(jsonb_set(v_s, '{id}', to_jsonb(s_late)), '{name}', '"VERIFY M3 LATE NIGHT"'));
+  if (select name from menu_schedules where id = s_late) <> 'VERIFY M3 LATE NIGHT' then
+    raise exception 'FAIL D2b: a schedule could not change the case of its own name';
+  end if;
+  perform menu_save_schedule(jsonb_set(v_s, '{id}', to_jsonb(s_late)));
   -- D3. edited: windows replaced, productIds left out = links kept
   perform menu_save_schedule(jsonb_build_object('id', s_late, 'name', 'Verify M3 Late night',
     'windows', jsonb_build_array(pg_temp.win(array[6, 5, 5], '22:00', '02:00'))));
@@ -388,6 +423,14 @@ begin
   if (v_res->>'productCount')::int <> 2 or jsonb_array_length(v_res->'windows') <> 1 or v_res->>'name' <> 'Verify M3 Closed now' then
     raise exception 'FAIL H: menu_schedule_list %', v_res;
   end if;
+  -- H0. linkCount counts every linked product (what the Delete confirm says the delete unlinks),
+  --     productCount only those on sale
+  update menu_products set is_active = false where id = v_toast;
+  v_res := (select x from jsonb_array_elements(menu_schedule_list()) x where x->>'id' = s_closed::text);
+  if (v_res->>'productCount')::int <> 1 or (v_res->>'linkCount')::int <> 2 then
+    raise exception 'FAIL H0: a switched-off product must count in linkCount only %', v_res;
+  end if;
+  update menu_products set is_active = true where id = v_toast;
   v_res := menu_schedule_detail(s_closed);
   if not (v_res->'productIds' @> jsonb_build_array(v_pancake, v_toast)) or jsonb_array_length(v_res->'windows') <> 1 then
     raise exception 'FAIL H: menu_schedule_detail %', v_res;
@@ -559,6 +602,25 @@ begin
     exception when others then
       if sqlerrm like 'FAIL %' then raise; end if;
       raise notice 'SKIP I3b (owner): storage refused the statement for its own reasons (%)', sqlerrm;
+    end;
+    reset role;
+    -- I3c. (M3 final fixes) even the owner cannot delete a file a product still points at — the
+    --      delete removes nothing; once the pointer moved off it, the same delete goes through
+    v_text := menu_set_product_image(v_pancake, v_path);
+    begin
+      set local role authenticated;
+      delete from storage.objects where bucket_id = 'menu-images' and name = v_path;
+      get diagnostics n = row_count;
+      if n <> 0 then raise exception 'FAIL I3c: a photo a product points at was deleted'; end if;
+      reset role;
+      v_text := menu_set_product_image(v_pancake, null);
+      set local role authenticated;
+      delete from storage.objects where bucket_id = 'menu-images' and name = v_path;
+      get diagnostics n = row_count;
+      if n <> 1 then raise exception 'FAIL I3c: the owner could not delete a photo no product points at'; end if;
+    exception when others then
+      if sqlerrm like 'FAIL %' then raise; end if;
+      raise notice 'SKIP I3c: storage refused the statement for its own reasons (%)', sqlerrm;
     end;
     reset role;
   end if;

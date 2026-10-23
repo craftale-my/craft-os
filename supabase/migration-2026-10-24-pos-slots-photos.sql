@@ -45,6 +45,17 @@ create table if not exists menu_schedule_windows (
   sort_order   integer not null default 0,
   check (start_time <> end_time)
 );
+-- M3 final fixes: names are unique whatever their case, as menu_save_schedule checks them
+-- ("Breakfast" and "breakfast" are one name). The function's check alone lets two saves at the
+-- same moment both pass it; this index refuses the second (menu_save_schedule turns the
+-- unique_violation into "A schedule called … already exists").
+do $$ begin
+  if exists (select 1 from menu_schedules group by lower(name) having count(*) > 1) then
+    raise exception 'STOP: two schedules have the same name in different case — rename one on the Schedules page, then re-run';
+  end if;
+end $$;
+create unique index if not exists menu_schedules_name_lower_idx on menu_schedules (lower(name));
+
 create index if not exists menu_schedule_windows_schedule_idx on menu_schedule_windows(schedule_id);
 
 -- Which schedules a product follows (configuration: a removed link is deleted).
@@ -104,9 +115,14 @@ create policy "menu_images_update" on storage.objects for update to authenticate
   with check (bucket_id = 'menu-images' and (storage.foldername(name))[1] = 'products'
               and public.has_menu_cap('manage_menu'));
 
+-- M3 final fixes: never a file a product still points at. The editors delete a file only after
+-- the product's pointer moved off it; this makes "a product pointing at a deleted file"
+-- impossible from any client, including a pointer write that committed after the client saw a
+-- network error. A refused delete removes nothing and raises nothing (the file simply stays).
 drop policy if exists "menu_images_delete" on storage.objects;
 create policy "menu_images_delete" on storage.objects for delete to authenticated
-  using (bucket_id = 'menu-images' and public.has_menu_cap('manage_menu'));
+  using (bucket_id = 'menu-images' and public.has_menu_cap('manage_menu')
+         and not exists (select 1 from public.menu_products p where p.image_path = objects.name));
 
 -- PostgREST picks up the new tables and columns now, not at its next poll
 notify pgrst, 'reload schema';
