@@ -119,6 +119,19 @@ export function groupProblems(f: GroupForm, catalogName: (id: string) => string)
   return out
 }
 
+/** Whether the form differs from the loaded one. A blank catalog price is the same as no override,
+ *  so typing a price and clearing it again is not a change. */
+export function groupFormDirty(form: GroupForm, loaded: GroupForm | null): boolean {
+  const norm = (f: GroupForm) => JSON.stringify({
+    ...f,
+    options: f.options.map((o) => ({
+      ...o,
+      catalogPrices: Object.fromEntries(Object.entries(o.catalogPrices).filter(([, t]) => t.trim() !== '').sort(([a], [b]) => (a < b ? -1 : 1))),
+    })),
+  })
+  return !loaded || norm(form) !== norm(loaded)
+}
+
 /** What menu_save_group takes. Call it only when groupProblems() is empty. */
 export function groupPayload(f: GroupForm): GroupPayload {
   const sen = (text: string): number => {

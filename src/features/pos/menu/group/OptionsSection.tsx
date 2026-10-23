@@ -36,11 +36,11 @@ export default function OptionsSection({ form, onChange, addOns, catalogs, probl
               <Fragment key={o.ref}>
                 <tr className="border-t border-border">
                   <td className="py-1 pr-2">
-                    <input className={`${inputCls} w-full`} value={o.name}
+                    <input className={`${inputCls} w-full`} aria-label={`Option ${i + 1} name`} value={o.name}
                       onChange={(e) => onChange(updateOption(form, o.ref, { name: e.target.value }))} />
                   </td>
                   <td className="py-1 pr-2">
-                    <select className={inputCls} value={o.productId ?? ''}
+                    <select className={inputCls} aria-label={`Option ${i + 1} add-on item`} value={o.productId ?? ''}
                       onChange={(e) => onChange(updateOption(form, o.ref, { productId: e.target.value || null }))}>
                       <option value="">None</option>
                       {o.productId && !addOnName.has(o.productId) && <option value={o.productId}>(not an add-on item)</option>}
@@ -48,7 +48,7 @@ export default function OptionsSection({ form, onChange, addOns, catalogs, probl
                     </select>
                   </td>
                   <td className="py-1 pr-2">
-                    <input className={`${inputCls} w-20`} inputMode="decimal" value={o.price}
+                    <input className={`${inputCls} w-20`} inputMode="decimal" aria-label={`Option ${i + 1} price (RM)`} value={o.price}
                       onChange={(e) => onChange(updateOption(form, o.ref, { price: e.target.value }))} />
                   </td>
                   <td className="py-1 pr-2">
@@ -56,7 +56,7 @@ export default function OptionsSection({ form, onChange, addOns, catalogs, probl
                       onChange={(e) => onChange(updateOption(form, o.ref, { isDefault: e.target.checked }))} />
                   </td>
                   <td className="py-1 pr-2">
-                    <select className={inputCls} value={o.availability}
+                    <select className={inputCls} aria-label={`Option ${i + 1} offered`} value={o.availability}
                       onChange={(e) => onChange(updateOption(form, o.ref, { availability: e.target.value as Availability }))}>
                       {(Object.keys(OPTION_AVAILABILITY_LABELS) as Availability[]).map((a) => (
                         <option key={a} value={a}>{OPTION_AVAILABILITY_LABELS[a]}</option>
@@ -67,9 +67,9 @@ export default function OptionsSection({ form, onChange, addOns, catalogs, probl
                     <button type="button" className={linkBtnCls} onClick={() => setOpen(open === o.ref ? null : o.ref)}>
                       Catalog prices{Object.values(o.catalogPrices).some((t) => t.trim() !== '') ? ' •' : ''}
                     </button>{' '}
-                    <button type="button" className={linkBtnCls} disabled={i === 0} aria-label="Move up"
+                    <button type="button" className={linkBtnCls} disabled={i === 0} aria-label={`Move option ${i + 1} up`}
                       onClick={() => onChange(moveOption(form, i, -1))}>↑</button>{' '}
-                    <button type="button" className={linkBtnCls} disabled={i === form.options.length - 1} aria-label="Move down"
+                    <button type="button" className={linkBtnCls} disabled={i === form.options.length - 1} aria-label={`Move option ${i + 1} down`}
                       onClick={() => onChange(moveOption(form, i, 1))}>↓</button>{' '}
                     {o.id === null && (
                       <button type="button" className={linkBtnCls} onClick={() => onChange(removeNewOption(form, o.ref))}>Remove</button>
@@ -83,7 +83,7 @@ export default function OptionsSection({ form, onChange, addOns, catalogs, probl
                       <div className="mt-1 flex flex-wrap gap-3">
                         {catalogs.map((c) => (
                           <label key={c.id} className="text-xs">{c.name}{c.isActive ? '' : ' (off)'}
-                            <input className={`${inputCls} ml-1 w-20`} inputMode="decimal" value={o.catalogPrices[c.id] ?? ''}
+                            <input className={`${inputCls} ml-1 w-20`} inputMode="decimal" aria-label={`Option ${i + 1} ${c.name} price (RM)`} value={o.catalogPrices[c.id] ?? ''}
                               onChange={(e) => onChange(setOptionCatalogPrice(form, o.ref, c.id, e.target.value))} />
                           </label>
                         ))}

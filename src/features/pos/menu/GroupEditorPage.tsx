@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchGroupDetail, fetchLookups, saveGroup, type GroupDetail, type MenuLookups } from './menuEditorApi'
-import { emptyGroupForm, groupFormFromDetail, groupPayload, groupProblems, type GroupForm, type GroupSection } from './groupForm'
+import { emptyGroupForm, groupFormDirty, groupFormFromDetail, groupPayload, groupProblems, type GroupForm, type GroupSection } from './groupForm'
 import MenuTabs from './MenuTabs'
 import OptionsSection from './group/OptionsSection'
 import { OutcomeLine, Section, btnCls, errorText, inputCls, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
@@ -34,14 +34,21 @@ export default function GroupEditorPage({ groupId }: { groupId: string | null })
   }, [groupId])
   useEffect(() => { load().catch((e) => setLoadError(errorText(e))) }, [load])
 
+  /** Reload after a failure; a "Saved, but reloading failed" notice becomes plain "Saved". */
+  const retryLoad = () => {
+    load()
+      .then(() => setOutcome((o) => (o?.kind === 'error' && o.text.startsWith('Saved, but') ? { kind: 'ok', text: 'Saved' } : o)))
+      .catch((e) => setLoadError(errorText(e)))
+  }
+
   const change = (next: GroupForm) => { setForm(next); setOutcome(null) }
   const catalogName = (id: string) => lookups?.catalogs.find((c) => c.id === id)?.name ?? 'A catalog'
   const problems = form ? groupProblems(form, catalogName) : []
-  useUnsavedWarning(!!form && !saving && JSON.stringify(form) !== JSON.stringify(loaded))
+  useUnsavedWarning(!!form && !saving && groupFormDirty(form, loaded))
   const problemOf = (s: GroupSection) => (tried ? problems.find((p) => p.section === s)?.message ?? null : null)
 
   const save = async () => {
-    if (!form || saving) return
+    if (!form || saving || loadError) return
     setTried(true)
     if (problems.length > 0) { setOutcome({ kind: 'error', text: 'Not saved — fix the problems marked above.' }); return }
     setSaving(true)
@@ -57,7 +64,9 @@ export default function GroupEditorPage({ groupId }: { groupId: string | null })
         setTried(false)
         setOutcome({ kind: 'ok', text: 'Saved' })
       } catch (e) {
-        setOutcome({ kind: 'error', text: `Saved, but reloading failed: ${errorText(e)}` })
+        // The form on screen is now stale: lock it until a fresh load succeeds.
+        setLoadError(errorText(e))
+        setOutcome({ kind: 'error', text: 'Saved, but reloading failed — reload before editing again.' })
       }
     } catch (e) {
       setOutcome({ kind: 'error', text: errorText(e) })
@@ -77,39 +86,42 @@ export default function GroupEditorPage({ groupId }: { groupId: string | null })
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
-          <button className="text-sm underline" onClick={() => load().catch((e) => setLoadError(errorText(e)))}>Try again</button>
+          <button className="text-sm underline" disabled={saving} onClick={() => retryLoad()}>Try again</button>
         </div>
       )}
       {!form || !lookups ? (!loadError && <p className="text-sm">Loading…</p>) : (
         <>
-          <Section title="Group" problem={problemOf('details')}
-            hint={usedBy.length === 0 ? 'No product uses this group yet — add it in a product’s editor.'
-              : `Used by ${usedBy.length} product${usedBy.length === 1 ? '' : 's'}: ${usedBy.slice(0, 8).map((p) => p.name).join(', ')}${usedBy.length > 8 ? ', …' : ''}`}>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="block text-sm sm:col-span-3">Name
-                <input className={`${inputCls} mt-1 w-full`} value={form.name} onChange={(e) => set({ name: e.target.value })} />
-              </label>
-              <label className="block text-sm">Choose at least
-                <input className={`${inputCls} mt-1 w-full`} inputMode="numeric" value={form.min} onChange={(e) => set({ min: e.target.value })} />
-              </label>
-              <label className="block text-sm">Choose at most
-                <input className={`${inputCls} mt-1 w-full`} inputMode="numeric" value={form.max} onChange={(e) => set({ max: e.target.value })} />
-              </label>
-            </div>
-            <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={form.isActive} onChange={(e) => set({ isActive: e.target.checked })} />
-                On (a switched-off group is left off every product)
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={form.stackable} onChange={(e) => set({ stackable: e.target.checked })} />
-                Stackable (kept from Feedme; the counter does not use it yet)
-              </label>
-            </div>
-          </Section>
-          <OptionsSection form={form} onChange={change} addOns={lookups.addOns} catalogs={lookups.catalogs} problem={problemOf('options')} />
+          {/* Locked while saving (the reload would overwrite typing) and while the form is stale after a failed reload. */}
+          <fieldset disabled={saving || !!loadError} className="m-0 min-w-0 space-y-4 border-0 p-0">
+            <Section title="Group" problem={problemOf('details')}
+              hint={usedBy.length === 0 ? 'No product uses this group yet — add it in a product’s editor.'
+                : `Used by ${usedBy.length} product${usedBy.length === 1 ? '' : 's'}: ${usedBy.slice(0, 8).map((p) => p.name).join(', ')}${usedBy.length > 8 ? ', …' : ''}`}>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <label className="block text-sm sm:col-span-3">Name
+                  <input className={`${inputCls} mt-1 w-full`} value={form.name} onChange={(e) => set({ name: e.target.value })} />
+                </label>
+                <label className="block text-sm">Choose at least
+                  <input className={`${inputCls} mt-1 w-full`} inputMode="numeric" value={form.min} onChange={(e) => set({ min: e.target.value })} />
+                </label>
+                <label className="block text-sm">Choose at most
+                  <input className={`${inputCls} mt-1 w-full`} inputMode="numeric" value={form.max} onChange={(e) => set({ max: e.target.value })} />
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={form.isActive} onChange={(e) => set({ isActive: e.target.checked })} />
+                  On (a switched-off group is left off every product)
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={form.stackable} onChange={(e) => set({ stackable: e.target.checked })} />
+                  Stackable (kept from Feedme; the counter does not use it yet)
+                </label>
+              </div>
+            </Section>
+            <OptionsSection form={form} onChange={change} addOns={lookups.addOns} catalogs={lookups.catalogs} problem={problemOf('options')} />
+          </fieldset>
           <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t border-border bg-cream py-3">
-            <button className={btnCls} disabled={saving} onClick={() => void save()}>
+            <button className={btnCls} disabled={saving || !!loadError} onClick={() => void save()}>
               {saving ? 'Saving…' : form.id ? 'Save add-on group' : 'Create add-on group'}
             </button>
             <OutcomeLine outcome={outcome} />

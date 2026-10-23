@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  addOption, emptyGroupForm, groupFormFromDetail, groupPayload, groupProblems, moveOption, removeNewOption,
+  addOption, emptyGroupForm, groupFormDirty, groupFormFromDetail, groupPayload, groupProblems, moveOption, removeNewOption,
   setOptionCatalogPrice, updateOption, type GroupForm,
 } from './groupForm'
 import type { GroupDetail } from './menuEditorApi'
@@ -39,6 +39,32 @@ describe('the form of a saved group', () => {
         { ref: 'o-oat', id: 'o-oat', name: 'Oat milk', priceDeltaSen: 200, productId: 'p-oat', isDefault: false, availability: 'all' },
       ],
       catalogPrices: [{ catalogId: 'cafe', ref: 'o-full', priceDeltaSen: 50 }],
+    })
+  })
+})
+
+describe('unsaved changes', () => {
+  it('typing a catalog price and clearing it again is not a change', () => {
+    const typed = setOptionCatalogPrice(saved(), 'o-full', 'cafe', '0.50')
+    expect(groupFormDirty(typed, saved())).toBe(true)
+    expect(groupFormDirty(setOptionCatalogPrice(typed, 'o-full', 'cafe', ''), saved())).toBe(false)
+    expect(groupFormDirty(setOptionCatalogPrice(saved(), 'o-oat', 'grab', ''), saved())).toBe(true)   // a saved override cleared
+    expect(groupFormDirty(updateOption(saved(), 'o-oat', { name: 'Oat' }), saved())).toBe(true)
+  })
+})
+
+describe('the payload of a new group', () => {
+  it('has no ids, and names its options by new-N refs', () => {
+    let f = { ...emptyGroupForm(), name: '  Sugar  ' }
+    f = updateOption(addOption(f), 'new-1', { name: 'Less sugar' })
+    f = setOptionCatalogPrice(addOption(f, { id: 'p-honey', name: 'Honey' }), 'new-2', 'grab', '1.50')
+    expect(groupPayload(f)).toEqual({
+      id: null, name: 'Sugar', min: 0, max: 1, stackable: false, isActive: true,
+      options: [
+        { ref: 'new-1', id: null, name: 'Less sugar', priceDeltaSen: 0, productId: null, isDefault: false, availability: 'all' },
+        { ref: 'new-2', id: null, name: 'Honey', priceDeltaSen: 0, productId: 'p-honey', isDefault: false, availability: 'all' },
+      ],
+      catalogPrices: [{ catalogId: 'grab', ref: 'new-2', priceDeltaSen: 150 }],
     })
   })
 })
