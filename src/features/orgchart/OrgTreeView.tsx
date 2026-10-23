@@ -30,62 +30,119 @@ function OrgNode({ person, ctx, ancestors }: { person: OrgPerson; ctx: TreeCtx; 
   // `ancestors` guards against a loop in old data rendering forever.
   const kids = ctx.tree.childrenOf(person.id).filter(k => !ancestors.has(k.id))
   const isOpen = ctx.expanded.has(person.id)
+  const nextAncestors = new Set(ancestors).add(person.id)
+
+  // Reports who lead a team of their own branch sideways; everyone else
+  // stacks in one column under the supervisor. A manager with fifteen
+  // kitchen crew used to spread fifteen cards across the page.
+  const hasTeam = (k: OrgPerson) => ctx.tree.childrenOf(k.id).some(g => !nextAncestors.has(g.id))
+  const leads = kids.filter(hasTeam)
+  const solo = kids.filter(k => !hasTeam(k))
+
+  return (
+    <li>
+      <OrgCard person={person} ctx={ctx} teamSize={kids.length} isOpen={isOpen} />
+      {kids.length > 0 && isOpen && (
+        <ul>
+          {leads.map(k => <OrgNode key={k.id} person={k} ctx={ctx} ancestors={nextAncestors} />)}
+          {solo.length > 0 && (
+            <li>
+              <div className="org-stack" data-testid={`org-stack-${person.id}`}>
+                {solo.map(k => <OrgCard key={k.id} person={k} ctx={ctx} compact />)}
+              </div>
+            </li>
+          )}
+        </ul>
+      )}
+    </li>
+  )
+}
+
+function OrgCard({ person, ctx, teamSize = 0, isOpen = false, compact = false }: {
+  person: OrgPerson
+  ctx: TreeCtx
+  teamSize?: number
+  isOpen?: boolean
+  /** Stacked column card: one tighter block, no team toggle. */
+  compact?: boolean
+}) {
   const isMe = person.id === ctx.meId
   const border =
     ctx.highlightId === person.id ? 'border-accent ring-2 ring-accent/40'
     : isMe ? 'border-accent'
     : ctx.chainIds.has(person.id) ? 'border-accent/40'
     : 'border-transparent'
-  const nextAncestors = new Set(ancestors).add(person.id)
 
-  return (
-    <li>
+  const name = ctx.onOpen ? (
+    <button
+      type="button"
+      onClick={() => ctx.onOpen!(person.id)}
+      className="block max-w-full truncate text-sm font-semibold text-brown-dark hover:underline"
+    >
+      {person.name}
+    </button>
+  ) : (
+    <p className="truncate text-sm font-semibold text-brown-dark">{person.name}</p>
+  )
+  const youBadge = isMe && (
+    <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-semibold text-white">You</span>
+  )
+
+  if (compact) {
+    return (
       <div
         id={`org-node-${person.id}`}
         data-testid={`org-card-${person.id}`}
-        className={`w-44 rounded-xl border bg-white shadow-card px-3 py-2.5 text-left transition-shadow ${border}`}
+        className={`w-44 rounded-xl border bg-white shadow-card px-3 py-2 text-left transition-shadow ${border}`}
       >
         <div className="flex items-center gap-2">
           <Avatar name={person.name} avatar={person.avatar} size="sm" />
           <div className="min-w-0">
-            {ctx.onOpen ? (
-              <button
-                type="button"
-                onClick={() => ctx.onOpen!(person.id)}
-                className="block max-w-full truncate text-sm font-semibold text-brown-dark hover:underline"
-              >
-                {person.name}
-              </button>
-            ) : (
-              <p className="truncate text-sm font-semibold text-brown-dark">{person.name}</p>
-            )}
-            {person.nickname && <p className="truncate text-xs text-brown-muted">({person.nickname})</p>}
+            {name}
+            <div className="mt-0.5 flex flex-wrap items-center gap-1">
+              <RankBadge rank={person.rank} size="sm" />
+              {youBadge}
+            </div>
           </div>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-1">
-          <RankBadge rank={person.rank} size="sm" />
-          {isMe && <span className="rounded-full bg-accent px-2 py-0.5 text-[11px] font-semibold text-white">You</span>}
-        </div>
-        {person.job_title && <p className="mt-1 truncate text-xs text-brown-dark">{person.job_title}</p>}
-        <p className="text-xs text-brown-muted">{shortenBranch(person.branch)}</p>
-        {kids.length > 0 && (
-          <button
-            type="button"
-            onClick={() => ctx.onToggle(person.id)}
-            aria-expanded={isOpen}
-            aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${person.name}'s team`}
-            className="mt-1.5 inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs font-medium text-accent-text hover:bg-cream"
-          >
-            {isOpen ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
-            {kids.length}
-          </button>
-        )}
+        <p className="mt-1 truncate text-xs text-brown-muted">
+          {person.job_title ? `${person.job_title} · ` : ''}{shortenBranch(person.branch)}
+        </p>
       </div>
-      {kids.length > 0 && isOpen && (
-        <ul>
-          {kids.map(k => <OrgNode key={k.id} person={k} ctx={ctx} ancestors={nextAncestors} />)}
-        </ul>
+    )
+  }
+
+  return (
+    <div
+      id={`org-node-${person.id}`}
+      data-testid={`org-card-${person.id}`}
+      className={`w-44 rounded-xl border bg-white shadow-card px-3 py-2.5 text-left transition-shadow ${border}`}
+    >
+      <div className="flex items-center gap-2">
+        <Avatar name={person.name} avatar={person.avatar} size="sm" />
+        <div className="min-w-0">
+          {name}
+          {person.nickname && <p className="truncate text-xs text-brown-muted">({person.nickname})</p>}
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1">
+        <RankBadge rank={person.rank} size="sm" />
+        {youBadge}
+      </div>
+      {person.job_title && <p className="mt-1 truncate text-xs text-brown-dark">{person.job_title}</p>}
+      <p className="text-xs text-brown-muted">{shortenBranch(person.branch)}</p>
+      {teamSize > 0 && (
+        <button
+          type="button"
+          onClick={() => ctx.onToggle(person.id)}
+          aria-expanded={isOpen}
+          aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${person.name}'s team`}
+          className="mt-1.5 inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs font-medium text-accent-text hover:bg-cream"
+        >
+          {isOpen ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
+          {teamSize}
+        </button>
       )}
-    </li>
+    </div>
   )
 }

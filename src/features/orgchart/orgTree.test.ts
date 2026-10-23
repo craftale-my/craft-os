@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  buildOrgTree, chainOf, descendantsOf, supervisorChoices, initialExpanded, searchPeople,
+  buildOrgTree, chainOf, descendantsOf, supervisorChoices, initialExpanded, searchPeople, scrollLeftToCenter,
   type OrgPerson,
 } from './orgTree'
 
@@ -115,5 +115,20 @@ describe('searchPeople', () => {
     const t = buildOrgTree(ROWS)
     expect(searchPeople(t, '  ')).toEqual([])
     expect(searchPeople(t, 'u', 1)).toHaveLength(1)
+  })
+})
+
+describe('scrollLeftToCenter', () => {
+  it('scrolls so the card sits in the middle of the container', () => {
+    // card's centre is 1100 + 88 = 1188px into the content; half the view is 250
+    expect(scrollLeftToCenter({ left: 100, scrollLeft: 0, clientWidth: 500 }, { left: 1200, width: 176 })).toBe(938)
+  })
+
+  it('accounts for the current scroll position', () => {
+    expect(scrollLeftToCenter({ left: 100, scrollLeft: 300, clientWidth: 500 }, { left: 900, width: 176 })).toBe(938)
+  })
+
+  it('never returns a negative scroll', () => {
+    expect(scrollLeftToCenter({ left: 0, scrollLeft: 0, clientWidth: 800 }, { left: 100, width: 176 })).toBe(0)
   })
 })
