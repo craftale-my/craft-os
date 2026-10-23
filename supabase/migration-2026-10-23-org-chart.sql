@@ -1,12 +1,18 @@
 -- 2026-10-23 — Org Chart: a narrow read of the reporting tree, plus a guard
 -- against reporting loops.
 --
--- get_org_chart(): every signed-in staff member can open the Org Chart, so it
--- needs every active person's name, rank, title, branch and supervisor. It
+-- get_org_chart(): every active staff member can open the Org Chart, so it
+-- needs every live person's name, rank, title, branch and supervisor. It
 -- returns ONLY those columns, never IC number, phone, address or date of
 -- birth, so the chart keeps working if staff_select is later narrowed to self
 -- or same-branch, and so the page never pulls sensitive columns into the
 -- browser.
+--
+-- Liveness rule (matches notify_late): a person is live when
+-- status = 'active' and is_active. A probation elimination sets
+-- is_active = false and leaves status = 'active', so both must be checked.
+-- Only callers who are themselves live staff get rows; resigned or eliminated
+-- logins, and any future non-staff accounts, get none.
 --
 -- staff_guard_supervisor_loop: staff_supervisor_not_self_check already stops
 -- A → A. This also stops A → B → A (and longer loops), which would make a
@@ -34,15 +40,15 @@ returns table (
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
   select s.id, s.name::text, s.nickname::text, s.avatar::text, s.rank::text,
          s.system_role::text, r.name::text, s.branch::text, s.department::text,
          s.supervisor_id
   from staff s
   left join roles r on r.id = s.job_title_id
-  where s.status = 'active'
-    and auth.uid() is not null
+  where s.status = 'active' and s.is_active
+    and exists (select 1 from staff me where me.id = auth.uid() and me.status = 'active' and me.is_active)
   order by s.name;
 $$;
 
@@ -53,7 +59,7 @@ create or replace function staff_guard_supervisor_loop()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
 declare
   v_cur uuid := new.supervisor_id;
@@ -65,6 +71,8 @@ begin
   if tg_op = 'UPDATE' and new.supervisor_id is not distinct from old.supervisor_id then
     return new;
   end if;
+  -- Serialises concurrent supervisor changes so two simultaneous saves (A→B, B→A) can't both pass the loop check.
+  perform pg_advisory_xact_lock(hashtext('staff.supervisor_id'));
   -- Walk up from the new supervisor; reaching this row means a loop. Bounded
   -- so a loop already present in old data cannot hang the write.
   while v_cur is not null and v_steps < 100 loop
@@ -107,3 +115,16 @@ commit;
 --     end;
 --     raise exception 'VERIFY_DONE: loop_blocked=%', blocked;
 --   end $$;
+--
+-- VERIFY 3 — get_org_chart() returns exactly the live staff when called by an
+-- active staff member (expect fn_rows = live_rows). Impersonates the first live
+-- staff member inside a transaction that is rolled back, so nothing changes.
+-- Note: live_rows is read under the authenticated role, so it relies on
+-- staff_select still being using (true); if that policy has been narrowed, run
+-- the live_rows count separately as the postgres role.
+--   begin;
+--   select set_config('request.jwt.claims', json_build_object('sub', (select id from staff where status='active' and is_active limit 1), 'role','authenticated')::text, true);
+--   set local role authenticated;
+--   select (select count(*) from get_org_chart()) as fn_rows,
+--          (select count(*) from staff where status='active' and is_active) as live_rows;
+--   rollback;
