@@ -117,6 +117,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-23-pos-ordering-fn.sql',
       'migration-2026-10-24-pos-catalogs-fn.sql',
       'migration-2026-10-24-pos-checkout-fn.sql',
+      'migration-2026-10-24-pos-menu-editor-fn.sql',
     ]))
   })
 
@@ -132,5 +133,15 @@ describe('pg-safeupdate guard: POS migrations', () => {
     const sql = readFileSync(new URL('migration-2026-10-24-pos-catalogs-fn.sql', SUPABASE), 'utf8')
     const names = functionBodies(sql).map((b) => b.name)
     expect(names).toEqual(expect.arrayContaining(['pos_insert_order', 'menu_import', 'menu_import_catalogs', 'save_branch_catalogs']))
+  })
+
+  it('scans every write function of the menu editor (M2)', () => {
+    const sql = readFileSync(new URL('migration-2026-10-24-pos-menu-editor-fn.sql', SUPABASE), 'utf8')
+    const names = functionBodies(sql).map((b) => b.name)
+    expect(names).toEqual(expect.arrayContaining([
+      'menu_save_product', 'menu_save_group', 'menu_save_catalog', 'menu_duplicate_catalog', 'menu_reorder_catalogs',
+      'menu_set_catalog_active', 'menu_save_catalog_row', 'menu_save_category', 'menu_reorder_categories',
+      'menu_set_category_active',
+    ]))
   })
 })
