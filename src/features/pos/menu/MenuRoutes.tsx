@@ -6,6 +6,7 @@ import CatalogsPage from './CatalogsPage'
 import CatalogGridPage from './CatalogGridPage'
 import GroupListPage from './GroupListPage'
 import GroupEditorPage from './GroupEditorPage'
+import CategoriesPage from './CategoriesPage'
 import MenuImportPage from './MenuImportPage'
 
 /** A fresh editor per product: nothing typed for one product can leak into another. */
@@ -36,6 +37,7 @@ export default function MenuRoutes() {
       <Route path="groups" element={<GroupListPage />} />
       <Route path="groups/new" element={<GroupEditorRoute />} />
       <Route path="groups/:id" element={<GroupEditorRoute />} />
+      <Route path="categories" element={<CategoriesPage />} />
       <Route path="import" element={<MenuImportPage />} />
       <Route path="*" element={<Navigate to="/menu" replace />} />
     </Routes>
