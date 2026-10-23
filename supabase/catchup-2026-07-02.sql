@@ -18,7 +18,7 @@
 -- ============================================================================
 
 -- ── 1. Staff management columns ─────────────────────────────────────────────
-alter table staff add column if not exists manager_notes    text;
+-- manager_notes: lives in staff_manager_notes now (see migration-2026-10-23-staff-private.sql); do not re-add it to staff.
 alter table staff add column if not exists last_level_up_at timestamptz;
 alter table staff add column if not exists is_active        boolean not null default true;
 

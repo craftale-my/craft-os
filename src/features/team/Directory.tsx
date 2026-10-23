@@ -10,7 +10,7 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import { shortenBranch } from '../../shared/lib/branches'
-import { useCan } from '../../shared/lib/permissions'
+import { useCan, creatableRanks } from '../../shared/lib/permissions'
 import { Avatar } from '../../shared/components/Avatar'
 import { useTeamData } from './useTeamData'
 
@@ -49,7 +49,12 @@ export function formatTimeAgo(ts: string): string {
 
 // ─── AddStaffModal ────────────────────────────────────────────────────────────
 
-function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function AddStaffModal({ creator, onClose, onCreated }: {
+  creator: Pick<Staff, 'rank' | 'system_role'> | null; onClose: () => void; onCreated: () => void
+}) {
+  // Supervisor / hr may only create trainee, junior or senior staff (provision-
+  // staff and the DB guard refuse the rest); don't offer what will be refused.
+  const ranks = creatableRanks(creator)
   const [form, setForm] = useState({
     name: '', email: '', password: '', rank: 'trainee', branch: '', department: '',
   })
@@ -119,7 +124,7 @@ function AddStaffModal({ onClose, onCreated }: { onClose: () => void; onCreated:
             <div>
               <label className={labelCls}>Rank</label>
               <select className={inputCls} value={form.rank} onChange={set('rank')}>
-                {(['trainee', 'junior', 'senior', 'supervisor', 'manager'] as const).map(r => (
+                {ranks.map(r => (
                   <option key={r} value={r}>{RANK_LABELS[r]}</option>
                 ))}
               </select>
@@ -170,11 +175,14 @@ function ApproveRegModal({
 }: {
   request: RegRequest
   onClose: () => void
-  onApproved: (creds: { email: string; password: string }) => void
+  onApproved: (creds: ApprovedCreds) => void
 }) {
   const [password, setPassword] = useState(genTempPassword())
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // Once the server says the account was created with this password, it is
+  // live: freeze it so a retry or a Regenerate can't make the shown one wrong.
+  const [passwordLocked, setPasswordLocked] = useState(false)
 
   async function handleApprove() {
     if (password.length < 6) {
@@ -204,12 +212,15 @@ function ApproveRegModal({
 
     if (!result.ok) {
       setError(result.error)
+      if (result.accountCreated) setPasswordLocked(true)
       setSaving(false)
       return
     }
 
     setSaving(false)
-    onApproved({ email: request.email, password })
+    onApproved(result.alreadyExisted
+      ? { email: request.email, password: '', alreadyExisted: true, message: result.message }
+      : { email: request.email, password })
   }
 
   const inputCls =
@@ -234,15 +245,19 @@ function ApproveRegModal({
               <input
                 className={inputCls}
                 value={password}
+                readOnly={passwordLocked}
+                aria-readonly={passwordLocked}
                 onChange={e => setPassword(e.target.value)}
               />
-              <button
-                type="button"
-                onClick={() => setPassword(genTempPassword())}
-                className="px-3 py-2 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors flex-shrink-0"
-              >
-                Regenerate
-              </button>
+              {!passwordLocked && (
+                <button
+                  type="button"
+                  onClick={() => setPassword(genTempPassword())}
+                  className="px-3 py-2 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors flex-shrink-0"
+                >
+                  Regenerate
+                </button>
+              )}
             </div>
             <p className="text-xs text-brown-faint mt-1">Share this with {request.full_name.split(' ')[0]} after approving.</p>
           </div>
@@ -294,6 +309,9 @@ function RejectRegModal({
         reviewed_by: reviewerId ?? null,
         reviewed_at: new Date().toISOString(),
         rejection_reason: reason.trim() || null,
+        // A request that is no longer pending keeps no phone number: supervisors
+        // can read registration_requests but are not readers of private fields.
+        phone: null,
       })
       .eq('id', request.id)
     setSaving(false)
@@ -347,21 +365,55 @@ function RejectRegModal({
 
 // ─── CredentialsModal ─────────────────────────────────────────────────────────
 
+/** What the approve flow hands to CredentialsModal. alreadyExisted: the email
+ *  already had a staff account — nothing was created and its password was not
+ *  changed, so there are no login details to share. */
+interface ApprovedCreds {
+  email: string
+  password: string
+  alreadyExisted?: boolean
+  message?: string
+}
+
 function CredentialsModal({
   email,
   password,
+  alreadyExisted,
+  message,
   onClose,
-}: {
-  email: string
-  password: string
-  onClose: () => void
-}) {
+}: ApprovedCreds & { onClose: () => void }) {
   const [copied, setCopied] = useState(false)
 
   function copy() {
     navigator.clipboard.writeText(`Email: ${email}\nTemporary password: ${password}`)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
+  }
+
+  if (alreadyExisted) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md">
+          <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0]">
+            <h2 className="font-bold text-brown-dark text-lg">Account Already Existed</h2>
+          </div>
+          <div className="px-6 py-5 space-y-4">
+            <p className="text-sm text-brown-medium">
+              {message ?? 'An account for this email already existed. Its password and profile were not changed; the request is marked approved.'}
+            </p>
+            <p className="text-sm font-semibold text-brown-dark">{email}</p>
+            <p className="text-xs text-brown-faint">No new login details were created. The staff member keeps signing in with their existing password.</p>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-full py-2.5 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -486,7 +538,7 @@ export default function DirectoryPage() {
   const [regTab, setRegTab] = useState<'pending' | 'rejected'>('pending')
   const [approveTarget, setApproveTarget] = useState<RegRequest | null>(null)
   const [rejectTarget, setRejectTarget] = useState<RegRequest | null>(null)
-  const [newCredentials, setNewCredentials] = useState<{ email: string; password: string } | null>(null)
+  const [newCredentials, setNewCredentials] = useState<ApprovedCreds | null>(null)
 
   const isManager = currentStaff?.rank === 'manager'
 
@@ -573,7 +625,7 @@ export default function DirectoryPage() {
     loadAll()
   }
 
-  function handleRegApproved(creds: { email: string; password: string }) {
+  function handleRegApproved(creds: ApprovedCreds) {
     setApproveTarget(null)
     setNewCredentials(creds)
     reloadAll()
@@ -599,7 +651,7 @@ export default function DirectoryPage() {
   return (
     <div className="min-h-screen bg-cream-light">
       {showAddModal && (
-        <AddStaffModal onClose={() => setShowAddModal(false)} onCreated={reloadAll} />
+        <AddStaffModal creator={currentStaff} onClose={() => setShowAddModal(false)} onCreated={reloadAll} />
       )}
       {approveTarget && (
         <ApproveRegModal
@@ -620,6 +672,8 @@ export default function DirectoryPage() {
         <CredentialsModal
           email={newCredentials.email}
           password={newCredentials.password}
+          alreadyExisted={newCredentials.alreadyExisted}
+          message={newCredentials.message}
           onClose={() => setNewCredentials(null)}
         />
       )}
