@@ -20,8 +20,7 @@ import TasksArchivePage from './features/tasks/TasksArchive'
 import ProjectsPage from './features/tasks/Projects'
 import ProjectDetailPage from './features/tasks/ProjectDetail'
 import SettingsPage from './features/settings/Settings'
-import MenuPage from './features/pos/menu/MenuPage'
-import MenuImportPage from './features/pos/menu/MenuImportPage'
+import MenuRoutes from './features/pos/menu/MenuRoutes'
 import PosPage from './features/pos/order/PosPage'
 import PosSettingsPage from './features/pos/order/PosSettingsPage'
 import HrAttendancePage from './features/hr/HrAttendance'
@@ -263,19 +262,10 @@ function AppRoutes() {
       />
 
       <Route
-        path="/menu"
+        path="/menu/*"
         element={
           <ProtectedRoute requireCap="manage_menu">
-            <AppLayout><MenuPage /></AppLayout>
-          </ProtectedRoute>
-        }
-      />
-
-      <Route
-        path="/menu/import"
-        element={
-          <ProtectedRoute requireCap="manage_menu">
-            <AppLayout><MenuImportPage /></AppLayout>
+            <AppLayout><MenuRoutes /></AppLayout>
           </ProtectedRoute>
         }
       />

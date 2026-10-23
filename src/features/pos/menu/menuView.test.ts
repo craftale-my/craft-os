@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { catalogAvailability, formatCatalogPrice, formatPrice, groupMenu, initialCatalogId } from './menuView'
+import { formatPrice, groupMenu, menuTab, soldIn, type MenuFilter } from './menuView'
 import type { MenuProductRow } from './menuApi'
 
 function row(over: Partial<MenuProductRow>): MenuProductRow {
   return {
-    id: over.name ?? 'x', name: 'x', is_addon: false, sst_rate_bp: 600, print_route: null,
-    takeaway_fee_sen: 0, sort_order: 0, category: { name: 'TEA', sort_order: 0 }, menu_variants: [], ...over,
+    id: over.name ?? 'x', name: 'x', is_active: true, is_addon: false, sst_rate_bp: 600, print_route: null,
+    takeaway_fee_sen: 0, sort_order: 0, category_id: 'tea', category: { name: 'TEA', sort_order: 0 }, menu_variants: [],
+    catalog_ids: [], ...over,
   }
 }
 const v = (price_sen: number, is_active = true) => ({ id: String(price_sen), name: 'v', price_sen, is_active, sort_order: 0 })
+const all: MenuFilter = { search: '', showAddons: false, showInactive: false, categoryId: null, catalogId: null }
 
 describe('formatPrice', () => {
   it('shows one price, a range, or a dash, ignoring switched-off variants', () => {
@@ -18,55 +20,56 @@ describe('formatPrice', () => {
   })
 })
 
-describe('catalog columns', () => {
-  it('reads a product with no row in the catalog as not in it', () => {
-    const entries = new Map([['p1', 'counter_only' as const]])
-    expect(catalogAvailability(entries, 'p1')).toBe('counter_only')
-    expect(catalogAvailability(entries, 'p2')).toBe('hidden')
+describe('soldIn', () => {
+  it('names the catalogs that sell a product, in catalog order', () => {
+    const catalogs = [{ id: 'g', name: 'Grab Food', sortOrder: 6 }, { id: 'c', name: 'Craft Cafe', sortOrder: 0 }, { id: 's', name: 'Staff Meal', sortOrder: 3 }]
+    expect(soldIn(['g', 'c'], catalogs)).toEqual(['Craft Cafe', 'Grab Food'])
+    expect(soldIn([], catalogs)).toEqual([])
   })
+})
 
-  it('shows the catalog\'s prices of active variants only', () => {
-    const variants = [{ id: 'a', is_active: true }, { id: 'b', is_active: true }, { id: 'c', is_active: false }, { id: 'd', is_active: true }]
-    const prices = new Map([['a', 1000], ['b', 1250], ['c', 1]])
-    expect(formatCatalogPrice(variants, prices)).toBe('RM 10.00 – 12.50')
-    expect(formatCatalogPrice(variants, new Map())).toBe('—')
+describe('menuTab', () => {
+  it('maps every /menu path to its tab', () => {
+    expect(menuTab('/menu')).toBe('products')
+    expect(menuTab('/menu/')).toBe('products')
+    expect(menuTab('/menu/products/new')).toBe('products')
+    expect(menuTab('/menu/catalogs/abc')).toBe('catalogs')
+    expect(menuTab('/menu/groups/new')).toBe('groups')
+    expect(menuTab('/menu/categories')).toBe('categories')
+    expect(menuTab('/menu/import')).toBe('import')
   })
 })
 
 describe('groupMenu', () => {
   const rows = [
-    row({ name: 'Oat milk', is_addon: true, category: { name: 'ADDON', sort_order: 2 } }),
-    row({ name: 'Smoked Duck DON', sort_order: 1, category: { name: 'DONBURI', sort_order: 1 } }),
-    row({ name: 'Lychee Rose', sort_order: 2 }),
-    row({ name: 'Apple Tea', sort_order: 1 }),
-    row({ name: 'Mystery', category: null }),
+    row({ name: 'Oat milk', is_addon: true, category_id: 'addon', category: { name: 'ADDON', sort_order: 2 } }),
+    row({ name: 'Smoked Duck DON', sort_order: 1, category_id: 'don', category: { name: 'DONBURI', sort_order: 1 }, catalog_ids: ['grab'] }),
+    row({ name: 'Lychee Rose', sort_order: 2, catalog_ids: ['cafe', 'grab'] }),
+    row({ name: 'Apple Tea', sort_order: 1, catalog_ids: ['cafe'] }),
+    row({ name: 'Old Tea', is_active: false }),
+    row({ name: 'Mystery', category_id: null, category: null }),
   ]
 
-  it('orders sections by category and products by sort order, hiding add-ons by default', () => {
-    const s = groupMenu(rows, { showAddons: false, search: '' })
+  it('orders sections by category and products by sort order, hiding add-ons and switched-off products by default', () => {
+    const s = groupMenu(rows, all)
     expect(s.map((x) => x.title)).toEqual(['TEA', 'DONBURI', 'Uncategorised'])
     expect(s[0].products.map((p) => p.name)).toEqual(['Apple Tea', 'Lychee Rose'])
   })
 
-  it('shows add-ons when asked', () => {
-    expect(groupMenu(rows, { showAddons: true, search: '' }).map((x) => x.title)).toContain('ADDON')
+  it('shows add-ons and switched-off products when asked', () => {
+    expect(groupMenu(rows, { ...all, showAddons: true }).map((x) => x.title)).toContain('ADDON')
+    expect(groupMenu(rows, { ...all, showInactive: true })[0].products.map((p) => p.name)).toContain('Old Tea')
   })
 
   it('filters by name, case-insensitively', () => {
-    const s = groupMenu(rows, { showAddons: false, search: 'duck' })
+    const s = groupMenu(rows, { ...all, search: 'duck' })
     expect(s).toHaveLength(1)
     expect(s[0].products[0].name).toBe('Smoked Duck DON')
   })
-})
 
-describe('initialCatalogId', () => {
-  const cat = (id: string, name: string, is_active = true) => ({ id, name, is_active })
-  it('opens on Craft Cafe even when another catalog sorts first', () => {
-    expect(initialCatalogId([cat('d', 'Dino Meal'), cat('c', 'Craft Cafe'), cat('g', 'Grab Food')])).toBe('c')
-  })
-  it('falls back to the first active catalog, then the first, then none', () => {
-    expect(initialCatalogId([cat('x', 'Old', false), cat('d', 'Dino Meal')])).toBe('d')
-    expect(initialCatalogId([cat('x', 'Old', false)])).toBe('x')
-    expect(initialCatalogId([])).toBeNull()
+  it('filters by category and by the catalog that sells it', () => {
+    expect(groupMenu(rows, { ...all, categoryId: 'don' }).map((x) => x.title)).toEqual(['DONBURI'])
+    expect(groupMenu(rows, { ...all, catalogId: 'grab' }).flatMap((x) => x.products.map((p) => p.name)))
+      .toEqual(['Lychee Rose', 'Smoked Duck DON'])
   })
 })

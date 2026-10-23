@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { buildCatalogsImport, readFeedmeExport, type CatalogsImport } from './feedmeExport'
 import { countCatalogs, importFeedme, type ImportReport } from './menuApi'
 import { IMPORT_CONFIRM_WORD, MASTER_WARNING, canImport, catalogSummary } from './importView'
+import MenuTabs from './MenuTabs'
 
 type Stage =
   | { kind: 'pick' }
@@ -55,7 +56,7 @@ export default function MenuImportPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-6">
-      <Link to="/menu" className="text-sm underline">← Menu</Link>
+      <MenuTabs />
       <h1 className="text-2xl font-semibold">Import menu from Feedme</h1>
       <p className="text-sm text-gray-500">
         In the Feedme portal go to Menu → Products → Export and choose the downloaded <code>books_….zip</code>.

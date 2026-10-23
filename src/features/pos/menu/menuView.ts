@@ -1,6 +1,5 @@
 import type { Availability } from './feedmeExport'
 import type { MenuProductRow, MenuVariantRow } from './menuApi'
-import type { CatalogRow } from '../order/catalogs'
 
 /** Feedme's print routes at Craft Cafe (portal → Menu → Print route, 2026-10-22). */
 export const PRINT_ROUTES = ['Bar', 'Kitchen', 'Bakery', 'Front House'] as const
@@ -15,15 +14,31 @@ export const CATALOG_AVAILABILITY_LABELS: Record<Availability, string> = {
   counter_only: 'Counter only',
 }
 
+/** The /menu sub-navigation. `match` decides which tab a path belongs to. */
+export type MenuTab = 'products' | 'catalogs' | 'groups' | 'categories' | 'import'
+export const MENU_TABS: { id: Exclude<MenuTab, 'import'>; label: string; to: string }[] = [
+  { id: 'products', label: 'Products', to: '/menu' },
+  { id: 'catalogs', label: 'Catalogs', to: '/menu/catalogs' },
+  { id: 'groups', label: 'Add-on groups', to: '/menu/groups' },
+  { id: 'categories', label: 'Categories', to: '/menu/categories' },
+]
+export function menuTab(pathname: string): MenuTab {
+  const rest = pathname.replace(/^\/menu\/?/, '')
+  if (rest.startsWith('catalogs')) return 'catalogs'
+  if (rest.startsWith('groups')) return 'groups'
+  if (rest.startsWith('categories')) return 'categories'
+  if (rest.startsWith('import')) return 'import'
+  return 'products'
+}
+
 export interface MenuSection { title: string; products: MenuProductRow[] }
-
-/** The shop's own catalog, which /menu opens on so an owner never edits another
- *  catalog (Dino Meal, Grab Food…) by mistake. */
-export const SHOP_CATALOG_NAME = 'Craft Cafe'
-
-/** /menu's first catalog: Craft Cafe if it exists, else the first active one, else the first. */
-export function initialCatalogId(catalogs: Pick<CatalogRow, 'id' | 'name' | 'is_active'>[]): string | null {
-  return (catalogs.find((c) => c.name === SHOP_CATALOG_NAME) ?? catalogs.find((c) => c.is_active) ?? catalogs[0])?.id ?? null
+export interface MenuFilter {
+  search: string
+  showAddons: boolean
+  showInactive: boolean
+  categoryId: string | null
+  /** only the products this catalog sells */
+  catalogId: string | null
 }
 
 const rm = (sen: number) => (sen / 100).toFixed(2)
@@ -36,21 +51,22 @@ export function formatPrice(variants: Pick<MenuVariantRow, 'price_sen' | 'is_act
   return lo === hi ? `RM ${rm(lo)}` : `RM ${rm(lo)} – ${rm(hi)}`
 }
 
-/** No row in the catalog reads as not in it. */
-export function catalogAvailability(entries: Map<string, Availability>, productId: string): Availability {
-  return entries.get(productId) ?? 'hidden'
+/** The names of the catalogs that sell a product, in catalog order. */
+export function soldIn(catalogIds: string[], catalogs: { id: string; name: string; sortOrder: number }[]): string[] {
+  return catalogs
+    .filter((c) => catalogIds.includes(c.id))
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+    .map((c) => c.name)
 }
 
-/** The catalog's prices of the active variants it prices ('—' when none). */
-export function formatCatalogPrice(variants: Pick<MenuVariantRow, 'id' | 'is_active'>[], prices: Map<string, number>): string {
-  return formatPrice(variants.filter((v) => prices.has(v.id)).map((v) => ({ price_sen: prices.get(v.id) as number, is_active: v.is_active })))
-}
-
-export function groupMenu(rows: MenuProductRow[], opts: { showAddons: boolean; search: string }): MenuSection[] {
-  const q = opts.search.trim().toLowerCase()
+export function groupMenu(rows: MenuProductRow[], f: MenuFilter): MenuSection[] {
+  const q = f.search.trim().toLowerCase()
   const sections = new Map<string, { order: number; products: MenuProductRow[] }>()
   for (const r of rows) {
-    if (!opts.showAddons && r.is_addon) continue
+    if (!f.showAddons && r.is_addon) continue
+    if (!f.showInactive && !r.is_active) continue
+    if (f.categoryId && r.category_id !== f.categoryId) continue
+    if (f.catalogId && !r.catalog_ids.includes(f.catalogId)) continue
     if (q && !r.name.toLowerCase().includes(q)) continue
     const title = r.category?.name ?? 'Uncategorised'
     if (!sections.has(title)) sections.set(title, { order: r.category?.sort_order ?? Number.MAX_SAFE_INTEGER, products: [] })
