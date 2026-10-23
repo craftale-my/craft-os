@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatSen } from '../order/cart'
-import { fetchClosedBillsSince, fetchPaymentMethods, refundBill, reprintReceipt, type ClosedBillRow, type PaymentMethodRow } from './checkoutApi'
+import { fetchClosedBillsSince, fetchRefundableMethods, refundBill, reprintReceipt, type ClosedBillRow } from './checkoutApi'
 import ApprovalDialog from './ApprovalDialog'
-import { mytDayStartIso, refundDoneNote, refundableSen, STATUS_LABEL } from './todayBills'
+import { mytDayStartIso, refundChoices, refundDoneNote, refundableSen, STATUS_LABEL, type RefundChoice } from './todayBills'
 import { parseRinggit } from './tender'
 import type { RefundResult } from './rpcResult'
 
@@ -13,11 +13,14 @@ const where = (b: ClosedBillRow) => (b.dining_tables ? `Table ${b.dining_tables.
 /** Today's closed bills (Malaysia day): reprint a receipt, refund a paid bill. */
 export default function TodayBillsDrawer({ branchId, onClose }: { branchId: string; onClose: () => void }) {
   const [bills, setBills] = useState<ClosedBillRow[] | null>(null)
-  const [methods, setMethods] = useState<PaymentMethodRow[]>([])
   const [note, setNote] = useState<string | null>(null)
   const [refunding, setRefunding] = useState<ClosedBillRow | null>(null)
   const [amountText, setAmountText] = useState('')
   const [methodId, setMethodId] = useState('')
+  // Refunds go back the original route: the methods this bill was paid with that
+  // still have something left (null while loading).
+  const [choices, setChoices] = useState<RefundChoice[] | null>(null)
+  const [choicesError, setChoicesError] = useState<string | null>(null)
   const refundId = useRef<string>('')
   // After the first Approve of a refund dialog the amount and method are fixed: a
   // retry after a lost reply resends the SAME refund (same refundId), never a new one.
@@ -29,10 +32,7 @@ export default function TodayBillsDrawer({ branchId, onClose }: { branchId: stri
   const load = async () => {
     try { setBills(await fetchClosedBillsSince(branchId, mytDayStartIso(Date.now()))) } catch (e) { setNote(msg(e)) }
   }
-  useEffect(() => {
-    void load()
-    fetchPaymentMethods(branchId, true).then(setMethods, (e) => setNote(msg(e)))
-  }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const reprint = async (b: ClosedBillRow) => {
     if (reprintingRef.current.has(b.id)) return
@@ -42,19 +42,41 @@ export default function TodayBillsDrawer({ branchId, onClose }: { branchId: stri
   }
 
   const startRefund = (b: ClosedBillRow) => {
-    refundId.current = crypto.randomUUID()          // one id per refund: a retry can never refund twice
-    setAmountText((refundableSen(b) / 100).toFixed(2))
-    setMethodId(methods.find((m) => m.kind === 'cash')?.id ?? methods[0]?.id ?? '')
+    const id = crypto.randomUUID()                  // one id per refund: a retry can never refund twice
+    refundId.current = id
+    setAmountText('')
+    setMethodId('')
+    setChoices(null)
+    setChoicesError(null)
     setRefundLocked(false)
     refundResult.current = null
     setRefunding(b)
+    fetchRefundableMethods(b.id).then((rows) => {
+      if (refundId.current !== id) return           // the dialog was closed or reopened meanwhile
+      const c = refundChoices(rows, refundableSen(b))
+      setChoices(c)
+      setMethodId(c[0]?.methodId ?? '')
+      setAmountText(c[0] ? (c[0].maxSen / 100).toFixed(2) : '')
+    }, (e) => { if (refundId.current === id) setChoicesError(msg(e)) })
   }
 
+  // Before the first Approve, choosing another method resets the amount to what it can take.
+  const chooseMethod = (id: string) => {
+    if (refundLocked) return
+    setMethodId(id)
+    const c = choices?.find((x) => x.methodId === id)
+    if (c) setAmountText((c.maxSen / 100).toFixed(2))
+  }
+
+  const chosen = choices?.find((c) => c.methodId === methodId) ?? null
   const amountSen = parseRinggit(amountText)
   const refundProblem = !refunding ? null
+    : choicesError ? `Could not load how this bill was paid: ${choicesError}`
+    : choices === null ? 'Loading how this bill was paid…'
+    : choices.length === 0 ? 'Nothing left to refund on this bill.'
+    : !chosen ? 'Choose how the money goes back'
     : amountSen === null || amountSen <= 0 ? 'Enter the refund amount'
-    : amountSen > refundableSen(refunding) ? `At most ${formatSen(refundableSen(refunding))} can be refunded`
-    : !methodId ? 'Choose how the money goes back'
+    : amountSen > chosen.maxSen ? `At most ${formatSen(chosen.maxSen)} can go back this way`
     : null
 
   return (
@@ -100,25 +122,34 @@ export default function TodayBillsDrawer({ branchId, onClose }: { branchId: stri
           summary={`Paid ${formatSen(refunding.total_sen ?? 0)}${refunding.refunded_sen ? `, already refunded ${formatSen(refunding.refunded_sen)}` : ''}`}
           extra={
             <div className="space-y-2 text-sm">
-              <label className="block">Amount (RM)
-                <input inputMode="decimal" className="ml-2 w-32 rounded border border-border p-2 disabled:opacity-60" value={amountText}
-                  disabled={refundLocked} onChange={(e) => setAmountText(e.target.value)} />
-              </label>
-              <label className="block">Paid back by
-                <select className="ml-2 rounded border border-border p-2 disabled:opacity-60" value={methodId}
-                  disabled={refundLocked} onChange={(e) => setMethodId(e.target.value)}>
-                  {methods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </select>
-              </label>
+              {choicesError && <p className="rounded bg-red-50 p-2 text-red-700">Could not load how this bill was paid: {choicesError}</p>}
+              {!choicesError && choices === null && <p className="text-brown-muted">Loading how this bill was paid…</p>}
+              {choices?.length === 0 && <p className="rounded bg-amber-50 p-2 text-amber-800">Nothing left to refund on this bill.</p>}
+              {choices && choices.length > 0 && (
+                <>
+                  <label className="block">Paid back by
+                    <select className="ml-2 rounded border border-border p-2 disabled:opacity-60" value={methodId}
+                      disabled={refundLocked} onChange={(e) => chooseMethod(e.target.value)}>
+                      {choices.map((c) => <option key={c.methodId} value={c.methodId}>{c.label}</option>)}
+                    </select>
+                  </label>
+                  <label className="block">Amount (RM)
+                    <input inputMode="decimal" className="ml-2 w-32 rounded border border-border p-2 disabled:opacity-60" value={amountText}
+                      disabled={refundLocked} onChange={(e) => setAmountText(e.target.value)} />
+                  </label>
+                  <p className="text-xs text-brown-muted">Refunds go back the way the bill was paid.</p>
+                </>
+              )}
               {refundLocked && <p className="text-xs text-brown-muted">Amount and method are fixed for this refund. To refund a different amount, close and reopen.</p>}
             </div>
           }
           extraProblem={refundProblem}
+          approveDisabled={!refundLocked && (choices === null || choices.length === 0)}
           onApprove={async (a) => {
             setRefundLocked(true)
             refundResult.current = await refundBill(refundId.current, refunding.id, amountSen ?? 0, methodId, a)
           }}
-          onClose={() => setRefunding(null)}
+          onClose={() => { refundId.current = ''; setRefunding(null) }}
           onDone={() => {
             const r = refundResult.current
             setNote(r ? refundDoneNote(r, refunding.bill_no) : `Refund on ${refunding.bill_no} done`)

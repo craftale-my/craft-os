@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mytDayStartIso, refundDoneNote, refundableSen } from './todayBills'
+import { mytDayStartIso, refundChoices, refundDoneNote, refundableSen } from './todayBills'
 
 describe('mytDayStartIso', () => {
   it('is midnight Malaysia time, i.e. 16:00 UTC the day before', () => {
@@ -24,5 +24,31 @@ describe('refundDoneNote', () => {
   it('says when no refund slip was printed', () => {
     expect(refundDoneNote({ amountSen: 1300, slipQueued: false }, '261024-007'))
       .toBe('Refunded RM 13.00 on 261024-007 — no refund slip printed (no receipt printer set)')
+  })
+})
+
+describe('refundChoices', () => {
+  const tng = { methodId: 'm-tng', methodName: "Touch 'n Go", leftSen: 2000 }
+  const cash = { methodId: 'm-cash', methodName: 'Cash', leftSen: 2290 }
+
+  it('offers each method the bill was paid with, up to what it has left, in payment order', () => {
+    expect(refundChoices([tng, cash], 4290)).toEqual([
+      { methodId: 'm-tng', maxSen: 2000, label: "Touch 'n Go · up to RM 20.00" },
+      { methodId: 'm-cash', maxSen: 2290, label: 'Cash · up to RM 22.90' },
+    ])
+  })
+  it('drops a method with nothing left', () => {
+    expect(refundChoices([{ ...tng, leftSen: 0 }, cash], 2290).map((c) => c.methodId)).toEqual(['m-cash'])
+  })
+  it('never offers more than is left on the whole bill', () => {
+    expect(refundChoices([tng, cash], 1500)).toEqual([
+      { methodId: 'm-tng', maxSen: 1500, label: "Touch 'n Go · up to RM 15.00" },
+      { methodId: 'm-cash', maxSen: 1500, label: 'Cash · up to RM 15.00' },
+    ])
+  })
+  it('is empty when nothing is left to refund', () => {
+    expect(refundChoices([tng, cash], 0)).toEqual([])
+    expect(refundChoices([{ ...tng, leftSen: 0 }], 4290)).toEqual([])
+    expect(refundChoices([], 4290)).toEqual([])
   })
 })

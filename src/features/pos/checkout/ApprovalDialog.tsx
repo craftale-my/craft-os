@@ -7,13 +7,14 @@ const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'Clear', '0', '⌫']
 
 /** Reason + approver + PIN, for voids and refunds. The PIN is checked by the
  *  protected RPC itself (onApprove), never by a separate call. */
-export default function ApprovalDialog({ branchId, action, title, summary, extra, extraProblem, onApprove, onClose, onDone }: {
+export default function ApprovalDialog({ branchId, action, title, summary, extra, extraProblem, approveDisabled, onApprove, onClose, onDone }: {
   branchId: string
   action: ReasonAction
   title: string                         // "Void item"
   summary: string                       // "2 × Coffee Latte (COLD) · RM 26.00"
   extra?: ReactNode                     // refund: amount + method fields
   extraProblem?: string | null          // why the extra fields are not ready
+  approveDisabled?: boolean             // the extra fields cannot be filled yet (or at all)
   onApprove: (a: Approval) => Promise<void>
   onClose: () => void
   onDone: () => void
@@ -103,7 +104,7 @@ export default function ApprovalDialog({ branchId, action, title, summary, extra
           </div>
           <div className="flex w-full gap-2">
             <button onClick={onClose} disabled={busy} className="flex-1 rounded-xl border border-border py-3">Cancel</button>
-            <button onClick={() => void approve()} disabled={busy} className="flex-1 rounded-xl bg-red-700 py-3 text-white disabled:opacity-40">
+            <button onClick={() => void approve()} disabled={busy || approveDisabled} className="flex-1 rounded-xl bg-red-700 py-3 text-white disabled:opacity-40">
               {busy ? 'Checking…' : 'Approve'}
             </button>
           </div>

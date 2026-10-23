@@ -20,3 +20,20 @@ export const STATUS_LABEL: Record<string, string> = { paid: 'Paid', voided: 'Voi
 export function refundDoneNote(r: { amountSen: number; slipQueued: boolean }, billNo: string): string {
   return `Refunded ${formatSen(r.amountSen)} on ${billNo}${r.slipQueued ? '' : ' — no refund slip printed (no receipt printer set)'}`
 }
+
+/** One way a refund can go back: a method the bill was paid with, and the most it can take. */
+export interface RefundChoice { methodId: string; label: string; maxSen: number }
+
+/** Refunds go back the original route (owner, 2026-10-24): only the methods the bill
+ *  was paid with that still have something left, each capped by its own left and by
+ *  what is left on the whole bill (an older refund may have gone back another way).
+ *  Kept in the order the payments were taken; the first is the default. */
+export function refundChoices(
+  methods: readonly { methodId: string; methodName: string; leftSen: number }[],
+  billLeftSen: number,
+): RefundChoice[] {
+  return methods
+    .map((m) => ({ m, maxSen: Math.max(0, Math.min(m.leftSen, billLeftSen)) }))
+    .filter((c) => c.maxSen > 0)
+    .map(({ m, maxSen }) => ({ methodId: m.methodId, maxSen, label: `${m.methodName} · up to ${formatSen(maxSen)}` }))
+}

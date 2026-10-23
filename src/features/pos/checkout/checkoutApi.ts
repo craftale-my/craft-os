@@ -222,6 +222,24 @@ export async function mergeBills(fromBillId: string, intoBillId: string): Promis
   if (error) fail(error)
 }
 
+/** One payment method a paid bill was paid with, and what it can still give back
+ *  (refunds go back the original route, capped per method — owner, 2026-10-24). */
+export interface RefundableMethod {
+  methodId: string
+  methodName: string
+  kind: PaymentKind
+  paidSen: number
+  refundedSen: number
+  leftSen: number
+}
+
+export async function fetchRefundableMethods(billId: string): Promise<RefundableMethod[]> {
+  const { data, error } = await supabase.rpc('pos_refundable_methods', { p_bill_id: billId })
+  if (error) fail(error)
+  return ((data ?? []) as { method_id: string; method_name: string; kind: PaymentKind; paid_sen: number; refunded_sen: number; left_sen: number }[])
+    .map((m) => ({ methodId: m.method_id, methodName: m.method_name, kind: m.kind, paidSen: m.paid_sen, refundedSen: m.refunded_sen, leftSen: m.left_sen }))
+}
+
 /** Answers what the server recorded — on a resend after a lost reply, that is the
  *  FIRST call's refund, so the till pays out the recorded amount, not the typed one. */
 export async function refundBill(refundId: string, billId: string, amountSen: number, methodId: string, a: Approval): Promise<RefundResult> {
