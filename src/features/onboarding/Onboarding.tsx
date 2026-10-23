@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
+import { fetchStaffPrivate } from '../staff/privateApi'
+import { submitOnboarding, type OnboardingForm } from './submitOnboarding'
 import { useLookups } from '../../shared/lib/lookups'
 import { BRANCHES } from '../../shared/types'
 
@@ -38,22 +39,7 @@ const COMPANY_VALUES = [
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface FormData {
-  branch: string
-  department: string
-  employmentType: string
-  nickname: string
-  fullName: string
-  icNumber: string
-  address: string
-  gender: string
-  dateOfBirth: string
-  contactNumber: string
-  workingExperience: string
-  education: string
-}
-
-type FormErrors = Partial<Record<keyof FormData, string>>
+type FormErrors = Partial<Record<keyof OnboardingForm, string>>
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
@@ -67,28 +53,46 @@ export function OnboardingPage() {
   const [submitError, setSubmitError] = useState('')
   const [errors, setErrors] = useState<FormErrors>({})
 
-  const [formData, setFormData] = useState<FormData>({
+  const [formData, setFormData] = useState<OnboardingForm>({
     branch: '',
     department: '',
     employmentType: '',
     nickname: '',
     fullName: staff?.name ?? '',
-    icNumber: staff?.ic_number ?? '',
-    address: staff?.address ?? '',
+    icNumber: '',
+    address: '',
     gender: staff?.gender ?? '',
-    dateOfBirth: staff?.date_of_birth ?? '',
-    contactNumber: staff?.contact_number ?? '',
+    dateOfBirth: '',
+    contactNumber: '',
     workingExperience: staff?.working_experience ?? '',
     education: staff?.education ?? '',
   })
 
-  function update(field: keyof FormData, value: string) {
+  // Prefill from staff_private (a manager-approved registration already has
+  // the phone there). Only fills fields the user hasn't typed into yet.
+  useEffect(() => {
+    if (!user?.id) return
+    let cancelled = false
+    fetchStaffPrivate(user.id).then(p => {
+      if (cancelled || !p) return
+      setFormData(prev => ({
+        ...prev,
+        icNumber:      prev.icNumber      || p.ic_number      || '',
+        address:       prev.address       || p.address        || '',
+        dateOfBirth:   prev.dateOfBirth   || p.date_of_birth  || '',
+        contactNumber: prev.contactNumber || p.contact_number || '',
+      }))
+    }).catch(() => { /* prefill is a convenience; the form still works empty */ })
+    return () => { cancelled = true }
+  }, [user?.id])
+
+  function update(field: keyof OnboardingForm, value: string) {
     setFormData(prev => ({ ...prev, [field]: value }))
     if (errors[field]) setErrors(prev => ({ ...prev, [field]: undefined }))
   }
 
   function validateStep2(): boolean {
-    const required: (keyof FormData)[] = [
+    const required: (keyof OnboardingForm)[] = [
       'branch', 'department', 'employmentType',
       'fullName', 'icNumber', 'address', 'gender',
       'dateOfBirth', 'contactNumber', 'workingExperience', 'education',
@@ -105,29 +109,13 @@ export function OnboardingPage() {
     if (!user) return
     setSaving(true)
     setSubmitError('')
-
-    const { error } = await supabase.from('staff').update({
-      name:                 formData.fullName,
-      nickname:             formData.nickname || null,
-      department:           formData.department || null,   // already a department slug
-      branch:               formData.branch,
-      employment_type:      formData.employmentType,
-      ic_number:            formData.icNumber,
-      address:              formData.address,
-      gender:               formData.gender,
-      date_of_birth:        formData.dateOfBirth,
-      contact_number:       formData.contactNumber,
-      working_experience:   formData.workingExperience,
-      education:            formData.education,
-      onboarding_completed: true,
-    }).eq('id', user.id)
-
-    if (error) {
-      setSubmitError(error.message)
+    try {
+      await submitOnboarding(user.id, formData)
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Could not save your details.')
       setSaving(false)
       return
     }
-
     await refreshStaff()
     navigate('/profile', { replace: true })
   }
@@ -311,10 +299,10 @@ function InfoStep({
   onBack,
   onNext,
 }: {
-  formData: FormData
+  formData: OnboardingForm
   errors: FormErrors
   email: string
-  onUpdate: (field: keyof FormData, value: string) => void
+  onUpdate: (field: keyof OnboardingForm, value: string) => void
   onBack: () => void
   onNext: () => void
 }) {
@@ -518,7 +506,7 @@ function ConfirmStep({
   onBack,
   onSubmit,
 }: {
-  formData: FormData
+  formData: OnboardingForm
   email: string
   saving: boolean
   submitError: string
