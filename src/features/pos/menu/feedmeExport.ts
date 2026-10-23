@@ -43,8 +43,22 @@ export interface MenuImport {
 }
 export interface FeedmeFiles { menu: Workbook; addonGroup: Workbook; itemLinkedAddon: Workbook }
 
-/** The Feedme catalog whose "Order from" decides the shop's menu (user's choice, 2026-10-22). */
-export const FEEDME_CATALOG = 'Craft Cafe'
+/** Feedme's master sheets (every product, default prices, every add-on group). */
+export const MASTER_MENU_SHEET = 'Default Catalog'
+export const MASTER_ADDON_SHEET = 'Default AddonGroup'
+
+/** One Feedme catalog sheet as menu_import_catalogs takes it: only the products the
+ *  catalog sells (base row "Order from" ALL / POS_ONLY), a price for every variant
+ *  of the master product, and the add-on prices that differ from the default. */
+export interface ImportCatalogProduct {
+  feedmeId: string
+  availability: 'all' | 'counter_only'
+  sortOrder: number
+  prices: { key: string; priceSen: number }[]
+}
+export interface ImportOptionPrice { groupFeedmeId: string; productFeedmeId: string; variantKey: string; priceSen: number }
+export interface ImportCatalog { name: string; sortOrder: number; products: ImportCatalogProduct[]; optionPrices: ImportOptionPrice[] }
+export interface CatalogsImport extends MenuImport { catalogs: ImportCatalog[] }
 
 const AVAILABILITY: Record<string, Availability> = { ALL: 'all', POS_ONLY: 'counter_only', NONE: 'hidden' }
 
@@ -94,7 +108,11 @@ export function readFeedmeExport(zip: Uint8Array): FeedmeFiles {
   return { menu: find('menu'), addonGroup: find('addonGroup'), itemLinkedAddon: find('itemLinkedAddon') }
 }
 
-export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload: MenuImport; warnings: string[] } {
+/** The master list from one menu sheet and one add-on sheet (by default the sheet of
+ *  the same name); add-on links from the link sheets' column named `catalog`. */
+export function buildMenuImport(
+  files: FeedmeFiles, catalog: string, addonSheet: string = catalog,
+): { payload: MenuImport; warnings: string[] } {
   const warnings: string[] = []
 
   // ── products and variants ────────────────────────────────────────────────
@@ -174,7 +192,7 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
   }
 
   // ── modifier groups ──────────────────────────────────────────────────────
-  const addon = sheetOf(files.addonGroup, catalog, 'the add-on group file')
+  const addon = sheetOf(files.addonGroup, addonSheet, 'the add-on group file')
   const gc = columns(addon[0], [
     'Group ID', 'Group Name', 'Min', 'Max', 'Stackable', 'Item ID', 'Item Name',
     'Item Name Overrider', 'Variant Key', 'Item price', 'Order from', 'isDefault',
@@ -270,5 +288,102 @@ export function buildMenuImport(files: FeedmeFiles, catalog: string): { payload:
       links,
     },
     warnings,
+  }
+}
+
+/** The whole export: the master from the Default sheets plus one catalog per other
+ *  sheet of the menu file (every sheet lists every product; verified 2026-10-24). */
+export function buildCatalogsImport(files: FeedmeFiles): { payload: CatalogsImport; warnings: string[] } {
+  const { payload: master, warnings } = buildMenuImport(files, MASTER_MENU_SHEET, MASTER_ADDON_SHEET)
+  const products = new Map(master.products.map((p) => [p.feedmeId, p]))
+  const optionDefaults = new Map<string, number>()            // "group|item|variant" → default price
+  for (const g of master.groups) for (const o of g.options) optionDefaults.set(`${g.feedmeId}|${o.productFeedmeId}|${o.variantKey}`, o.priceSen)
+  const names = Object.keys(files.menu).filter((n) => n !== MASTER_MENU_SHEET)
+  if (names.length === 0) throw new Error('The menu file has no catalog sheets — is this a Feedme menu export?')
+  const catalogs = names.map((name, sortOrder) => readCatalog(files, name, sortOrder, products, optionDefaults, warnings))
+  warnLinkDifferences(files, warnings)
+  return { payload: { ...master, catalogs }, warnings }
+}
+
+function readCatalog(
+  files: FeedmeFiles, name: string, sortOrder: number, products: Map<string, ImportProduct>,
+  optionDefaults: Map<string, number>, warnings: string[],
+): ImportCatalog {
+  const sheet = sheetOf(files.menu, name, 'the menu file')
+  const mc = columns(sheet[0], ['Product ID', 'Variant key', 'Order from', 'Selling price'])
+  const rows = new Map<string, { orderFrom: string; row: number; prices: Map<string, number | null> }>()
+  sheet.slice(1).forEach((r, i) => {
+    const id = clean(r[mc['Product ID']])
+    if (!id) return
+    const key = clean(r[mc['Variant key']])
+    const price = toSen(r[mc['Selling price']])
+    let entry = rows.get(id)
+    if (!key) {
+      if (entry) return                                   // a second base row: the master already warned
+      entry = { orderFrom: clean(r[mc['Order from']]).toUpperCase(), row: i, prices: new Map() }
+      rows.set(id, entry)
+    }
+    if (!entry) return                                    // a variant row before its base row: the master warned
+    if (!entry.prices.has(key)) entry.prices.set(key, price)
+  })
+
+  const out: ImportCatalogProduct[] = []
+  for (const [id, e] of rows) {
+    if (e.orderFrom !== 'ALL' && e.orderFrom !== 'POS_ONLY') continue      // NONE (or blank): not in this catalog
+    const p = products.get(id)
+    if (!p) continue                                                        // skipped in the master, which said why
+    const prices: { key: string; priceSen: number }[] = []
+    const missing = p.variants.find((v) => {
+      const price = e.prices.get(v.key) ?? null
+      if (price !== null) prices.push({ key: v.key, priceSen: price })
+      return price === null
+    })
+    if (missing) {
+      warnings.push(`${name}: ${p.name} / ${missing.name} has no price — left out of this catalog`)
+      continue
+    }
+    out.push({ feedmeId: id, availability: e.orderFrom === 'ALL' ? 'all' : 'counter_only', sortOrder: e.row, prices })
+  }
+
+  const optionPrices: ImportOptionPrice[] = []
+  const addon = files.addonGroup[name]
+  if (!addon || addon.length === 0) {
+    warnings.push(`${name}: no add-on price sheet — add-ons use their default prices`)
+  } else {
+    const gc = columns(addon[0], ['Group ID', 'Item ID', 'Variant Key', 'Item price'])
+    const seen = new Set<string>()
+    for (const r of addon.slice(1)) {
+      const groupFeedmeId = clean(r[gc['Group ID']])
+      const productFeedmeId = clean(r[gc['Item ID']])
+      const variantKey = clean(r[gc['Variant Key']])
+      const k = `${groupFeedmeId}|${productFeedmeId}|${variantKey}`
+      const def = optionDefaults.get(k)
+      if (def === undefined || seen.has(k)) continue
+      seen.add(k)
+      const priceSen = toSen(r[gc['Item price']]) ?? 0                      // as the master reads it
+      if (priceSen !== def) optionPrices.push({ groupFeedmeId, productFeedmeId, variantKey, priceSen })
+    }
+  }
+  return { name, sortOrder, products: out, optionPrices }
+}
+
+/** Links stay global (the Default Catalog column). A link sheet that also carries
+ *  catalog columns is compared, so the report says where Feedme differed. */
+function warnLinkDifferences(files: FeedmeFiles, warnings: string[]): void {
+  const diffs = new Map<string, number>()
+  for (const sheet of Object.values(files.itemLinkedAddon)) {
+    if (sheet.length === 0) continue
+    const header = sheet[0].map((h) => clean(h))
+    const master = header.indexOf(MASTER_MENU_SHEET)
+    if (master < 0) continue
+    header.forEach((h, j) => {
+      if (j === master || h === '' || h === 'Group ID' || h === 'Item ID' || h === 'Item Name') return
+      for (const r of sheet.slice(1)) {
+        if (clean(r[j]).toUpperCase() !== clean(r[master]).toUpperCase()) diffs.set(h, (diffs.get(h) ?? 0) + 1)
+      }
+    })
+  }
+  for (const [catalog, n] of diffs) {
+    warnings.push(`${catalog}: ${n} add-on link${n === 1 ? ' differs' : 's differ'} from the Default Catalog — Craft OS uses the Default Catalog links for every catalog`)
   }
 }

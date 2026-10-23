@@ -1,17 +1,22 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { buildMenuImport, FEEDME_CATALOG, readFeedmeExport, type MenuImport } from './feedmeExport'
-import { importMenu } from './menuApi'
+import { buildCatalogsImport, readFeedmeExport, type CatalogsImport } from './feedmeExport'
+import { countCatalogs, importFeedme, type ImportReport } from './menuApi'
+import { IMPORT_CONFIRM_WORD, MASTER_WARNING, canImport, catalogSummary } from './importView'
 
 type Stage =
   | { kind: 'pick' }
-  | { kind: 'preview'; fileName: string; payload: MenuImport; warnings: string[] }
+  | { kind: 'preview'; fileName: string; payload: CatalogsImport; warnings: string[]; existingCatalogs: number }
   | { kind: 'importing' }
-  | { kind: 'done'; counts: Record<string, number> }
+  | { kind: 'done'; report: ImportReport }
+
+const th = 'px-3 py-1 text-left font-normal text-gray-500'
+const td = 'px-3 py-1'
 
 export default function MenuImportPage() {
   const [stage, setStage] = useState<Stage>({ kind: 'pick' })
   const [error, setError] = useState<string | null>(null)
+  const [typed, setTyped] = useState('')
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
@@ -28,18 +33,20 @@ export default function MenuImportPage() {
         const notAZip = /invalid zip|unexpected eof/i.test(msg)
         throw new Error(notAZip ? 'That file is not a Feedme export zip (books_….zip).' : msg)
       }
-      const { payload, warnings } = buildMenuImport(files, FEEDME_CATALOG)
-      setStage({ kind: 'preview', fileName: file.name, payload, warnings })
+      const { payload, warnings } = buildCatalogsImport(files)
+      const existingCatalogs = await countCatalogs()
+      setTyped('')
+      setStage({ kind: 'preview', fileName: file.name, payload, warnings, existingCatalogs })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setStage({ kind: 'pick' })
     }
   }
 
-  const confirm = async (payload: MenuImport) => {
+  const confirm = async (payload: CatalogsImport) => {
     setStage({ kind: 'importing' })
     try {
-      setStage({ kind: 'done', counts: await importMenu(payload) })
+      setStage({ kind: 'done', report: await importFeedme(payload) })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setStage({ kind: 'pick' })
@@ -52,8 +59,9 @@ export default function MenuImportPage() {
       <h1 className="text-2xl font-semibold">Import menu from Feedme</h1>
       <p className="text-sm text-gray-500">
         In the Feedme portal go to Menu → Products → Export and choose the downloaded <code>books_….zip</code>.
-        Availability is taken from the “{FEEDME_CATALOG}” catalog. Importing again updates names, prices, add-ons and availability from Feedme;
-        SST and print routes set in Craft OS are kept, and no product is deleted.
+        The import loads every product from the “Default Catalog” sheet and every Feedme catalog with its own products
+        and prices. SST and print routes set in Craft OS are kept, and nothing is deleted: a product a catalog no longer
+        sells is hidden in it. Branch assignments are not imported — choose each branch’s catalogs in POS settings.
       </p>
 
       {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
@@ -70,8 +78,19 @@ export default function MenuImportPage() {
             {stage.payload.products.reduce((n, p) => n + p.variants.length, 0)} variants,{' '}
             {stage.payload.categories.length} categories, {stage.payload.groups.length} add-on groups,{' '}
             {stage.payload.groups.reduce((n, g) => n + g.options.length, 0)} add-on options,{' '}
-            {stage.payload.links.length} product ↔ add-on links.
+            {stage.payload.links.length} product ↔ add-on links, {stage.payload.catalogs.length} catalogs.
           </p>
+          <table className="w-full text-sm">
+            <thead><tr><th className={th}>Catalog</th><th className={th}>Products</th><th className={th}>Counter only</th><th className={th}>Own add-on prices</th></tr></thead>
+            <tbody>
+              {stage.payload.catalogs.map(catalogSummary).map((c) => (
+                <tr key={c.name} className="border-t border-border">
+                  <td className={td}>{c.name}</td><td className={td}>{c.products}</td>
+                  <td className={td}>{c.counterOnly}</td><td className={td}>{c.optionPrices}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
           {stage.warnings.length > 0 && (
             <details className="text-sm">
               <summary>{stage.warnings.length} warnings</summary>
@@ -82,9 +101,20 @@ export default function MenuImportPage() {
               </ul>
             </details>
           )}
+          <p role="alert" className="rounded bg-amber-50 p-3 text-sm text-amber-900">{MASTER_WARNING}</p>
+          {stage.existingCatalogs > 0 && (
+            <label className="block text-sm">
+              {stage.existingCatalogs} catalog{stage.existingCatalogs === 1 ? '' : 's'} already exist. Type <b>{IMPORT_CONFIRM_WORD}</b> to overwrite them.
+              <input className="ml-2 rounded border border-border px-2 py-1" value={typed} onChange={(e) => setTyped(e.target.value)} />
+            </label>
+          )}
           <div className="flex gap-2">
-            <button className="rounded bg-brown-btn px-4 py-2 text-sm text-white hover:bg-brown-btn-hover" onClick={() => void confirm(stage.payload)}>
-              Import {stage.payload.products.length} products
+            <button
+              disabled={!canImport(stage.existingCatalogs, typed)}
+              className="rounded bg-brown-btn px-4 py-2 text-sm text-white hover:bg-brown-btn-hover disabled:opacity-40"
+              onClick={() => void confirm(stage.payload)}
+            >
+              Import {stage.payload.products.length} products and {stage.payload.catalogs.length} catalogs
             </button>
             <button className="rounded border border-border px-4 py-2 text-sm" onClick={() => setStage({ kind: 'pick' })}>
               Choose another file
@@ -98,9 +128,21 @@ export default function MenuImportPage() {
       {stage.kind === 'done' && (
         <div className="space-y-2 rounded border border-border p-4 text-sm">
           <p>
-            Synced: {stage.counts.products} products, {stage.counts.variants} variants, {stage.counts.groups} add-on groups,{' '}
-            {stage.counts.options} add-on options, {stage.counts.links} links.
+            Synced: {stage.report.products} products, {stage.report.variants} variants, {stage.report.groups} add-on groups,{' '}
+            {stage.report.options} add-on options, {stage.report.links} links.
           </p>
+          <table className="w-full">
+            <thead><tr><th className={th}>Catalog</th><th className={th}>Products</th><th className={th}>Prices</th><th className={th}>Own add-on prices</th></tr></thead>
+            <tbody>
+              {stage.report.catalogs.map((c) => (
+                <tr key={c.name} className="border-t border-border">
+                  <td className={td}>{c.name}</td><td className={td}>{c.products}</td>
+                  <td className={td}>{c.prices}</td><td className={td}>{c.optionPrices}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p>Next: choose each branch’s catalogs in <Link to="/pos/settings" className="underline">POS settings</Link>.</p>
           <Link to="/menu" className="underline">Open the menu</Link>
         </div>
       )}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { zipSync } from 'fflate'
-import { buildMenuImport, clean, readFeedmeExport, toSen, type FeedmeFiles } from './feedmeExport'
+import { buildCatalogsImport, buildMenuImport, clean, readFeedmeExport, toSen, type FeedmeFiles } from './feedmeExport'
 import { makeXlsx } from './testing/makeXlsx'
 
 const MENU_HEADER = [
@@ -191,6 +191,95 @@ describe('buildMenuImport', () => {
     const f = files()
     f.menu['Craft Cafe'][0] = f.menu['Craft Cafe'][0].map((h) => (h === 'Selling price' ? 'Price' : h))
     expect(() => buildMenuImport(f, 'Craft Cafe')).toThrow('Column "Selling price" not found')
+  })
+})
+
+// Three catalogs, as Feedme exports them: every sheet lists every product with its own
+// "Order from" and price; NONE leaves a product out of that catalog.
+function catalogFiles(): FeedmeFiles {
+  const sheet = (rows: { tea: [string, string, string]; don: [string, string]; cake: [string, string] }) => [
+    MENU_HEADER,
+    menuRow('product_tea', 'Apple Tea', '', '', 'TEA', rows.tea[0], '10'),
+    menuRow('product_tea', 'Apple Tea', 'variant_x/0', 'HOT', 'TEA', rows.tea[0], rows.tea[1]),
+    menuRow('product_tea', 'Apple Tea', 'variant_x/1', 'COLD', 'TEA', rows.tea[0], rows.tea[2]),
+    menuRow('product_don', 'Smoked Duck DON', '', '', 'DONBURI', rows.don[0], rows.don[1], '1.06'),
+    menuRow('product_cake', 'Burnt Cheesecake', '', '', 'CAKE', rows.cake[0], rows.cake[1]),
+    menuRow('item_egg', 'Salted Egg', '', '', 'ADDON', 'ALL', '0'),
+  ]
+  const addon = (eggPrice: string) => [GROUP_HEADER, groupRow('group_sauce', 'Sauce | Choose One', '1', '1', 'item_egg', 'Salted Egg', eggPrice)]
+  return {
+    menu: {
+      'Default Catalog': sheet({ tea: ['ALL', '10', '11.5'], don: ['ALL', '24'], cake: ['NONE', '15'] }),
+      'Craft Cafe': sheet({ tea: ['ALL', '10', '11.5'], don: ['POS_ONLY', '24'], cake: ['NONE', '15'] }),
+      'Grab Food': sheet({ tea: ['ALL', '11', '13'], don: ['NONE', '24'], cake: ['ALL', '17'] }),
+      'Staff Meal': sheet({ tea: ['POS_ONLY', '10', '11.5'], don: ['ALL', '20'], cake: ['NONE', '15'] }),
+    },
+    addonGroup: { 'Default AddonGroup': addon('0'), 'Craft Cafe': addon('0'), 'Grab Food': addon('1.5') },
+    itemLinkedAddon: {
+      '1. Sauce | Choose One': [
+        ['Group ID', 'Item ID', 'Item Name', 'Default Catalog', 'Grab Food'],
+        ['group_sauce', 'product_don', 'Smoked Duck DON', 'T', ''],
+      ],
+    },
+  }
+}
+
+describe('buildCatalogsImport', () => {
+  const { payload, warnings } = buildCatalogsImport(catalogFiles())
+  const catalog = (name: string) => payload.catalogs.find((c) => c.name === name)!
+
+  it('takes the master list from the Default sheets, every product included', () => {
+    expect(payload.products.map((p) => p.feedmeId)).toEqual(['product_tea', 'product_don', 'product_cake', 'item_egg'])
+    expect(payload.groups.map((g) => g.feedmeId)).toEqual(['group_sauce'])
+    expect(payload.links).toEqual([{ productFeedmeId: 'product_don', groupFeedmeId: 'group_sauce', sortOrder: 0 }])
+  })
+
+  it('makes one catalog per other sheet, in sheet order', () => {
+    expect(payload.catalogs.map((c) => [c.name, c.sortOrder])).toEqual([['Craft Cafe', 0], ['Grab Food', 1], ['Staff Meal', 2]])
+  })
+
+  it('includes ALL and POS_ONLY products with a price for every variant, and leaves NONE out', () => {
+    expect(catalog('Craft Cafe').products).toEqual([
+      { feedmeId: 'product_tea', availability: 'all', sortOrder: 0, prices: [{ key: 'variant_x/0', priceSen: 1000 }, { key: 'variant_x/1', priceSen: 1150 }] },
+      { feedmeId: 'product_don', availability: 'counter_only', sortOrder: 3, prices: [{ key: '', priceSen: 2400 }] },
+      { feedmeId: 'item_egg', availability: 'all', sortOrder: 5, prices: [{ key: '', priceSen: 0 }] },
+    ])
+    expect(catalog('Staff Meal').products.map((p) => [p.feedmeId, p.availability])).toEqual(
+      [['product_tea', 'counter_only'], ['product_don', 'all'], ['item_egg', 'all']])
+  })
+
+  it('takes each catalog\'s own prices', () => {
+    expect(catalog('Grab Food').products.find((p) => p.feedmeId === 'product_tea')!.prices)
+      .toEqual([{ key: 'variant_x/0', priceSen: 1100 }, { key: 'variant_x/1', priceSen: 1300 }])
+    expect(catalog('Grab Food').products.find((p) => p.feedmeId === 'product_cake')!.prices).toEqual([{ key: '', priceSen: 1700 }])
+    expect(catalog('Staff Meal').products.find((p) => p.feedmeId === 'product_don')!.prices).toEqual([{ key: '', priceSen: 2000 }])
+  })
+
+  it('keeps only the add-on prices that differ from the default, and says when a catalog has no add-on sheet', () => {
+    expect(catalog('Grab Food').optionPrices).toEqual([{ groupFeedmeId: 'group_sauce', productFeedmeId: 'item_egg', variantKey: '', priceSen: 150 }])
+    expect(catalog('Craft Cafe').optionPrices).toEqual([])
+    expect(warnings).toContain('Staff Meal: no add-on price sheet — add-ons use their default prices')
+  })
+
+  it('reports catalog link columns that differ from the Default Catalog', () => {
+    expect(warnings).toContain('Grab Food: 1 add-on link differs from the Default Catalog — Craft OS uses the Default Catalog links for every catalog')
+  })
+
+  it('leaves out a product with a variant that has no usable price, and says so', () => {
+    const f = catalogFiles()
+    f.menu['Grab Food'][3][13] = 'abc'                       // Apple Tea / COLD
+    const r = buildCatalogsImport(f)
+    expect(r.payload.catalogs.find((c) => c.name === 'Grab Food')!.products.map((p) => p.feedmeId)).toEqual(['product_cake', 'item_egg'])
+    expect(r.warnings).toContain('Grab Food: Apple Tea / COLD has no price — left out of this catalog')
+  })
+
+  it('fails clearly without the master sheet or without any catalog sheet', () => {
+    const noMaster = catalogFiles()
+    delete noMaster.menu['Default Catalog']
+    expect(() => buildCatalogsImport(noMaster)).toThrow('Sheet "Default Catalog" not found in the menu file')
+    const onlyMaster = catalogFiles()
+    onlyMaster.menu = { 'Default Catalog': onlyMaster.menu['Default Catalog'] }
+    expect(() => buildCatalogsImport(onlyMaster)).toThrow('The menu file has no catalog sheets — is this a Feedme menu export?')
   })
 })
 

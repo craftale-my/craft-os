@@ -1,6 +1,6 @@
 import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
-import type { Availability, MenuImport } from './feedmeExport'
+import type { Availability, CatalogsImport } from './feedmeExport'
 
 export interface MenuVariantRow { id: string; name: string; price_sen: number; is_active: boolean; sort_order: number }
 export interface MenuProductRow {
@@ -42,8 +42,27 @@ export async function updateProducts(ids: string[], patch: ProductPatch): Promis
   if ((res.data ?? []).length !== ids.length) throw new Error('Some products were not updated — refresh and try again.')
 }
 
-export async function importMenu(payload: MenuImport): Promise<Record<string, number>> {
-  const { data, error } = await supabase.rpc('menu_import', { p_payload: payload })
+/** What menu_import_catalogs answers. */
+export interface ImportReport {
+  categories: number
+  products: number
+  variants: number
+  groups: number
+  options: number
+  links: number
+  catalogs: { name: string; products: number; prices: number; optionPrices: number }[]
+}
+
+/** The whole Feedme export in one transaction (manage_menu). */
+export async function importFeedme(payload: CatalogsImport): Promise<ImportReport> {
+  const { data, error } = await supabase.rpc('menu_import_catalogs', { p_payload: payload })
   if (error) throw new Error(error.message)
-  return data as Record<string, number>
+  return data as ImportReport
+}
+
+/** How many catalogs exist (a re-import must be confirmed by typing). */
+export async function countCatalogs(): Promise<number> {
+  const { count, error } = await supabase.from('menu_catalogs').select('id', { count: 'exact', head: true })
+  if (error) throw new Error(error.message)
+  return count ?? 0
 }
