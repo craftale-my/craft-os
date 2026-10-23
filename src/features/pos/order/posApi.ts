@@ -4,10 +4,7 @@ import { writeOutcome } from '../../../shared/lib/db-write'
 import type { PrintJob } from '../print/printHost'
 import type { PrintRoute } from '../print/adapter'
 import { counterOrderArgs, toSendResult, type QueuedOrder, type SendResult, type OrderType } from '../offline/orderQueue'
-import {
-  buildPosMenu, type CatalogProductRow, type GroupRow, type LinkRow, type OptionPriceRow, type PosMenu, type ProductRow,
-  type SoldOutRow, type VariantPriceRow,
-} from './cart'
+import { buildPosMenu, type CatalogRows, type GroupRow, type LinkRow, type PosMenu, type ProductRow, type SoldOutRow } from './cart'
 import type { BranchCatalogRow, BranchCatalogSettings, BranchCatalogs, CatalogRow } from './catalogs'
 
 const SEND_TIMEOUT_MS = 8000
@@ -40,33 +37,23 @@ export interface PrintJobRow extends PrintJob {
   created_at: string
 }
 
-/** The counter menu of one catalog: flat reads (RLS menu_read) shaped by the pure
- *  builder. Products and prices come from the catalog, never from the master list. */
-export async function fetchPosMenu(branchId: string, catalogId: string): Promise<PosMenu> {
-  const [p, g, l, s, cp, vp, op] = await Promise.all([
-    supabase.from('menu_products')
-      .select('id, name, description, is_addon, is_active, sort_order, category:menu_categories(name, sort_order), ' +
-              'menu_variants(id, name, is_active, sort_order, feedme_variant_key)')
-      .eq('is_active', true).order('sort_order').order('name'),
-    supabase.from('modifier_groups')
-      .select('id, name, min_select, max_select, is_active, sort_order, ' +
-              'modifier_options(id, name, price_delta_sen, is_default, availability, sort_order, product_id)'),
-    supabase.from('product_modifier_groups').select('product_id, group_id, sort_order'),
-    supabase.from('branch_menu_status').select('product_id, is_sold_out').eq('branch_id', branchId),
-    supabase.from('catalog_products').select('product_id, availability, sort_order').eq('catalog_id', catalogId),
-    supabase.from('catalog_variant_prices').select('variant_id, price_sen').eq('catalog_id', catalogId),
-    supabase.from('catalog_option_prices').select('option_id, price_delta_sen').eq('catalog_id', catalogId),
-  ])
-  for (const r of [p, g, l, s, cp, vp, op]) if (r.error) fail(r.error)
-  return buildPosMenu(
-    (p.data ?? []) as unknown as ProductRow[], (g.data ?? []) as unknown as GroupRow[],
-    (l.data ?? []) as LinkRow[], (s.data ?? []) as SoldOutRow[], 'counter',
-    {
-      products: (cp.data ?? []) as CatalogProductRow[],
-      prices: (vp.data ?? []) as VariantPriceRow[],
-      optionPrices: (op.data ?? []) as OptionPriceRow[],
-    },
-  )
+/** What pos_menu_rows returns: the flat rows buildPosMenu takes, in one JSON value. */
+interface PosMenuRows {
+  products: ProductRow[]
+  groups: GroupRow[]
+  links: LinkRow[]
+  soldOut: SoldOutRow[]
+  catalog: CatalogRows
+}
+
+/** The counter menu of one catalog in one call (pos_menu_rows: one JSON value, so
+ *  PostgREST's 1000-row cap never cuts it short), shaped by the pure builder. Products
+ *  and prices come from the catalog; sold-out is the caller's own branch. */
+export async function fetchPosMenu(catalogId: string): Promise<PosMenu> {
+  const { data, error } = await supabase.rpc('pos_menu_rows', { p_catalog_id: catalogId })
+  if (error) fail(error)
+  const rows = data as PosMenuRows
+  return buildPosMenu(rows.products, rows.groups, rows.links, rows.soldOut, 'counter', rows.catalog)
 }
 
 /** Every catalog (for names) and this branch's assignments. */

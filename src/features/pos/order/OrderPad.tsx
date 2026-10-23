@@ -68,7 +68,7 @@ export default function OrderPad({
     const id = catalogIdRef.current
     if (!id) { setMenu(null); return }
     try {
-      const m = await fetchPosMenu(branchId, id)
+      const m = await fetchPosMenu(id)
       if (seq === loadSeq.current) { setMenu(m); setError(null) }
     } catch (e) {
       if (seq === loadSeq.current) setError(e instanceof Error ? e.message : String(e))
