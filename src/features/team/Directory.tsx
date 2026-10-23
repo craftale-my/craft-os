@@ -301,6 +301,9 @@ function RejectRegModal({
         reviewed_by: reviewerId ?? null,
         reviewed_at: new Date().toISOString(),
         rejection_reason: reason.trim() || null,
+        // A request that is no longer pending keeps no phone number: supervisors
+        // can read registration_requests but are not readers of private fields.
+        phone: null,
       })
       .eq('id', request.id)
     setSaving(false)

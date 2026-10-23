@@ -292,20 +292,26 @@ Deno.serve(async (req) => {
 
     // 电话属于 staff_private(本人 + hr/manager/admin/owner 可读),不再写进 staff。
     // staff_private 那一行由 staff insert trigger 保证存在;这里 upsert 只为写入电话,
-    // 重复审批同一位也安全。失败时不回滚 auth/staff —— 帐号本身是好的,
-    // 经理重新按一次审批就会补上电话。
-    const { error: privErr } = await admin.from('staff_private')
-      .upsert({ staff_id: userId, contact_number: phone }, { onConflict: 'staff_id' })
-    if (privErr) {
-      return json({ error: `Staff created, but the phone number was not saved: ${privErr.message}` }, 400)
+    // 所以没有电话就整段跳过 —— 否则重复审批会用 null 盖掉已经存在的号码。
+    // 重复审批同一位也安全。失败时不回滚 auth/staff,也不把申请标成 approved
+    // —— 帐号本身是好的,申请留在 pending,经理重新按一次审批就会补上电话。
+    if (phone) {
+      const { error: privErr } = await admin.from('staff_private')
+        .upsert({ staff_id: userId, contact_number: phone }, { onConflict: 'staff_id' })
+      if (privErr) {
+        return json({ error: `Staff created, but the phone number was not saved: ${privErr.message}` }, 400)
+      }
     }
 
     await assignJobTitle(admin, userId, 'trainee', department)
 
+    // phone 一并清空:号码此刻已在 staff_private,申请表不该再留一份
+    // (registration_requests 对 supervisor 可读,而 supervisor 不是电话的读者)。
     await admin.from('registration_requests').update({
       status: 'approved',
       reviewed_by: auth.callerId,
       reviewed_at: new Date().toISOString(),
+      phone: null,
     }).eq('id', requestId)
 
     return json({ ok: true, staffId: userId })
