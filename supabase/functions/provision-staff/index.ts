@@ -371,9 +371,14 @@ Deno.serve(async (req) => {
       userId = created.user.id
       createdNow = true
     } else if (createErr && /already/i.test(createErr.message)) {
-      const { data: list } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 })
-      const existing = list?.users.find((u) => u.email?.toLowerCase() === email.toLowerCase())
-      if (!existing) return fail(400, createErr.message)
+      // 按 email 直接查 auth.users(RPC 只给 service_role),不再只看 listUsers 第一页:
+      // 共用后端加入 POS / 顾客登入后会超过 1000 人。
+      const { data: foundId, error: lookupErr } = await admin.rpc('auth_user_id_by_email', { p_email: email })
+      if (lookupErr) return fail(500, `Could not look up the existing login: ${lookupErr.message}`)
+      if (!foundId) return fail(400, createErr.message)
+      const { data: found, error: getErr } = await admin.auth.admin.getUserById(String(foundId))
+      if (getErr || !found?.user) return fail(500, `Could not load the existing login: ${getErr?.message ?? 'not found'}`)
+      const existing = found.user
       userId = existing.id
 
       const { data: staffRow, error: staffErr } = await admin.from('staff')

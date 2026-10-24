@@ -299,10 +299,15 @@ function RejectRegModal({
 }) {
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
   async function handleReject() {
     setSaving(true)
-    await supabase
+    setError('')
+    // RLS only lets a pending request be rejected (and reviewed_at is stamped
+    // by the server). .select() so a request that was already decided shows
+    // up as 0 rows instead of looking like success.
+    const { data, error: err } = await supabase
       .from('registration_requests')
       .update({
         status: 'rejected',
@@ -314,7 +319,17 @@ function RejectRegModal({
         phone: null,
       })
       .eq('id', request.id)
+      .eq('status', 'pending')
+      .select('id')
     setSaving(false)
+    if (err) {
+      setError(err.message)
+      return
+    }
+    if ((data ?? []).length === 0) {
+      setError('This request was already decided. Refresh the list.')
+      return
+    }
     onRejected()
   }
 
@@ -326,6 +341,7 @@ function RejectRegModal({
           <button onClick={onClose} className="text-brown-faint hover:text-brown-dark text-xl leading-none">✕</button>
         </div>
         <div className="px-6 py-5 space-y-4">
+          {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
           <div className="bg-white rounded-lg border border-[#E8DDD0] p-3 space-y-1">
             <p className="text-sm font-semibold text-brown-dark">{request.full_name}</p>
             <p className="text-xs text-brown-faint">{request.email}</p>

@@ -252,12 +252,12 @@ alter table staff
   (以及直接 insert 非 `staff` 的值);经 service role 的 create 依 rank 推出初始角色是有意保留的行为,
   而非 supervisor/hr 能触及的路径(他们只能建 trainee/junior/senior,推出的一律是 `staff`)。
 - **后续事项(本分支不做):** supervisor / hr 仍能改**别人**的 `status`(例如把 owner 标成 resigned,
-  对方随即被挡在 app 外)。用户这次的决定是 status 维持原样;日后应比照 rank,把改别人 status 收到 manager-tier。
+  对方随即被挡在 app 外)。用户这次的决定是 status 维持原样;日后应比照 rank,把改别人 status 收到 manager-tier。(2026-10-24 已处理,见 `2026-10-24-authority-followups-design.md`。)
 - **后续事项:`listUsers` 分页。** approve 找既有 auth 用户只看第一页 1000 人;用户数超过后可能找不到
-  本该接管 / 判定为已存在的帐号(只会回错,不会误接管),共用后端加入 POS / 顾客帐号后需改成按 email 查询或分页。
+  本该接管 / 判定为已存在的帐号(只会回错,不会误接管),共用后端加入 POS / 顾客帐号后需改成按 email 查询或分页。(2026-10-24 已处理,见 `2026-10-24-authority-followups-design.md`。)
 - **后续事项:`registration_requests` RLS。** `registration_requests_manage` 让 supervisor/hr 能 UPDATE
   任何申请(改 email、改电话、把已批准改回 pending),本分支靠 provision-staff 的服务端检查兜住;
-  日后应收紧成只能改 status/审核栏位,并只允许 pending → approved/rejected。
+  日后应收紧成只能改 status/审核栏位,并只允许 pending → approved/rejected。(2026-10-24 已处理,见 `2026-10-24-authority-followups-design.md`。)
 - **上线顺序改为先上 DB。** 第一段 + authority guard + VERIFY 在合并前就在 prod 跑完(第一段只加不删,
   旧版网站照常);接着部署新 provision-staff;再合并、部署前端、跑第一段补漏、跑第二段。第二段自带闸门:锁 `staff`、删同步 trigger、
   核对查询差异不为 0 或仍有对象依赖五栏就整笔 rollback。VERIFY 改为每个身份一行 `pass`、加总 `all_pass`。
