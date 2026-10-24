@@ -222,7 +222,7 @@ export default function PosPage() {
       {drawer === 'bills' && <TodayBillsDrawer branchId={branchId} onClose={() => setDrawer(null)} />}
       {drawer === 'pin' && <MyPinDialog onClose={() => setDrawer(null)} />}
       {checkout && (
-        <CheckoutSheet branchId={branchId} bill={checkout}
+        <CheckoutSheet branchId={branchId} bill={checkout} refreshKey={refreshKey}
           title={checkout.table_id ? `Table ${tables.find((t) => t.id === checkout.table_id)?.label ?? '?'}` : 'Takeaway'}
           onClose={() => setCheckout(null)}
           onPaid={() => { setCheckout(null); setSelection(null); setRefreshKey((k) => k + 1); void reload() }} />
