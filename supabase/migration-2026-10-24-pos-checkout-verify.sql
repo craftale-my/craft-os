@@ -342,11 +342,14 @@ begin
   begin perform void_order_item(v_item, 'Wrong item keyed', v_far, '9999'); raise exception 'FAIL: other branch approved';
   exception when raise_exception then if sqlerrm <> 'The approver is not active staff of this branch' then raise; end if; end;
   -- a resigned person keeps is_active = true; status = 'resigned' must end their authority
+  -- (only manager-tier may change another's status — 9d3f7f5's staff guard — so the owner does it)
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
   update staff set status = 'resigned' where id = v_sup;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_staff, 'role', 'authenticated')::text, true);
   begin perform void_order_item(v_item, 'Wrong item keyed', v_sup, '1234'); raise exception 'FAIL: resigned approver approved';
   exception when raise_exception then if sqlerrm <> 'The approver is not active staff of this branch' then raise; end if; end;
-  update staff set status = 'active' where id = v_sup;
   perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  update staff set status = 'active' where id = v_sup;
   update staff set status = 'resigned' where id = v_staff;                     -- the owner changes it (staff_guard)
   perform set_config('request.jwt.claims', json_build_object('sub', v_staff, 'role', 'authenticated')::text, true);
   begin perform place_counter_order(v_t2.id, 'dine_in', 1,
