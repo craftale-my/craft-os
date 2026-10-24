@@ -19,6 +19,14 @@ export interface RefundResult {
   slipQueued: boolean
 }
 
+/** A request that got no reply, as postgrest-js reports the browser's network failure
+ *  ("${name}: ${message}"): Chrome "TypeError: Failed to fetch", Firefox "TypeError: NetworkError
+ *  when attempting to fetch resource.", Safari — every iPad — "TypeError: Load failed", or a
+ *  timeout / abort. The request may still have landed, so the sheet keeps its id and a resend is
+ *  safe. The one classifier of the POS sheets (checkout, close shift, pay in / pay out); every
+ *  refusal of the server has other words. */
+export const looksOffline = (m: string) => /load failed|fetch|network|timeout|abort|signal/i.test(m)
+
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 
 /** Throws the server's words when the action was refused; returns the reply otherwise. */

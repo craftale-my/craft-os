@@ -6,6 +6,7 @@ import type { BillOrderType, BillTotals, CashRounding, ServiceChargeRuleInput } 
 import type { PaymentKind } from './tender'
 import type { ReasonAction, ReasonTemplate } from './reasons'
 import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
+import { parseCheckoutState, type CheckoutState } from './follow'
 
 const CHECKOUT_TIMEOUT_MS = 10_000
 const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
@@ -164,6 +165,15 @@ export async function fetchBillTotals(billId: string): Promise<BillTotals> {
   if (error) fail(error)
   if (!data) throw new Error('Bill not found')
   return data as BillTotals
+}
+
+/** The bill as the checkout sheet follows it (pos_checkout_state): its status, the totals
+ *  while it is open, and the checkout result when one of checkoutIds (every id the sheet
+ *  has used — paySession's checkoutIds) paid it. */
+export async function fetchCheckoutState(billId: string, checkoutIds: string[]): Promise<CheckoutState> {
+  const { data, error } = await supabase.rpc('pos_checkout_state', { p_bill_id: billId, p_checkout_ids: checkoutIds })
+  if (error) fail(error)
+  return parseCheckoutState(data)
 }
 
 /** A timeout or dropped connection throws — the sheet then offers Pay again with the

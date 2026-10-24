@@ -1,6 +1,7 @@
 /** Pure rules of the shift screens (Sub-plan 4a). The server repeats every check with
  *  the same words (migration-2026-10-24-pos-shifts-fn.sql); these are only so the
  *  cashier sees the problem before pressing the button. Money is integer sen. */
+import { looksOffline } from '../checkout/rpcResult'   // the one "no reply" classifier (knows Safari's "Load failed")
 import { parseRinggit } from '../checkout/tender'
 import { formatSen } from '../order/cart'
 import type { ZReport } from '../print/zreport'
@@ -171,9 +172,6 @@ export function closeShiftError(m: string): string {
 export function printedNote(printed: boolean): string {
   return printed ? 'Z report sent to the receipt printer' : 'Not printed — no receipt printer set'
 }
-
-/** What happened after a request with no reply: the id makes a resend safe. */
-export const looksOffline = (m: string) => /fetch|network|timeout|abort|signal/i.test(m)
 
 /** After a refused pay in / pay out, what is recorded under its id: 'unsure' (no reply — keep the
  *  move, its id and its fields until the server answers), 'recorded' (a resend that does not match:

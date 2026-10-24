@@ -2,10 +2,11 @@ import { useRef, useState } from 'react'
 import { formatSen } from '../order/cart'
 import { parseRinggit } from '../checkout/tender'
 import ApprovalDialog from '../checkout/ApprovalDialog'
+import { looksOffline } from '../checkout/rpcResult'
 import { closeShift } from './shiftApi'
 import ZReportView from './ZReportView'
 import {
-  approvalNote, closeShiftError, countProblem, looksOffline, openBillsWarning, printedNote, varianceLabel,
+  approvalNote, closeShiftError, countProblem, openBillsWarning, printedNote, varianceLabel,
   type CloseResult, type OpenShift,
 } from './shift'
 

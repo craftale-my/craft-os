@@ -76,6 +76,7 @@ describe('refusals', () => {
   })
   it('keeps a pay in / pay out (same id) only while it is unanswered; locks it while something may be recorded', () => {
     expect(moveRefusal('TypeError: Failed to fetch')).toBe('unsure')
+    expect(moveRefusal('TypeError: Load failed')).toBe('unsure')     // Safari, on every iPad
     expect(moveRefusal('signal timed out')).toBe('unsure')
     expect(moveRefusal('This was already recorded as Pay in RM 20.00 — close and reopen to record another')).toBe('recorded')
     expect(moveRefusal('Open the shift first')).toBe('nothing')

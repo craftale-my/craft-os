@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseCheckoutResult, parseRefundResult, unwrapAction } from './rpcResult'
+import { looksOffline, parseCheckoutResult, parseRefundResult, unwrapAction } from './rpcResult'
 
 describe('unwrapAction', () => {
   it('returns an approved reply', () => {
@@ -36,5 +36,20 @@ describe('parseRefundResult', () => {
   })
   it('refuses a reply without the recorded amount', () => {
     expect(() => parseRefundResult({ ok: true, refundedSen: 1300, slipQueued: true })).toThrow('Unexpected reply')
+  })
+})
+
+describe('looksOffline — a request with no reply, in every browser', () => {
+  it('takes a dropped connection or a timeout for no reply (Safari, on every iPad, says "Load failed")', () => {
+    for (const m of ['TypeError: Load failed', 'TypeError: Failed to fetch', 'NetworkError when attempting to fetch resource.',
+      'TimeoutError: signal timed out', 'AbortError: The operation was aborted.']) {
+      expect(looksOffline(m), m).toBe(true)
+    }
+  })
+  it('never takes a refusal of the server for no reply', () => {
+    for (const m of ['This bill is already paid', 'Payments (RM 1.00) do not match the total (RM 2.00)',
+      "This payment was already recorded with other amounts — check Today's bills", 'Wrong PIN — 4 tries left']) {
+      expect(looksOffline(m), m).toBe(false)
+    }
   })
 })
