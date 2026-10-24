@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  approvalNote, cashMoveMayBeRecorded, cashMoveProblem, closeShiftError, countProblem, floatProblem, limitProblem, mytTime,
+  approvalNote, cashMoveProblem, LOST_MOVE_NOTE, moveRefusal, resumeMove, closeShiftError, countProblem, floatProblem, limitProblem, mytTime,
   openBillsWarning, parseCashMoveResult, parseCloseResult, parseShiftList, parseShiftStatus, parseZReport, printedNote, senToText, shiftLabel,
   staleShiftNote, varianceLabel, type ShiftStatus,
 } from './shift'
@@ -74,11 +74,22 @@ describe('refusals', () => {
     expect(closeShiftError('This shift is already closed')).toBe('This shift is already closed — a supervisor can open its Z report under Shifts')
     expect(closeShiftError('Wrong PIN — 4 tries left')).toBe('Wrong PIN — 4 tries left')
   })
-  it('keeps a pay in / pay out locked only when something may be recorded under its id', () => {
-    expect(cashMoveMayBeRecorded('Failed to fetch')).toBe(true)
-    expect(cashMoveMayBeRecorded('This was already recorded as Pay in RM 20.00 — close and reopen to record another')).toBe(true)
-    expect(cashMoveMayBeRecorded('Open the shift first')).toBe(false)
-    expect(cashMoveMayBeRecorded('Wrong PIN — 4 tries left')).toBe(false)
+  it('keeps a pay in / pay out (same id) only while it is unanswered; locks it while something may be recorded', () => {
+    expect(moveRefusal('TypeError: Failed to fetch')).toBe('unsure')
+    expect(moveRefusal('signal timed out')).toBe('unsure')
+    expect(moveRefusal('This was already recorded as Pay in RM 20.00 — close and reopen to record another')).toBe('recorded')
+    expect(moveRefusal('Open the shift first')).toBe('nothing')
+    expect(moveRefusal('Wrong PIN — 4 tries left')).toBe('nothing')
+    expect(LOST_MOVE_NOTE.pay_out).toBe('Not sure it was recorded (no reply). Press Approve again — it will not be recorded twice.')
+  })
+  it('reopens the Pay in / Pay out sheet afresh, or on the unanswered move with its id and fields', () => {
+    expect(resumeMove(null, 'new')).toEqual({ id: 'new', kind: 'pay_in', amountText: '', reason: '', unsure: false, note: null })
+    expect(resumeMove({ id: 'm1', kind: 'pay_out', amountText: '15', reason: 'Ice' }, 'new')).toEqual({
+      id: 'm1', kind: 'pay_out', amountText: '15', reason: 'Ice', unsure: true,
+      note: 'Not sure the last pay out of RM 15.00 was recorded (no reply). Press Next: approval, then Approve — it will not be recorded twice.',
+    })
+    expect(resumeMove({ id: 'm2', kind: 'pay_in', amountText: '20.50', reason: 'Float' }, 'new').note)
+      .toBe('Not sure the last pay in of RM 20.50 was recorded (no reply). Press Record pay in — it will not be recorded twice.')
   })
 })
 

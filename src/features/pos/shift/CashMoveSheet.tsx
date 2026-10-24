@@ -3,7 +3,9 @@ import { formatSen } from '../order/cart'
 import { parseRinggit } from '../checkout/tender'
 import ApprovalDialog from '../checkout/ApprovalDialog'
 import { recordCashMove } from './shiftApi'
-import { cashMoveMayBeRecorded, cashMoveProblem, KIND_LABEL, looksOffline, type CashMoveKind, type CashMoveResult } from './shift'
+import {
+  cashMoveProblem, KIND_LABEL, LOST_MOVE_NOTE, moveRefusal, resumeMove, type CashMoveKind, type CashMoveResult, type PendingMove,
+} from './shift'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const KINDS: CashMoveKind[] = ['pay_in', 'pay_out']
@@ -11,19 +13,25 @@ const KINDS: CashMoveKind[] = ['pay_in', 'pay_out']
 /** Pay in / Pay out: cash put into or taken out of the drawer, with a reason. Pay out needs an
  *  approver's PIN. One id per send: once sent, the kind and amount are fixed, so a resend after
  *  a lost reply can never record the money twice; a refusal that recorded nothing ("Open the
- *  shift first", a wrong PIN, …) unlocks the fields and takes a new id. */
-export default function CashMoveSheet({ branchId, onClose, onRecorded }: {
+ *  shift first", a wrong PIN, …) unlocks the fields and takes a new id. A send with no reply is
+ *  handed to the parent (`onPending`), which passes it back as `pending` when the sheet is
+ *  reopened: Cancel and reopen resume the same id and fields until the server answers. */
+export default function CashMoveSheet({ branchId, pending, onPending, onClose, onRecorded }: {
   branchId: string
+  pending: PendingMove | null
+  onPending: (p: PendingMove | null) => void
   onClose: () => void
   onRecorded: (note: string) => void
 }) {
-  const moveId = useRef(crypto.randomUUID())
-  const [kind, setKind] = useState<CashMoveKind>('pay_in')
-  const [amountText, setAmountText] = useState('')
-  const [reason, setReason] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [start] = useState(() => resumeMove(pending, crypto.randomUUID()))
+  const moveId = useRef(start.id)
+  const [kind, setKind] = useState<CashMoveKind>(start.kind)
+  const [amountText, setAmountText] = useState(start.amountText)
+  const [reason, setReason] = useState(start.reason)
+  const [error, setError] = useState<string | null>(start.note)
   const [busy, setBusy] = useState(false)
-  const [locked, setLocked] = useState(false)
+  const [locked, setLocked] = useState(start.unsure)
+  const [unsure, setUnsure] = useState(start.unsure)     // sent with no reply: kept by the parent
   const [approving, setApproving] = useState(false)
   const running = useRef(false)
   const result = useRef<CashMoveResult | null>(null)
@@ -32,11 +40,19 @@ export default function CashMoveSheet({ branchId, onClose, onRecorded }: {
   const done = (r: CashMoveResult) => onRecorded(`${KIND_LABEL[r.kind]} ${formatSen(r.amountSen)} recorded`)
   const send = async (approverId: string | null, pin: string | null) => {
     setLocked(true)
+    const id = moveId.current
     try {
-      return await recordCashMove({ id: moveId.current, kind, amountSen, reason: reason.trim(), approverId, pin })
+      const r = await recordCashMove({ id, kind, amountSen, reason: reason.trim(), approverId, pin })
+      onPending(null); setUnsure(false)
+      return r
     } catch (e) {
-      if (!cashMoveMayBeRecorded(msg(e))) { moveId.current = crypto.randomUUID(); setLocked(false) }  // nothing was recorded
-      throw e
+      const m = msg(e)
+      const what = moveRefusal(m)
+      setUnsure(what === 'unsure')
+      if (what === 'unsure') onPending({ id, kind, amountText, reason })    // a reopen resumes this id
+      else onPending(null)
+      if (what === 'nothing') { moveId.current = crypto.randomUUID(); setLocked(false) }  // nothing was recorded
+      throw new Error(what === 'unsure' ? LOST_MOVE_NOTE[kind] : m)
     }
   }
 
@@ -46,10 +62,7 @@ export default function CashMoveSheet({ branchId, onClose, onRecorded }: {
     if (kind === 'pay_out') { setError(null); setApproving(true); return }
     if (running.current) return
     running.current = true; setBusy(true); setError(null)
-    try { done(await send(null, null)) } catch (e) {
-      const m = msg(e)
-      setError(looksOffline(m) ? 'Not sure it was recorded (no reply). Press Record again — it will not be recorded twice.' : m)
-    } finally { running.current = false; setBusy(false) }
+    try { done(await send(null, null)) } catch (e) { setError(msg(e)) } finally { running.current = false; setBusy(false) }
   }
 
   return (
@@ -75,7 +88,12 @@ export default function CashMoveSheet({ branchId, onClose, onRecorded }: {
               onChange={(e) => { setReason(e.target.value); setError(null) }} />
           </label>
           {kind === 'pay_out' && <p className="text-xs text-brown-muted">A pay out needs a supervisor's PIN.</p>}
-          {locked && <p className="text-xs text-brown-muted">Kind and amount are fixed now. To record another, close and reopen.</p>}
+          {locked && (
+            <p className="text-xs text-brown-muted">
+              {unsure ? 'Kind, amount and reason stay fixed until the server answers — closing this keeps them.'
+                : 'Kind and amount are fixed now. To record another, close and reopen.'}
+            </p>
+          )}
           {error && <p role="alert" className="rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
           <div className="flex gap-2">
             <button onClick={onClose} disabled={busy} className="flex-1 rounded-xl border border-border py-3">Cancel</button>

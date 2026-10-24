@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchShiftStatus } from './shiftApi'
-import { shiftLabel, staleShiftNote, type OpenShift, type ShiftStatus } from './shift'
+import { shiftLabel, staleShiftNote, type OpenShift, type PendingMove, type ShiftStatus } from './shift'
 import OpenShiftSheet from './OpenShiftSheet'
 import CashMoveSheet from './CashMoveSheet'
 import CloseShiftSheet from './CloseShiftSheet'
@@ -22,6 +22,8 @@ export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branc
   const [note, setNote] = useState<string | null>(null)
   // kept from when Close shift was pressed: a status read meanwhile (the shift now closed) must not unmount the sheet
   const [closing, setClosing] = useState<{ shift: OpenShift; openBillCount: number } | null>(null)
+  // a pay in / pay out sent with no reply: reopening the sheet resumes it (same id), never records it twice
+  const [pendingMove, setPendingMove] = useState<PendingMove | null>(null)
   const seq = useRef(0)
 
   const load = useCallback(async () => {
@@ -68,7 +70,8 @@ export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branc
               onOpened={(s) => { seq.current++; setStatus(s); setSheet(null); setNote('Shift opened') }} />
           )}
           {sheet === 'move' && (
-            <CashMoveSheet branchId={branchId} onClose={closeSheet} onRecorded={(text) => { setNote(text); closeSheet() }} />
+            <CashMoveSheet branchId={branchId} pending={pendingMove} onPending={setPendingMove} onClose={closeSheet}
+              onRecorded={(text) => { setNote(text); closeSheet() }} />
           )}
           {closing && (
             <CloseShiftSheet branchId={branchId} shift={closing.shift} openBillCount={closing.openBillCount}

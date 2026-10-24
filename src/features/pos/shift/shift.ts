@@ -175,6 +175,33 @@ export function printedNote(printed: boolean): string {
 /** What happened after a request with no reply: the id makes a resend safe. */
 export const looksOffline = (m: string) => /fetch|network|timeout|abort|signal/i.test(m)
 
-/** After a refused pay in / pay out: was anything recorded under its id? Only a lost reply (maybe)
- *  or a resend that does not match (yes) keep the sheet locked; every other refusal wrote nothing. */
-export const cashMoveMayBeRecorded = (m: string) => looksOffline(m) || m.startsWith('This was already recorded')
+/** After a refused pay in / pay out, what is recorded under its id: 'unsure' (no reply — keep the
+ *  move, its id and its fields until the server answers), 'recorded' (a resend that does not match:
+ *  the id holds another move, the fields stay fixed, a reopen starts afresh) or 'nothing' (every
+ *  other refusal: a new id, the fields unlocked). */
+export type MoveRefusal = 'unsure' | 'recorded' | 'nothing'
+export function moveRefusal(m: string): MoveRefusal {
+  if (looksOffline(m)) return 'unsure'
+  return m.startsWith('This was already recorded') ? 'recorded' : 'nothing'
+}
+
+/** The words for a pay in / pay out sent with no reply, by the button that sends it again. */
+export const LOST_MOVE_NOTE: Record<CashMoveKind, string> = {
+  pay_in: 'Not sure it was recorded (no reply). Press Record again — it will not be recorded twice.',
+  pay_out: 'Not sure it was recorded (no reply). Press Approve again — it will not be recorded twice.',
+}
+
+/** A pay in / pay out sent with no reply. The top bar keeps it while the sheet is closed, so Cancel
+ *  and reopen resume the same id with the same fields — never a second record. */
+export interface PendingMove { id: string; kind: CashMoveKind; amountText: string; reason: string }
+
+/** How the Pay in / Pay out sheet starts: afresh with a new id, or resuming the unanswered move. */
+export function resumeMove(pending: PendingMove | null, newId: string) {
+  if (!pending) return { id: newId, kind: 'pay_in' as CashMoveKind, amountText: '', reason: '', unsure: false, note: null }
+  const amount = formatSen(parseRinggit(pending.amountText) ?? 0)
+  const again = pending.kind === 'pay_in' ? 'Record pay in' : 'Next: approval, then Approve'
+  return {
+    ...pending, unsure: true,
+    note: `Not sure the last ${KIND_LABEL[pending.kind].toLowerCase()} of ${amount} was recorded (no reply). Press ${again} — it will not be recorded twice.`,
+  }
+}
