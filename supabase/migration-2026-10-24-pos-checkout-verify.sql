@@ -174,6 +174,11 @@ begin
     (v_sup,   'Verify Supervisor', 'supervisor', true, current_date, 'supervisor', v_branch),
     (v_staff, 'Verify Cashier',    'trainee',    true, current_date, 'staff',      v_branch),
     (v_far,   'Far Supervisor',    'supervisor', true, current_date, 'supervisor', v_branch2);
+  -- Sub-plan 4a (migration-2026-10-24-pos-shifts.sql): money moves only inside an open shift.
+  -- Once shifts are applied, VERIFY works inside one; the shifts verify script tests the shifts.
+  if to_regclass('public.pos_shifts') is not null then
+    execute 'insert into pos_shifts(branch_id, opened_by, opening_float_sen) values ($1, $2, 0)' using v_branch, v_owner;
+  end if;
 
   -- ── D. capability pos_supervise: defaults, Owner override, SQL helpers agree ─
   for r in select * from (values ('owner', true), ('admin', true), ('hr', false), ('manager', true),
