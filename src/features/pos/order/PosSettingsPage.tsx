@@ -11,6 +11,7 @@ import { PRINT_ROUTES } from '../menu/menuView'
 import { addTableAction, friendlyDbMessage, openBillMessage, renameConflict } from './tableAdmin'
 import CheckoutSettings from '../checkout/CheckoutSettings'
 import MenuCatalogsSection from './MenuCatalogsSection'
+import ShiftSettingsSection from '../shift/ShiftSettingsSection'
 
 const KINDS: PrinterKind[] = ['agent', 'epson-epos', 'star-webprnt']
 
@@ -171,6 +172,8 @@ export default function PosSettingsPage() {
       <MenuCatalogsSection branchId={branchId} />
 
       <CheckoutSettings branchId={branchId} routes={routes.map((r) => r.route)} tables={tables} />
+
+      <ShiftSettingsSection branchId={branchId} />
 
       {card && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40" onClick={() => setCard(null)}>
