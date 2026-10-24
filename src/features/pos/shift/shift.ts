@@ -50,10 +50,12 @@ export function parseShiftStatus(data: unknown): ShiftStatus {
   return { shift, openBillCount: data.openBillCount, lastFloatSen: isNum(data.lastFloatSen) ? data.lastFloatSen : null, now: data.now }
 }
 
-/** A frozen Z report as the server stored it (only its outline is checked). */
+/** A frozen Z report as the server stored it (only its outline is checked). A report frozen
+ *  before the first count's variance was stored has no firstVarianceSen: read as null. */
 export function parseZReport(data: unknown): ZReport {
   if (!isObj(data) || !isObj(data.summary) || !isObj(data.sales) || !isObj(data.cash) || !Array.isArray(data.payments)) return unexpected()
-  return data as unknown as ZReport
+  const firstVarianceSen = isNum(data.cash.firstVarianceSen) ? data.cash.firstVarianceSen : null
+  return { ...data, cash: { ...data.cash, firstVarianceSen } } as unknown as ZReport
 }
 
 /** Throws the server's words for a wrong PIN; otherwise closed, or "needs approval". */

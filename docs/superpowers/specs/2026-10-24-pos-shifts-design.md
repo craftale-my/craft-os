@@ -35,6 +35,7 @@ pos_shifts
   opened_by → staff, opened_at, opening_float_sen ≥ 0
   status 'open' | 'closed'
   first_count_sen      -- the first blind count submitted (kept even if the count is re-entered)
+  first_variance_sen   -- that count − the expected cash at that moment, stored with it
   counted_cash_sen, expected_cash_sen, variance_sen      -- set at close
   variance_reason, variance_approved_by → staff          -- only when |variance| > limit
   closed_by → staff, closed_at
@@ -77,14 +78,15 @@ reason, approver, pin)` is idempotent on `id`.
    shift") and lets the cashier continue.
 2. **Counted cash** (one total, blind). Submitting calls `close_shift(shift_id, counted, reason, approver,
    pin, expected)` (`expected`: the expected cash the approver was shown, none on a plain count); the
-   first call stores `first_count_sen`.
+   first call stores `first_count_sen` and `first_variance_sen` (against the expected cash at that moment).
 3. The server computes **expected cash = opening float + cash payments − cash refunds + pay in − pay
    out** (cash payments are `amount_sen`, change already taken off).
 4. Within the limit → closed. Above it without an approver → `{ok:false, needsApproval:true,
    expectedSen, varianceSen}`; the sheet then shows expected and variance and asks for a reason and a
    supervisor PIN. Re-entering a different count is allowed; the Z report shows the first count beside
    the final one. **Once the first count was above the limit, the close still needs the reason and the
-   supervisor PIN** even when a new count is within it (the cashier has seen the expected cash by then;
+   supervisor PIN** even when a new count is within it — judged by the stored `first_variance_sen`, not
+   against the expected cash now, so a pay in recorded after seeing the figure cannot lift it (the cashier has seen the expected cash by then;
    the sheet says "A supervisor still approves, because the first count was more than RM 5.00 off.").
    If the expected cash changed while the supervisor came over (a sale, refund or pay in / out on another
    iPad), an approval with the old `expected` gets `{ok:false, needsApproval:true, expectedSen,
@@ -107,7 +109,7 @@ by, nett sales, variance) and opens each Z report with **Reprint**.
 - **Order type:** dine-in / takeaway — bills, nett.
 - **Source:** counter / QR — orders, item value.
 - **Cash drawer:** opening float, cash sales, cash refunds, each pay in / pay out (amount, reason, by),
-  expected, first count, counted, variance (reason, approved by).
+  expected, first count (and its variance then), counted, variance (reason, approved by).
 - **Voids:** voided items and bills whose void time falls between open and close (name, qty, value,
   reason, by, approver).
 - **Refunds:** bill no, amount, method, reason, approver.
@@ -137,7 +139,8 @@ Dev first; prod later by the owner, before any deploy carrying the client.
 - **SQL verify script (dev, rolled back):** open twice refused; checkout and refund refused with no shift;
   stamps on payments and refunds; pay out without PIN refused; expected cash with float, cash and card
   payments, change, a cash refund, pay in and pay out; within-limit close; above-limit needs approval;
-  first count kept; a re-count within the limit after a first count above it still needs approval; an
+  first count kept; a re-count within the limit after a first count above it still needs approval, also
+  after a pay in that would bring the first count within the limit against the expected cash now; an
   approval of a changed expected cash answers the new figures; closed shift immutable; a checkout racing a close lands in the closed shift's report;
   a refund of a closed shift's bill lands in the new shift; a RM 0.00 bill counts in its shift; report
   totals equal the bills' totals.

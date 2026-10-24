@@ -82,6 +82,7 @@ export interface ZReport {
     payOutSen: number
     expectedSen: number
     firstCountSen: number | null
+    firstVarianceSen: number | null // the first count − the expected cash at that moment (null in reports frozen before it existed)
     countedSen: number | null
     varianceSen: number | null
     varianceReason: string | null
@@ -159,7 +160,11 @@ export function renderZReportLines(input: ZReportPayload, cols: number): string[
         ...indented(`by ${m.by ?? '-'}${m.approvedBy ? `, approved by ${m.approvedBy}` : ''}`, cols),
       ]),
       ...lr('Expected cash', money(c.expectedSen), cols),
-      ...(c.firstCountSen !== null && c.firstCountSen !== c.countedSen ? lr('First count', money(c.firstCountSen), cols) : []),
+      ...(c.firstCountSen !== null && c.firstCountSen !== c.countedSen ? [
+        ...lr('First count', money(c.firstCountSen), cols),
+        // != null: a report frozen before the first variance was stored has no such key
+        ...(c.firstVarianceSen != null ? lr('  First variance', signedMoney(c.firstVarianceSen), cols) : []),
+      ] : []),
       ...lr('Counted cash', c.countedSen === null ? '-' : money(c.countedSen), cols),
       ...lr('Variance', c.varianceSen === null ? '-' : signedMoney(c.varianceSen), cols),
       ...(c.varianceReason ? indented(`Reason: ${c.varianceReason}`, cols) : []),

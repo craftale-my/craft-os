@@ -34,7 +34,7 @@ declare
   v_cat uuid; v_catalog uuid; v_plate uuid; v_plate_v uuid; v_tea uuid; v_tea_v uuid; v_water uuid; v_water_v uuid;
   v_cash uuid; v_card uuid;
   b1 uuid; b2 uuid; b3 uuid; b4 uuid; b5 uuid; b6 uuid; b7 uuid;
-  s1 uuid; s2 uuid;
+  s1 uuid; s2 uuid; s3 uuid;
   v_move uuid := 'eeeeeeee-1111-0000-0000-000000000001';
   v_move2 uuid := 'eeeeeeee-1111-0000-0000-000000000002';
   v_res jsonb; v_rep jsonb; v_rep1 jsonb; v_text text; v_id uuid; n integer; r record; v_role text; v_tbl text; v_priv text;
@@ -284,13 +284,13 @@ begin
   -- short RM 5.15 (more than RM 5.00): no approver yet → the sheet asks for one
   v_res := close_shift(s1, 14000, null, null, null, null);
   if v_res is distinct from jsonb_build_object('ok', false, 'needsApproval', true, 'expectedSen', 14515, 'varianceSen', -515, 'limitSen', 500)
-     or (select status || ':' || first_count_sen from pos_shifts where id = s1) is distinct from 'open:14000' then
+     or (select status || ':' || first_count_sen || ':' || first_variance_sen from pos_shifts where id = s1) is distinct from 'open:14000:-515' then
     raise exception 'FAIL F above the limit: %', v_res;
   end if;
   -- the expected cash is on screen now: a new count of exactly that still needs the approval
   v_res := close_shift(s1, 14515, null, null, null, null);
   if v_res is distinct from jsonb_build_object('ok', false, 'needsApproval', true, 'expectedSen', 14515, 'varianceSen', 0, 'limitSen', 500)
-     or (select status || ':' || first_count_sen from pos_shifts where id = s1) is distinct from 'open:14000' then
+     or (select status || ':' || first_count_sen || ':' || first_variance_sen from pos_shifts where id = s1) is distinct from 'open:14000:-515' then
     raise exception 'FAIL F a re-count within the limit after a first count above it closed without approval: %', v_res;
   end if;
   -- the approver was shown another expected cash (it moved meanwhile): the new figures, no PIN tried
@@ -340,6 +340,7 @@ begin
   end if;
   if (v_rep1->'cash') - 'moves' is distinct from '{"countedSen": 13900, "payInSen": 2000, "payOutSen": 1500, "expectedSen": 14515,
                                     "varianceSen": -615, "cashSalesSen": 5015, "cashRefundSen": 1000, "firstCountSen": 14000,
+                                    "firstVarianceSen": -515,
                                     "varianceReason": "Short — till miscount", "openingFloatSen": 10000,
                                     "varianceApprovedBy": "Verify 4A Supervisor"}'::jsonb
      or (select string_agg(m->>'kind' || ':' || (m->>'amountSen') || ':' || (m->>'reason') || ':' || (m->>'by') || ':' || coalesce(m->>'approvedBy', '-'), ',')
@@ -418,7 +419,8 @@ begin
   v_rep := v_res->'report';
   select * into r from pos_shifts where id = s2;
   if r.variance_sen is distinct from 50 or r.expected_cash_sen is distinct from 12050 or r.variance_reason is not null or r.variance_approved_by is not null
-     or r.report_printed then
+     or r.report_printed or r.first_count_sen is distinct from 12100 or r.first_variance_sen is distinct from 50
+     or (v_res->'report'->'cash'->>'firstVarianceSen')::int is distinct from 50 then
     raise exception 'FAIL H closed row: %', row_to_json(r);
   end if;
   if (v_rep->'summary'->>'billCount')::int is distinct from 2 or (v_rep->'summary'->>'refundSen')::int is distinct from 500
@@ -460,6 +462,33 @@ begin
   end if;
   perform pg_temp.act(v_far);
   perform pg_temp.expect_error(format('select pos_shift_zreport(%L)', s1), 'Shift not found', 'I another branch');
+
+  -- ── J. the first count is judged against the expected cash at that moment ──
+  -- over by RM 6.00 on the first count; a pay in (no PIN) then moves the expected cash so that the
+  -- first count would be within the limit against the expected cash now, and a re-count matches it
+  -- exactly: the supervisor still approves
+  perform pg_temp.act(v_cashier);
+  s3 := (open_shift(10000)->'shift'->>'id')::uuid;
+  v_res := close_shift(s3, 10600, null, null, null, null);
+  if v_res is distinct from jsonb_build_object('ok', false, 'needsApproval', true, 'expectedSen', 10000, 'varianceSen', 600, 'limitSen', 500)
+     or (select first_count_sen || ':' || first_variance_sen from pos_shifts where id = s3) is distinct from '10600:600' then
+    raise exception 'FAIL J first count above the limit: %', v_res;
+  end if;
+  v_res := record_cash_move(gen_random_uuid(), 'pay_in', 200, 'Float top-up', null, null);
+  if not (v_res->>'ok')::boolean then raise exception 'FAIL J pay in: %', v_res; end if;
+  v_res := close_shift(s3, 10200, null, null, null, null);
+  if v_res is distinct from jsonb_build_object('ok', false, 'needsApproval', true, 'expectedSen', 10200, 'varianceSen', 0, 'limitSen', 500)
+     or (select status || ':' || first_count_sen || ':' || first_variance_sen from pos_shifts where id = s3) is distinct from 'open:10600:600' then
+    raise exception 'FAIL J a pay in after the first count let the close skip the approval: %', v_res;
+  end if;
+  v_res := close_shift(s3, 10200, 'Miscounted the first time', v_sup, '2468', 10200);
+  if not (v_res->>'ok')::boolean
+     or (v_res->'report'->'cash'->>'firstCountSen')::int is distinct from 10600
+     or (v_res->'report'->'cash'->>'firstVarianceSen')::int is distinct from 600
+     or (v_res->'report'->'cash'->>'varianceSen')::int is distinct from 0
+     or v_res->'report'->'cash'->>'varianceApprovedBy' is distinct from 'Verify 4A Supervisor' then
+    raise exception 'FAIL J approved close: %', v_res;
+  end if;
   perform pg_temp.act(v_owner);
 
   raise notice 'VERIFY OK';

@@ -34,6 +34,7 @@ create table if not exists pos_shifts (
   opening_float_sen     integer not null check (opening_float_sen between 0 and 10000000),
   status                text not null default 'open' check (status in ('open', 'closed')),
   first_count_sen       integer check (first_count_sen between 0 and 10000000),     -- the first blind count, kept
+  first_variance_sen    integer,                                                     -- the first count − the expected cash then
   counted_cash_sen      integer check (counted_cash_sen between 0 and 10000000),    -- the count the shift closed with
   expected_cash_sen     integer,
   variance_sen          integer,                                                     -- counted − expected
@@ -90,6 +91,10 @@ alter table payments add column if not exists shift_id uuid;
 alter table refunds add column if not exists shift_id uuid;
 alter table refunds add column if not exists kind text;                -- snapshot of the payment's kind: cash refunds leave the drawer
 alter table branch_pos_settings add column if not exists cash_variance_limit_sen integer not null default 500;
+-- the first count's variance, stored with it: "the first count was above the limit" is judged
+-- against the expected cash at that moment, not the expected cash at the final count (a pay in
+-- recorded after seeing the figure must not let the close skip the approval)
+alter table pos_shifts add column if not exists first_variance_sen integer;
 do $$ begin
   if not exists (select 1 from pg_constraint where conname = 'bills_shift_id_fkey') then
     alter table bills add constraint bills_shift_id_fkey foreign key (shift_id) references pos_shifts(id);

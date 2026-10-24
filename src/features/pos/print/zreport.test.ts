@@ -22,7 +22,7 @@ const shiftOne: ZReport = {
       { kind: 'pay_in', amountSen: 2000, reason: 'Float top-up', by: 'Aina', approvedBy: null, at: '2026-10-24T03:00:00.000Z' },
       { kind: 'pay_out', amountSen: 1500, reason: 'Ice', by: 'Aina', approvedBy: 'Hafiz', at: '2026-10-24T05:00:00.000Z' },
     ],
-    payInSen: 2000, payOutSen: 1500, expectedSen: 14515, firstCountSen: 14000, countedSen: 13900, varianceSen: -615,
+    payInSen: 2000, payOutSen: 1500, expectedSen: 14515, firstCountSen: 14000, firstVarianceSen: -515, countedSen: 13900, varianceSen: -615,
     varianceReason: 'Short — till miscount', varianceApprovedBy: 'Hafiz',
   },
   voids: {
@@ -96,6 +96,7 @@ describe('renderZReportLines', () => {
       '  by Aina, approved by Hafiz',
       'Expected cash                             145.15',
       'First count                               140.00',
+      '  First variance                           -5.15',
       'Counted cash                              139.00',
       'Variance                                   -6.15',
       '  Reason: Short - till miscount',
@@ -134,9 +135,17 @@ describe('renderZReportLines', () => {
     const lines = renderZReportLines(payload(quiet, true), 48)
     expect(lines[0]).toBe('                *** REPRINT ***')
     expect(lines).not.toContain('First count                               145.15')
+    expect(lines.some((l) => l.startsWith('  First variance'))).toBe(false)
     expect(lines).toContain('Variance                                    0.00')
     for (const empty of ['No payments', 'No voids', 'No refunds', 'No sales']) expect(lines).toContain(empty)
     expect(lines.some((l) => l.startsWith('  Reason:') || l.startsWith('  Approved by'))).toBe(false)
+  })
+
+  it('prints a first count without its variance when the report was frozen before the variance was stored', () => {
+    const { firstVarianceSen: _gone, ...oldCash } = shiftOne.cash
+    const lines = renderZReportLines(payload({ ...shiftOne, cash: oldCash as ZReport['cash'] }), 48)
+    expect(lines).toContain('First count                               140.00')
+    expect(lines.some((l) => l.startsWith('  First variance'))).toBe(false)
   })
 
   it('never prints a line wider than the paper', () => {

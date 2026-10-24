@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   approvalNote, cashMoveMayBeRecorded, cashMoveProblem, closeShiftError, countProblem, floatProblem, limitProblem, mytTime,
-  openBillsWarning, parseCashMoveResult, parseCloseResult, parseShiftList, parseShiftStatus, printedNote, senToText, shiftLabel,
+  openBillsWarning, parseCashMoveResult, parseCloseResult, parseShiftList, parseShiftStatus, parseZReport, printedNote, senToText, shiftLabel,
   staleShiftNote, varianceLabel, type ShiftStatus,
 } from './shift'
 
@@ -91,11 +91,18 @@ describe('server replies', () => {
     expect(() => parseShiftStatus({ shift: { id: 's' }, openBillCount: 0, now: 'n' })).toThrow('Unexpected reply from the server')
   })
   it('reads a close: closed, needs approval, or the PIN words', () => {
-    expect(parseCloseResult({ ok: true, shiftId: 's', report, printed: false })).toEqual({ kind: 'closed', report, printed: false })
+    expect(parseCloseResult({ ok: true, shiftId: 's', report, printed: false }))
+      .toEqual({ kind: 'closed', report: { ...report, cash: { firstVarianceSen: null } }, printed: false })
     expect(parseCloseResult({ ok: false, needsApproval: true, expectedSen: 14515, varianceSen: -515, limitSen: 500 }))
       .toEqual({ kind: 'needsApproval', expectedSen: 14515, varianceSen: -515, limitSen: 500 })
     expect(() => parseCloseResult({ ok: false, error: 'Wrong PIN — 4 tries left' })).toThrow('Wrong PIN — 4 tries left')
     expect(() => parseCloseResult({ ok: true, printed: true, report: null })).toThrow('Unexpected reply from the server')
+  })
+  it('reads the first count\'s variance of a Z report, and null in a report frozen before it was stored', () => {
+    const withIt = { ...report, cash: { firstCountSen: 10600, firstVarianceSen: 600 } }
+    expect(parseZReport(withIt).cash).toEqual({ firstCountSen: 10600, firstVarianceSen: 600 })
+    expect(parseZReport({ ...report, cash: { firstCountSen: 10600 } }).cash).toEqual({ firstCountSen: 10600, firstVarianceSen: null })
+    expect(() => parseZReport({ ...report, cash: null })).toThrow('Unexpected reply from the server')
   })
   it('reads a cash move and a resend that does not match', () => {
     expect(parseCashMoveResult({ ok: true, id: 'm', kind: 'pay_out', amountSen: 1500 })).toEqual({ id: 'm', kind: 'pay_out', amountSen: 1500 })

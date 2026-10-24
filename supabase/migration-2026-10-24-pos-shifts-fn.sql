@@ -252,6 +252,7 @@ language sql stable security definer set search_path = public, pg_temp as $$
       'payOutSen', coalesce((select sum(mv.amount_sen) from mv where mv.kind = 'pay_out'), 0)::integer,
       'expectedSen', coalesce(s.expected_cash_sen, pos_shift_expected_cash(s.id)),
       'firstCountSen', s.first_count_sen,
+      'firstVarianceSen', s.first_variance_sen,
       'countedSen', s.counted_cash_sen,
       'varianceSen', s.variance_sen,
       'varianceReason', s.variance_reason,
@@ -312,8 +313,9 @@ revoke all on function pos_queue_zreport(uuid, jsonb, boolean) from public, anon
 -- Answers { ok: true, shiftId, report, printed }, or { ok: false, needsApproval: true,
 -- expectedSen, varianceSen, limitSen } (above the limit with no approver yet, or with an
 -- approver who was shown another expected cash), or { ok: false, error } (a wrong PIN).
--- The first count is stored on the first call and never replaced. Once the first count
--- was above the limit, the close needs the approver, the PIN and a reason even if a new
+-- The first count is stored on the first call, with its variance against the expected
+-- cash at that moment, and never replaced. Once the first count was above the limit
+-- (by that stored variance), the close needs the approver, the PIN and a reason even if a new
 -- count is within it (the cashier has seen the expected cash by then). p_expected_sen is
 -- the expected cash the approver was shown: when it changed meanwhile (a sale, refund or
 -- pay in / out on another iPad) the answer is "needs approval" again with the new
@@ -347,14 +349,19 @@ begin
     end if;
     raise exception 'This shift is already closed';
   end if;
-  if v_shift.first_count_sen is null then
-    update pos_shifts set first_count_sen = p_counted_sen where id = v_shift.id;
-  end if;
   v_expected := pos_shift_expected_cash(v_shift.id);
   v_var      := p_counted_sen - v_expected;
+  -- the first count and its variance against the expected cash at that moment, stored together, never replaced
+  if v_shift.first_count_sen is null then
+    update pos_shifts set first_count_sen = p_counted_sen, first_variance_sen = v_var where id = v_shift.id;
+  end if;
   v_limit    := coalesce((select s.cash_variance_limit_sen from branch_pos_settings s where s.branch_id = v_branch), 500);
-  -- v_shift was read before the first count was stored: on the first call this is the count itself
-  v_above    := abs(v_var) > v_limit or abs(coalesce(v_shift.first_count_sen, p_counted_sen) - v_expected) > v_limit;
+  -- v_shift was read before the first count was stored: on the first call this is this count's variance.
+  -- The first count is judged by its own variance, not against the expected cash now: a pay in recorded
+  -- after the figure was shown cannot bring it within the limit. (A shift counted before
+  -- first_variance_sen existed falls back to the old rule.)
+  v_above    := abs(v_var) > v_limit
+                or abs(coalesce(v_shift.first_variance_sen, v_shift.first_count_sen - v_expected, v_var)) > v_limit;
   if v_above then
     if p_approver_id is null or p_expected_sen is distinct from v_expected then
       return jsonb_build_object('ok', false, 'needsApproval', true,
