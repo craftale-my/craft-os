@@ -25,7 +25,9 @@ export type PayEvent =
   | { type: 'checkedOpen'; newCheckoutId: string } // the bill is still open: unlock with a new id
   | { type: 'checkEnded' }                         // Check bill did not find it open (no answer, paid or closed)
 
-export const newPaySession = (checkoutId: string): PaySession => ({ phase: 'editing', checkoutId, earlierIds: [] })
+/** earlierIds: the ids an earlier sheet of the same bill used (PosPage keeps them per bill), so a
+ *  late landing of that sheet's unsure payment still shows as paid here, never "on another iPad". */
+export const newPaySession = (checkoutId: string, earlierIds: string[] = []): PaySession => ({ phase: 'editing', checkoutId, earlierIds })
 
 /** An event that does not fit the phase changes nothing (a double tap, a late reply). */
 export function nextPay(s: PaySession, e: PayEvent): PaySession {

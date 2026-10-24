@@ -39,6 +39,13 @@ describe('nextPay — payment attempts of one checkout', () => {
     expect(linesLocked(paying)).toBe(true)
     expect(linesLocked(start)).toBe(false)
   })
+  it('a reopened sheet starts with the ids an earlier sheet of the bill used', () => {
+    const reopened = newPaySession('id-3', ['id-1', 'id-2'])
+    expect(reopened).toEqual({ phase: 'editing', checkoutId: 'id-3', earlierIds: ['id-1', 'id-2'] })
+    expect(checkoutIds(reopened)).toEqual(['id-1', 'id-2', 'id-3'])
+    expect(checkoutIds(run(reopened, { type: 'send' }, { type: 'noReply' }, { type: 'check' }, { type: 'checkedOpen', newCheckoutId: 'id-4' })))
+      .toEqual(['id-1', 'id-2', 'id-3', 'id-4'])
+  })
   it('says what happened in the words of the design', () => {
     expect(UNSURE.startsWith('Not sure the payment went through')).toBe(true)
     expect(CHECKED_OPEN).toBe('The bill is still open — the payment was not recorded. Check the lines and press Pay.')

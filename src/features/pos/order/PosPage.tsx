@@ -47,6 +47,9 @@ export default function PosPage() {
   const queue = useOrderQueue()
   const reqId = useRef(0)
   const selectedBillIdRef = useRef<string | null>(null)
+  // checkout ids this iPad sent per bill: a reopened sheet re-reads with them, so an unsure payment
+  // that lands late shows as paid here. Dropped once the bill is paid or no longer open.
+  const checkoutIdsByBill = useRef(new Map<string, string[]>())
 
   const reload = useCallback(async () => {
     if (!branchId) return
@@ -58,6 +61,10 @@ export default function PosPage() {
     } catch (e) { if (id === reqId.current) setError(e instanceof Error ? e.message : String(e)) }
   }, [branchId])
   useEffect(() => { void reload() }, [reload])
+  useEffect(() => {
+    const open = new Set(bills.map((b) => b.id))
+    for (const id of checkoutIdsByBill.current.keys()) if (!open.has(id)) checkoutIdsByBill.current.delete(id)
+  }, [bills])
   useEffect(() => {
     if (branchId) fetchBranchName(branchId).then(setBranchName, () => setBranchName(null))
   }, [branchId])
@@ -222,10 +229,12 @@ export default function PosPage() {
       {drawer === 'bills' && <TodayBillsDrawer branchId={branchId} onClose={() => setDrawer(null)} />}
       {drawer === 'pin' && <MyPinDialog onClose={() => setDrawer(null)} />}
       {checkout && (
-        <CheckoutSheet branchId={branchId} bill={checkout} refreshKey={refreshKey}
+        <CheckoutSheet key={checkout.id} branchId={branchId} bill={checkout} refreshKey={refreshKey}
+          earlierIds={checkoutIdsByBill.current.get(checkout.id) ?? []}
+          onSendIds={(ids) => checkoutIdsByBill.current.set(checkout.id, ids)}
           title={checkout.table_id ? `Table ${tables.find((t) => t.id === checkout.table_id)?.label ?? '?'}` : 'Takeaway'}
           onClose={() => setCheckout(null)}
-          onPaid={() => { setCheckout(null); setSelection(null); setRefreshKey((k) => k + 1); void reload() }} />
+          onPaid={() => { checkoutIdsByBill.current.delete(checkout.id); setCheckout(null); setSelection(null); setRefreshKey((k) => k + 1); void reload() }} />
       )}
     </div>
   )

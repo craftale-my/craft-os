@@ -2,7 +2,7 @@
 // approvals, voids, move/merge, refunds and the checkout sections of /pos/settings.
 import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
-import type { BillOrderType, BillTotals, CashRounding, ServiceChargeRuleInput } from './bill'
+import type { BillOrderType, CashRounding, ServiceChargeRuleInput } from './bill'
 import type { PaymentKind } from './tender'
 import type { ReasonAction, ReasonTemplate } from './reasons'
 import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
@@ -159,19 +159,14 @@ export async function fetchReceiptDetails(branchId: string): Promise<ReceiptDeta
   }
 }
 
-/** Server preview of the bill's totals (pos_bill_totals) — what checkout will charge. */
-export async function fetchBillTotals(billId: string): Promise<BillTotals> {
-  const { data, error } = await supabase.rpc('pos_bill_totals', { p_bill_id: billId })
-  if (error) fail(error)
-  if (!data) throw new Error('Bill not found')
-  return data as BillTotals
-}
-
 /** The bill as the checkout sheet follows it (pos_checkout_state): its status, the totals
  *  while it is open, and the checkout result when one of checkoutIds (every id the sheet
- *  has used — paySession's checkoutIds) paid it. */
+ *  has used — paySession's checkoutIds) paid it. Times out like checkoutBill: Check bill is
+ *  pressed on a bad network and must hand the cashier back Try again / Check bill / Back. */
 export async function fetchCheckoutState(billId: string, checkoutIds: string[]): Promise<CheckoutState> {
-  const { data, error } = await supabase.rpc('pos_checkout_state', { p_bill_id: billId, p_checkout_ids: checkoutIds })
+  const { data, error } = await supabase
+    .rpc('pos_checkout_state', { p_bill_id: billId, p_checkout_ids: checkoutIds })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
   if (error) fail(error)
   return parseCheckoutState(data)
 }

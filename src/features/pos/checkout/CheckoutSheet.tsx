@@ -14,11 +14,13 @@ import {
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClose, onPaid }: {
+export default function CheckoutSheet({ branchId, bill, title, refreshKey, earlierIds, onSendIds, onClose, onPaid }: {
   branchId: string
   bill: OpenBillRow
   title: string                 // "Table T3" or "Takeaway 261024-004"
   refreshKey: number            // bumped on every bills event, order and 15 s sweep: re-read the bill
+  earlierIds: string[]          // checkout ids an earlier sheet of this bill used on this iPad
+  onSendIds: (ids: string[]) => void   // every id used so far, at each send: PosPage keeps them per bill
   onClose: () => void
   onPaid: () => void            // after the cashier closes the success screen
 }) {
@@ -30,11 +32,12 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
   const [tenderedText, setTenderedText] = useState('')
   const [reference, setReference] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [methodsError, setMethodsError] = useState<string | null>(null)   // apart from `error`: a good totals read must not hide it
   const [changeNote, setChangeNote] = useState<string | null>(null)   // the bill changed on another iPad
   const [lockNote, setLockNote] = useState<string | null>(null)       // paid, voided or merged on another iPad
   const [result, setResult] = useState<CheckoutResult | null>(null)
   // one id per payment attempt: Pay again after a lost reply can never charge twice (paySession.ts)
-  const [session, setSession] = useState<PaySession>(() => newPaySession(crypto.randomUUID()))
+  const [session, setSession] = useState<PaySession>(() => newPaySession(crypto.randomUUID(), earlierIds))
   const sessionRef = useRef(session)
   const totalsRef = useRef<BillTotals | null>(null)
   const loadFailed = useRef(false)       // the first read failed: its error shows until a read succeeds
@@ -46,6 +49,7 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
     const s = nextPay(sessionRef.current, e)
     sessionRef.current = s
     setSession(s)
+    if (e.type === 'send') onSendIds(checkoutIds(s))
     return s
   }
   const apply = (a: FollowAction) => {
@@ -73,9 +77,12 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
   }
 
   useEffect(() => {
+    let live = true
+    setMethodsError(null)
     fetchPaymentMethods(branchId, true)
-      .then((rows) => setMethods(rows.map((m) => ({ id: m.id, name: m.name, kind: m.kind, needsReference: m.needs_reference }))))
-      .catch((e) => setError(msg(e)))
+      .then((rows) => { if (live) setMethods(rows.map((m) => ({ id: m.id, name: m.name, kind: m.kind, needsReference: m.needs_reference }))) })
+      .catch((e) => { if (live) setMethodsError(msg(e)) })
+    return () => { live = false }
   }, [branchId])
   // the first load, then every bills event, order and sweep — never while a Pay or Check bill is out
   useEffect(() => {
@@ -125,7 +132,7 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
       setResult(await checkoutBill(bill.id, toPayments(lines), s.checkoutId))
     } catch (e) {
       const m = msg(e)
-      if (looksOffline(m)) { step({ type: 'noReply' }); setMethod(null); setError(UNSURE) }
+      if (looksOffline(m)) { step({ type: 'noReply' }); setMethod(null); setError(UNSURE); void follow() }   // the bill may have been paid meanwhile (by that very attempt)
       else { step({ type: 'refused' }); setError(m); void follow() }   // e.g. a QR order arrived meanwhile and the total changed
     }
   }
@@ -143,6 +150,7 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
     } catch (e) {
       step({ type: 'checkEnded' }); setError(`Could not check the bill: ${msg(e)}`)
     }
+    void follow()                                       // refreshKey bumps skipped while checking: catch up now
   }
 
   if (result) {
@@ -178,7 +186,9 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
               <div className="text-xs opacity-75">{m.kind}</div>
             </button>
           ))}
-          {methods.length === 0 && <p className="text-sm text-brown-muted">No payment methods — add them in POS settings.</p>}
+          {methods.length === 0 && (methodsError
+            ? <p role="alert" className="col-span-3 rounded bg-red-50 p-2 text-sm text-red-700">{methodsError}</p>
+            : <p className="text-sm text-brown-muted">No payment methods — add them in POS settings.</p>)}
         </div>
         {method && !locked && (
           <div className="mt-4 space-y-3 rounded-xl border border-border bg-card p-4">
@@ -225,7 +235,7 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
         <div className="mt-2 flex justify-between"><span>Left to pay</span><b>{formatSen(Math.max(0, left))}</b></div>
         <div className="flex justify-between"><span>Change</span><b>{formatSen(changeSen(lines))}</b></div>
         {lockNote ? (
-          <button onClick={onClose} className="mt-3 w-full rounded-xl bg-brown-btn py-4 text-lg text-white hover:bg-brown-btn-hover">Close</button>
+          <button onClick={onClose} disabled={busy} className="mt-3 w-full rounded-xl bg-brown-btn py-4 text-lg text-white hover:bg-brown-btn-hover">Close</button>
         ) : session.phase === 'unsure' || session.phase === 'checking' ? (
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button disabled={busy} onClick={() => void pay()} className="rounded-xl bg-brown-btn py-4 text-lg text-white disabled:opacity-40">Try again</button>
