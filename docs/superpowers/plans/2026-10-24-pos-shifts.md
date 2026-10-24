@@ -2,26 +2,26 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A branch runs on **one shift a day**. With no shift open the POS top bar shows **Open shift**; the cashier enters the **Opening float** (prefilled with the last shift's) and the bar then reads "Shift open · since 09:02" (amber "This shift was opened yesterday — close it" after 20 hours). **No money moves without an open shift**: checkout, refund, Pay in and Pay out are refused with "Open the shift first", while ordering (counter and QR) and kitchen tickets keep working. **Pay in / Pay out** is one sheet (kind, amount, reason); a pay out needs a supervisor's PIN in the existing approval dialog. **Close shift** warns about bills still open, asks for the counted cash **blind** (the expected amount is never shown before the count), and closes at once when the count is within the branch's **Cash variance limit** (default RM 5.00); above it the sheet shows expected and difference and asks for a reason and a supervisor's PIN (or a new count — the first count is kept beside the final one). At close the server freezes a **Z report** (Feedme's "Close up" without discount, delivery and member sections), stores it and queues it on the receipt printer (none → "Not printed — no receipt printer set"). A **Shifts** drawer (Approve POS voids & refunds) lists the last 30 closed shifts and opens each frozen report with **Reprint**. The limit is set on POS settings → **Shifts**.
+**Goal:** A branch runs on **one shift a day**. With no shift open the POS top bar shows **Open shift**; the cashier enters the **Opening float** (prefilled with the last shift's) and the bar then reads "Shift open · since 09:02" (amber "This shift was opened yesterday — close it" after 20 hours). **No money moves without an open shift**: checkout, refund, Pay in and Pay out are refused with "Open the shift first", while ordering (counter and QR) and kitchen tickets keep working. **Pay in / Pay out** is one sheet (kind, amount, reason); a pay out needs a supervisor's PIN in the existing approval dialog. **Close shift** warns about bills still open, asks for the counted cash **blind** (the expected amount is never shown before the count), and closes at once when the count is within the branch's **Cash variance limit** (default RM 5.00); above it the sheet shows expected and difference and asks for a reason and a supervisor's PIN. A new count may correct the figure (the first count is kept beside the final one), but once the first count was above the limit the supervisor still approves; if the expected cash moves while the supervisor comes over, the sheet shows the new figures before any PIN is tried. At close the server freezes a **Z report** (Feedme's "Close up" without discount, delivery and member sections), stores it and queues it on the receipt printer (none → "Not printed — no receipt printer set"). A **Shifts** drawer (Approve POS voids & refunds) lists the last 30 closed shifts and opens each frozen report with **Reprint**. The limit is set on POS settings → **Shifts**.
 
-**Architecture:** Two migrations. `supabase/migration-2026-10-24-pos-shifts.sql` adds `pos_shifts` (one open row per branch, a trigger that refuses any change to a closed shift and any delete), `pos_cash_moves` (client-generated ids), `payments.shift_id`, `refunds.shift_id`, `refunds.kind`, `branch_pos_settings.cash_variance_limit_sen` (default 500). Both new tables have RLS on, **no policy and no table privilege**: every read and write goes through the functions. `supabase/migration-2026-10-24-pos-shifts-fn.sql` adds `pos_current_shift`, `open_shift`, `record_cash_move`, `close_shift`, `pos_shift_list`, `pos_shift_zreport`, `reprint_zreport`, `save_shift_settings` and the internal `pos_shift_expected_cash`, `pos_shift_report` (the Z report builder) and `pos_queue_zreport`, and re-creates `checkout_bill` (from `migration-2026-10-24-pos-checkout-fn.sql`) and `refund_bill` (the **last** definition in `migration-2026-10-24-pos-checkout-fixes.sql`) with only the lines marked `4a` added: both take the open shift `FOR SHARE` and stamp it (refund_bill also snapshots the payment's `kind`); `close_shift` takes the shift `FOR UPDATE`, so a close waits for a checkout in flight and then counts it. No other function is re-created (checked: `checkout_bill` is defined only in `checkout-fn`; `refund_bill` in `bill-actions-fn` and twice in `checkout-fixes`; catalogs-fn, menu-editor-fn and slots-photos-fn re-create neither). On the client the Z report is a new print payload kind `zreport` rendered by `renderJobLines` (both print hosts — the iPad page and the Node agent — print it with no other change; `print_jobs.kind` stays `receipt`, as the refund slip does). The rules live in a pure `shift.ts` with Vitest tests; the RPC wrappers in `shiftApi.ts`; the sheets in `src/features/pos/shift/`; `PosPage` gains one `<ShiftBar>` line and `PosSettingsPage` one `<ShiftSettingsSection>` line.
+**Architecture:** Two migrations. `supabase/migration-2026-10-24-pos-shifts.sql` adds `pos_shifts` (one open row per branch, a trigger that refuses any change to a closed shift and any delete), `pos_cash_moves` (client-generated ids), `bills.shift_id`, `payments.shift_id`, `refunds.shift_id`, `refunds.kind`, `branch_pos_settings.cash_variance_limit_sen` (default 500). Both new tables have RLS on, **no policy and no table privilege**: every read and write goes through the functions. `supabase/migration-2026-10-24-pos-shifts-fn.sql` adds `pos_current_shift`, `open_shift`, `record_cash_move`, `close_shift`, `pos_shift_list`, `pos_shift_zreport`, `reprint_zreport`, `save_shift_settings` and the internal `pos_shift_expected_cash`, `pos_shift_report` (the Z report builder) and `pos_queue_zreport`, and re-creates `checkout_bill` (from `migration-2026-10-24-pos-checkout-fn.sql`) and `refund_bill` (the **last** definition in `migration-2026-10-24-pos-checkout-fixes.sql`) with only the lines marked `4a` added: both take the open shift `FOR SHARE` and stamp it (checkout_bill on the paid bill too; refund_bill also snapshots the payment's `kind`); `close_shift` takes the shift `FOR UPDATE`, so a close waits for a checkout in flight and then counts it. No other function is re-created (checked: `checkout_bill` is defined only in `checkout-fn`; `refund_bill` in `bill-actions-fn` and twice in `checkout-fixes`; catalogs-fn, menu-editor-fn and slots-photos-fn re-create neither). On the client the Z report is a new print payload kind `zreport` rendered by `renderJobLines` (both print hosts — the iPad page and the Node agent — print it with no other change; `print_jobs.kind` stays `receipt`, as the refund slip does). The rules live in a pure `shift.ts` with Vitest tests; the RPC wrappers in `shiftApi.ts`; the sheets in `src/features/pos/shift/`; `PosPage` gains one `<ShiftBar>` line and `PosSettingsPage` one `<ShiftSettingsSection>` line.
 
 **Tech Stack:** React 19 + Vite 6 + TypeScript + Tailwind, Supabase (Postgres RLS, plpgsql `security definer` RPCs, Realtime), Vitest. No ESLint config in the repo; the gates are `npx tsc -b` and `npx vitest run`.
 
-**Spec:** `docs/superpowers/specs/2026-10-24-pos-shifts-design.md` (commit `57f13dd`). Its owner decisions 1–6 are final and bind this plan, with the resolutions below. Builds on Sub-plans 1–3 and menu catalogs M1–M3 (head `57f13dd`).
+**Spec:** `docs/superpowers/specs/2026-10-24-pos-shifts-design.md` (commit `57f13dd`; its close-shift steps 2, 4–5, data model and testing list revised together with this plan's review fixes I1–I3). Its owner decisions 1–6 are final and bind this plan, with the resolutions below. Builds on Sub-plans 1–3 and menu catalogs M1–M3 (head `57f13dd`).
 
 ## Resolutions (decided while planning, 2026-10-24)
 
 The owner asked that open choices follow Feedme's behaviour; the spec already settled the Close up layout that way. The rest, each listed again under Open points:
 
 - **Reads are RPC-only.** `pos_shifts` and `pos_cash_moves` have no RLS policy and no table privilege for `anon` / `authenticated`. The top bar reads `pos_current_shift()`: `{ shift: null | { id, openedAt, openedByName, openingFloatSen }, openBillCount, lastFloatSen, now }` — **never the expected cash** (the count is blind). Other iPads learn about an open or closed shift on the POS page's existing refresh (`refreshKey`: every bill change and the 15-second sweep), not through Realtime.
-- **"Above the limit" means `|counted − expected| > limit`**; a difference of exactly RM 5.00 closes without approval. The first `close_shift` call stores `first_count_sen`, whatever the outcome; it is never replaced.
-- **Close answers**: `{ok:true, shiftId, report, printed}`; `{ok:false, needsApproval:true, expectedSen, varianceSen, limitSen}` above the limit without an approver; `{ok:false, error}` for a wrong PIN (no raise: the PIN counter and the first count must persist, as in the existing approval flows). A resend of a close that went through with the same count answers the same report (nothing printed twice); any other call on a closed shift raises "This shift is already closed". A reason is required only above the limit ("Enter a reason for the difference"); within the limit a reason sent is not stored.
+- **"Above the limit" means `|counted − expected| > limit`**; a difference of exactly RM 5.00 closes without approval. The first `close_shift` call stores `first_count_sen`, whatever the outcome; it is never replaced. **Once the first count is above the limit, the close needs the approver, the PIN and a reason even when a later count is within it** (decided with the controller after review, 2026-10-24, in line with the owner's blind count: after the first answer the cashier has seen the expected cash, so a re-count only corrects the figure; the sheet then says "A supervisor still approves, because the first count was more than RM 5.00 off.").
+- **Close answers**: `{ok:true, shiftId, report, printed}`; `{ok:false, needsApproval:true, expectedSen, varianceSen, limitSen}` above the limit (this count or the first) without an approver — **and also with an approver when `p_expected_sen`, the expected cash the sheet showed the approver, is not the expected cash now** (a sale, refund or pay in / out on another iPad meanwhile): the answer comes before the reason and PIN checks, so no PIN try is spent, and the sheet shows the new figures to approve; `{ok:false, error}` for a wrong PIN (no raise: the PIN counter and the first count must persist, as in the existing approval flows). A resend of a close that went through with the same count answers the same report (nothing printed twice); any other call on a closed shift raises "This shift is already closed". A reason is required only above the limit ("Enter a reason for the difference"); within the limit a reason sent is not stored.
 - **Pay in / Pay out**: `record_cash_move(p_id, p_kind, p_amount_sen, p_reason, p_approver_id, p_pin)` is idempotent on `p_id`; a resend with another kind or amount answers `{ok:false, error:'This was already recorded as Pay in RM 20.00 — close and reopen to record another'}`. The reason is free text (required, at most 200 characters) — the reason templates stay for voids and refunds. The sheet asks kind, amount and reason; a pay out then opens the approval dialog without its reason field (`askReason={false}`). A pay out's approver is checked by the existing `pos_check_approver` (its words: "Choose who approves", "This person cannot approve voids or refunds").
-- **The approval dialog** gets two small, backwards-compatible options: `action: ReasonAction | null` (null = no template: a reason is required, any wording — used for the cash variance) and `askReason?: boolean` (default true). It also gains the double-tap ref every new button has.
-- **The Z report's numbers.** A bill belongs to the shift of its payments. *Nett sales* = the sum of those bills' `total_sen` (SST, service charge, takeaway fee and rounding included); *Sales summary* = Gross (`subtotal_sen`) → Takeaway fee → Service charge → SST → Rounding → Nett, each the sum over the shift's bills, so it adds up to Nett; refunds are shown apart (Summary "Total refund", per method, the Refunds list), not taken off Nett (Feedme's Close up does the same). *Average per bill / per pax* round half up to the sen (0 when there are no bills / no pax). *Void bills* = bills of the branch voided between open and close (an empty bill voided by mistake counts too); *Total void* = the value of items voided between open and close (`unit_price_sen × qty`), whether their bill was later paid or voided. *Source* = the shift's bills' orders by source (orders, and the value of their items not voided). *Product sales* = items of the shift's bills not voided, by `name_snapshot`, most sold first (then value, then name).
-- **The shift report's time window** is `opened_at .. closed_at` (the close time while it is being built).
-- **On screen** the Z report is shown as the very lines the receipt printer prints (48 columns), in the close sheet and the Shifts drawer.
+- **The approval dialog** gets three small, backwards-compatible options: `action: ReasonAction | null` (null = no template: a reason is required, any wording — used for the cash variance), `askReason?: boolean` (default true) and `reasonMissing?: string` (with `action` null, the words for an empty reason — the cash variance passes the server's "Enter a reason for the difference"). It also gains the double-tap ref every new button has.
+- **The Z report's numbers.** A bill belongs to the shift it was checked out in: `checkout_bill` stamps `bills.shift_id` (a bill of RM 0.00 — free items only — is paid with no payment rows and still counts in its shift's bills, pax and product sales); `payments.shift_id` stays for the cash maths. *Nett sales* = the sum of those bills' `total_sen` (SST, service charge, takeaway fee and rounding included); *Sales summary* = Gross (`subtotal_sen`) → Takeaway fee → Service charge → SST → Rounding → Nett, each the sum over the shift's bills, so it adds up to Nett; refunds are shown apart (Summary "Total refund", per method, the Refunds list), not taken off Nett (Feedme's Close up does the same). *Average per bill / per pax* round half up to the sen (0 when there are no bills / no pax). *Void bills* = bills of the branch voided between open and close (an empty bill voided by mistake counts too); *Total void* = the value of items voided between open and close (`unit_price_sen × qty`), whether their bill was later paid or voided. *Source* = the shift's bills' orders by source (orders, and the value of their items not voided). *Product sales* = items of the shift's bills not voided, by `name_snapshot`, most sold first (then value, then name).
+- **The shift report's time window** is `opened_at .. closed_at` (the close time while it is being built). `closed_at` is `clock_timestamp()` at the close's UPDATE, not the transaction's `now()`: a close that waited for a checkout's lock still sees a void committed during the wait inside its window.
+- **On screen** the Z report is shown as the receipt layout's lines at 48 columns (`renderZReportLines`), in the close sheet and the Shifts drawer. The printers print the same content wrapped at their own width (the iPad print host at `TICKET_COLS` = 42, the Node agent at its `.env` `TICKET_COLS`), so line breaks may differ from the screen.
 - **The cash variance limit** is saved by a new `save_shift_settings(p_cash_variance_limit_sen)` (`access_settings` holders, own branch, RM 0.00–10000.00), not by re-creating `save_receipt_settings`; it is read from `branch_pos_settings` (already readable by staff). It is its own section, **Shifts**, on `/pos/settings` (CheckoutSettings is already past 250 lines).
 - **Open shift is not idempotent by id**: a resend after a lost reply answers "A shift is already open — opened by <you> at HH:MM"; the bar reloads its status when the sheet closes.
 - **The checkout verify script** (`migration-2026-10-24-pos-checkout-verify.sql`) opens a shift for its VERIFY branch when `pos_shifts` exists: without it, its checkouts are now refused and the regression run would fail. It still runs unchanged before 4a is applied.
@@ -39,9 +39,9 @@ The owner asked that open choices follow Feedme's behaviour; the spec already se
 - **No unpaged reads that can pass 1,000 rows.** Every new read is an RPC returning one JSON value (the Shifts list is capped at 30).
 - **Migrations are idempotent** (`create table if not exists`, `add column if not exists`, guarded constraints, `create index if not exists`, `drop trigger if exists` + `create trigger`, `create or replace function`), and each ends with `notify pgrst, 'reload schema';` before its final `select`.
 - **STOP guards:** the schema file stops without the checkout fixes (`pos_refundable_methods`, `pos_caller_branch`) or without M1 (`branch_catalogs`); the function file stops without the schema file, when `refund_bill` is not the original-route version of the checkout fixes, or without `pos_check_approver`.
-- **Re-run hazards.** (1) Re-running `migration-2026-10-24-pos-checkout-fixes.sql` or `migration-2026-10-24-pos-bill-actions-fn.sql` brings back a `refund_bill` without the shift check and stamp; re-running `migration-2026-10-24-pos-checkout-fn.sql` is already stopped by its own M1 guard, but would bring back `checkout_bill` without them. Re-run `migration-2026-10-24-pos-shifts-fn.sql` afterwards: Task 1 says so in the three files' headers, and the shifts verify's A section fails until then. (2) Re-running either 4a file is harmless.
+- **Re-run hazards.** (1) Re-running `migration-2026-10-24-pos-checkout-fixes.sql` or `migration-2026-10-24-pos-bill-actions-fn.sql` brings back a `refund_bill` without the shift check and stamp; re-running `migration-2026-10-24-pos-checkout-fn.sql` is already stopped by its own M1 guard, but would bring back `checkout_bill` without them. Re-run `migration-2026-10-24-pos-shifts-fn.sql` afterwards: Task 1 says so in the headers of bill-actions-fn and checkout-fixes (checkout-fn's header says it cannot be re-run after M1 and names the canonical file), and the shifts verify's A section fails until then. (2) Re-running either 4a file is harmless.
 - **Staff fixtures in the verify script** are created after `request.jwt.claims` is set to the dev owner `76cbcf9f-905e-450d-9f5e-1c9e72a9373d`, inserted as `staff` and promoted by the owner (the staff authority guard).
-- **UI lessons from M1/M2, applied to every new sheet and section:** each action shows its outcome next to the control that made it; every write button is disabled while it runs and a ref refuses a second tap in the same render; a load that fails locks the writes and offers **Try again** (the top bar offers nothing that moves money while the shift status is unknown); every load keyed by a selection drops a stale reply (a sequence ref); every input has a visible label or an `aria-label`; no file this plan creates or rewrites passes ~250 lines.
+- **UI lessons from M1/M2, applied to every new sheet and section:** each action shows its outcome next to the control that made it; every write button is disabled while it runs and a ref refuses a second tap in the same render; a load that fails locks the writes and offers **Try again** (the top bar offers nothing that moves money while the shift status is unknown); every load keyed by a selection drops a stale reply (a sequence ref); every input has a visible label or an `aria-label`; no `.ts` / `.tsx` file this plan creates or rewrites passes ~250 lines (the SQL files are longer, as in Sub-plans 1–3).
 - `tsconfig` has `noUnusedLocals` / `noUnusedParameters`: remove an import the moment it is no longer used.
 - Every commit ends with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Work in the worktree `/Users/USER/Desktop/Craft_OS/.claude/worktrees/pos-demo`, branch `feature/pos-demo`. Several sessions share the stash stack: never use a bare `git stash`. Every replacement below quotes its old text — if one does not match, another session changed the file since `57f13dd`: read it and apply the same change to what is there.
@@ -52,7 +52,7 @@ The owner asked that open choices follow Feedme's behaviour; the spec already se
 |---|---|
 | `supabase/migration-2026-10-24-pos-shifts.sql` | `pos_shifts`, its guard trigger, `pos_cash_moves`, the shift stamp and kind columns, the variance limit, RLS (Task 1) |
 | `supabase/migration-2026-10-24-pos-shifts-fn.sql` | Every 4a function; canonical `checkout_bill` and `refund_bill` (Task 1) |
-| `supabase/migration-2026-10-24-pos-checkout-fn.sql`, `-bill-actions-fn.sql`, `-checkout-fixes.sql` | Header comments only: re-run the shifts function file after them (Task 1) |
+| `supabase/migration-2026-10-24-pos-checkout-fn.sql`, `-bill-actions-fn.sql`, `-checkout-fixes.sql` | Header comments only: the shifts function file is canonical — re-run it after them (Task 1) |
 | `src/features/pos/sqlSafeUpdate.test.ts` | Names the two new files and their write functions in the pg-safeupdate scan (Task 1) |
 | `supabase/migration-2026-10-24-pos-shifts-verify.sql` | Self-check, rolled back (Task 2) |
 | `supabase/migration-2026-10-24-pos-checkout-verify.sql` | Opens a shift for its VERIFY branch once shifts exist (Task 2) |
@@ -65,7 +65,7 @@ The owner asked that open choices follow Feedme's behaviour; the spec already se
 
 `checkout_bill` and `refund_bill` change only by their `4a` lines; `CheckoutSheet`, `TodayBillsDrawer`, `BillPanel`, `CheckoutSettings`, every ordering function, every earlier RLS policy and the print hosts' code do not change (a refused checkout or refund already shows the server's words in its sheet).
 
-**Test counts** (checked while planning on a scratch copy of the worktree at `57f13dd`, by replaying this document task by task): baseline 98 files / 852 tests. After Task 1: 98 / 855. Task 2: 98 / 855. Task 3: 99 / 860. Task 4: 100 / 871. Tasks 5–8: 100 / 871. `npx tsc -b` prints nothing after every task.
+**Test counts** (checked while planning on a scratch copy of the worktree at `57f13dd`, by replaying this document task by task): baseline 98 files / 852 tests. After Task 1: 98 / 855. Task 2: 98 / 855. Task 3: 99 / 860. Task 4: 100 / 874. Tasks 5–8: 100 / 874. `npx tsc -b` prints nothing after every task.
 
 ---
 
@@ -81,11 +81,12 @@ The owner asked that open choices follow Feedme's behaviour; the spec already se
   - `pos_current_shift() → { shift: null | { id, openedAt, openedByName, openingFloatSen }, openBillCount, lastFloatSen: int|null, now }`
   - `open_shift(p_float_sen integer) → pos_current_shift()`
   - `record_cash_move(p_id uuid, p_kind text 'pay_in'|'pay_out', p_amount_sen integer, p_reason text, p_approver_id uuid, p_pin text) → { ok: true, id, kind, amountSen } | { ok: false, error }`
-  - `close_shift(p_shift_id uuid, p_counted_sen integer, p_reason text, p_approver_id uuid, p_pin text) → { ok: true, shiftId, report: ZReport, printed } | { ok: false, needsApproval: true, expectedSen, varianceSen, limitSen } | { ok: false, error }`
+  - `close_shift(p_shift_id uuid, p_counted_sen integer, p_reason text, p_approver_id uuid, p_pin text, p_expected_sen integer) → { ok: true, shiftId, report: ZReport, printed } | { ok: false, needsApproval: true, expectedSen, varianceSen, limitSen } | { ok: false, error }` — `p_expected_sen` is null on a count without approval, and the `expectedSen` the approver was shown on an approval; needs approval when this count or the first count is above the limit.
+  - `bills.shift_id` — set by `checkout_bill` when the bill is paid; `pos_shift_report` takes a shift's bills by it.
   - `pos_shift_list() → [{ id, openedAt, closedAt, openedBy, closedBy, nettSen, varianceSen }]` (last 30 closed, newest first), `pos_shift_zreport(p_shift_id uuid) → ZReport`, `reprint_zreport(p_shift_id uuid) → void`, `save_shift_settings(p_cash_variance_limit_sen integer) → void`
   - `ZReport` = `{ branch, openedAt, openedBy, closedAt, closedBy, summary: { billCount, pax, nettSen, avgPerBillSen, avgPerPaxSen, voidBillCount, voidSen, refundSen }, sales: { grossSen, takeawayFeeSen, serviceChargeSen, sstSen, roundingSen, nettSen }, payments: [{ name, kind, count, amountSen, refundCount, refundSen, netSen }], orderTypes: [{ orderType, bills, nettSen }] (dine_in, takeaway), sources: [{ source, orders, itemSen }] (counter, qr), cash: { openingFloatSen, cashSalesSen, cashRefundSen, moves: [{ kind, amountSen, reason, by, approvedBy, at }], payInSen, payOutSen, expectedSen, firstCountSen, countedSen, varianceSen, varianceReason, varianceApprovedBy }, voids: { items: [{ at, billNo, name, qty, valueSen, reason, by, approvedBy }], bills: [{ at, billNo, reason, by, approvedBy }] }, refunds: [{ at, billNo, amountSen, method, reason, approvedBy }], products: [{ name, qty, valueSen }] }` — Task 3's `ZReport` type is exactly this.
   - Print job: `print_jobs(kind 'receipt', route = branch_pos_settings.receipt_route, payload { kind: 'zreport', route, reprint, report })`.
-  - Refusal words (shown as they are): `Open the shift first`; `Enter the opening float (RM 0.00 or more)`; `A shift is already open — opened by <name> at HH:MM`; `Cash move id is missing`; `This cash move id belongs to another branch`; `Choose Pay in or Pay out`; `Enter the amount`; `Enter a reason`; `Reason is too long`; `Enter the counted cash`; `Shift not found`; `This shift is already closed`; `Enter a reason for the difference`; `Only a supervisor can see past shifts`; `Only a supervisor can reprint a Z report`; `No receipt printer is set — choose one in POS settings`; `Only a manager can change the shift settings`; `Enter a cash variance limit between RM 0.00 and RM 10000.00`; `A closed shift never changes`; `A shift is never deleted`; plus the existing approver words (`Choose who approves`, `This person cannot approve voids or refunds`, `Wrong PIN — n tries left`, …).
+  - Refusal words (shown as they are): `Open the shift first`; `Enter the opening float (RM 0.00 to RM 100000.00)`; `A shift is already open — opened by <name> at HH:MM`; `Cash move id is missing`; `This cash move id belongs to another branch`; `Choose Pay in or Pay out`; `Enter the amount (RM 0.01 to RM 100000.00)`; `Enter a reason`; `Reason is too long`; `Enter the counted cash (RM 0.00 to RM 100000.00)`; `Shift not found`; `This shift is already closed`; `Enter a reason for the difference`; `Only a supervisor can see past shifts`; `Only a supervisor can reprint a Z report`; `No receipt printer is set — choose one in POS settings`; `Only a manager can change the shift settings`; `Enter a cash variance limit between RM 0.00 and RM 10000.00`; `A closed shift never changes`; `A shift is never deleted`; plus the existing approver words (`Choose who approves`, `This person cannot approve voids or refunds`, `Wrong PIN — n tries left`, …).
 
 - [ ] **Step 1: Make the pg-safeupdate scan name the new files.** In `src/features/pos/sqlSafeUpdate.test.ts` make exactly these replacements (each old text occurs once, in this order):
 
@@ -133,7 +134,7 @@ The owner asked that open choices follow Feedme's behaviour; the spec already se
 
 - [ ] **Step 2: Run it to verify it fails.** Run: `npx vitest run src/features/pos/sqlSafeUpdate.test.ts` — Expected: FAIL, `Tests  2 failed | 20 passed (22)` (`reads the POS function migrations` misses the two files; the new test cannot read the function file: `ENOENT`).
 
-- [ ] **Step 3: Say in the three older files' headers that the shifts function file must be re-run after them** (comments only; the function bodies Step 6 compares do not move). Make exactly these replacements (each old text occurs once):
+- [ ] **Step 3: Say in the three older files' headers that the shifts function file is canonical** — re-run it after bill-actions-fn or checkout-fixes; checkout-fn cannot be re-run after M1 at all (comments only; the function bodies Step 6 compares do not move). Make exactly these replacements (each old text occurs once):
 
    In `supabase/migration-2026-10-24-pos-checkout-fn.sql`:
 
@@ -149,8 +150,9 @@ The owner asked that open choices follow Feedme's behaviour; the spec already se
 ```sql
 -- Totals (pos_compute_bill) are mirrored by computeBill in
 -- src/features/pos/checkout/bill.ts; both are tested against the same vectors.
--- Sub-plan 4a re-creates checkout_bill (the open shift, stamped on each payment):
--- after re-running THIS file, re-run migration-2026-10-24-pos-shifts-fn.sql too.
+-- Sub-plan 4a: this file cannot be re-run after M1 (see the STOP guard); checkout_bill is
+-- canonical in migration-2026-10-24-pos-shifts-fn.sql (the open shift, stamped on each
+-- payment and on the bill).
 ```
 
 
@@ -201,7 +203,9 @@ The owner asked that open choices follow Feedme's behaviour; the spec already se
 --
 -- One shift per branch at a time (several iPads share one cash drawer). Every money
 -- row (payment, refund, pay in / pay out) is stamped with the shift that was open
--- when it was written, by the server (checkout_bill, refund_bill, record_cash_move).
+-- when it was written, by the server (checkout_bill, refund_bill, record_cash_move);
+-- so is a paid bill (checkout_bill): a bill of RM 0.00 has no payment rows and still
+-- belongs to its shift.
 -- Old dev rows keep shift_id null and appear in no report.
 -- pos_shifts and pos_cash_moves have RLS on and no policy at all: they are read
 -- and written only through the functions in migration-2026-10-24-pos-shifts-fn.sql
@@ -276,12 +280,16 @@ create table if not exists pos_cash_moves (
 );
 create index if not exists pos_cash_moves_shift_idx on pos_cash_moves(shift_id, created_at);
 
--- ── The shift stamp on every money row; the refund's kind; the variance limit ─
+-- ── The shift stamp on every money row and paid bill; the refund's kind; the variance limit ─
+alter table bills add column if not exists shift_id uuid;                -- the shift it was checked out in
 alter table payments add column if not exists shift_id uuid;
 alter table refunds add column if not exists shift_id uuid;
 alter table refunds add column if not exists kind text;                -- snapshot of the payment's kind: cash refunds leave the drawer
 alter table branch_pos_settings add column if not exists cash_variance_limit_sen integer not null default 500;
 do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'bills_shift_id_fkey') then
+    alter table bills add constraint bills_shift_id_fkey foreign key (shift_id) references pos_shifts(id);
+  end if;
   if not exists (select 1 from pg_constraint where conname = 'payments_shift_id_fkey') then
     alter table payments add constraint payments_shift_id_fkey foreign key (shift_id) references pos_shifts(id);
   end if;
@@ -297,6 +305,7 @@ do $$ begin
       check (cash_variance_limit_sen between 0 and 1000000);
   end if;
 end $$;
+create index if not exists bills_shift_idx on bills(shift_id) where shift_id is not null;
 create index if not exists payments_shift_idx on payments(shift_id) where shift_id is not null;
 create index if not exists refunds_shift_idx on refunds(shift_id) where shift_id is not null;
 
@@ -331,10 +340,10 @@ select 'shifts schema applied' as result;
 -- migration-2026-10-24-pos-checkout-fn.sql) and refund_bill (the last definition in
 -- migration-2026-10-24-pos-checkout-fixes.sql), each with only the lines marked "4a"
 -- added: both take the branch's open shift FOR SHARE ("Open the shift first" when
--- there is none) and stamp it on the payment / refund rows; refund_bill also keeps
--- the payment's kind. Re-running checkout-fn, bill-actions-fn or checkout-fixes
--- brings an old body back — re-run this file afterwards (the shifts verify's A
--- section fails until then).
+-- there is none) and stamp it on the payment / refund rows (checkout_bill on the
+-- paid bill too); refund_bill also keeps the payment's kind. Re-running
+-- checkout-fn, bill-actions-fn or checkout-fixes brings an old body back — re-run
+-- this file afterwards (the shifts verify's A section fails until then).
 -- Every DELETE / UPDATE has a WHERE: Supabase's API role runs pg-safeupdate
 -- (src/features/pos/sqlSafeUpdate.test.ts scans this file).
 -- ============================================================================
@@ -346,8 +355,13 @@ do $$ begin
                        and column_name = 'cash_variance_limit_sen') then
     raise exception 'STOP: run migration-2026-10-24-pos-shifts.sql first (pos_shifts is missing)';
   end if;
-  if to_regprocedure('pos_refundable_methods(uuid)') is null
-     or pg_get_functiondef('refund_bill(uuid,uuid,integer,uuid,text,uuid,text)'::regprocedure) not like '%Refunds go back the way the bill was paid%' then
+  -- nested, not "or": PostgreSQL does not promise left-to-right evaluation, and the
+  -- function text can only be read once refund_bill is known to exist
+  if to_regprocedure('refund_bill(uuid,uuid,integer,uuid,text,uuid,text)') is null
+     or to_regprocedure('pos_refundable_methods(uuid)') is null then
+    raise exception 'STOP: run migration-2026-10-24-pos-checkout-fixes.sql first (refund_bill is not the original-route version)';
+  elsif pg_get_functiondef(to_regprocedure('refund_bill(uuid,uuid,integer,uuid,text,uuid,text)'))
+          not like '%Refunds go back the way the bill was paid%' then
     raise exception 'STOP: run migration-2026-10-24-pos-checkout-fixes.sql first (refund_bill is not the original-route version)';
   end if;
   if to_regprocedure('pos_check_approver(uuid,uuid,text)') is null then
@@ -387,7 +401,7 @@ declare
   v_open   pos_shifts;
 begin
   if p_float_sen is null or p_float_sen < 0 or p_float_sen > 10000000 then
-    raise exception 'Enter the opening float (RM 0.00 or more)';
+    raise exception 'Enter the opening float (RM 0.00 to RM 100000.00)';
   end if;
   select * into v_open from pos_shifts where branch_id = v_branch and status = 'open';
   if not found then
@@ -431,7 +445,9 @@ begin
     return jsonb_build_object('ok', true, 'id', v_existing.id, 'kind', v_existing.kind, 'amountSen', v_existing.amount_sen);
   end if;
   if p_kind is null or p_kind not in ('pay_in', 'pay_out') then raise exception 'Choose Pay in or Pay out'; end if;
-  if p_amount_sen is null or p_amount_sen <= 0 or p_amount_sen > 10000000 then raise exception 'Enter the amount'; end if;
+  if p_amount_sen is null or p_amount_sen <= 0 or p_amount_sen > 10000000 then
+    raise exception 'Enter the amount (RM 0.01 to RM 100000.00)';
+  end if;
   if v_reason is null then raise exception 'Enter a reason'; end if;
   if length(v_reason) > 200 then raise exception 'Reason is too long'; end if;
   select id into v_shift from pos_shifts where branch_id = v_branch and status = 'open' for share;
@@ -467,16 +483,17 @@ $$;
 revoke all on function pos_shift_expected_cash(uuid) from public, anon, authenticated;
 
 -- ── The Z report (Feedme "Close up", without discount, delivery and member) ─
--- Exactly ZReport in src/features/pos/print/zreport.ts. A bill belongs to the shift
--- of its payments; voids (no money moves) by their time, opened_at..closed_at (now()
--- while the shift is still open). Money in integer sen, times ISO UTC. Internal.
+-- Exactly ZReport in src/features/pos/print/zreport.ts. A bill belongs to the shift it
+-- was checked out in (bills.shift_id: a bill of RM 0.00 has no payment rows); voids (no
+-- money moves) by their time, opened_at..closed_at (now() while the shift is still open).
+-- Money in integer sen, times ISO UTC. Internal.
 create or replace function pos_shift_report(p_shift_id uuid) returns jsonb
 language sql stable security definer set search_path = public, pg_temp as $$
   with s as (
     select sh.*, coalesce(sh.closed_at, now()) as until from pos_shifts sh where sh.id = p_shift_id
   ),
   sb as (                                                                -- the shift's bills
-    select b.* from bills b where b.id in (select p.bill_id from payments p where p.shift_id = p_shift_id)
+    select b.* from bills b where b.shift_id = p_shift_id
   ),
   t as (
     select count(*)::integer as bill_count, coalesce(sum(sb.pax), 0)::integer as pax,
@@ -618,12 +635,17 @@ revoke all on function pos_queue_zreport(uuid, jsonb, boolean) from public, anon
 
 -- ── Close shift: blind count; above the limit an approver + PIN + reason ────
 -- Answers { ok: true, shiftId, report, printed }, or { ok: false, needsApproval: true,
--- expectedSen, varianceSen, limitSen } (above the limit, no approver yet), or
--- { ok: false, error } (a wrong PIN). The first count is stored on the first call and
--- never replaced. A resend of a close that went through (same count) gets the same
--- answer; any other call on a closed shift is refused.
+-- expectedSen, varianceSen, limitSen } (above the limit with no approver yet, or with an
+-- approver who was shown another expected cash), or { ok: false, error } (a wrong PIN).
+-- The first count is stored on the first call and never replaced. Once the first count
+-- was above the limit, the close needs the approver, the PIN and a reason even if a new
+-- count is within it (the cashier has seen the expected cash by then). p_expected_sen is
+-- the expected cash the approver was shown: when it changed meanwhile (a sale, refund or
+-- pay in / out on another iPad) the answer is "needs approval" again with the new
+-- figures, before the PIN is tried. A resend of a close that went through (same count)
+-- gets the same answer; any other call on a closed shift is refused.
 create or replace function close_shift(p_shift_id uuid, p_counted_sen integer, p_reason text,
-                                       p_approver_id uuid, p_pin text) returns jsonb
+                                       p_approver_id uuid, p_pin text, p_expected_sen integer) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_branch   uuid := pos_my_branch();
@@ -638,7 +660,7 @@ declare
   v_printed  boolean;
 begin
   if p_counted_sen is null or p_counted_sen < 0 or p_counted_sen > 10000000 then
-    raise exception 'Enter the counted cash';
+    raise exception 'Enter the counted cash (RM 0.00 to RM 100000.00)';
   end if;
   -- FOR UPDATE: waits for a checkout or refund in flight (they hold the shift FOR SHARE)
   select * into v_shift from pos_shifts where id = p_shift_id and branch_id = v_branch for update;
@@ -656,9 +678,10 @@ begin
   v_expected := pos_shift_expected_cash(v_shift.id);
   v_var      := p_counted_sen - v_expected;
   v_limit    := coalesce((select s.cash_variance_limit_sen from branch_pos_settings s where s.branch_id = v_branch), 500);
-  v_above    := abs(v_var) > v_limit;
+  -- v_shift was read before the first count was stored: on the first call this is the count itself
+  v_above    := abs(v_var) > v_limit or abs(coalesce(v_shift.first_count_sen, p_counted_sen) - v_expected) > v_limit;
   if v_above then
-    if p_approver_id is null then
+    if p_approver_id is null or p_expected_sen is distinct from v_expected then
       return jsonb_build_object('ok', false, 'needsApproval', true,
                                 'expectedSen', v_expected, 'varianceSen', v_var, 'limitSen', v_limit);
     end if;
@@ -672,15 +695,15 @@ begin
      set status = 'closed', counted_cash_sen = p_counted_sen, expected_cash_sen = v_expected, variance_sen = v_var,
          variance_reason = case when v_above then v_reason end,
          variance_approved_by = case when v_above then p_approver_id end,
-         closed_by = auth.uid(), closed_at = now()
+         closed_by = auth.uid(), closed_at = clock_timestamp()   -- not now(): after any wait for the lock
    where id = v_shift.id;
   v_report  := pos_shift_report(v_shift.id);
   v_printed := pos_queue_zreport(v_branch, v_report, false);
   update pos_shifts set report = v_report, report_printed = v_printed where id = v_shift.id;
   return jsonb_build_object('ok', true, 'shiftId', v_shift.id, 'report', v_report, 'printed', v_printed);
 end $$;
-revoke all on function close_shift(uuid, integer, text, uuid, text) from public, anon;
-grant execute on function close_shift(uuid, integer, text, uuid, text) to authenticated;
+revoke all on function close_shift(uuid, integer, text, uuid, text, integer) from public, anon;
+grant execute on function close_shift(uuid, integer, text, uuid, text, integer) to authenticated;
 
 -- ── Past shifts (Approve POS voids & refunds): the last 30 closed, newest first ─
 create or replace function pos_shift_list() returns jsonb
@@ -758,7 +781,7 @@ revoke all on function save_shift_settings(integer) from public, anon;
 grant execute on function save_shift_settings(integer) to authenticated;
 
 -- ── Checkout, re-created: the live text of migration-2026-10-24-pos-checkout-fn.sql with
---    only the lines marked "4a" added (the open shift, FOR SHARE, stamped on each payment) ─
+--    only the lines marked "4a" added (the open shift, FOR SHARE, stamped on each payment and the bill) ─
 -- p_payments: [{ methodId: uuid, amountSen: int > 0, tenderedSen: int|null (cash only), reference: text|null }]
 create or replace function checkout_bill(p_bill_id uuid, p_payments jsonb, p_checkout_id uuid) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
@@ -863,6 +886,7 @@ begin
 
   update bills
      set status = 'paid', closed_at = now(), closed_by = auth.uid(), checkout_id = p_checkout_id,
+         shift_id = v_shift,                                                     -- 4a: the bill's shift
          totals = v_totals,
          subtotal_sen       = (v_totals->>'subtotalSen')::integer,
          service_charge_sen = (v_totals->>'serviceChargeSen')::integer,
@@ -1004,6 +1028,8 @@ Expected: exactly the `4a` lines, nothing else —
 <             auth.uid(), v_n);
 ---
 >             auth.uid(), v_n, v_shift);                                          -- 4a: v_shift
+98a104
+>          shift_id = v_shift,                                                     -- 4a: the bill's shift
 ```
 
 ```
@@ -1053,7 +1079,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Consumes: Task 1; M1's `place_counter_order` / `place_table_order`; `void_order_item`, `void_bill`, `set_my_pos_pin`, `pos_bill_totals`; the dev test login `76cbcf9f-905e-450d-9f5e-1c9e72a9373d` (owner).
 - Produces: on dev, both 4a migrations applied and seven verify scripts printing `VERIFY OK` (menu, ordering, checkout, catalogs, menu editor, slots and photos, shifts).
 
-The script covers every test bullet of the spec, each refusal paired with the success it guards: grants, internal helpers, `search_path`, no policy and no table privilege on the two tables, one `checkout_bill` / `refund_bill` each **with the shift check** (a re-run of an older file is caught), the lock modes (money `FOR SHARE`, close `FOR UPDATE`), the guard trigger, the one-open index, the 500 default (A); the fixture — a branch with a catalog of two products (a 6 % SST plate with a takeaway fee, a 0 % tea), cash and card, four tables, a supervisor with a PIN, a cashier, a supervisor of another branch, five bills from the counter and QR (B); **no shift: checkout and pay in refused, nothing written; ordering works** (C); **open twice refused** with the opener's name and time, a second open row refused by the index, another branch opens its own (D); **stamps on payments and refunds**; voids of an item on an open bill, of an item on a bill later paid and of a whole bill; pay in without approver and its resend; **pay out without the PIN refused** (and by the cashier, and without an approver); a cash and a card refund; **expected cash with float, cash and card payments, change, a cash refund, pay in and pay out** = 145.15 (E); the limit saved by the owner only; **above the limit needs approval**; a second count with a wrong PIN leaves the shift open; **first count kept**; the closed row; **report totals equal the bills' totals**; every section of the report; the Z report job on the receipt route (F); **a closed shift never changes** — a resend answers the same, another count is refused, a direct UPDATE or DELETE is refused by the trigger, checkout / refund / pay in refused until the next shift (G); **a refund of a closed shift's bill lands in the new shift**; **within-limit close** with no reason kept; no printer → not printed (H); the Shifts list and report for supervisors only, own branch only, reprint (I). **The race** ("a checkout racing a close lands in the closed shift's report") cannot be run in one SQL session, which never waits for itself: section A pins the lock modes that make it true (a close `FOR UPDATE` waits for every checkout holding the shift `FOR SHARE` and then counts it; a checkout arriving after the close finds no open shift), and G checks the second half.
+The script covers every test bullet of the spec, each refusal paired with the success it guards: grants, internal helpers, `search_path`, no policy and no table privilege on the two tables (SELECT, INSERT, UPDATE, DELETE, for `anon` and `authenticated`), one `checkout_bill` / `refund_bill` each **with the shift check** (a re-run of an older file is caught), the lock modes (money `FOR SHARE`, close `FOR UPDATE`), the guard trigger, the one-open index, the 500 default (A); the fixture — a branch with a catalog of two products (a 6 % SST plate with a takeaway fee, a 0 % tea) and a free water (RM 0.00), cash and card, four tables, a supervisor with a PIN, a cashier, a supervisor of another branch, five bills from the counter and QR (B); **no shift: checkout and pay in refused, nothing written; ordering works**; a float above RM 100000.00 refused (C); **open twice refused** with the opener's name and time, a second open row refused by the index, another branch opens its own (D); **stamps on payments, refunds and the paid bills**; voids of an item on an open bill, of an item on a bill later paid and of a whole bill; pay in without approver and its resend; **pay out without the PIN refused** (and by the cashier, and without an approver); an amount above RM 100000.00 refused; a cash and a card refund; **expected cash with float, cash and card payments, change, a cash refund, pay in and pay out** = 145.15 (E); the limit saved by the owner only; **above the limit needs approval**; **a new count of exactly the expected cash still needs it** (the first count was above the limit); **an approval of an expected cash that has changed answers the new figures, with the PIN not tried**; a second count with a wrong PIN leaves the shift open; **first count kept**; the closed row; **report totals equal the bills' totals**; every section of the report; the Z report job on the receipt route (F); **a closed shift never changes** — a resend answers the same, another count is refused, a direct UPDATE or DELETE is refused by the trigger, checkout / refund / pay in refused until the next shift (G); **a refund of a closed shift's bill lands in the new shift**; **a bill of RM 0.00 paid with no payment rows counts in its shift** (bills, products, the report's totals equal the bills'); **within-limit close** with no reason kept; no printer → not printed (H); the Shifts list and report for supervisors only, own branch only, reprint (I). **The race** ("a checkout racing a close lands in the closed shift's report") cannot be run in one SQL session, which never waits for itself: section A pins the lock modes that make it true (a close `FOR UPDATE` waits for every checkout holding the shift `FOR SHARE` and then counts it; a checkout arriving after the close finds no open shift), and G checks the second half.
 
 - [ ] **Step 1: Write the verify script.** Create `supabase/migration-2026-10-24-pos-shifts-verify.sql`:
 
@@ -1091,18 +1117,18 @@ declare
   v_far     uuid := 'eeeeeeee-0000-0000-0000-000000000043';   -- supervisor of another branch
   v_branch uuid; v_branch2 uuid;
   v_t1 dining_tables; v_t2 dining_tables; v_t3 dining_tables; v_t4 dining_tables;
-  v_cat uuid; v_catalog uuid; v_plate uuid; v_plate_v uuid; v_tea uuid; v_tea_v uuid;
+  v_cat uuid; v_catalog uuid; v_plate uuid; v_plate_v uuid; v_tea uuid; v_tea_v uuid; v_water uuid; v_water_v uuid;
   v_cash uuid; v_card uuid;
-  b1 uuid; b2 uuid; b3 uuid; b4 uuid; b5 uuid; b6 uuid;
+  b1 uuid; b2 uuid; b3 uuid; b4 uuid; b5 uuid; b6 uuid; b7 uuid;
   s1 uuid; s2 uuid;
   v_move uuid := 'eeeeeeee-1111-0000-0000-000000000001';
   v_move2 uuid := 'eeeeeeee-1111-0000-0000-000000000002';
-  v_res jsonb; v_rep jsonb; v_rep1 jsonb; v_text text; v_id uuid; n integer; r record;
+  v_res jsonb; v_rep jsonb; v_rep1 jsonb; v_text text; v_id uuid; n integer; r record; v_role text; v_tbl text; v_priv text;
 begin
   -- ── A. grants, internal helpers, search_path, RLS, the canonical money functions ──
   for r in select f from unnest(array[
              'pos_current_shift()', 'open_shift(integer)', 'record_cash_move(uuid,text,integer,text,uuid,text)',
-             'close_shift(uuid,integer,text,uuid,text)', 'pos_shift_list()', 'pos_shift_zreport(uuid)',
+             'close_shift(uuid,integer,text,uuid,text,integer)', 'pos_shift_list()', 'pos_shift_zreport(uuid)',
              'reprint_zreport(uuid)', 'save_shift_settings(integer)', 'checkout_bill(uuid,jsonb,uuid)',
              'refund_bill(uuid,uuid,integer,uuid,text,uuid,text)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
@@ -1124,11 +1150,18 @@ begin
   end loop;
   if exists (select 1 from pg_policies where schemaname = 'public' and tablename in ('pos_shifts', 'pos_cash_moves'))
      or exists (select 1 from pg_class where relname in ('pos_shifts', 'pos_cash_moves')
-                 and relnamespace = 'public'::regnamespace and not relrowsecurity)
-     or has_table_privilege('authenticated', 'pos_shifts', 'SELECT') or has_table_privilege('anon', 'pos_shifts', 'SELECT')
-     or has_table_privilege('authenticated', 'pos_cash_moves', 'SELECT') then
+                 and relnamespace = 'public'::regnamespace and not relrowsecurity) then
     raise exception 'FAIL rls: pos_shifts and pos_cash_moves must be read and written only through the functions';
   end if;
+  foreach v_role in array array['anon', 'authenticated'] loop
+    foreach v_tbl in array array['pos_shifts', 'pos_cash_moves'] loop
+      foreach v_priv in array array['SELECT', 'INSERT', 'UPDATE', 'DELETE'] loop
+        if has_table_privilege(v_role, v_tbl, v_priv) then
+          raise exception 'FAIL rls: % has % on % (the functions only)', v_role, v_priv, v_tbl;
+        end if;
+      end loop;
+    end loop;
+  end loop;
   if (select count(*) from pg_proc where proname = 'checkout_bill') is distinct from 1 or (select count(*) from pg_proc where proname = 'refund_bill') is distinct from 1 then
     raise exception 'FAIL: more than one checkout_bill or refund_bill';
   end if;
@@ -1143,7 +1176,7 @@ begin
   if pg_get_functiondef('checkout_bill(uuid,jsonb,uuid)'::regprocedure) not like '%status = ''open'' for share%'
      or pg_get_functiondef('refund_bill(uuid,uuid,integer,uuid,text,uuid,text)'::regprocedure) not like '%status = ''open'' for share%'
      or pg_get_functiondef('record_cash_move(uuid,text,integer,text,uuid,text)'::regprocedure) not like '%status = ''open'' for share%'
-     or pg_get_functiondef('close_shift(uuid,integer,text,uuid,text)'::regprocedure) not like '%for update%' then
+     or pg_get_functiondef('close_shift(uuid,integer,text,uuid,text,integer)'::regprocedure) not like '%for update%' then
     raise exception 'FAIL race: the shift lock modes changed (money FOR SHARE, close FOR UPDATE)';
   end if;
   if not exists (select 1 from pg_trigger where tgname = 'pos_shifts_guard' and tgrelid = 'pos_shifts'::regclass)
@@ -1168,11 +1201,15 @@ begin
   insert into menu_categories(name, sort_order) values ('VERIFY 4A FOOD', 900) returning id into v_cat;
   insert into menu_products(name, category_id, sst_rate_bp, takeaway_fee_sen) values ('Verify 4A Plate', v_cat, 600, 100) returning id into v_plate;
   insert into menu_products(name, category_id, sst_rate_bp) values ('Verify 4A Tea', v_cat, 0) returning id into v_tea;
+  insert into menu_products(name, category_id, sst_rate_bp) values ('Verify 4A Water', v_cat, 0) returning id into v_water;   -- free
   insert into menu_variants(product_id, feedme_variant_key, name, price_sen) values (v_plate, '', 'Regular', 2000) returning id into v_plate_v;
   insert into menu_variants(product_id, feedme_variant_key, name, price_sen) values (v_tea, '', 'Regular', 550) returning id into v_tea_v;
+  insert into menu_variants(product_id, feedme_variant_key, name, price_sen) values (v_water, '', 'Regular', 0) returning id into v_water_v;
   insert into menu_catalogs(name, sort_order) values ('VERIFY 4A CATALOG', 900) returning id into v_catalog;
-  insert into catalog_products(catalog_id, product_id, availability) values (v_catalog, v_plate, 'all'), (v_catalog, v_tea, 'all');
-  insert into catalog_variant_prices(catalog_id, variant_id, price_sen) values (v_catalog, v_plate_v, 2000), (v_catalog, v_tea_v, 550);
+  insert into catalog_products(catalog_id, product_id, availability) values
+    (v_catalog, v_plate, 'all'), (v_catalog, v_tea, 'all'), (v_catalog, v_water, 'all');
+  insert into catalog_variant_prices(catalog_id, variant_id, price_sen) values
+    (v_catalog, v_plate_v, 2000), (v_catalog, v_tea_v, 550), (v_catalog, v_water_v, 0);
   insert into branch_catalogs(branch_id, role, catalog_id) values
     (v_branch, 'dine_in', v_catalog), (v_branch, 'takeaway', v_catalog), (v_branch, 'qr', v_catalog);
   insert into payment_methods(branch_id, name, kind, sort_order) values (v_branch, 'V Cash', 'cash', 1) returning id into v_cash;
@@ -1225,9 +1262,10 @@ begin
   if exists (select 1 from payments where bill_id = b1) or (select status from bills where id = b1) is distinct from 'open' then
     raise exception 'FAIL C: a refused checkout wrote something';
   end if;
-  perform pg_temp.expect_error('select open_shift(-1)', 'Enter the opening float (RM 0.00 or more)', 'C negative float');
-  perform pg_temp.expect_error('select open_shift(null)', 'Enter the opening float (RM 0.00 or more)', 'C no float');
-  perform pg_temp.expect_error(format('select close_shift(%L, 0, null, null, null)', gen_random_uuid()), 'Shift not found', 'C close unknown');
+  perform pg_temp.expect_error('select open_shift(-1)', 'Enter the opening float (RM 0.00 to RM 100000.00)', 'C negative float');
+  perform pg_temp.expect_error('select open_shift(null)', 'Enter the opening float (RM 0.00 to RM 100000.00)', 'C no float');
+  perform pg_temp.expect_error('select open_shift(10000001)', 'Enter the opening float (RM 0.00 to RM 100000.00)', 'C float above RM 100000');
+  perform pg_temp.expect_error(format('select close_shift(%L, 0, null, null, null, null)', gen_random_uuid()), 'Shift not found', 'C close unknown');
 
   -- ── D. open: one shift per branch; the top bar never sees the expected cash ──
   v_res := open_shift(10000);
@@ -1261,8 +1299,10 @@ begin
                                               jsonb_build_object('methodId', v_cash, 'amountSen', 775)), gen_random_uuid());
   perform checkout_bill(b3, jsonb_build_array(jsonb_build_object('methodId', v_card, 'amountSen', 550)), gen_random_uuid());
   if exists (select 1 from payments where bill_id in (b1, b2, b3) and shift_id is distinct from s1)
-     or (select count(*) from payments where shift_id = s1) is distinct from 4 then
-    raise exception 'FAIL E stamps: payments not stamped with shift 1';
+     or (select count(*) from payments where shift_id = s1) is distinct from 4
+     or exists (select 1 from bills where id in (b1, b2, b3) and shift_id is distinct from s1)
+     or (select count(*) from bills where shift_id = s1) is distinct from 3 then
+    raise exception 'FAIL E stamps: payments or bills not stamped with shift 1';
   end if;
   -- voids: one item of an open bill, one whole bill (listed by time, they move no money)
   perform void_order_item((select id from order_items where bill_id = b4), 'Wrong item keyed', v_sup, '2468');
@@ -1282,7 +1322,10 @@ begin
      or (select reason || ':' || coalesce(approved_by::text, '-') from pos_cash_moves where id = v_move) is distinct from 'Float top-up:-' then
     raise exception 'FAIL E pay in row';
   end if;
-  perform pg_temp.expect_error(format('select record_cash_move(%L, %L, 0, %L, null, null)', v_move2, 'pay_out', 'Ice'), 'Enter the amount', 'E zero');
+  perform pg_temp.expect_error(format('select record_cash_move(%L, %L, 0, %L, null, null)', v_move2, 'pay_out', 'Ice'),
+    'Enter the amount (RM 0.01 to RM 100000.00)', 'E zero');
+  perform pg_temp.expect_error(format('select record_cash_move(%L, %L, 10000001, %L, null, null)', v_move2, 'pay_in', 'Ice'),
+    'Enter the amount (RM 0.01 to RM 100000.00)', 'E above RM 100000');
   perform pg_temp.expect_error(format('select record_cash_move(%L, %L, 1500, %L, null, null)', v_move2, 'pay_out', ' '), 'Enter a reason', 'E no reason');
   perform pg_temp.expect_error(format('select record_cash_move(%L, %L, 1500, %L, null, null)', v_move2, 'tips', 'Ice'), 'Choose Pay in or Pay out', 'E kind');
   -- pay out: an approver with the right PIN, never the cashier, never without the PIN
@@ -1320,22 +1363,38 @@ begin
     raise exception 'FAIL F settings';
   end if;
   perform pg_temp.act(v_cashier);
-  perform pg_temp.expect_error(format('select close_shift(%L, -5, null, null, null)', s1), 'Enter the counted cash', 'F negative count');
+  perform pg_temp.expect_error(format('select close_shift(%L, -5, null, null, null, null)', s1),
+    'Enter the counted cash (RM 0.00 to RM 100000.00)', 'F negative count');
+  perform pg_temp.expect_error(format('select close_shift(%L, 10000001, null, null, null, null)', s1),
+    'Enter the counted cash (RM 0.00 to RM 100000.00)', 'F count above RM 100000');
   -- short RM 5.15 (more than RM 5.00): no approver yet → the sheet asks for one
-  v_res := close_shift(s1, 14000, null, null, null);
+  v_res := close_shift(s1, 14000, null, null, null, null);
   if v_res is distinct from jsonb_build_object('ok', false, 'needsApproval', true, 'expectedSen', 14515, 'varianceSen', -515, 'limitSen', 500)
      or (select status || ':' || first_count_sen from pos_shifts where id = s1) is distinct from 'open:14000' then
     raise exception 'FAIL F above the limit: %', v_res;
   end if;
+  -- the expected cash is on screen now: a new count of exactly that still needs the approval
+  v_res := close_shift(s1, 14515, null, null, null, null);
+  if v_res is distinct from jsonb_build_object('ok', false, 'needsApproval', true, 'expectedSen', 14515, 'varianceSen', 0, 'limitSen', 500)
+     or (select status || ':' || first_count_sen from pos_shifts where id = s1) is distinct from 'open:14000' then
+    raise exception 'FAIL F a re-count within the limit after a first count above it closed without approval: %', v_res;
+  end if;
+  -- the approver was shown another expected cash (it moved meanwhile): the new figures, no PIN tried
+  v_res := close_shift(s1, 13900, 'Short — till miscount', v_sup, '0000', 14000);
+  if v_res is distinct from jsonb_build_object('ok', false, 'needsApproval', true, 'expectedSen', 14515, 'varianceSen', -615, 'limitSen', 500)
+     or (select status from pos_shifts where id = s1) is distinct from 'open'
+     or (select failed_attempts from staff_pos_pins where staff_id = v_sup) is distinct from 0 then
+    raise exception 'FAIL F approval of a stale expected cash: %', v_res;
+  end if;
   -- counted again (RM 139.00, short 6.15): a wrong PIN leaves it open; the first count stays
-  v_res := close_shift(s1, 13900, 'Short — till miscount', v_sup, '0000');
-  if (v_res->>'ok')::boolean or v_res->>'error' not like 'Wrong PIN%'
+  v_res := close_shift(s1, 13900, 'Short — till miscount', v_sup, '0000', 14515);
+  if (v_res->>'ok')::boolean or v_res->>'error' is distinct from 'Wrong PIN — 4 tries left'
      or (select status || ':' || first_count_sen from pos_shifts where id = s1) is distinct from 'open:14000' then
     raise exception 'FAIL F wrong PIN: %', v_res;
   end if;
-  perform pg_temp.expect_error(format('select close_shift(%L, 13900, %L, %L, %L)', s1, ' ', v_sup, '2468'),
+  perform pg_temp.expect_error(format('select close_shift(%L, 13900, %L, %L, %L, 14515)', s1, ' ', v_sup, '2468'),
     'Enter a reason for the difference', 'F no reason');
-  v_res := close_shift(s1, 13900, 'Short — till miscount', v_sup, '2468');
+  v_res := close_shift(s1, 13900, 'Short — till miscount', v_sup, '2468', 14515);
   if not (v_res->>'ok')::boolean or not (v_res->>'printed')::boolean then raise exception 'FAIL F close: %', v_res; end if;
   v_rep1 := v_res->'report';
   select * into r from pos_shifts where id = s1;
@@ -1355,7 +1414,7 @@ begin
   -- the report's totals are the bills' totals
   if (select jsonb_build_object('grossSen', sum(subtotal_sen), 'takeawayFeeSen', sum(takeaway_fee_sen), 'serviceChargeSen', sum(service_charge_sen),
                                 'sstSen', sum(sst_sen), 'roundingSen', sum(rounding_sen), 'nettSen', sum(total_sen))
-        from bills where id in (select bill_id from payments where shift_id = s1)) is distinct from v_rep1->'sales' then
+        from bills where shift_id = s1) is distinct from v_rep1->'sales' then
     raise exception 'FAIL F report totals differ from the bills';
   end if;
   if v_rep1->'payments' is distinct from '[{"kind": "card", "name": "V Card", "count": 2, "netSen": 2250, "amountSen": 2550, "refundSen": 300, "refundCount": 1},
@@ -1389,8 +1448,8 @@ begin
   if n is distinct from 1 then raise exception 'FAIL F: % Z report jobs queued', n; end if;
 
   -- ── G. a closed shift never changes; money stops until the next shift opens ──
-  if close_shift(s1, 13900, null, null, null) is distinct from v_res then raise exception 'FAIL G: a resend of the close got another answer'; end if;
-  perform pg_temp.expect_error(format('select close_shift(%L, 14515, null, null, null)', s1), 'This shift is already closed', 'G close again');
+  if close_shift(s1, 13900, null, null, null, null) is distinct from v_res then raise exception 'FAIL G: a resend of the close got another answer'; end if;
+  perform pg_temp.expect_error(format('select close_shift(%L, 14515, null, null, null, null)', s1), 'This shift is already closed', 'G close again');
   if (select count(*) from print_jobs where branch_id = v_branch and payload->>'kind' = 'zreport') is distinct from 1 then
     raise exception 'FAIL G: a resend printed the Z report again';
   end if;
@@ -1429,9 +1488,18 @@ begin
   end if;
   perform checkout_bill(b6, jsonb_build_array(jsonb_build_object('methodId', v_cash, 'amountSen', 550, 'tenderedSen', 1000)), gen_random_uuid());
   if (select shift_id from payments where bill_id = b6) is distinct from s2 then raise exception 'FAIL H: b6 not in shift 2'; end if;
+  -- a bill of RM 0.00 (a free water) is paid with no payment rows and still belongs to the shift
+  v_id := place_counter_order(null, 'takeaway', null,
+    jsonb_build_array(jsonb_build_object('productId', v_water, 'variantId', v_water_v)), gen_random_uuid());
+  b7 := (select bill_id from orders where id = v_id);
+  perform checkout_bill(b7, '[]'::jsonb, gen_random_uuid());
+  if (select status || ':' || total_sen || ':' || coalesce(shift_id::text, '-') from bills where id = b7) is distinct from 'paid:0:' || s2
+     or exists (select 1 from payments where bill_id = b7) then
+    raise exception 'FAIL H: the RM 0.00 bill is not paid in shift 2';
+  end if;
   update branch_pos_settings set receipt_route = null where branch_id = v_branch;
   -- expected 120.00 − 5.00 + 5.50 = 120.50; counted 121.00 is within RM 5.00: no approver, no reason kept
-  v_res := close_shift(s2, 12100, 'ignored', null, null);
+  v_res := close_shift(s2, 12100, 'ignored', null, null, null);
   if not (v_res->>'ok')::boolean or (v_res->>'printed')::boolean then raise exception 'FAIL H close: %', v_res; end if;
   v_rep := v_res->'report';
   select * into r from pos_shifts where id = s2;
@@ -1439,10 +1507,16 @@ begin
      or r.report_printed then
     raise exception 'FAIL H closed row: %', row_to_json(r);
   end if;
-  if (v_rep->'summary'->>'billCount')::int is distinct from 1 or (v_rep->'summary'->>'refundSen')::int is distinct from 500
+  if (v_rep->'summary'->>'billCount')::int is distinct from 2 or (v_rep->'summary'->>'refundSen')::int is distinct from 500
+     or v_rep->'products' is distinct from '[{"qty": 1, "name": "Verify 4A Tea", "valueSen": 550}, {"qty": 1, "name": "Verify 4A Water", "valueSen": 0}]'::jsonb
      or (v_rep->'cash'->>'cashRefundSen')::int is distinct from 500 or jsonb_array_length(v_rep->'voids'->'items') is distinct from 0
      or v_rep->'refunds'->0->>'billNo' is distinct from (select bill_no from bills where id = b1) then
     raise exception 'FAIL H report: %', v_rep;
+  end if;
+  if (select jsonb_build_object('grossSen', sum(subtotal_sen), 'takeawayFeeSen', sum(takeaway_fee_sen), 'serviceChargeSen', sum(service_charge_sen),
+                                'sstSen', sum(sst_sen), 'roundingSen', sum(rounding_sen), 'nettSen', sum(total_sen))
+        from bills where shift_id = s2) is distinct from v_rep->'sales' then
+    raise exception 'FAIL H report totals differ from the bills';
   end if;
   if (select report from pos_shifts where id = s1) is distinct from v_rep1 then raise exception 'FAIL H: shift 1''s report changed'; end if;
   if exists (select 1 from print_jobs where branch_id = v_branch and payload->>'kind' = 'zreport' and payload->'report' = v_rep) then
@@ -1501,7 +1575,7 @@ rollback;
 ```
 
 
-- [ ] **Step 3: Local checks.** Run: `grep -c "VERIFY OK" supabase/migration-2026-10-24-pos-shifts-verify.sql` — Expected: `3` (header, notice, final select). Run: `grep -c "perform pg_temp.expect_error" supabase/migration-2026-10-24-pos-shifts-verify.sql` — Expected: `24`. Run: `grep -n "insert into staff" -B3 supabase/migration-2026-10-24-pos-shifts-verify.sql | grep -c "act(v_owner)"` — Expected: `1` (the staff are inserted after the claims are set to the owner). Run: `npx vitest run` — Expected: 98 files, 855 tests pass (the scan ignores `-verify` files).
+- [ ] **Step 3: Local checks.** Run: `grep -c "VERIFY OK" supabase/migration-2026-10-24-pos-shifts-verify.sql` — Expected: `3` (header, notice, final select). Run: `grep -c "perform pg_temp.expect_error" supabase/migration-2026-10-24-pos-shifts-verify.sql` — Expected: `27`. Run: `grep -n "insert into staff" -B3 supabase/migration-2026-10-24-pos-shifts-verify.sql | grep -c "act(v_owner)"` — Expected: `1` (the staff are inserted after the claims are set to the owner). Run: `npx vitest run` — Expected: 98 files, 855 tests pass (the scan ignores `-verify` files).
 
 - [ ] **Step 4: Commit**
 
@@ -1521,13 +1595,14 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ```sql
 select (select count(*) from pos_shifts)                                          as shifts,
+       (select count(*) from bills where shift_id is not null)                    as stamped_bills,
        (select count(*) from payments where shift_id is not null)                 as stamped_payments,
        (select count(*) from pg_proc where proname in ('checkout_bill', 'refund_bill')) as money_functions,
        (select count(*) from pg_policies where tablename in ('pos_shifts', 'pos_cash_moves')) as policies,
        (select count(*) from branch_pos_settings where cash_variance_limit_sen <> 500) as changed_limits;
 ```
 
-     Expected: `0`, `0`, `2`, `0`, `0`.
+     Expected: `0`, `0`, `0`, `2`, `0`, `0`.
 
   If a script stops with `FAIL …`, the message names the check: fix the function file (implementer, new commit), re-run it, then re-run the verify. From now until Task 7 lands, checkout and refunds on dev answer "Open the shift first" (the bar that opens a shift comes in Task 7). If a demo needs checkout before then, open a shift for the test login's branch in the SQL editor, as one run: `select set_config('request.jwt.claims', json_build_object('sub', '76cbcf9f-905e-450d-9f5e-1c9e72a9373d', 'role', 'authenticated')::text, true), open_shift(0);` — and close it from the Task 7 bar later. Record the outcome in the ledger.
 
@@ -2021,16 +2096,16 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `parseRinggit` (`checkout/tender.ts`), `formatSen` (`order/cart.ts`), `Approval` (`checkout/checkoutApi.ts`), `ZReport` (Task 3), the Task 1 RPCs.
-- Produces — `shift.ts`: `CashMoveKind = 'pay_in' | 'pay_out'`, `KIND_LABEL`, `SHIFT_STALE_HOURS = 20`, `OpenShift { id; openedAt; openedByName: string | null; openingFloatSen }`, `ShiftStatus { shift: OpenShift | null; openBillCount; lastFloatSen: number | null; now }`, `CloseResult = { kind: 'closed'; report: ZReport; printed: boolean } | { kind: 'needsApproval'; expectedSen; varianceSen; limitSen }`, `CashMoveResult { id; kind; amountSen }`, `ShiftListRow { id; openedAt; closedAt; openedBy; closedBy; nettSen; varianceSen }`, `parseShiftStatus`, `parseZReport`, `parseCloseResult` (throws the server's words for a wrong PIN), `parseCashMoveResult`, `parseShiftList`, `mytTime(iso)` ("09:02"), `shiftLabel(status)` ("Shift open · since 09:02" / "No shift open"), `staleShiftNote(status)` (more than 20 h by the server's `now` → "This shift was opened yesterday — close it"), `openBillsWarning(n)`, `senToText(sen)`, `floatProblem`, `countProblem`, `cashMoveProblem(amountText, reason)`, `limitProblem`, `varianceLabel(sen)` ("Short RM 6.15" / "Over RM 0.50" / "Exact"), `printedNote(printed)`, `looksOffline(message)`. `shiftApi.ts`: `fetchShiftStatus()`, `openShift(floatSen)`, `CashMoveInput { id; kind; amountSen; reason; approverId; pin }`, `recordCashMove(m)`, `closeShift(shiftId, countedSen, approval: Approval | null)`, `fetchShiftList()`, `fetchShiftZReport(shiftId)`, `reprintZReport(shiftId)`, `fetchCashVarianceLimit(branchId)` (no row → 500), `saveCashVarianceLimit(limitSen)`.
+- Produces — `shift.ts`: `CashMoveKind = 'pay_in' | 'pay_out'`, `KIND_LABEL`, `SHIFT_STALE_HOURS = 20`, `MAX_CASH_SEN = 10_000_000`, `OpenShift { id; openedAt; openedByName: string | null; openingFloatSen }`, `ShiftStatus { shift: OpenShift | null; openBillCount; lastFloatSen: number | null; now }`, `CloseResult = { kind: 'closed'; report: ZReport; printed: boolean } | { kind: 'needsApproval'; expectedSen; varianceSen; limitSen }`, `CashMoveResult { id; kind; amountSen }`, `ShiftListRow { id; openedAt; closedAt; openedBy; closedBy; nettSen; varianceSen }`, `parseShiftStatus`, `parseZReport`, `parseCloseResult` (throws the server's words for a wrong PIN), `parseCashMoveResult`, `parseShiftList`, `mytTime(iso)` ("09:02"), `shiftLabel(status)` ("Shift open · since 09:02" / "No shift open"), `staleShiftNote(status)` (more than 20 h by the server's `now` → "This shift was opened yesterday — close it"), `openBillsWarning(n)`, `senToText(sen)`, `floatProblem`, `countProblem`, `cashMoveProblem(amountText, reason)` (each capped at RM 100000.00, with the server's words), `limitProblem`, `varianceLabel(sen)` ("Short RM 6.15" / "Over RM 0.50" / "Exact"), `approvalNote({ varianceSen, limitSen })` (this count more than the limit off, or "A supervisor still approves, because the first count was more than RM 5.00 off."), `closeShiftError(message)` ("This shift is already closed" + "— a supervisor can open its Z report under Shifts"), `printedNote(printed)`, `looksOffline(message)`, `cashMoveMayBeRecorded(message)` (a lost reply or "This was already recorded …": keep the pay in / pay out sheet locked). `shiftApi.ts`: `fetchShiftStatus()`, `openShift(floatSen)`, `CashMoveInput { id; kind; amountSen; reason; approverId; pin }`, `recordCashMove(m)`, `closeShift(shiftId, countedSen, approval: Approval | null, expectedSen: number | null)` (`expectedSen`: what the approver was shown), `fetchShiftList()`, `fetchShiftZReport(shiftId)`, `reprintZReport(shiftId)`, `fetchCashVarianceLimit(branchId)` (no row → 500), `saveCashVarianceLimit(limitSen)`.
 
 - [ ] **Step 1: Write the failing test.** Create `src/features/pos/shift/shift.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest'
 import {
-  cashMoveProblem, countProblem, floatProblem, limitProblem, mytTime, openBillsWarning, parseCashMoveResult,
-  parseCloseResult, parseShiftList, parseShiftStatus, printedNote, senToText, shiftLabel, staleShiftNote, varianceLabel,
-  type ShiftStatus,
+  approvalNote, cashMoveMayBeRecorded, cashMoveProblem, closeShiftError, countProblem, floatProblem, limitProblem, mytTime,
+  openBillsWarning, parseCashMoveResult, parseCloseResult, parseShiftList, parseShiftStatus, printedNote, senToText, shiftLabel,
+  staleShiftNote, varianceLabel, type ShiftStatus,
 } from './shift'
 
 const open = (openedAt: string, now: string): ShiftStatus => ({
@@ -2058,18 +2133,22 @@ describe('the shift status banner', () => {
 })
 
 describe('amount fields', () => {
-  it('takes an opening float and a count of zero or more', () => {
+  it('takes an opening float and a count from RM 0.00 to RM 100000.00', () => {
     expect(floatProblem('100')).toBeNull()
     expect(floatProblem('0')).toBeNull()
-    expect(floatProblem('')).toBe('Enter the opening float (RM 0.00 or more)')
-    expect(floatProblem('-5')).toBe('Enter the opening float (RM 0.00 or more)')
+    expect(floatProblem('100000.00')).toBeNull()
+    expect(floatProblem('')).toBe('Enter the opening float (RM 0.00 to RM 100000.00)')
+    expect(floatProblem('-5')).toBe('Enter the opening float (RM 0.00 to RM 100000.00)')
+    expect(floatProblem('100000.01')).toBe('Enter the opening float (RM 0.00 to RM 100000.00)')
     expect(countProblem('139.00')).toBeNull()
-    expect(countProblem('12.345')).toBe('Enter the counted cash')
+    expect(countProblem('12.345')).toBe('Enter the counted cash (RM 0.00 to RM 100000.00)')
+    expect(countProblem('200000')).toBe('Enter the counted cash (RM 0.00 to RM 100000.00)')
   })
-  it('needs an amount above zero and a reason for pay in / pay out', () => {
+  it('needs an amount from RM 0.01 to RM 100000.00 and a reason for pay in / pay out', () => {
     expect(cashMoveProblem('15', 'Ice')).toBeNull()
-    expect(cashMoveProblem('0', 'Ice')).toBe('Enter the amount')
-    expect(cashMoveProblem('abc', 'Ice')).toBe('Enter the amount')
+    expect(cashMoveProblem('0', 'Ice')).toBe('Enter the amount (RM 0.01 to RM 100000.00)')
+    expect(cashMoveProblem('abc', 'Ice')).toBe('Enter the amount (RM 0.01 to RM 100000.00)')
+    expect(cashMoveProblem('100000.01', 'Ice')).toBe('Enter the amount (RM 0.01 to RM 100000.00)')
     expect(cashMoveProblem('15', '  ')).toBe('Enter a reason')
     expect(cashMoveProblem('15', 'x'.repeat(201))).toBe('Reason is too long')
   })
@@ -2084,6 +2163,25 @@ describe('amount fields', () => {
     expect(varianceLabel(50)).toBe('Over RM 0.50')
     expect(varianceLabel(0)).toBe('Exact')
     expect(printedNote(false)).toBe('Not printed — no receipt printer set')
+  })
+  it('says why a supervisor approves: this count, or the first one', () => {
+    expect(approvalNote({ varianceSen: -615, limitSen: 500 }))
+      .toBe('More than RM 5.00 off: a supervisor approves the difference with a reason. If you miscounted, count again — the approval is still needed.')
+    expect(approvalNote({ varianceSen: 0, limitSen: 500 })).toBe('A supervisor still approves, because the first count was more than RM 5.00 off.')
+    expect(approvalNote({ varianceSen: 500, limitSen: 500 })).toBe('A supervisor still approves, because the first count was more than RM 5.00 off.')
+  })
+})
+
+describe('refusals', () => {
+  it('points to Shifts when the shift closed under another count', () => {
+    expect(closeShiftError('This shift is already closed')).toBe('This shift is already closed — a supervisor can open its Z report under Shifts')
+    expect(closeShiftError('Wrong PIN — 4 tries left')).toBe('Wrong PIN — 4 tries left')
+  })
+  it('keeps a pay in / pay out locked only when something may be recorded under its id', () => {
+    expect(cashMoveMayBeRecorded('Failed to fetch')).toBe(true)
+    expect(cashMoveMayBeRecorded('This was already recorded as Pay in RM 20.00 — close and reopen to record another')).toBe(true)
+    expect(cashMoveMayBeRecorded('Open the shift first')).toBe(false)
+    expect(cashMoveMayBeRecorded('Wrong PIN — 4 tries left')).toBe(false)
   })
 })
 
@@ -2132,6 +2230,9 @@ export const KIND_LABEL: Record<CashMoveKind, string> = { pay_in: 'Pay in', pay_
 
 /** A shift open longer than this gets the amber "close it" note in the top bar. */
 export const SHIFT_STALE_HOURS = 20
+
+/** The most a float, a count or a pay in / pay out can be (RM 100000.00), as the server says. */
+export const MAX_CASH_SEN = 10_000_000
 
 export interface OpenShift { id: string; openedAt: string; openedByName: string | null; openingFloatSen: number }
 /** pos_current_shift: never the expected cash (the count at close is blind). */
@@ -2237,20 +2338,22 @@ export function senToText(sen: number): string {
   return (sen / 100).toFixed(2)
 }
 
-/** The opening float: RM 0.00 or more. */
+/** The opening float: RM 0.00 to RM 100000.00. */
 export function floatProblem(text: string): string | null {
-  return parseRinggit(text) === null ? 'Enter the opening float (RM 0.00 or more)' : null
+  const sen = parseRinggit(text)
+  return sen === null || sen > MAX_CASH_SEN ? 'Enter the opening float (RM 0.00 to RM 100000.00)' : null
 }
 
-/** The blind count: RM 0.00 or more. */
+/** The blind count: RM 0.00 to RM 100000.00. */
 export function countProblem(text: string): string | null {
-  return parseRinggit(text) === null ? 'Enter the counted cash' : null
+  const sen = parseRinggit(text)
+  return sen === null || sen > MAX_CASH_SEN ? 'Enter the counted cash (RM 0.00 to RM 100000.00)' : null
 }
 
-/** Pay in / Pay out: an amount above zero and a reason, as record_cash_move says. */
+/** Pay in / Pay out: an amount from RM 0.01 to RM 100000.00 and a reason, as record_cash_move says. */
 export function cashMoveProblem(amountText: string, reason: string): string | null {
   const sen = parseRinggit(amountText)
-  if (sen === null || sen <= 0) return 'Enter the amount'
+  if (sen === null || sen <= 0 || sen > MAX_CASH_SEN) return 'Enter the amount (RM 0.01 to RM 100000.00)'
   if (!reason.trim()) return 'Enter a reason'
   if (reason.trim().length > 200) return 'Reason is too long'
   return null
@@ -2268,12 +2371,31 @@ export function varianceLabel(sen: number): string {
   return sen < 0 ? `Short ${formatSen(-sen)}` : `Over ${formatSen(sen)}`
 }
 
+/** Why the close sheet asks for a supervisor: this count is off by more than the limit, or the
+ *  first count was (a new count corrects the figure, the approval stays — close_shift's rule). */
+export function approvalNote(check: { varianceSen: number; limitSen: number }): string {
+  const limit = formatSen(check.limitSen)
+  return Math.abs(check.varianceSen) > check.limitSen
+    ? `More than ${limit} off: a supervisor approves the difference with a reason. If you miscounted, count again — the approval is still needed.`
+    : `A supervisor still approves, because the first count was more than ${limit} off.`
+}
+
+/** The close refusal that leaves a cashier without the report (a resend with another count
+ *  after a lost reply) says where the report is. */
+export function closeShiftError(m: string): string {
+  return m === 'This shift is already closed' ? `${m} — a supervisor can open its Z report under Shifts` : m
+}
+
 export function printedNote(printed: boolean): string {
   return printed ? 'Z report sent to the receipt printer' : 'Not printed — no receipt printer set'
 }
 
 /** What happened after a request with no reply: the id makes a resend safe. */
 export const looksOffline = (m: string) => /fetch|network|timeout|abort|signal/i.test(m)
+
+/** After a refused pay in / pay out: was anything recorded under its id? Only a lost reply (maybe)
+ *  or a resend that does not match (yes) keep the sheet locked; every other refusal wrote nothing. */
+export const cashMoveMayBeRecorded = (m: string) => looksOffline(m) || m.startsWith('This was already recorded')
 ```
 
 - [ ] **Step 4: Write the RPC wrappers.** Create `src/features/pos/shift/shiftApi.ts`:
@@ -2323,13 +2445,17 @@ export async function recordCashMove(m: CashMoveInput): Promise<CashMoveResult> 
   return parseCashMoveResult(data)
 }
 
-/** The blind count. Without `approval` the server answers "needs approval" above the limit;
- *  a resend of a close that went through answers the same report. */
-export async function closeShift(shiftId: string, countedSen: number, approval: Approval | null): Promise<CloseResult> {
+/** The blind count. Without `approval` the server answers "needs approval" above the limit (or
+ *  when the first count was above it); with it, `expectedSen` is the expected cash the approver
+ *  was shown — changed meanwhile, the answer is "needs approval" again with the new figures.
+ *  A resend of a close that went through answers the same report. */
+export async function closeShift(shiftId: string, countedSen: number, approval: Approval | null,
+                                 expectedSen: number | null): Promise<CloseResult> {
   const { data, error } = await supabase
     .rpc('close_shift', {
       p_shift_id: shiftId, p_counted_sen: countedSen,
       p_reason: approval?.reason ?? null, p_approver_id: approval?.approverId ?? null, p_pin: approval?.pin ?? null,
+      p_expected_sen: expectedSen,
     })
     .abortSignal(AbortSignal.timeout(MONEY_TIMEOUT_MS))
   if (error) fail(error)
@@ -2368,7 +2494,7 @@ export async function saveCashVarianceLimit(limitSen: number): Promise<void> {
 }
 ```
 
-- [ ] **Step 5: Run the tests and the gates.** Run: `npx vitest run src/features/pos/shift/shift.test.ts` — Expected: PASS, 11 tests. Run: `npx vitest run` — Expected: 100 files, 871 tests pass. Run: `npx tsc -b` — Expected: no output.
+- [ ] **Step 5: Run the tests and the gates.** Run: `npx vitest run src/features/pos/shift/shift.test.ts` — Expected: PASS, 14 tests. Run: `npx vitest run` — Expected: 100 files, 874 tests pass. Run: `npx tsc -b` — Expected: no output.
 
 - [ ] **Step 6: Commit**
 
@@ -2389,9 +2515,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 4; `formatSen`; `parseRinggit`.
-- Produces: `ApprovalDialog` props gain `action: ReasonAction | null` and `askReason?: boolean` (existing callers — voids and refunds in `BillPanel` / `TodayBillsDrawer` — pass an action and no `askReason`, so they behave as before); `<OpenShiftSheet lastFloatSen onClose onOpened(status: ShiftStatus)>`; `<CashMoveSheet branchId onClose onRecorded(note: string)>` ("Pay in RM 20.00 recorded").
+- Produces: `ApprovalDialog` props gain `action: ReasonAction | null`, `askReason?: boolean` and `reasonMissing?: string` (existing callers — voids and refunds in `BillPanel` / `TodayBillsDrawer` — pass an action and no `askReason`, so they behave as before); `<OpenShiftSheet lastFloatSen onClose onOpened(status: ShiftStatus)>`; `<CashMoveSheet branchId onClose onRecorded(note: string)>` ("Pay in RM 20.00 recorded").
 
-- [ ] **Step 1: Give the approval dialog its two options and a double-tap guard.** In `src/features/pos/checkout/ApprovalDialog.tsx` make exactly these replacements (each old text occurs once, in this order):
+- [ ] **Step 1: Give the approval dialog its three options and a double-tap guard.** In `src/features/pos/checkout/ApprovalDialog.tsx` make exactly these replacements (each old text occurs once, in this order):
 
 1. Replace
 
@@ -2420,10 +2546,11 @@ export default function ApprovalDialog({ branchId, action, title, summary, extra
 ```tsx
 /** Reason + approver + PIN, for voids, refunds, pay outs and a cash variance. The PIN is
  *  checked by the protected RPC itself (onApprove), never by a separate call. */
-export default function ApprovalDialog({ branchId, action, askReason = true, title, summary, extra, extraProblem, approveDisabled, onApprove, onClose, onDone }: {
+export default function ApprovalDialog({ branchId, action, askReason = true, reasonMissing, title, summary, extra, extraProblem, approveDisabled, onApprove, onClose, onDone }: {
   branchId: string
   action: ReasonAction | null           // null: no reason template (a reason is required, any wording)
   askReason?: boolean                   // false: the reason was asked before (pay out)
+  reasonMissing?: string                // action null: the server's words for an empty reason
 ```
 
 3. Replace
@@ -2460,7 +2587,8 @@ export default function ApprovalDialog({ branchId, action, askReason = true, tit
    with
 
 ```tsx
-    const problem = extraProblem ?? (askReason ? reasonProblem(template, reason) : null)
+    const problem = extraProblem
+      ?? (!askReason ? null : action === null && reasonMissing && !reason.trim() ? reasonMissing : reasonProblem(template, reason))
 ```
 
 6. Replace
@@ -2578,7 +2706,7 @@ export default function OpenShiftSheet({ lastFloatSen, onClose, onOpened }: {
 }
 ```
 
-- [ ] **Step 3: Write the Pay in / Pay out sheet.** Create `src/features/pos/shift/CashMoveSheet.tsx` (one id per sheet: after the first send the kind and amount are locked, so a resend after a lost reply records nothing twice):
+- [ ] **Step 3: Write the Pay in / Pay out sheet.** Create `src/features/pos/shift/CashMoveSheet.tsx` (one id per send: once sent, the kind and amount are locked, so a resend after a lost reply records nothing twice; a refusal that recorded nothing — "Open the shift first", an amount the server refuses, a wrong PIN — unlocks them and takes a new id):
 
 ```tsx
 import { useRef, useState } from 'react'
@@ -2586,14 +2714,15 @@ import { formatSen } from '../order/cart'
 import { parseRinggit } from '../checkout/tender'
 import ApprovalDialog from '../checkout/ApprovalDialog'
 import { recordCashMove } from './shiftApi'
-import { cashMoveProblem, KIND_LABEL, looksOffline, type CashMoveKind, type CashMoveResult } from './shift'
+import { cashMoveMayBeRecorded, cashMoveProblem, KIND_LABEL, looksOffline, type CashMoveKind, type CashMoveResult } from './shift'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const KINDS: CashMoveKind[] = ['pay_in', 'pay_out']
 
 /** Pay in / Pay out: cash put into or taken out of the drawer, with a reason. Pay out needs an
- *  approver's PIN. One id per sheet: after the first send the kind and amount are fixed, so a
- *  resend after a lost reply can never record the money twice. */
+ *  approver's PIN. One id per send: once sent, the kind and amount are fixed, so a resend after
+ *  a lost reply can never record the money twice; a refusal that recorded nothing ("Open the
+ *  shift first", a wrong PIN, …) unlocks the fields and takes a new id. */
 export default function CashMoveSheet({ branchId, onClose, onRecorded }: {
   branchId: string
   onClose: () => void
@@ -2612,9 +2741,14 @@ export default function CashMoveSheet({ branchId, onClose, onRecorded }: {
 
   const amountSen = parseRinggit(amountText) ?? 0
   const done = (r: CashMoveResult) => onRecorded(`${KIND_LABEL[r.kind]} ${formatSen(r.amountSen)} recorded`)
-  const send = (approverId: string | null, pin: string | null) => {
+  const send = async (approverId: string | null, pin: string | null) => {
     setLocked(true)
-    return recordCashMove({ id: moveId.current, kind, amountSen, reason: reason.trim(), approverId, pin })
+    try {
+      return await recordCashMove({ id: moveId.current, kind, amountSen, reason: reason.trim(), approverId, pin })
+    } catch (e) {
+      if (!cashMoveMayBeRecorded(msg(e))) { moveId.current = crypto.randomUUID(); setLocked(false) }  // nothing was recorded
+      throw e
+    }
   }
 
   const submit = async () => {
@@ -2674,7 +2808,7 @@ export default function CashMoveSheet({ branchId, onClose, onRecorded }: {
 }
 ```
 
-- [ ] **Step 4: Gates.** Run: `git diff --stat HEAD -- src/features/pos/order src/features/pos/checkout` — Expected: only `src/features/pos/checkout/ApprovalDialog.tsx` (no caller changes). Run: `npx vitest run` — Expected: 100 files, 871 tests pass. Run: `npx tsc -b` — Expected: no output (the existing callers still type-check).
+- [ ] **Step 4: Gates.** Run: `git diff --stat HEAD -- src/features/pos/order src/features/pos/checkout` — Expected: only `src/features/pos/checkout/ApprovalDialog.tsx` (no caller changes). Run: `npx vitest run` — Expected: 100 files, 874 tests pass. Run: `npx tsc -b` — Expected: no output (the existing callers still type-check).
 
 - [ ] **Step 5: Commit**
 
@@ -2694,14 +2828,15 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Tasks 3–5 (`renderZReportLines`, `closeShift`, `fetchShiftList`, `fetchShiftZReport`, `reprintZReport`, `ApprovalDialog` with `action={null}`), `formatMyt`.
-- Produces: `<ZReportView report>`; `<CloseShiftSheet branchId shift: OpenShift openBillCount onClose onClosed>` (steps: open-bills warning → blind count → above the limit: counted / expected / difference with **Count again** or **Approve difference** → the report with the printed note → **Done**); `<ShiftsDrawer onClose>`.
+- Produces: `<ZReportView report>`; `<CloseShiftSheet branchId shift: OpenShift openBillCount onClose onClosed>` (steps: open-bills warning → blind count → above the limit, or after a first count above it: counted / expected / difference, `approvalNote`, **Count again** or **Approve difference** → the report with the printed note → **Done**; an approval answered "needs approval" — the expected cash moved meanwhile — shows the new figures and "The expected cash changed meanwhile …" to approve again; "This shift is already closed" points to Shifts); `<ShiftsDrawer onClose>`.
 
 - [ ] **Step 1: Write the on-screen report.** Create `src/features/pos/shift/ZReportView.tsx`:
 
 ```tsx
 import { renderZReportLines, type ZReport } from '../print/zreport'
 
-/** The Z report on screen, line for line what the receipt printer prints (48 columns). */
+/** The Z report on screen: the receipt layout's lines at 48 columns. A printer wraps the same
+ *  content at its own width (the iPad print host at TICKET_COLS 42, the Node agent at its .env's). */
 export default function ZReportView({ report }: { report: ZReport }) {
   const lines = renderZReportLines({ kind: 'zreport', route: '', reprint: false, report }, 48)
   return (
@@ -2722,7 +2857,8 @@ import ApprovalDialog from '../checkout/ApprovalDialog'
 import { closeShift } from './shiftApi'
 import ZReportView from './ZReportView'
 import {
-  countProblem, looksOffline, openBillsWarning, printedNote, varianceLabel, type CloseResult, type OpenShift,
+  approvalNote, closeShiftError, countProblem, looksOffline, openBillsWarning, printedNote, varianceLabel,
+  type CloseResult, type OpenShift,
 } from './shift'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -2732,7 +2868,9 @@ type Closed = Extract<CloseResult, { kind: 'closed' }>
 
 /** Close shift: open-bills warning → blind count → (above the limit) expected, variance,
  *  reason and a supervisor's PIN → the Z report. The expected cash is shown only after the
- *  count was submitted. Re-entering a different count is allowed; the first one is kept. */
+ *  count was submitted. Re-entering a different count is allowed; the first one is kept, and
+ *  once it was above the limit the approval stays (close_shift's rule). If the expected cash
+ *  changed while the supervisor came over, the server answers with the new figures. */
 export default function CloseShiftSheet({ branchId, shift, openBillCount, onClose, onClosed }: {
   branchId: string
   shift: OpenShift
@@ -2748,6 +2886,7 @@ export default function CloseShiftSheet({ branchId, shift, openBillCount, onClos
   const [check, setCheck] = useState<NeedsApproval | null>(null)
   const [closed, setClosed] = useState<Closed | null>(null)
   const [approving, setApproving] = useState(false)
+  const [changed, setChanged] = useState(false)     // the expected cash moved while approving
   const running = useRef(false)
   const counted = useRef(0)
 
@@ -2759,11 +2898,11 @@ export default function CloseShiftSheet({ branchId, shift, openBillCount, onClos
     const problem = countProblem(countText)
     if (problem) { setError(problem); return }
     if (running.current) return
-    running.current = true; setBusy(true); setError(null)
+    running.current = true; setBusy(true); setError(null); setChanged(false)
     counted.current = parseRinggit(countText) ?? 0
-    try { take(await closeShift(shift.id, counted.current, null)) } catch (e) {
+    try { take(await closeShift(shift.id, counted.current, null, null)) } catch (e) {
       const m = msg(e)
-      setError(looksOffline(m) ? 'Not sure the shift closed (no reply). Press Close shift again with the same count.' : m)
+      setError(looksOffline(m) ? 'Not sure the shift closed (no reply). Press Close shift again with the same count.' : closeShiftError(m))
     } finally { running.current = false; setBusy(false) }
   }
 
@@ -2805,9 +2944,12 @@ export default function CloseShiftSheet({ branchId, shift, openBillCount, onClos
                 <dt>Expected</dt><dd className="text-right">{formatSen(check.expectedSen)}</dd>
                 <dt className="font-semibold">Difference</dt><dd className="text-right font-semibold text-red-700">{varianceLabel(check.varianceSen)}</dd>
               </dl>
-              <p className="rounded bg-amber-50 p-2 text-sm text-amber-800">
-                More than {formatSen(check.limitSen)} off: count again, or a supervisor approves the difference with a reason.
-              </p>
+              {changed && (
+                <p role="alert" className="rounded bg-red-50 p-2 text-sm text-red-700">
+                  The expected cash changed meanwhile (a sale, refund or pay in / out) — check the new figures and approve again.
+                </p>
+              )}
+              <p className="rounded bg-amber-50 p-2 text-sm text-amber-800">{approvalNote(check)}</p>
               <div className="flex gap-2">
                 <button onClick={() => { setCountText(''); setError(null); setStep('count') }} className="flex-1 rounded-xl border border-border py-3">Count again</button>
                 <button onClick={() => setApproving(true)} className="flex-1 rounded-xl bg-red-700 py-3 text-white">Approve difference</button>
@@ -2826,15 +2968,19 @@ export default function CloseShiftSheet({ branchId, shift, openBillCount, onClos
         </div>
       </div>
       {approving && check && (
-        <ApprovalDialog branchId={branchId} action={null} title="Approve cash difference"
+        <ApprovalDialog branchId={branchId} action={null} reasonMissing="Enter a reason for the difference" title="Approve cash difference"
           summary={`Counted ${formatSen(counted.current)} · expected ${formatSen(check.expectedSen)} · ${varianceLabel(check.varianceSen)}`}
           onApprove={async (a) => {
-            const r = await closeShift(shift.id, counted.current, a)
-            if (r.kind === 'needsApproval') throw new Error('The expected cash changed — count again')
-            setClosed(r)
+            let r: CloseResult
+            try { r = await closeShift(shift.id, counted.current, a, check.expectedSen) } catch (e) {
+              const m = msg(e)
+              throw new Error(looksOffline(m) ? 'Not sure the shift closed (no reply). Press Approve again — it will not close twice.' : closeShiftError(m))
+            }
+            setChanged(r.kind === 'needsApproval')       // the server's new figures replace the old ones
+            take(r)
           }}
           onClose={() => setApproving(false)}
-          onDone={() => { setApproving(false); setStep('done') }} />
+          onDone={() => setApproving(false)} />
       )}
     </>
   )
@@ -2942,7 +3088,7 @@ export default function ShiftsDrawer({ onClose }: { onClose: () => void }) {
 }
 ```
 
-- [ ] **Step 4: Gates.** Run: `npx vitest run` — Expected: 100 files, 871 tests pass. Run: `npx tsc -b` — Expected: no output. Run: `wc -l src/features/pos/shift/*.tsx` — Expected: every file under 250 lines.
+- [ ] **Step 4: Gates.** Run: `npx vitest run` — Expected: 100 files, 874 tests pass. Run: `npx tsc -b` — Expected: no output. Run: `wc -l src/features/pos/shift/*.tsx` — Expected: every file under 250 lines.
 
 - [ ] **Step 5: Commit**
 
@@ -2963,12 +3109,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Tasks 4–6; `PosPage`'s `refreshKey` (bumped on every bill change, every order and the 15-second sweep) and `can('pos_supervise')`.
-- Produces: `<ShiftBar branchId refreshKey canSupervise>` in the `/pos` header, left of the print host: **Open shift** (no shift) or "Shift open · since 09:02" + amber stale note + **Pay in / out** + **Close shift**; **Shifts** for supervisors; a short outcome after each action ("Shift opened", "Pay out RM 15.00 recorded", "Shift closed"). A failed status read shows "Shift: <error> Try again" and offers nothing that moves money.
+- Produces: `<ShiftBar branchId refreshKey canSupervise>` in the `/pos` header, left of the print host: **Open shift** (no shift) or "Shift open · since 09:02" + amber stale note + **Pay in / out** + **Close shift**; **Shifts** for supervisors; a short outcome after each action ("Shift opened", "Pay out RM 15.00 recorded", "Shift closed") that clears after 8 s. The sheets and the drawer render through `createPortal(…, document.body)`, so they do not inherit the header's `text-xs text-brown-muted`; the header's right group wraps (`flex-wrap`) when the bar is full. A failed status read shows "Shift: <error> Try again" and offers nothing that moves money.
 
 - [ ] **Step 1: Write the bar.** Create `src/features/pos/shift/ShiftBar.tsx` (the close sheet keeps the shift it was opened for: a status read meanwhile — the shift now closed — must not unmount it before the cashier has seen the report):
 
 ```tsx
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { fetchShiftStatus } from './shiftApi'
 import { shiftLabel, staleShiftNote, type OpenShift, type ShiftStatus } from './shift'
 import OpenShiftSheet from './OpenShiftSheet'
@@ -2978,10 +3125,12 @@ import ShiftsDrawer from './ShiftsDrawer'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 type Sheet = 'open' | 'move' | 'shifts' | null
+const NOTE_MS = 8_000                              // "Shift opened" and the like fade after a while
 
 /** The shift part of the POS top bar: Open shift, or "Shift open · since 09:02" with Pay in / out
  *  and Close shift; Shifts for supervisors. Read again whenever the POS page refreshes
- *  (`refreshKey`: a bill changed here or on another iPad, and every 15 s). */
+ *  (`refreshKey`: a bill changed here or on another iPad, and every 15 s). The sheets render
+ *  into document.body, so they do not take the header's small muted text. */
 export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branchId: string; refreshKey: number; canSupervise: boolean }) {
   const [status, setStatus] = useState<ShiftStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -2999,6 +3148,11 @@ export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branc
     } catch (e) { if (id === seq.current) setError(msg(e)) }
   }, [])
   useEffect(() => { void load() }, [load, refreshKey])
+  useEffect(() => {
+    if (!note) return
+    const t = setTimeout(() => setNote(null), NOTE_MS)
+    return () => clearTimeout(t)
+  }, [note])
 
   const closeSheet = () => { setSheet(null); setClosing(null); void load() }
   const btn = 'rounded border border-border px-3 py-1'
@@ -3023,18 +3177,23 @@ export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branc
       )}
       {note && <span role="status" className="text-green-800">{note}</span>}
       {canSupervise && <button onClick={() => setSheet('shifts')} className={btn}>Shifts</button>}
-      {sheet === 'open' && status && (
-        <OpenShiftSheet lastFloatSen={status.lastFloatSen} onClose={closeSheet}
-          onOpened={(s) => { seq.current++; setStatus(s); setSheet(null); setNote('Shift opened') }} />
+      {createPortal(
+        <>
+          {sheet === 'open' && status && (
+            <OpenShiftSheet lastFloatSen={status.lastFloatSen} onClose={closeSheet}
+              onOpened={(s) => { seq.current++; setStatus(s); setSheet(null); setNote('Shift opened') }} />
+          )}
+          {sheet === 'move' && (
+            <CashMoveSheet branchId={branchId} onClose={closeSheet} onRecorded={(text) => { setNote(text); closeSheet() }} />
+          )}
+          {closing && (
+            <CloseShiftSheet branchId={branchId} shift={closing.shift} openBillCount={closing.openBillCount}
+              onClose={closeSheet} onClosed={() => { setNote('Shift closed'); closeSheet() }} />
+          )}
+          {sheet === 'shifts' && <ShiftsDrawer onClose={() => setSheet(null)} />}
+        </>,
+        document.body,
       )}
-      {sheet === 'move' && (
-        <CashMoveSheet branchId={branchId} onClose={closeSheet} onRecorded={(text) => { setNote(text); closeSheet() }} />
-      )}
-      {closing && (
-        <CloseShiftSheet branchId={branchId} shift={closing.shift} openBillCount={closing.openBillCount}
-          onClose={closeSheet} onClosed={() => { setNote('Shift closed'); closeSheet() }} />
-      )}
-      {sheet === 'shifts' && <ShiftsDrawer onClose={() => setSheet(null)} />}
     </>
   )
 }
@@ -3065,13 +3224,13 @@ import ShiftBar from '../shift/ShiftBar'
    with
 
 ```tsx
-        <div className="flex items-center gap-3 text-xs text-brown-muted">
+        <div className="flex flex-wrap items-center justify-end gap-3 text-xs text-brown-muted">
           <ShiftBar branchId={branchId} refreshKey={refreshKey} canSupervise={can('pos_supervise')} />
           <PrintHostPanel branchId={branchId} />
 ```
 
 
-- [ ] **Step 3: Gates.** Run: `npx vitest run` — Expected: 100 files, 871 tests pass. Run: `npx tsc -b` — Expected: no output. Run: `wc -l src/features/pos/order/PosPage.tsx` — Expected: `232`.
+- [ ] **Step 3: Gates.** Run: `npx vitest run` — Expected: 100 files, 874 tests pass. Run: `npx tsc -b` — Expected: no output. Run: `wc -l src/features/pos/order/PosPage.tsx` — Expected: `232`.
 
 - [ ] **Step 4: Commit**
 
@@ -3084,11 +3243,11 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 5 (controller, craft-os-dev — browser on the dev server (launch entry `craft-os-dev`) and the SQL editor; the implementer does not touch the database):** test login (owner of the Demo branch; set **My PIN** first if it has none) → `/pos`. If Task 2's snippet opened a shift, close it first (Step 5.6) and start again.
   1. **No shift:** the bar shows **Open shift** and **Shifts**. Pick a table with an open bill (or place an order: ordering works) → **Checkout** → Cash → **Pay** → the sheet says "Open the shift first"; nothing is paid. **Today's bills** → a paid bill (if one is listed) → **Refund** → approve → "Open the shift first".
-  2. **Open:** **Open shift** → the field holds the last closed shift's float (empty when the branch never closed one) → clear it → **Open shift** → "Enter the opening float (RM 0.00 or more)" → `100` → **Open shift** → the sheet closes, "Shift opened", the bar reads "Shift open · since HH:MM" (now, Malaysia time). A second tab on `/pos` shows the open shift within 15 s. SQL: `select opening_float_sen, status from pos_shifts where branch_id = (select id from branches where name = 'Demo')` → `10000 open`. Press **Open shift** in a tab that still shows it (before its refresh) → "A shift is already open — opened by <name> at HH:MM".
-  3. **Pay in / out:** **Pay in / out** → Pay in, `20`, reason empty → **Record pay in** → "Enter a reason" → `Float top-up` → "Pay in RM 20.00 recorded". Again → **Pay out**, `15`, `Ice` → **Next: approval** → the dialog has no reason field and says "Pay out RM 15.00 · Ice" → approver, a wrong PIN → "Wrong PIN — 4 tries left", the amount fields stay locked → the right PIN → "Pay out RM 15.00 recorded". DevTools → Network → **Offline** → a pay in of `5`, reason `Coins` → "Not sure it was recorded (no reply)…" → **No throttling** → **Record pay in** again → "Pay in RM 5.00 recorded", once (SQL: `select kind, amount_sen, reason from pos_cash_moves order by created_at` shows it once).
+  2. **Open:** **Open shift** → the field holds the last closed shift's float (empty when the branch never closed one) → clear it → **Open shift** → "Enter the opening float (RM 0.00 to RM 100000.00)" → `100` → **Open shift** → the sheet closes, "Shift opened", the bar reads "Shift open · since HH:MM" (now, Malaysia time). A second tab on `/pos` shows the open shift within 15 s. SQL: `select opening_float_sen, status from pos_shifts where branch_id = (select id from branches where name = 'Demo')` → `10000 open`. Press **Open shift** in a tab that still shows it (before its refresh) → "A shift is already open — opened by <name> at HH:MM".
+  3. **Pay in / out:** **Pay in / out** → Pay in, `20`, reason empty → **Record pay in** → "Enter a reason" → `Float top-up` → "Pay in RM 20.00 recorded". Again → **Pay out**, `15`, `Ice` → **Next: approval** → the dialog has no reason field and says "Pay out RM 15.00 · Ice" → approver, a wrong PIN → "Wrong PIN — 4 tries left" (nothing recorded) → **Cancel** → kind, amount and reason can be changed again → **Next: approval** → the right PIN → "Pay out RM 15.00 recorded"; the note beside the bar is gone about 8 s later. DevTools → Network → **Offline** → a pay in of `5`, reason `Coins` → "Not sure it was recorded (no reply)…", the fields stay locked → **No throttling** → **Record pay in** again → "Pay in RM 5.00 recorded", once (SQL: `select kind, amount_sen, reason from pos_cash_moves order by created_at` shows it once).
   4. **The stale note:** SQL `update pos_shifts set opened_at = now() - interval '21 hours' where status = 'open' and branch_id = (select id from branches where name = 'Demo')` → within 15 s the bar adds the amber "This shift was opened yesterday — close it"; set it back with `opened_at = now() - interval '1 hour'` → the note goes.
-  5. **Shifts as a cashier:** (if a staff login without Approve POS voids & refunds is at hand) the bar has no **Shifts** button.
-  6. **Close within the limit:** with one open bill left on a table, **Close shift** → "1 bill is still open — it stays open for the next shift" → **Continue** → the count field shows no expected amount → enter the float + pay ins − pay out (`110.00` for 100 + 20 + 5 − 15, if nothing was paid by cash in this shift) → **Close shift** → "Shift closed. Z report sent to the receipt printer" (or "Not printed — no receipt printer set") and the report on screen. The print host (the iPad page or the Node agent) prints the same lines. **Done** → the bar shows **Open shift**; the open bill is still on its table.
+  5. **Shifts as a cashier:** (if a staff login without Approve POS voids & refunds is at hand) the bar has no **Shifts** button. **The bar on an iPad:** DevTools → device toolbar at 1024 × 768 → with a shift open (and the amber note from 5.4 back for a moment) the header's buttons wrap to a second line instead of running off the screen; the sheets' buttons and text are the normal size (not the header's small muted text).
+  6. **Close within the limit:** with one open bill left on a table, **Close shift** → "1 bill is still open — it stays open for the next shift" → **Continue** → the count field shows no expected amount → enter the float + pay ins − pay out (`110.00` for 100 + 20 + 5 − 15, if nothing was paid by cash in this shift) → **Close shift** → "Shift closed. Z report sent to the receipt printer" (or "Not printed — no receipt printer set") and the report on screen. The print host (the iPad page or the Node agent) prints the same content, wrapped at its own width. **Done** → the bar shows **Open shift**; the open bill is still on its table.
   7. **Shifts:** **Shifts** → the closed shift with its nett sales and "Exact" (or its difference) → open it → the same report → **Reprint** → "Z report sent to the receipt printer"; the printer prints it with `*** REPRINT ***`.
 
 ---
@@ -3137,9 +3296,10 @@ export default function ShiftSettingsSection({ branchId }: { branchId: string })
     if (running.current) return
     running.current = true; setBusy(true); setOutcome(null)
     try {
-      await saveCashVarianceLimit(parseRinggit(text) ?? 0)
+      const sen = parseRinggit(text) ?? 0
+      await saveCashVarianceLimit(sen)
       setOutcome({ ok: true, text: 'Shift settings saved' })
-      void load()
+      setText(senToText(sen))                      // "2" shows as "2.00"; no reload, which would hide the outcome
     } catch (e) { setOutcome({ ok: false, text: msg(e) }) } finally { running.current = false; setBusy(false) }
   }
 
@@ -3206,7 +3366,7 @@ import ShiftSettingsSection from '../shift/ShiftSettingsSection'
 ```
 
 
-- [ ] **Step 3: Gates.** Run: `npx vitest run` — Expected: 100 files, 871 tests pass. Run: `npx tsc -b` — Expected: no output.
+- [ ] **Step 3: Gates.** Run: `npx vitest run` — Expected: 100 files, 874 tests pass. Run: `npx tsc -b` — Expected: no output.
 
 - [ ] **Step 4: Commit**
 
@@ -3217,7 +3377,7 @@ git commit -m "feat(pos-shift): POS settings → Shifts — the cash variance li
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 5 (controller, craft-os-dev — browser on the dev server and the SQL editor; the implementer does not touch the database):** `/pos/settings` → **Shifts** shows `5.00`. Enter `10000.01` → **Save shift settings** → "Enter a cash variance limit between RM 0.00 and RM 10000.00" beside the button; `2` → "Shift settings saved"; reload → `2.00`. SQL: `select cash_variance_limit_sen from branch_pos_settings where branch_id = (select id from branches where name = 'Demo')` → `200`. Set it back to `5.00` → saved → `500`. DevTools → Network → **Offline** → reload the page section (navigate away and back) → "Could not load the shift settings: … Try again" and no Save button → **No throttling** → **Try again** → `5.00`.
+- [ ] **Step 5 (controller, craft-os-dev — browser on the dev server and the SQL editor; the implementer does not touch the database):** `/pos/settings` → **Shifts** shows `5.00`. Enter `10000.01` → **Save shift settings** → "Enter a cash variance limit between RM 0.00 and RM 10000.00" beside the button; `2` → "Shift settings saved" stays beside the button and the field reads `2.00`; reload → `2.00`. SQL: `select cash_variance_limit_sen from branch_pos_settings where branch_id = (select id from branches where name = 'Demo')` → `200`. Set it back to `5.00` → saved → `500`. DevTools → Network → **Offline** → reload the page section (navigate away and back) → "Could not load the shift settings: … Try again" and no Save button → **No throttling** → **Try again** → `5.00`.
 
 ---
 
@@ -3229,7 +3389,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   3. Checkout: the table by **Cash** with cash received above the total (note the change), the takeaway by **Maybank Terminal**, the QR table half cash, half card.
   4. **Pay out** RM 10.00 "Ice" with a supervisor's PIN.
   5. **Today's bills** → refund RM 2.00 of the cash bill (Cash) with approval → the refund slip prints.
-  6. Work out the expected cash by hand: float + the cash amounts paid (not the cash received) − 2.00 − 10.00. **Close shift** → count RM 7.00 less than that → the sheet shows Counted / Expected / "Short RM 7.00" and "More than RM 5.00 off" → **Count again** → count RM 6.00 less → "Short RM 6.00" → **Approve difference** → reason "Till miscount", supervisor PIN → "Shift closed. Z report sent to the receipt printer". The printed report: 3 bills; nett sales = the three bills' totals; Payments with Cash net of the RM 2.00 refund; Order type Dine-in (2) / Takeaway (1); Source Counter (2 orders) / QR (1 order); Cash drawer with the pay out, Expected, **First count** (7.00 short) and Counted (6.00 short), Variance -6.00 with the reason and approver; Refunds with the bill; Product sales most sold first.
+  6. Work out the expected cash by hand: float + the cash amounts paid (not the cash received) − 2.00 − 10.00. **Close shift** → count RM 7.00 less than that → the sheet shows Counted / Expected / "Short RM 7.00" and "More than RM 5.00 off: a supervisor approves …" → **Count again** → count exactly the expected cash → "Exact" and "A supervisor still approves, because the first count was more than RM 5.00 off." (the shift stays open) → **Count again** → count RM 6.00 less → "Short RM 6.00" → **Approve difference** → reason "Till miscount", supervisor PIN → "Shift closed. Z report sent to the receipt printer". The printed report: 3 bills; nett sales = the three bills' totals; Payments with Cash net of the RM 2.00 refund; Order type Dine-in (2) / Takeaway (1); Source Counter (2 orders) / QR (1 order); Cash drawer with the pay out, Expected, **First count** (7.00 short) and Counted (6.00 short), Variance -6.00 with the reason and approver; Refunds with the bill; Product sales most sold first.
   7. SQL: `select first_count_sen, counted_cash_sen, expected_cash_sen, variance_sen, variance_reason from pos_shifts where branch_id = (select id from branches where name = 'Demo') order by opened_at desc limit 1` → the numbers of the sheet; `select count(*) from payments where shift_id is null and taken_at > now() - interval '1 hour'` → `0`.
   8. **Shifts** → the shift on top → **Reprint** → the printer prints `*** REPRINT ***` and the same report.
   9. Record in the ledger: the report photo or its lines, the expected cash worked out by hand against the server's, and whether both print hosts printed it (agent and iPad page, if both are at hand).
@@ -3241,13 +3401,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Tasks 1–2 are SQL; Task 2 lands it on dev (Step 5). Tasks 3–6 are local (no database). Task 7 is the first visible change and needs Task 2's SQL; Tasks 7–8 end with a browser check on dev; Task 9 is the spec's browser run.
 - Every step that reads or writes craft-os-dev (Task 2 Step 5, Task 7 Step 5, Task 8 Step 5, Task 9) is the controller's; implementers stop at `tsc` / `vitest` / commit.
 - **Between Task 2's apply and Task 7** checkout and refunds on dev are refused ("Open the shift first"); Task 2 Step 5 gives the one-line SQL that opens a shift for a demo in between.
-- **Checked while planning:** both migrations and the verify script were run on a throwaway local PostgreSQL 18 (Supabase stubs: `auth.uid()` from `request.jwt.claims`, `anon` / `authenticated` roles, `pgcrypto` in `extensions`, the `supabase_realtime` publication, the staff authority guard, a `storage` schema) after every earlier POS migration: both files apply twice; all seven verify scripts print `VERIFY OK` (the checkout verify only with Task 2's fixture block — without it, it stops at "Open the shift first"). Each of these mutations makes the shifts verify fail at the matching check: `refund_bill` from a re-run of checkout-fixes (A); the first count replaced on every call (F); cash payments counted by what was tendered (E); a refund not stamped, or without its kind (E); the pay-out PIN not checked (E); pay out left out of the expected cash (E); a limit check that lets −6.15 through (F); `needsApproval` never answered (F); voided items in the product sales or the source value (F); a reason kept within the limit (H); a close resend refused instead of answered (G); a cash-move resend with another amount accepted (E); the Shifts list open to a cashier (I); no "no printer" check (H). pg-safeupdate itself was not available there — the Vitest scan stands in for it. The client side was replayed task by task on a scratch copy (the test counts above; `npx tsc -b` clean after every task); the screens were not run against a database while planning — Tasks 7–9 are their first run.
+- **Checked while planning:** both migrations and the verify script were run on a throwaway local PostgreSQL 18 (Supabase stubs: `auth.uid()` from `request.jwt.claims`, `anon` / `authenticated` roles, `pgcrypto` in `extensions`, the `supabase_realtime` publication, the staff authority guard, a `storage` schema) after every earlier POS migration: both files apply twice; all seven verify scripts print `VERIFY OK` (the checkout verify only with Task 2's fixture block — without it, it stops at "Open the shift first"). Each of these mutations makes the shifts verify fail at the matching check: `refund_bill` from a re-run of checkout-fixes (A); the first count replaced on every call (F); cash payments counted by what was tendered (E); a refund not stamped, or without its kind (E); the pay-out PIN not checked (E); pay out left out of the expected cash (E); a limit check that lets −6.15 through (F); `needsApproval` never answered (F); voided items in the product sales or the source value (F); a reason kept within the limit (H); a close resend refused instead of answered (G); a cash-move resend with another amount accepted (E); the Shifts list open to a cashier (I); no "no printer" check (H). After the plan review (2026-10-24) the run was repeated on the revised files, with these too: a re-count within the limit closing without approval after a first count above it (F); an approval of a stale expected cash going through, or spending a PIN try (F); the paid bill not stamped (E), or a shift's bills taken from its payments, which drops the RM 0.00 bill (H); the float's RM 100000.00 cap removed (C); an INSERT privilege on `pos_cash_moves` for `authenticated` (A); the function file's STOP guard run on a database without `refund_bill` (its STOP message, not a raw error). pg-safeupdate itself was not available there — the Vitest scan stands in for it. The client side was replayed task by task on a scratch copy (the test counts above; `npx tsc -b` clean after every task); the screens were not run against a database while planning — Tasks 7–9 are their first run.
 - The browser checks use the Demo branch's normal flow (no `[TEST]` rows); the shifts, cash moves and refunds they make stay on dev — nothing is deleted.
-- **Prod rollout (owner's decision, later):** run `migration-2026-10-24-pos-shifts.sql` then `migration-2026-10-24-pos-shifts-fn.sql` on prod **right before** the first deploy from main that carries Task 7, and open the first shift on each branch's POS right after the deploy (until then checkout is refused). Nothing to backfill: old payments and refunds keep `shift_id` null and appear in no report. The verify script is dev-only.
+- **Prod rollout (owner's decision, later):** run `migration-2026-10-24-pos-shifts.sql` then `migration-2026-10-24-pos-shifts-fn.sql` on prod **right before** the first deploy from main that carries Task 7, and open the first shift on each branch's POS right after the deploy (until then checkout is refused). Nothing to backfill: old bills, payments and refunds keep `shift_id` null and appear in no report. The verify script is dev-only.
 
 ## Open points (choices made while planning, 2026-10-24 — each can be changed later)
 
-1. **A difference of exactly the limit closes without approval** (`|variance| > limit` needs it), and a limit of RM 0.00 makes every difference need approval.
+1. **A difference of exactly the limit closes without approval** (`|variance| > limit` needs it), and a limit of RM 0.00 makes every difference need approval. **Once the first count is above the limit, the approval stays** for any later count (Resolutions); if the owner prefers that a correct re-count closes on its own, it is the one `v_above` line in `close_shift` and the verify F re-count check.
 2. **Nett sales are the bills' totals** (tax, service charge, takeaway fee and rounding included); refunds are listed apart and not taken off Nett, as Feedme's Close up shows them.
 3. **Void bills count every bill voided in the shift**, an empty bill opened by mistake too; *Total void* is the value of the voided items.
 4. **The blind count is procedural**: `pos_current_shift` never sends the expected cash, but `payments` / `refunds` stay readable to signed-in staff (Sub-plan 3's `pos_read`), so a determined cashier could add them up.
@@ -3256,14 +3416,17 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 7. **The approver of a pay out or a variance** is any live staff of the branch with Approve POS voids & refunds (the existing `pos_check_approver`, whose words mention voids and refunds); the cashier may be that person if they hold it, as for voids.
 8. **Open shift has no client id**: a resend after a lost reply is refused with "A shift is already open — opened by <you>", and the bar reloads.
 9. **The cash variance limit** has its own section and RPC (`save_shift_settings`) instead of joining the receipt settings.
-10. **The race is checked by its lock modes**, not by two live sessions: the verify script pins `FOR SHARE` in the three money functions and `FOR UPDATE` in `close_shift`.
+10. **The race is checked by its lock modes**, not by two live sessions: the verify script pins `FOR SHARE` in the three money functions and `FOR UPDATE` in `close_shift`. Share lockers are not queued behind a waiting `FOR UPDATE`, so a steady stream of overlapping checkouts could keep a close waiting; at closing time that is negligible.
 11. **Today's bills still lists the Malaysian day**, not the shift; a refund of an older bill is not reachable from the POS yet (it would land in the shift open then, as the verify checks).
 12. **X report, denominations, cash drawer kick, several drawers, e-Invoice export** — Sub-plan 4b or later (spec "Out").
+13. **Voids made while no shift is open are in no Z report** — e.g. a QR order voided before the morning **Open shift** or after the night close (ordering and voids keep working without a shift; no money moves). Refusing voids without a shift would re-create `void_order_item` / `void_bill`, outside this plan's "only checkout and refund change"; the owner may accept the gap or ask for it in 4b.
+14. **Average per pax** divides all the shift's bills' nett (takeaways included) by the dine-in pax only (takeaways have no pax), as the spec's Summary lists it; computing it over dine-in bills only would be one line in `pos_shift_report` if the owner prefers.
 
 ## Self-review (2026-10-24)
 
-- **Spec coverage:** Owner decision 1 (one shift a day, shared by the branch's iPads) → `pos_shifts_one_open`, verify D; 2 (no money without a shift; ordering keeps working) → `checkout_bill`, `refund_bill`, `record_cash_move`, verify C and G; 3 (blind count, limit RM 5.00, PIN and reason) → `close_shift`, `pos_current_shift`, Task 6, verify F/H; 4 (Pay in / Pay out recorded, in the expected cash) → `record_cash_move`, `pos_shift_expected_cash`, Task 5, verify E; 5 (the server stamps `shift_id`; voids by time) → the `4a` lines, `pos_shift_report`, verify E/F; 6 (Close up layout; old bills' refunds to the shift open then) → Task 3, verify H. Data model → Task 1 (plus `report_printed`, so a resend of the close answers without printing twice). Flows: Open shift with the last float → Task 5/7; "already open" words → verify D; stale note → `staleShiftNote` (Task 4) and Task 7; the open-bills warning → Task 6; first count kept and shown → verify F, `renderZReportLines`; not printed → `printedNote`, verify H; closed shift immutable → trigger, verify G; Shifts drawer (last 30, date, opened/closed by, nett, variance, Reprint) → Task 6, verify I. Z report sections: header, summary, sales summary, payments (count, amount, refunds, net), order type, source, cash drawer, voids, refunds, product sales → `pos_shift_report` and Task 3, every one asserted in verify F. Permissions → Global Constraints and verify E/F/I. SQL rules → Global Constraints and Task 1 Step 7. Testing: every SQL bullet → Task 2 (the race by its lock modes, see Open point 10); Vitest — the Z report layout (Task 3), amount parsing and the banner rules (Task 4); the browser run → Task 9.
+- **Spec coverage:** Owner decision 1 (one shift a day, shared by the branch's iPads) → `pos_shifts_one_open`, verify D; 2 (no money without a shift; ordering keeps working) → `checkout_bill`, `refund_bill`, `record_cash_move`, verify C and G; 3 (blind count, limit RM 5.00, PIN and reason) → `close_shift`, `pos_current_shift`, Task 6, verify F/H; 4 (Pay in / Pay out recorded, in the expected cash) → `record_cash_move`, `pos_shift_expected_cash`, Task 5, verify E; 5 (the server stamps `shift_id`; voids by time) → the `4a` lines (payments, refunds and the paid bill), `pos_shift_report`, verify E/F/H; 6 (Close up layout; old bills' refunds to the shift open then) → Task 3, verify H. Data model → Task 1 (plus `report_printed`, so a resend of the close answers without printing twice). Flows: Open shift with the last float → Task 5/7; "already open" words → verify D; stale note → `staleShiftNote` (Task 4) and Task 7; the open-bills warning → Task 6; first count kept and shown → verify F, `renderZReportLines`; a re-count after a first count above the limit still approved, and an approval of a changed expected cash refused with the new figures → `close_shift`, `approvalNote`, Task 6, verify F; not printed → `printedNote`, verify H; closed shift immutable → trigger, verify G; Shifts drawer (last 30, date, opened/closed by, nett, variance, Reprint) → Task 6, verify I. Z report sections: header, summary, sales summary, payments (count, amount, refunds, net), order type, source, cash drawer, voids, refunds, product sales → `pos_shift_report` and Task 3, every one asserted in verify F. Permissions → Global Constraints and verify E/F/I. SQL rules → Global Constraints and Task 1 Step 7. Testing: every SQL bullet → Task 2 (the race by its lock modes, see Open point 10); Vitest — the Z report layout (Task 3), amount parsing and the banner rules (Task 4); the browser run → Task 9.
 - **No placeholders:** every file is given in full or as exact replacements; every command has its expected output; the only values the controller fills in are the times and amounts read on dev.
-- **Names and signatures** are the same in the SQL, the verify script, `shift.ts`, `shiftApi.ts`, `zreport.ts` and the sheets (`pos_current_shift`, `open_shift`, `record_cash_move`, `close_shift`, `pos_shift_list`, `pos_shift_zreport`, `reprint_zreport`, `save_shift_settings`; JSON keys `openedAt`, `openedByName`, `openingFloatSen`, `openBillCount`, `lastFloatSen`, `needsApproval`, `expectedSen`, `varianceSen`, `limitSen`, `printed`, `report`; the `ZReport` keys). The words match between `shift.ts` and the functions ("Enter the opening float (RM 0.00 or more)", "Enter the counted cash", "Enter the amount", "Enter a reason", "Reason is too long", "Enter a cash variance limit between RM 0.00 and RM 10000.00").
+- **Names and signatures** are the same in the SQL, the verify script, `shift.ts`, `shiftApi.ts`, `zreport.ts` and the sheets (`pos_current_shift`, `open_shift`, `record_cash_move`, `close_shift`, `pos_shift_list`, `pos_shift_zreport`, `reprint_zreport`, `save_shift_settings`; JSON keys `openedAt`, `openedByName`, `openingFloatSen`, `openBillCount`, `lastFloatSen`, `needsApproval`, `expectedSen`, `varianceSen`, `limitSen`, `printed`, `report`; the `ZReport` keys; `close_shift`'s sixth argument `p_expected_sen` in the function, its grants, verify A/C/F/G/H and `closeShift`). The words match between `shift.ts` and the functions ("Enter the opening float (RM 0.00 to RM 100000.00)", "Enter the counted cash (RM 0.00 to RM 100000.00)", "Enter the amount (RM 0.01 to RM 100000.00)", "Enter a reason", "Enter a reason for the difference" (the approval dialog's `reasonMissing`), "Reason is too long", "Enter a cash variance limit between RM 0.00 and RM 10000.00").
 - **Re-created functions in full:** `checkout_bill` and `refund_bill` only, each the live text plus the `4a` lines (Task 1 Step 6 diffs them).
+- **Plan review (2026-10-24):** its three Important findings are applied — the approval stays after a first count above the limit (I1), `close_shift` takes the expected cash the approver saw (I2), a bill is attributed by `bills.shift_id` (I3) — each with a verify check that fails when its fix is taken out; every Minor too (M7, voids outside a shift, and the *Average per pax* basis as Open points 13–14, as the review allows), with the spec updated where I1–I3 change it.
 - **pg-safeupdate:** every UPDATE in the function file has a WHERE (`close_shift`: three, by id; `save_shift_settings`: by branch); there is no DELETE; the trigger function writes nothing; the Vitest scan checks both files (Task 1 Step 7).

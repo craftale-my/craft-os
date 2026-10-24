@@ -46,13 +46,15 @@ pos_cash_moves
   kind 'pay_in' | 'pay_out', amount_sen > 0, reason text not null
   created_by → staff, approved_by → staff (pay_out only), created_at
 
-payments.shift_id → pos_shifts      (set by checkout_bill)
+bills.shift_id    → pos_shifts      (set by checkout_bill when the bill is paid; the Z report takes
+                                     a shift's bills by it — a RM 0.00 bill has no payment rows)
+payments.shift_id → pos_shifts      (set by checkout_bill; the cash maths)
 refunds.shift_id  → pos_shifts      (set by refund_bill)
 refunds.kind      text              (snapshot of the method's kind; cash refunds leave the drawer)
 branch_pos_settings.cash_variance_limit_sen integer not null default 500
 ```
 
-Old dev rows keep `shift_id` null and appear in no report.
+Old dev rows (bills, payments, refunds) keep `shift_id` null and appear in no report.
 
 ## Flows
 
@@ -74,15 +76,22 @@ reason, approver, pin)` is idempotent on `id`.
 1. **Close shift** warns when bills are still open ("3 bills are still open — they stay open for the next
    shift") and lets the cashier continue.
 2. **Counted cash** (one total, blind). Submitting calls `close_shift(shift_id, counted, reason, approver,
-   pin)`; the first call stores `first_count_sen`.
+   pin, expected)` (`expected`: the expected cash the approver was shown, none on a plain count); the
+   first call stores `first_count_sen`.
 3. The server computes **expected cash = opening float + cash payments − cash refunds + pay in − pay
    out** (cash payments are `amount_sen`, change already taken off).
 4. Within the limit → closed. Above it without an approver → `{ok:false, needsApproval:true,
    expectedSen, varianceSen}`; the sheet then shows expected and variance and asks for a reason and a
    supervisor PIN. Re-entering a different count is allowed; the Z report shows the first count beside
-   the final one.
-5. On close the server builds the Z report once (`pos_shift_report`), stores it in `report`, and queues
-   it on the branch's receipt route (none → "Not printed — no receipt printer set").
+   the final one. **Once the first count was above the limit, the close still needs the reason and the
+   supervisor PIN** even when a new count is within it (the cashier has seen the expected cash by then;
+   the sheet says "A supervisor still approves, because the first count was more than RM 5.00 off.").
+   If the expected cash changed while the supervisor came over (a sale, refund or pay in / out on another
+   iPad), an approval with the old `expected` gets `{ok:false, needsApproval:true, expectedSen,
+   varianceSen}` again with the new figures, before the PIN is tried; the sheet shows them to approve.
+5. On close the server builds the Z report once (`pos_shift_report`; the shift's bills are those with
+   its `bills.shift_id`), stores it in `report`, and queues it on the branch's receipt route (none →
+   "Not printed — no receipt printer set").
 6. A closed shift never changes. A refund of its bills later belongs to the shift open at that time.
 
 **Past shifts.** A **Shifts** drawer (pos_supervise) lists the last 30 closed shifts (date, opened/closed
@@ -104,7 +113,8 @@ by, nett sales, variance) and opens each Z report with **Reprint**.
 - **Refunds:** bill no, amount, method, reason, approver.
 - **Product sales:** per product name, quantity and value, most sold first.
 
-A bill belongs to the shift of its payments (one checkout per bill, so all its payments share a shift).
+A bill belongs to the shift it was checked out in (`bills.shift_id`, stamped by `checkout_bill`; one
+checkout per bill, so its payments share that shift, and a RM 0.00 bill with no payments still counts).
 All money in integer sen; the printed layout reuses `renderJobLines` with a new payload kind `zreport`
 (print_jobs.kind stays `receipt`, as the refund slip does).
 
@@ -127,8 +137,10 @@ Dev first; prod later by the owner, before any deploy carrying the client.
 - **SQL verify script (dev, rolled back):** open twice refused; checkout and refund refused with no shift;
   stamps on payments and refunds; pay out without PIN refused; expected cash with float, cash and card
   payments, change, a cash refund, pay in and pay out; within-limit close; above-limit needs approval;
-  first count kept; closed shift immutable; a checkout racing a close lands in the closed shift's report;
-  a refund of a closed shift's bill lands in the new shift; report totals equal the bills' totals.
+  first count kept; a re-count within the limit after a first count above it still needs approval; an
+  approval of a changed expected cash answers the new figures; closed shift immutable; a checkout racing a close lands in the closed shift's report;
+  a refund of a closed shift's bill lands in the new shift; a RM 0.00 bill counts in its shift; report
+  totals equal the bills' totals.
 - **Vitest:** the Z report layout (`renderJobLines` for `zreport`), form parsing of amounts, the shift
   status banner rules.
 - **Browser on dev:** open → orders → cash and card checkout → pay out → refund → close with a short
