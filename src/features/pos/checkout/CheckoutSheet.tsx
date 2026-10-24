@@ -54,7 +54,7 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, earli
   }
   const apply = (a: FollowAction) => {
     if (a.kind === 'paidHere') setResult(a.result)
-    else if (a.kind === 'lock') { setLockNote(a.note); setMethod(null) }
+    else if (a.kind === 'lock') { setLockNote(a.note); setMethod(null); setError(null); setChangeNote(null) }
     else if (a.kind === 'reload') {
       totalsRef.current = a.totals
       setTotals(a.totals)
