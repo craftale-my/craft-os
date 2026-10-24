@@ -1,4 +1,4 @@
-// Craft POS print agent — prints print_jobs for routes of kind 'agent'
+// Craft POS print agent — prints print_jobs for routes of kind 'agent' of ONE branch (BRANCH_ID)
 // Sends raw ESC/POS bytes to the printer on TCP 9100.
 // Run:  node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
 import { createClient } from '@supabase/supabase-js'
@@ -8,6 +8,7 @@ import { processJob, type PrintHostDeps, type PrintJob } from '../../src/feature
 import { assertDevDatabase } from '../../src/features/pos/guard.ts'
 import { sendRaw } from './sendRaw.ts'
 import { checkPrinter, interpretStatus, PAPER_STATUS, queryStatus } from './printerStatus.ts'
+import { branchFilter, branchIdFrom, isAgentJob, loginBranchProblem } from './branch.ts'
 
 function env(key: string): string {
   const value = process.env[key]
@@ -20,6 +21,7 @@ const errMessage = (e: unknown): string => (e instanceof Error ? e.message : Str
 async function main(): Promise<void> {
   const url = env('SUPABASE_URL')
   assertDevDatabase(url)
+  const branchId = branchIdFrom(process.env)   // refuses to start without it
   const supabase = createClient(url, env('SUPABASE_ANON_KEY'), { auth: { persistSession: false } })
   let maxAgeMin = 30
   if (process.env.MAX_AGE_MIN !== undefined) {
@@ -34,19 +36,27 @@ async function main(): Promise<void> {
     else console.warn(`Invalid TICKET_COLS "${process.env.TICKET_COLS}"; using 42.`)
   }
 
-  const { error: authError } = await supabase.auth.signInWithPassword({
+  const { data: signIn, error: authError } = await supabase.auth.signInWithPassword({
     email: env('AGENT_EMAIL'),
     password: env('AGENT_PASSWORD'),
   })
   if (authError) throw authError
+  // the print RPCs act only on jobs of the login's own branch: it must be BRANCH_ID
+  const userId = signIn.user?.id
+  if (!userId) throw new Error('Sign-in returned no user')
+  const { data: me, error: meError } = await supabase.from('staff').select('branch_id').eq('id', userId).maybeSingle()
+  if (meError) throw meError
+  const loginProblem = loginBranchProblem((me as { branch_id: string | null } | null)?.branch_id ?? null, branchId)
+  if (loginProblem) throw new Error(loginProblem)
 
   const { data: routes, error: routeError } = await supabase
     .from('print_routes')
     .select('name, address')
     .eq('kind', 'agent')
+    .eq('branch_id', branchId)
   if (routeError) throw routeError
   const addressOf = new Map<string, string>((routes ?? []).map((r: { name: string; address: string }) => [r.name, r.address]))
-  console.log('agent routes:', Object.fromEntries(addressOf))
+  console.log('branch:', branchId, 'agent routes:', Object.fromEntries(addressOf))
   console.log('Routes are read at startup; restart the agent after changing print_routes.')
   if (addressOf.size === 0) {
     console.warn("No route has kind 'agent', so there is nothing to print. Waiting; point a route at the agent and restart.")
@@ -75,8 +85,8 @@ async function main(): Promise<void> {
   }
 
   // Never rejects: it is called from the sweep, a Realtime callback and an interval.
-  const handle = async (job: PrintJob & { created_at?: string; attempts?: number }): Promise<void> => {
-    if (!addressOf.has(job.route)) return
+  const handle = async (job: PrintJob & { branch_id?: string; created_at?: string; attempts?: number }): Promise<void> => {
+    if (!isAgentJob(job, branchId, addressOf)) return
     const id8 = job.id.slice(0, 8)
     // An old ticket that was never tried stays pending (the iPad shows it as "Waiting") so staff
     // decide, not a backlog dump. A requeued one (attempts >= 1) is a Reprint someone asked for: print it.
@@ -121,7 +131,8 @@ async function main(): Promise<void> {
     try {
       const { data, error } = await supabase
         .from('print_jobs')
-        .select('id, route, payload, status, created_at, attempts')
+        .select('id, branch_id, route, payload, status, created_at, attempts')
+        .eq('branch_id', branchId)
         .eq('status', 'pending')
         .in('route', [...addressOf.keys()])
         .order('created_at')
@@ -129,7 +140,7 @@ async function main(): Promise<void> {
         console.error('sweep failed:', error.message)
         return
       }
-      for (const job of (data ?? []) as (PrintJob & { created_at?: string; attempts?: number })[]) await handle(job)
+      for (const job of (data ?? []) as (PrintJob & { branch_id?: string; created_at?: string; attempts?: number })[]) await handle(job)
     } catch (e) {
       console.error('sweep failed:', errMessage(e))
     } finally {
@@ -139,8 +150,8 @@ async function main(): Promise<void> {
 
   supabase
     .channel(`print-agent-${crypto.randomUUID()}`)
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'print_jobs' }, (p) => {
-      void handle(p.new as PrintJob)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'print_jobs', filter: branchFilter(branchId) }, (p) => {
+      void handle(p.new as PrintJob & { branch_id?: string })
     })
     .subscribe((status) => {
       console.log('realtime:', status)
