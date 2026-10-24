@@ -24,6 +24,7 @@ export interface BillItemRow {
   unit_price_sen: number
   sst_rate_bp: number
   takeaway_fee_sen: number
+  order_type: OrderType           // the order type it was ordered under (a merged takeaway keeps 'takeaway')
   qty: number
   note: string | null
   modifiers_snapshot: { name: string }[]
@@ -100,7 +101,7 @@ export async function fetchOpenBills(branchId: string): Promise<OpenBillRow[]> {
 
 export async function fetchBillItems(billId: string): Promise<BillItemRow[]> {
   const { data, error } = await supabase.from('order_items')
-    .select('id, order_id, product_id, name_snapshot, unit_price_sen, sst_rate_bp, takeaway_fee_sen, qty, note, modifiers_snapshot, voided_at, ' +
+    .select('id, order_id, product_id, name_snapshot, unit_price_sen, sst_rate_bp, takeaway_fee_sen, order_type, qty, note, modifiers_snapshot, voided_at, ' +
             'orders!inner(order_no, source, placed_at)')
     .eq('bill_id', billId)
   if (error) fail(error)

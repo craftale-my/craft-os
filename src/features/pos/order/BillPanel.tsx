@@ -47,7 +47,7 @@ export default function BillPanel({ branchId, table, bill, refreshKey, billing, 
     orderType: bill.order_type, tableId: bill.table_id,
     sstRegistered: billing.settings.sstRegistered, cashRounding: billing.settings.cashRounding, rules: billing.rules,
     lines: rows.map((i) => ({ productId: i.product_id, unitPriceSen: i.unit_price_sen, qty: i.qty, sstRateBp: i.sst_rate_bp,
-                              takeawayFeeSen: i.takeaway_fee_sen, voided: i.voided_at !== null })),
+                              takeawayFeeSen: i.takeaway_fee_sen, voided: i.voided_at !== null, orderType: i.order_type })),
   }) : null
   const orders = [...new Map(rows.map((i) => [i.order_id, i.orders])).entries()]
   const changed = () => { setDialog(null); setLocalKey((k) => k + 1); void onChanged?.() }
