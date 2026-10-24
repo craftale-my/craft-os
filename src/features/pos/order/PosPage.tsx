@@ -18,6 +18,7 @@ import CheckoutSheet from '../checkout/CheckoutSheet'
 import { fetchBillingConfig, fetchProductNames, type BillingConfig } from '../checkout/checkoutApi'
 import TodayBillsDrawer from '../checkout/TodayBillsDrawer'
 import MyPinDialog from '../checkout/MyPinDialog'
+import ShiftBar from '../shift/ShiftBar'
 
 export type Selection = { kind: 'table'; tableId: string } | { kind: 'bill'; billId: string } | null
 
@@ -150,7 +151,8 @@ export default function PosPage() {
     <div className="flex h-dvh flex-col bg-cream">
       <header className="flex items-center justify-between border-b border-border bg-card px-4 py-2">
         <div className="font-semibold">Craft POS · {branchName ?? staff.branch ?? 'Branch'}</div>
-        <div className="flex items-center gap-3 text-xs text-brown-muted">
+        <div className="flex flex-wrap items-center justify-end gap-3 text-xs text-brown-muted">
+          <ShiftBar branchId={branchId} refreshKey={refreshKey} canSupervise={can('pos_supervise')} />
           <PrintHostPanel branchId={branchId} />
           <button onClick={() => setDrawer('bills')} className="rounded border border-border px-3 py-1">Today's bills</button>
           <button onClick={() => setDrawer('pin')} className="rounded border border-border px-3 py-1">My PIN</button>
