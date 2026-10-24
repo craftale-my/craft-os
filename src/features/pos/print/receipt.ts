@@ -88,7 +88,7 @@ export function toAscii(text: string): string {
   return out
 }
 
-function asciiDeep<T>(value: T): T {
+export function asciiDeep<T>(value: T): T {
   if (typeof value === 'string') return toAscii(value) as T
   if (Array.isArray(value)) return value.map(asciiDeep) as T
   if (value && typeof value === 'object') {
@@ -107,12 +107,12 @@ function pct(bp: number): string {
 }
 
 /** Label on the left, value flush right; a label too long for one line wraps and the value goes under it. */
-function lr(left: string, right: string, cols: number): string[] {
+export function lr(left: string, right: string, cols: number): string[] {
   if (left.length + 1 + right.length <= cols) return [left + ' '.repeat(cols - left.length - right.length) + right]
   return [...wrap(left, cols), right.padStart(cols)]
 }
 
-function center(text: string, cols: number): string[] {
+export function center(text: string, cols: number): string[] {
   return wrap(text, cols).map((l) => ' '.repeat(Math.max(0, Math.floor((cols - l.length) / 2))) + l)
 }
 
