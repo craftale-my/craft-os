@@ -102,7 +102,7 @@ describe('renderZReportLines', () => {
       '  Reason: Short - till miscount',
       '  Approved by Hafiz',
       '------------------------------------------------',
-      'VOIDS',
+      'VOIDS SINCE THE LAST CLOSE',
       '1 Iced Tea                                  5.50',
       '  261024-001, Wrong item keyed, by Aina,',
       '    approved by Hafiz',

@@ -8,6 +8,8 @@
 -- {"ok": true, ...} when done. Every other refusal is a raised exception.
 -- refund_bill here is an old body: migration-2026-10-24-pos-checkout-fixes.sql and then
 -- migration-2026-10-24-pos-shifts-fn.sql re-create it — re-run both after this file.
+-- void_order_item, pos_pin_attempt and set_my_pos_pin are old bodies too: they are canonical in
+-- migration-2026-10-25-pos-hardening.sql — re-run it last (after shifts-fn).
 -- ============================================================================
 
 -- ── Who may approve at the caller's branch ─────────────────────────────────

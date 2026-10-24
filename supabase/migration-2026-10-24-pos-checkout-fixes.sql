@@ -12,7 +12,8 @@
 -- puts back the older bodies — re-run this file afterwards.
 -- Sub-plan 4a: refund_bill is canonical in migration-2026-10-24-pos-shifts-fn.sql now
 -- (the open shift, shift_id and kind on each refund). After re-running THIS file,
--- re-run migration-2026-10-24-pos-shifts-fn.sql too.
+-- re-run migration-2026-10-24-pos-shifts-fn.sql too, and then
+-- migration-2026-10-25-pos-hardening.sql (shifts-fn brings back an old checkout_bill).
 -- ============================================================================
 
 -- ── I1. Capabilities end with the person: only live staff hold them ────────

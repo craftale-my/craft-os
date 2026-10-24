@@ -121,6 +121,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-24-pos-slots-photos-fn.sql',
       'migration-2026-10-24-pos-shifts.sql',
       'migration-2026-10-24-pos-shifts-fn.sql',
+      'migration-2026-10-25-pos-hardening.sql',
     ]))
   })
 
@@ -163,6 +164,15 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(names).toEqual(expect.arrayContaining([
       'open_shift', 'record_cash_move', 'close_shift', 'pos_queue_zreport', 'reprint_zreport', 'save_shift_settings',
       'checkout_bill', 'refund_bill',
+    ]))
+  })
+
+  it('scans every write function of the pre-pilot hardening', () => {
+    const sql = readFileSync(new URL('migration-2026-10-25-pos-hardening.sql', SUPABASE), 'utf8')
+    const names = functionBodies(sql).map((b) => b.name)
+    expect(names).toEqual(expect.arrayContaining([
+      'order_items_order_type', 'checkout_bill', 'void_order_item', 'pos_pin_attempt', 'set_my_pos_pin',
+      'claim_print_job', 'finish_print_job', 'requeue_print_job',
     ]))
   })
 })

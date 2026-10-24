@@ -13,7 +13,8 @@ end $$;
 -- src/features/pos/checkout/bill.ts; both are tested against the same vectors.
 -- Sub-plan 4a: this file cannot be re-run after M1 (see the STOP guard); checkout_bill is
 -- canonical in migration-2026-10-24-pos-shifts-fn.sql (the open shift, stamped on each
--- payment and on the bill).
+-- payment and on the bill). pos_compute_bill and pos_bill_totals are canonical in
+-- migration-2026-10-25-pos-hardening.sql (a line's own order type decides its packaging fee).
 -- ============================================================================
 
 -- ── The caller's branch (every POS RPC works inside it) ─────────────────────

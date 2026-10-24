@@ -10,6 +10,8 @@ end $$;
 -- Craft OS — POS Phase 1 · Ordering RPCs (2026-10-23). Run after
 -- migration-2026-10-23-pos-ordering.sql. Idempotent.
 -- Every price on an order is computed here from the menu; clients send ids only.
+-- claim_print_job, finish_print_job and requeue_print_job are canonical in
+-- migration-2026-10-25-pos-hardening.sql (security definer, the caller's branch only).
 -- ============================================================================
 
 -- ── Bill numbers: YYMMDD-NNN per branch per Malaysia day ────────────────────

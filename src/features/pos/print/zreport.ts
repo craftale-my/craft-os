@@ -170,7 +170,7 @@ export function renderZReportLines(input: ZReportPayload, cols: number): string[
       ...(c.varianceReason ? indented(`Reason: ${c.varianceReason}`, cols) : []),
       ...(c.varianceApprovedBy ? indented(`Approved by ${c.varianceApprovedBy}`, cols) : []),
     ]),
-    ...section('VOIDS', r.voids.items.length + r.voids.bills.length === 0 ? ['No voids'] : [
+    ...section('VOIDS SINCE THE LAST CLOSE', r.voids.items.length + r.voids.bills.length === 0 ? ['No voids'] : [
       ...r.voids.items.flatMap((v) => [
         ...lr(`${v.qty} ${v.name}`, money(v.valueSen), cols),
         ...indented(`${v.billNo}, ${v.reason ?? '-'}, by ${v.by ?? '-'}${v.approvedBy ? `, approved by ${v.approvedBy}` : ''}`, cols),

@@ -19,6 +19,8 @@
 -- paid bill too); refund_bill also keeps the payment's kind. Re-running
 -- checkout-fn, bill-actions-fn or checkout-fixes brings an old body back — re-run
 -- this file afterwards (the shifts verify's A section fails until then).
+-- Pre-pilot hardening: checkout_bill and pos_shift_report are canonical in
+-- migration-2026-10-25-pos-hardening.sql now — after re-running THIS file, re-run that one too.
 -- Every DELETE / UPDATE has a WHERE: Supabase's API role runs pg-safeupdate
 -- (src/features/pos/sqlSafeUpdate.test.ts scans this file).
 -- ============================================================================
