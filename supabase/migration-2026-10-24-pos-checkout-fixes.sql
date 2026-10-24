@@ -10,6 +10,9 @@
 -- refund_bill. Re-running an older migration that also defines them
 -- (2026-10-22-pos-menu, 2026-10-24-pos-checkout, 2026-10-24-pos-bill-actions-fn)
 -- puts back the older bodies — re-run this file afterwards.
+-- Sub-plan 4a: refund_bill is canonical in migration-2026-10-24-pos-shifts-fn.sql now
+-- (the open shift, shift_id and kind on each refund). After re-running THIS file,
+-- re-run migration-2026-10-24-pos-shifts-fn.sql too.
 -- ============================================================================
 
 -- ── I1. Capabilities end with the person: only live staff hold them ────────

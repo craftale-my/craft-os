@@ -119,6 +119,8 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-24-pos-checkout-fn.sql',
       'migration-2026-10-24-pos-menu-editor-fn.sql',
       'migration-2026-10-24-pos-slots-photos-fn.sql',
+      'migration-2026-10-24-pos-shifts.sql',
+      'migration-2026-10-24-pos-shifts-fn.sql',
     ]))
   })
 
@@ -152,6 +154,15 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(names).toEqual(expect.arrayContaining([
       'menu_save_schedule', 'menu_reorder_schedules', 'menu_delete_schedule', 'menu_set_product_schedules',
       'menu_set_product_image', 'pos_insert_order', 'qr_menu',
+    ]))
+  })
+
+  it('scans every write function of shifts (Sub-plan 4a)', () => {
+    const sql = readFileSync(new URL('migration-2026-10-24-pos-shifts-fn.sql', SUPABASE), 'utf8')
+    const names = functionBodies(sql).map((b) => b.name)
+    expect(names).toEqual(expect.arrayContaining([
+      'open_shift', 'record_cash_move', 'close_shift', 'pos_queue_zreport', 'reprint_zreport', 'save_shift_settings',
+      'checkout_bill', 'refund_bill',
     ]))
   })
 })

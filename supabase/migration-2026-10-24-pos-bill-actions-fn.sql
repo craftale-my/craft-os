@@ -6,6 +6,8 @@
 -- protected functions do NOT raise on a wrong PIN — a raise would roll the
 -- counter back. They answer {"ok": false, "error": "..."} instead, and
 -- {"ok": true, ...} when done. Every other refusal is a raised exception.
+-- refund_bill here is an old body: migration-2026-10-24-pos-checkout-fixes.sql and then
+-- migration-2026-10-24-pos-shifts-fn.sql re-create it — re-run both after this file.
 -- ============================================================================
 
 -- ── Who may approve at the caller's branch ─────────────────────────────────

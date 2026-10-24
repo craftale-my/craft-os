@@ -11,6 +11,9 @@ end $$;
 -- migration-2026-10-24-pos-checkout.sql. Idempotent.
 -- Totals (pos_compute_bill) are mirrored by computeBill in
 -- src/features/pos/checkout/bill.ts; both are tested against the same vectors.
+-- Sub-plan 4a: this file cannot be re-run after M1 (see the STOP guard); checkout_bill is
+-- canonical in migration-2026-10-24-pos-shifts-fn.sql (the open shift, stamped on each
+-- payment and on the bill).
 -- ============================================================================
 
 -- ── The caller's branch (every POS RPC works inside it) ─────────────────────
