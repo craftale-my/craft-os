@@ -36,8 +36,12 @@ export default function ShiftsDrawer({ onClose }: { onClose: () => void }) {
 
   const reprint = async () => {
     if (!open || printingRef.current) return
+    const id = reportSeq.current                   // Back or another shift meanwhile: the late note is dropped
     printingRef.current = true; setPrinting(true); setNote(null)
-    try { await reprintZReport(open.id); setNote({ ok: true, text: 'Z report sent to the receipt printer' }) } catch (e) { setNote({ ok: false, text: msg(e) }) }
+    try {
+      await reprintZReport(open.id)
+      if (id === reportSeq.current) setNote({ ok: true, text: 'Z report sent to the receipt printer' })
+    } catch (e) { if (id === reportSeq.current) setNote({ ok: false, text: msg(e) }) }
     finally { printingRef.current = false; setPrinting(false) }
   }
 

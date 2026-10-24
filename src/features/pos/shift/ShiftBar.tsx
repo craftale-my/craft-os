@@ -67,7 +67,7 @@ export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branc
         <>
           {sheet === 'open' && status && (
             <OpenShiftSheet lastFloatSen={status.lastFloatSen} onClose={closeSheet}
-              onOpened={(s) => { seq.current++; setStatus(s); setSheet(null); setNote('Shift opened') }} />
+              onOpened={(s) => { seq.current++; setStatus(s); setError(null); setSheet(null); setNote('Shift opened') }} />
           )}
           {sheet === 'move' && (
             <CashMoveSheet branchId={branchId} pending={pendingMove} onPending={setPendingMove} onClose={closeSheet}
