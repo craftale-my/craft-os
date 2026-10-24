@@ -1,6 +1,8 @@
 -- Self-check for the POS checkout migrations (Sub-plan 3). Run on craft-os-dev after
 -- migration-2026-10-24-pos-checkout.sql, -checkout-fn.sql, -bill-actions-fn.sql and
--- -checkout-fixes.sql.
+-- -checkout-fixes.sql — and, since the pre-pilot hardening, after
+-- migration-2026-10-25-pos-hardening.sql (the merge vector, a replay with the same
+-- payments only, wrong PINs counted per approver and caller in pos_pin_attempts).
 -- Everything is rolled back. Success = a result row "VERIFY OK".
 -- The vectors below are a byte-for-byte copy of src/features/pos/checkout/billVectors.json
 -- (bill.test.ts fails if the two differ).
@@ -211,7 +213,10 @@ begin
     raise exception 'FAIL pin: change without the current PIN: %', v_res;
   end if;
   if not (set_my_pos_pin('1234', '1234')->>'ok')::boolean then raise exception 'FAIL pin: change with the current PIN'; end if;
-  if (select failed_attempts from staff_pos_pins where staff_id = v_sup) <> 0 then raise exception 'FAIL pin: counter not reset'; end if;
+  -- a new PIN deletes every wrong-try row against this approver (hardening H6)
+  if exists (select 1 from pos_pin_attempts where approver_id = v_sup) then
+    raise exception 'FAIL pin: counter not reset';
+  end if;
   perform set_config('request.jwt.claims', json_build_object('sub', v_far, 'role', 'authenticated')::text, true);
   perform set_my_pos_pin('9999', null);
   -- approvers of the VERIFY branch: the owner (test login) and the supervisor, not the cashier or VERIFY2's supervisor
@@ -297,8 +302,16 @@ begin
      or v_job.payload->>'footer' <> 'This is an official receipt. Thank you for visiting us.' then
     raise exception 'FAIL receipt payload: %', v_job.payload;
   end if;
-  -- the same checkout again: the first answer, nothing new
-  if checkout_bill(v_bill.id, '[]'::jsonb, v_checkout) <> v_res then raise exception 'FAIL checkout replay'; end if;
+  -- the same checkout again: the first answer, nothing new — only with the very same payments (hardening)
+  if checkout_bill(v_bill.id, jsonb_build_array(
+       jsonb_build_object('methodId', v_tng, 'amountSen', 5000, 'reference', null),
+       jsonb_build_object('methodId', v_cash, 'amountSen', 4280, 'tenderedSen', 5000)), v_checkout) <> v_res then
+    raise exception 'FAIL checkout replay';
+  end if;
+  begin perform checkout_bill(v_bill.id, '[]'::jsonb, v_checkout); raise exception 'FAIL: replay with other payments accepted';
+  exception when raise_exception then
+    if sqlerrm <> 'This payment was already recorded with other amounts — check Today''s bills' then raise; end if;
+  end;
   select count(*) into n from payments where bill_id = v_bill.id; if n <> 2 then raise exception 'FAIL replay wrote payments'; end if;
   select count(*) into n from print_jobs where branch_id = v_branch and kind = 'receipt' and payload->>'billNo' = v_bill.bill_no;
   if n <> 1 then raise exception 'FAIL replay queued % receipts', n; end if;
@@ -364,7 +377,9 @@ begin
   v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '0000');
   if (v_res->>'ok')::boolean or v_res->>'error' <> 'Wrong PIN — 4 tries left' then raise exception 'FAIL wrong PIN: %', v_res; end if;
   if (select voided_at from order_items where id = v_item) is not null then raise exception 'FAIL: wrong PIN voided'; end if;
-  if (select failed_attempts from staff_pos_pins where staff_id = v_sup) <> 1 then raise exception 'FAIL: wrong PIN not counted'; end if;
+  if (select failed_attempts from pos_pin_attempts where approver_id = v_sup and caller_id = v_staff) <> 1 then
+    raise exception 'FAIL: wrong PIN not counted';
+  end if;
   v_res := void_order_item(v_item, ' Wrong item keyed ', v_sup, '1234');
   if not (v_res->>'ok')::boolean then raise exception 'FAIL void item: %', v_res; end if;
   if not exists (select 1 from order_items where id = v_item and voided_at is not null and voided_by = v_staff
@@ -379,7 +394,7 @@ begin
   if not (void_order_item(v_item, 'Wrong item keyed', v_sup, '0000')->>'ok')::boolean then raise exception 'FAIL void retry'; end if;
   select count(*) into n from print_jobs where order_id = (select order_id from order_items where id = v_item) and (payload->>'void')::boolean;
   if n <> 1 then raise exception 'FAIL void retry printed again'; end if;
-  -- lockout: 5 wrong PINs lock the approver for 10 minutes, even the right PIN
+  -- lockout: 5 wrong PINs lock this caller out of the approver for 10 minutes, even the right PIN
   v_order := place_counter_order(v_t1.id, 'dine_in', null,
     jsonb_build_array(jsonb_build_object('productId', v_plate, 'variantId', v_plate_var)), gen_random_uuid());
   select id into v_item from order_items where order_id = v_order;
@@ -387,10 +402,10 @@ begin
   v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '0000');
   if v_res->>'error' <> 'Wrong PIN — locked for 10 minutes after 5 wrong tries' then raise exception 'FAIL lockout: %', v_res; end if;
   v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '1234');
-  if (v_res->>'ok')::boolean or v_res->>'error' not like 'Too many wrong PINs — locked until %' then raise exception 'FAIL locked: %', v_res; end if;
-  update staff_pos_pins set locked_until = now() - interval '1 second' where staff_id = v_sup;
+  if (v_res->>'ok')::boolean or v_res->>'error' not like 'Too many wrong PINs — try again after %' then raise exception 'FAIL locked: %', v_res; end if;
+  update pos_pin_attempts set locked_until = now() - interval '1 second' where approver_id = v_sup and caller_id = v_staff;
   -- wrong tries older than a day are forgotten: 4 old failures + 1 new = "4 tries left", not a lock
-  update staff_pos_pins set failed_attempts = 4, updated_at = now() - interval '2 days' where staff_id = v_sup;
+  update pos_pin_attempts set failed_attempts = 4, updated_at = now() - interval '2 days' where approver_id = v_sup and caller_id = v_staff;
   v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '0000');
   if v_res->>'error' <> 'Wrong PIN — 4 tries left' then raise exception 'FAIL: old failures still counted: %', v_res; end if;
   -- the supervisor may approve their own action

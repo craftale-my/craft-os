@@ -1,5 +1,7 @@
 -- Self-check for POS Sub-plan 4a (shifts, Pay in / Pay out, the Z report). Run on
--- craft-os-dev after migration-2026-10-24-pos-shifts.sql and -shifts-fn.sql.
+-- craft-os-dev after migration-2026-10-24-pos-shifts.sql and -shifts-fn.sql — and, since
+-- the pre-pilot hardening, after migration-2026-10-25-pos-hardening.sql (wrong PINs are
+-- counted in pos_pin_attempts).
 -- Everything is rolled back. Success = a result row "VERIFY OK".
 -- Every refusal is paired with the success it guards. Inside one transaction now() does
 -- not move, so the script sets the first shift's open time and its voids back by hand.
@@ -297,7 +299,7 @@ begin
   v_res := close_shift(s1, 13900, 'Short — till miscount', v_sup, '0000', 14000);
   if v_res is distinct from jsonb_build_object('ok', false, 'needsApproval', true, 'expectedSen', 14515, 'varianceSen', -615, 'limitSen', 500)
      or (select status from pos_shifts where id = s1) is distinct from 'open'
-     or (select failed_attempts from staff_pos_pins where staff_id = v_sup) is distinct from 0 then
+     or exists (select 1 from pos_pin_attempts where approver_id = v_sup and failed_attempts <> 0) then
     raise exception 'FAIL F approval of a stale expected cash: %', v_res;
   end if;
   -- counted again (RM 139.00, short 6.15): a wrong PIN leaves it open; the first count stays
