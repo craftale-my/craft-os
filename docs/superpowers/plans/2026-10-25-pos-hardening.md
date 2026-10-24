@@ -4,7 +4,7 @@
 
 **Goal:** Close the review findings that can cost money, lose a report line or print in the wrong shop before the on-site simulated run and the pilot. (1) The **checkout sheet follows its bill**: on every bills event, order and 15 s sweep it re-reads the bill; paid, voided or merged on another iPad → it locks with a red note ("This bill was paid on another iPad — do not charge the card terminal." / "This bill was voided on another iPad." / "This bill was merged into <bill no> on another iPad.") and only **Close** works; still open with another total → it reloads the totals and says "The bill changed on another iPad — check the total.". (2) After "Not sure the payment went through" the lines **lock**; **Try again** resends the same lines under the same `checkout_id`, **Check bill** shows the paid result (paid by this sheet) or unlocks the lines with a new id (still open); the server refuses a replayed `checkout_id` with other payments ("This payment was already recorded with other amounts — check Today's bills"). (3) An **item void touches its bill** (`bills.updated_at`), so other iPads hear of it at once. (4) A takeaway merged into a table **keeps its packaging fee**, the fee's SST and its own service-charge rule (`order_items.order_type`, set from the bill by a trigger). (5) A Z report lists the **voids since the last close** of the branch. (6) Wrong PINs count per **(approver, caller)**: five wrong tries lock that caller out of that approver for 10 minutes ("Too many wrong PINs — try again after HH:MM"). (7) The print agent prints **one branch** (`BRANCH_ID`), and the print-job RPCs act only on the caller's branch. (8) A **simulated run sheet** with real Demo products and figures computed by the POS's own rules.
 
-**Architecture:** One migration, `supabase/migration-2026-10-25-pos-hardening.sql` (schema + functions, idempotent; lines marked `H1`–`H7` after the design's sections). New: `bills.updated_at`, `order_items.order_type` + trigger `order_items_order_type`, table `pos_pin_attempts` (RLS on, no policy, no privilege), `pos_checkout_state` (what the sheet re-reads) and the internal `pos_checkout_same_payments`. Re-created from their live text with only the marked lines changed: `pos_compute_bill`, `pos_bill_totals` (checkout-fn), `checkout_bill`, `pos_shift_report` (shifts-fn), `void_order_item`, `set_my_pos_pin` (bill-actions-fn); rewritten: `pos_pin_attempt` (bill-actions-fn) and `claim_print_job` / `finish_print_job` / `requeue_print_job` (ordering-fn, now `security definer`). `merge_bills` and `pos_insert_order` are **not** re-created. On the client: the TypeScript mirror `bill.ts` takes a line's own `orderType` (shared vectors gain a merge vector); the pure rules of the sheet live in `checkout/follow.ts` (lock / reload from the re-read bill) and `checkout/paySession.ts` (the unsure-reply state machine), both with Vitest tests; `CheckoutSheet.tsx` is rewritten on top of them (totals panel split into `CheckoutTotals.tsx`); `PosPage` passes its `refreshKey`. The agent's branch rules live in `tools/print-agent/branch.ts` (tested). The run sheet is written by `tools/run-sheet/figures.ts` from a read-only facts query the controller runs on dev.
+**Architecture:** One migration, `supabase/migration-2026-10-25-pos-hardening.sql` (schema + functions, idempotent; lines marked `H1`–`H7` after the design's sections). New: `bills.updated_at`, `order_items.order_type` + trigger `order_items_order_type`, table `pos_pin_attempts` (RLS on, no policy, no privilege), `pos_checkout_state` (what the sheet re-reads) and the internal `pos_checkout_same_payments`. Re-created from their live text with only the marked lines changed: `pos_compute_bill`, `pos_bill_totals` (checkout-fn), `checkout_bill`, `pos_shift_report` (shifts-fn), `void_order_item`, `set_my_pos_pin` (bill-actions-fn); rewritten: `pos_pin_attempt` (bill-actions-fn) and `claim_print_job` / `finish_print_job` / `requeue_print_job` (ordering-fn, now `security definer`). `merge_bills` and `pos_insert_order` are **not** re-created. On the client: the TypeScript mirror `bill.ts` takes a line's own `orderType` (shared vectors gain a merge vector); the pure rules of the sheet live in `checkout/follow.ts` (lock / reload from the re-read bill) and `checkout/paySession.ts` (the unsure-reply state machine), both with Vitest tests, and "no reply" is decided by one shared `looksOffline` (`checkout/rpcResult.ts`, also used by the shift sheets); `CheckoutSheet.tsx` is rewritten on top of them (totals panel split into `CheckoutTotals.tsx`); `PosPage` passes its `refreshKey`. The agent's branch rules live in `tools/print-agent/branch.ts` (tested). The run sheet is written by `tools/run-sheet/figures.ts` from a read-only facts query the controller runs on dev.
 
 **Tech Stack:** React 19 + Vite 6 + TypeScript + Tailwind, Supabase (Postgres RLS, plpgsql `security definer` RPCs, Realtime), Vitest, Node 22 `--experimental-strip-types` for the tools. No ESLint config in the repo; the gates are `npx tsc -b` and `npx vitest run`.
 
@@ -14,21 +14,22 @@
 
 Open choices settled the Feedme way, as the owner asked:
 
-- **The sheet re-reads through one new RPC**, `pos_checkout_state(p_bill_id, p_checkout_id)` → `{ status, billNo, mergedIntoBillNo, totals (open only), result (only when p_checkout_id paid the bill) }`. "This sheet has just paid it" therefore means *paid by this sheet's own checkout id*: the sheet then shows its paid result instead of locking (a lost reply is recovered the same way). **Check bill** uses the same call. The re-read runs on `PosPage`'s existing `refreshKey`, which every bills event, every order insert and every 15 s sweep bumps — so an order added on another iPad also reaches the sheet at once. No re-read while a Pay or Check bill is on its way.
-- **Lock / reload rule** (`followBill`): paid with this sheet's id → show the result; paid otherwise → lock (paid note); voided → lock; merged → lock with the bill it went into; open with a total other than the one on screen → reload + the "bill changed" note; payment lines already entered stay, and the existing sum check refuses **Pay** until they match.
-- **Unsure state machine** (`paySession.ts`): `editing → paying → (refused → editing, same id) | (no reply → unsure)`; `unsure → Try again (paying, same id) | Check bill (checking)`; Check bill → open: `editing` with a **new** id, message "The bill is still open — the payment was not recorded. Check the lines and press Pay."; paid by this sheet → the result; closed elsewhere → the lock; no answer → `unsure` again with "Could not check the bill: …". The no-reply message becomes "Not sure the payment went through (no reply). Press Try again — it will not be charged twice — or Check bill.".
+- **The sheet re-reads through one new RPC**, `pos_checkout_state(p_bill_id, p_checkout_ids)` → `{ status, billNo, mergedIntoBillNo, totals (open only), result (only when one of p_checkout_ids paid the bill) }`. `p_checkout_ids` is every checkout id the sheet has used (`checkoutIds(session)`: the current one and the ones Check bill replaced — a first attempt that timed out can still commit after Check bill found the bill open). "This sheet has just paid it" therefore means *paid by one of this sheet's own checkout ids*: the sheet then shows its paid result instead of locking, never "paid on another iPad" (a lost reply is recovered the same way). **Check bill** uses the same call. The re-read runs on `PosPage`'s existing `refreshKey`, which every bills event, every order insert and every 15 s sweep bumps — so an order added on another iPad also reaches the sheet at once. No re-read while a Pay or Check bill is on its way.
+- **Lock / reload rule** (`followBill`): paid with one of this sheet's ids → show the result; paid otherwise → lock (paid note); voided → lock; merged → lock with the bill it went into; open with a total other than the one on screen → reload + the "bill changed" note; payment lines already entered stay, and the existing sum check refuses **Pay** until they match.
+- **Unsure state machine** (`paySession.ts`): `editing → paying → (refused → editing, same id) | (no reply → unsure)`; `unsure → Try again (paying, same id) | Check bill (checking)`; Check bill → open: `editing` with a **new** id (the old one is kept in `earlierIds`), message "The bill is still open — the payment was not recorded. Check the lines and press Pay."; paid by this sheet → the result; closed elsewhere → the lock; no answer → `unsure` again with "Could not check the bill: …". The no-reply message becomes "Not sure the payment went through (no reply). Press Try again — it will not be charged twice — or Check bill.".
+- **"No reply" is one shared classifier**, `looksOffline(message)` in `src/features/pos/checkout/rpcResult.ts`: `/load failed|fetch|network|timeout|abort|signal/i`. postgrest-js reports a network failure as `"${name}: ${message}"`, and WebKit — every pilot iPad — says "TypeError: Load failed", which the old pattern missed (Chrome: "Failed to fetch", Firefox: "NetworkError…"). The checkout sheet and the shift sheets (`shift.ts` `moveRefusal`, `CloseShiftSheet.tsx`) use it; the copy in `shift.ts` goes. (`offline/orderQueue.ts` decides by error code, not by words, and is unchanged.)
 - **Replay comparison** (`pos_checkout_same_payments`): same number of payments and, line by line in `line_no` order, the same method (compared case-insensitively), amount and cash received; the reference is not compared (the spec names method, amount, tendered). Both replay paths of `checkout_bill` (before and after the bill lock) check it.
-- **A takeaway line matches no table-limited service-charge rule** (on its own bill it had no table), so a merged bill totals exactly what the two bills would have totalled apart, before the whole-bill rounding. On an unmerged bill nothing changes (the 22 vectors are untouched).
-- **Backfill of `order_items.order_type`:** an item with a packaging fee is `takeaway` (pos_insert_order snapshots the fee on takeaway bills only — so takeaways merged before this migration get their fee back), every other item takes its bill's type.
+- **A takeaway line matches no table-limited service-charge rule** (on its own bill it had no table), so a merged bill totals what the two bills would have totalled apart, before the whole-bill rounding — **except up to 1 sen per service-charge or SST rate the two bills share**: each rate's amount is rounded once on the whole bill (two lines with an SST base of RM 10.10 at 6% are 0.61 + 0.61 apart, 1.21 together). On an unmerged bill nothing changes (the 22 vectors are untouched).
+- **Backfill of `order_items.order_type`:** an item with a packaging fee is `takeaway` (pos_insert_order snapshots the fee on takeaway bills only — so takeaways merged before this migration get their fee back), every other item takes its bill's type. This goes beyond the spec's "backfilled from their bill" in the owner's favour (decision 1): **an open bill that was merged before the migration gains its packaging fee (and the fee's SST) when the migration runs** — on dev now, and on prod at rollout (a read-only pre-check is under Open points).
 - **"The previous closed shift"** = the latest closed shift of the same branch opened before this one. Voids count from just **after** its close (that instant belongs to the shift before) to this shift's close; with none, from this shift's open, as today. Reports frozen before this change keep their old window.
-- **Heading:** the report's section titles are capitals, so the section prints **"VOIDS SINCE THE LAST CLOSE"** (the spec's "Voids since the last close" in the house style of the layout); summary lines "Void bills" / "Total void" are unchanged.
-- **PINs:** the lock message is "Too many wrong PINs — try again after HH:MM" (Malaysia time); the fifth wrong try still answers "Wrong PIN — locked for 10 minutes after 5 wrong tries". A pair's counter resets on a right PIN or after a day without a try. `clear_pos_pin` is unchanged.
+- **Heading:** house style — every section title of the Z report prints in capitals — so the section prints **"VOIDS SINCE THE LAST CLOSE"**. This is the rendering of the spec string "Voids since the last close", not a different heading. Summary lines "Void bills" / "Total void" are unchanged. A reprint (`reprint_zreport`) of a shift closed **before** the migration shows the new heading over that report's old "during the shift" window (the frozen report carries no window marker) — accepted: only the few dev and pre-pilot shifts are affected.
+- **PINs:** the lock message is "Too many wrong PINs — try again after HH:MM" (Malaysia time); the fifth wrong try still answers "Wrong PIN — locked for 10 minutes after 5 wrong tries". A pair's counter resets on a right PIN or after a day without a try. A new PIN (`set_my_pos_pin`) deletes every `pos_pin_attempts` row of that approver — every caller starts afresh, as the old reset of `failed_attempts` / `locked_until` did. The count is per **login** (`auth.uid()`), not per iPad, so the run sheet asks for one login per cashier. `clear_pos_pin` is unchanged.
 - **Print agent:** besides filtering by `BRANCH_ID`, it checks at start that its login is staff of that branch and stops with a message otherwise (otherwise every job would be skipped silently). `tools/print-agent/README.md` is new (the spec mentions one; none existed). The `print_jobs_update` RLS policy (direct table updates of lifecycle columns by any staff) is outside the spec and stays; it is listed under Open points.
 - **Run sheet figures** are computed by a committed script (`tools/run-sheet/figures.ts`, using `computeBill` from `bill.ts`) from a committed read-only query (`tools/run-sheet/facts.sql`) that the **controller** runs on craft-os-dev; the implementer never touches the database. The generator was checked while planning against a full SQL simulation of the run on a scratch database: every bill total, the expected cash and the Z report summary, sales, payments, sources and product lines matched the server.
 
 ## Global Constraints
 
-- **Dev database first.** The SQL here is applied on `craft-os-dev` (ref `egznnbjmicebbhwasloy`) by the controller from the owner's Chrome tab on the dashboard SQL editor; prod (`yfsoesxzurzjdwstszru`) is a later step the owner decides. On prod the migration runs **after the shifts files** and **right before** the first main deploy that carries Tasks 2, 4 and 5: the client then reads `order_items.order_type` and calls `pos_checkout_state`, which exist only once it is applied. Seeds never run on prod; the verify scripts and the run-sheet facts query are dev-only.
+- **Dev database first.** The SQL here is applied on `craft-os-dev` (ref `egznnbjmicebbhwasloy`) by the controller from the owner's Chrome tab on the dashboard SQL editor; prod (`yfsoesxzurzjdwstszru`) is a later step the owner decides. On prod the migration runs **after the shifts files** and **right before** the first main deploy that carries Tasks 2, 4 and 5: the client then reads `order_items.order_type` and calls `pos_checkout_state`, which exist only once it is applied. Before it runs on prod, the read-only pre-check under Open points (open table bills holding a merged takeaway, whose totals the backfill raises). Seeds never run on prod; the verify scripts and the run-sheet facts query are dev-only.
 - Every step that reads or writes the dev database is marked **(controller, … ; the implementer does not touch the database)**; implementers run only local commands (`grep`, `diff`, `node`, `npx tsc -b`, `npx vitest run`) and commit.
 - All UI copy, field names and error messages in English (`english-product-copy` rule); code comments may be Chinese or English, matching the surrounding file. The exact strings are the spec's: "This bill was paid on another iPad — do not charge the card terminal.", "This bill was voided on another iPad.", "This bill was merged into <bill no> on another iPad.", "The bill changed on another iPad — check the total.", "This payment was already recorded with other amounts — check Today's bills", "Too many wrong PINs — try again after HH:MM", "Voids since the last close".
 - **Money is integer sen.** Sub-plan 3's money rules and the 22 vectors in `src/features/pos/checkout/billVectors.json` do not change; one merge vector is added, and the SQL verify's copy of the vectors stays byte-for-byte the same as the JSON (`bill.test.ts` checks it).
@@ -58,19 +59,20 @@ Open choices settled the Feedme way, as the owner asked:
 | `supabase/migration-2026-10-25-pos-hardening-verify.sql` | Self-check, rolled back (Task 3) |
 | `supabase/migration-2026-10-24-pos-checkout-verify.sql`, `-shifts-verify.sql` | Regression scripts follow the replay rule and `pos_pin_attempts` (Task 3) |
 | `src/features/pos/checkout/follow.ts` (+test), `paySession.ts` (+test), `checkoutApi.ts` | Pure lock / reload rule and unsure state machine; `fetchCheckoutState` (Task 4) |
+| `src/features/pos/checkout/rpcResult.ts` (+test), `src/features/pos/shift/shift.ts`, `CloseShiftSheet.tsx` | The one shared `looksOffline` (knows Safari's "Load failed"); the shift copy goes (Task 4) |
 | `src/features/pos/checkout/CheckoutSheet.tsx`, `CheckoutTotals.tsx`, `src/features/pos/order/PosPage.tsx` | The sheet follows its bill and locks after an unsure reply (Task 5) |
 | `tools/print-agent/branch.ts` (+test), `agent.ts`, `.env.example`, `README.md` | One branch per agent (Task 6) |
 | `tools/run-sheet/facts.sql`, `facts.ts`, `figures.ts`, `facts.example.json`; `docs/pos/2026-10-25-simulated-run-sheet.md` | The run sheet and how it is regenerated (Task 7) |
 
 `merge_bills`, `pos_insert_order`, `void_bill`, `move_bill`, `refund_bill`, `close_shift`, the browser print host (`PrintHostPanel.tsx`, already branch-scoped) and every RLS policy do not change.
 
-**Test counts** (checked while planning on a scratch copy of the worktree at `0c0ddb3`, by replaying this document task by task): baseline 100 files / 877 tests. After Task 1: 100 / 879. Task 2: 100 / 881. Task 3: 100 / 881. Task 4: 102 / 894. Task 5: 102 / 894. Task 6: 103 / 899. Task 7: 103 / 899. `npx tsc -b` prints nothing after every task. The SQL (Tasks 1 and 3) was replayed on a scratch PostgreSQL 18 with Supabase stand-ins: the hardening verify and all seven regression verify scripts print `VERIFY OK`, and the hardening verify fails for each of eight deliberate faults (no branch filter or an inclusive start in the void window, no branch filter in `claim_print_job`, no replay check, a case-sensitive method compare, a PIN counter per approver only, a table-limited rule matching takeaway lines, no bill touch on a void).
+**Test counts** (checked while planning on a scratch copy of the worktree at `0c0ddb3`, by replaying this document task by task, and again after the review fixes): baseline 100 files / 877 tests. After Task 1: 100 / 879. Task 2: 100 / 881. Task 3: 100 / 881. Task 4: 102 / 897. Task 5: 102 / 897. Task 6: 103 / 902. Task 7: 103 / 902. `npx tsc -b` prints nothing after every task. The SQL (Tasks 1 and 3) was replayed on a scratch PostgreSQL 18 with Supabase stand-ins: the hardening verify and all seven regression verify scripts print `VERIFY OK`, and the hardening verify fails for each of eight deliberate faults (no branch filter or an inclusive start in the void window, no branch filter in `claim_print_job`, no replay check, a case-sensitive method compare, a PIN counter per approver only, a table-limited rule matching takeaway lines, no bill touch on a void).
 
 ---
 
-### Task 1: The hardening migration (SQL), the re-run notes, the pg-safeupdate scan and the Z report heading
+### Task 1: The hardening migration (SQL), the re-run notes, the pg-safeupdate scan and the Z report heading — and applying it on craft-os-dev (implementer + controller)
 
-**Model tier:** cheap (the plan carries every line).
+**Model tier:** cheap (the plan carries every line); the controller runs Step 9.
 
 **Files:**
 - Create: `supabase/migration-2026-10-25-pos-hardening.sql`
@@ -82,7 +84,7 @@ Open choices settled the Feedme way, as the owner asked:
   - `bills.updated_at timestamptz not null default now()`; `void_order_item` sets it on every void.
   - `order_items.order_type text not null check in ('dine_in','takeaway')`, set from the bill on insert; read by `fetchBillItems` (Task 2).
   - `pos_compute_bill(jsonb)`: input lines may carry `orderType`; `pos_bill_totals(uuid)` passes `orderType` per line.
-  - `pos_checkout_state(p_bill_id uuid, p_checkout_id uuid) returns jsonb` → `{ status: 'open'|'paid'|'voided'|'merged', billNo: string, mergedIntoBillNo: string|null, totals: BillTotals|null, result: CheckoutResult|null }` (Task 4 parses it).
+  - `pos_checkout_state(p_bill_id uuid, p_checkout_ids uuid[]) returns jsonb` → `{ status: 'open'|'paid'|'voided'|'merged', billNo: string, mergedIntoBillNo: string|null, totals: BillTotals|null, result: CheckoutResult|null }`; `result` is set when one of `p_checkout_ids` paid the bill (Task 4 parses it).
   - `checkout_bill(uuid, jsonb, uuid)`: a replay with other payments raises `This payment was already recorded with other amounts — check Today's bills`.
   - `pos_pin_attempts(approver_id, caller_id, failed_attempts, locked_until, updated_at)`; `pos_pin_attempt` answers `Too many wrong PINs — try again after HH:MM` for a locked pair (Task 3 checks it).
   - `claim_print_job(uuid) returns boolean`, `finish_print_job(uuid, boolean, text)`, `requeue_print_job(uuid)`: security definer, caller's branch only (Task 6 relies on it).
@@ -270,7 +272,8 @@ create trigger order_items_order_type before insert on order_items
   for each row execute function order_items_order_type();
 
 -- existing rows: their bill's type; an item with a packaging fee was ordered on a takeaway
--- bill (pos_insert_order snapshots the fee on takeaway bills only), even if merged since
+-- bill (pos_insert_order snapshots the fee on takeaway bills only), even if merged since —
+-- so an OPEN bill merged before this migration gains that fee (and its SST) right here
 update order_items oi
    set order_type = case when oi.takeaway_fee_sen > 0 then 'takeaway' else b.order_type end
   from bills b
@@ -303,7 +306,8 @@ revoke all on pos_pin_attempts from public, anon, authenticated;
 --    computeBill (src/features/pos/checkout/bill.ts); both pass billVectors.json ─
 -- input lines may carry orderType ('dine_in' | 'takeaway'); a takeaway line matches no
 -- table-limited rule (on its own bill it had no table), so a merged bill totals what the
--- two bills would have totalled apart, before the whole-bill rounding.
+-- two bills would have totalled apart, before the whole-bill rounding — except up to 1 sen
+-- per service-charge or SST rate the two bills share (each rate is rounded on the whole bill).
 create or replace function pos_compute_bill(p_input jsonb) returns jsonb
 language sql immutable security invoker set search_path = public, pg_temp as $$
   with lines as (
@@ -401,10 +405,12 @@ revoke all on function pos_bill_totals(uuid) from public, anon;
 grant execute on function pos_bill_totals(uuid) to authenticated;
 
 -- ── H1. What the checkout sheet re-reads on every bill event and sweep ──────
+-- p_checkout_ids: every checkout id the sheet has used — a first attempt that timed out can
+-- still commit after Check bill gave the sheet a new id, and it is still the sheet's own payment.
 -- { status: 'open'|'paid'|'voided'|'merged', billNo, mergedIntoBillNo: text|null,
 --   totals: pos_bill_totals (open bills only, else null),
---   result: the checkout result when p_checkout_id paid this bill (else null) }
-create or replace function pos_checkout_state(p_bill_id uuid, p_checkout_id uuid) returns jsonb
+--   result: the checkout result when one of p_checkout_ids paid this bill (else null) }
+create or replace function pos_checkout_state(p_bill_id uuid, p_checkout_ids uuid[]) returns jsonb
 language plpgsql stable security definer set search_path = public, pg_temp as $$
 declare
   v_branch uuid := pos_my_branch();
@@ -417,11 +423,11 @@ begin
     'billNo', v_bill.bill_no,
     'mergedIntoBillNo', (select m.bill_no from bills m where m.id = v_bill.merged_into),
     'totals', case when v_bill.status = 'open' then pos_bill_totals(v_bill.id) end,
-    'result', case when v_bill.status = 'paid' and p_checkout_id is not null and v_bill.checkout_id = p_checkout_id
+    'result', case when v_bill.status = 'paid' and v_bill.checkout_id = any(coalesce(p_checkout_ids, '{}'::uuid[]))
                    then pos_checkout_result(v_bill.id) end);
 end $$;
-revoke all on function pos_checkout_state(uuid, uuid) from public, anon;
-grant execute on function pos_checkout_state(uuid, uuid) to authenticated;
+revoke all on function pos_checkout_state(uuid, uuid[]) from public, anon;
+grant execute on function pos_checkout_state(uuid, uuid[]) to authenticated;
 
 -- ── H2. A replayed checkout id must carry the very same payments ────────────
 -- Same count, and line by line (line_no order) the same method, amount and cash received.
@@ -792,7 +798,8 @@ end $$;
 revoke all on function pos_pin_attempt(uuid, text) from public, anon, authenticated;
 
 -- ── My PIN, re-created: the live text of migration-2026-10-24-pos-bill-actions-fn.sql with
---    only the H6 line changed (the caller is the approver: the same pos_pin_attempts row) ─
+--    only the H6 lines changed (the caller is the approver: the same pos_pin_attempts row;
+--    a new PIN clears every caller's wrong tries and lock against this approver) ─
 create or replace function set_my_pos_pin(p_new_pin text, p_current_pin text) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare v_err text;
@@ -810,6 +817,9 @@ begin
   values (auth.uid(), extensions.crypt(p_new_pin, extensions.gen_salt('bf')))
   on conflict (staff_id) do update
      set pin_hash = excluded.pin_hash, updated_at = now();          -- H6: wrong tries live in pos_pin_attempts
+  -- H6: a new PIN starts every (approver, caller) pair afresh, as the old reset of
+  -- wrong-try counter and lock did (a cashier locked out of the old PIN is free again)
+  delete from pos_pin_attempts where approver_id = auth.uid();
   return jsonb_build_object('ok', true);
 end $$;
 revoke all on function set_my_pos_pin(text, text) from public, anon;
@@ -947,15 +957,18 @@ Expected: exactly the `H` lines (and, in `pos_shift_report`, the two CTE comment
 >      where b.branch_id = s.branch_id and b.status = 'voided' and b.closed_at <= s.until
 >        and (b.closed_at > s.prev_close or (s.prev_close is null and b.closed_at >= s.opened_at))     -- H5
 == set_my_pos_pin
-17c17
+17c17,20
 <      set pin_hash = excluded.pin_hash, failed_attempts = 0, locked_until = null, updated_at = now();
 ---
 >      set pin_hash = excluded.pin_hash, updated_at = now();          -- H6: wrong tries live in pos_pin_attempts
+>   -- H6: a new PIN starts every (approver, caller) pair afresh, as the old reset of
+>   -- wrong-try counter and lock did (a cashier locked out of the old PIN is free again)
+>   delete from pos_pin_attempts where approver_id = auth.uid();
 ```
 
 If any other line differs, the older file changed since this plan was written: take its current text for the function and add the same `H` lines again.
 
-- [ ] **Step 6: The Z report heading.** In `src/features/pos/print/zreport.ts` make exactly this replacement (the old text occurs once):
+- [ ] **Step 6: The Z report heading.** The spec's "Voids since the last close", in capitals like every Z section title (Resolutions). A reprint of a shift closed before the migration shows it too, over that report's old window — accepted. In `src/features/pos/print/zreport.ts` make exactly this replacement (the old text occurs once):
 
 1. Replace:
 
@@ -995,6 +1008,8 @@ git commit -m "feat(pos): pre-pilot hardening — checkout state, replay check, 
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
+
+- [ ] **Step 9 (controller, craft-os-dev — dashboard SQL editor in the owner's Chrome tab; the implementer does not touch the database):** apply the migration now, before Task 2's client reads `order_items.order_type` (the worktree is shared by live sessions: a dev server on this branch would otherwise fail the bill panel's item load). Confirm the top bar reads **craft-os-dev** (`egznnbjmicebbhwasloy`) — never the prod project. Load `supabase/migration-2026-10-25-pos-hardening.sql` with `window.monaco.editor.getModels()[0].setValue(...)` and run it with `cmd+Return` → result `pos hardening applied`. Run it a second time → the same (idempotent). The verify and the regression scripts run in Task 3 Step 5. If the SQL is fixed later, re-run this step before Task 3 Step 5.
 
 ---
 
@@ -1044,6 +1059,8 @@ describe('roundingDeltaSen', () => {
    with:
 
 ```ts
+// Apart and merged agree up to 1 sen per service-charge or SST rate both parts share (each rate is
+// rounded on the whole bill); the merge vector's bases round without a remainder, so here they are equal.
 describe('a merged bill totals what its bills would have totalled apart (owner, 2026-10-25)', () => {
   it('the merge vector equals its dine-in and its takeaway part, before the whole-bill rounding', () => {
     const merged = all.find((v) => v.name.startsWith('merge:'))!.input
@@ -1248,7 +1265,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 3: The hardening verify, the regression scripts — and applying it on craft-os-dev (implementer + controller)
+### Task 3: The hardening verify, the regression scripts — and running them on craft-os-dev (implementer + controller)
 
 **Model tier:** cheap for Steps 1–4 (the plan carries every line); the controller runs Step 5.
 
@@ -1257,7 +1274,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Modify: `supabase/migration-2026-10-24-pos-checkout-verify.sql` (header, the replay check, the PIN checks), `supabase/migration-2026-10-24-pos-shifts-verify.sql` (header, one PIN check)
 
 **Interfaces:**
-- Consumes: everything Task 1 produces; Task 2's 23 vectors in the checkout verify.
+- Consumes: everything Task 1 produces (applied on craft-os-dev in Task 1 Step 9); Task 2's 23 vectors in the checkout verify.
 - Produces: `VERIFY OK` from the hardening verify and from the seven regression scripts on craft-os-dev.
 
 - [ ] **Step 1: Write the verify script.** Create `supabase/migration-2026-10-25-pos-hardening-verify.sql`:
@@ -1332,7 +1349,7 @@ begin
     end loop;
   end loop;
   for r in select f from unnest(array[
-             'pos_compute_bill(jsonb)', 'pos_bill_totals(uuid)', 'pos_checkout_state(uuid,uuid)', 'checkout_bill(uuid,jsonb,uuid)',
+             'pos_compute_bill(jsonb)', 'pos_bill_totals(uuid)', 'pos_checkout_state(uuid,uuid[])', 'checkout_bill(uuid,jsonb,uuid)',
              'void_order_item(uuid,text,uuid,text)', 'set_my_pos_pin(text,text)', 'claim_print_job(uuid)',
              'finish_print_job(uuid,boolean,text)', 'requeue_print_job(uuid)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
@@ -1435,6 +1452,8 @@ begin
     raise exception 'FAIL H4 apart: % %', v_a_tot, v_b_tot;
   end if;
   perform merge_bills(b2, b1);
+  -- merged = apart before rounding, exactly here: every rate's base rounds without a remainder
+  -- (in general up to 1 sen per service-charge or SST rate both bills share)
   if (select count(*) from order_items where bill_id = b1 and order_type = 'takeaway') is distinct from 2 then
     raise exception 'FAIL H4: merge changed the takeaway items'' order type';
   end if;
@@ -1509,11 +1528,15 @@ begin
       'This payment was already recorded with other amounts — check Today''s bills', 'H2 replay ' || v_pay::text);
   end loop;
   if (select count(*) from payments where bill_id = b1) is distinct from 2 then raise exception 'FAIL H2: a refused replay wrote payments'; end if;
-  -- the sheet that paid gets its result back from the state; any other sheet does not
-  if pos_checkout_state(b1, v_checkout) is distinct from jsonb_build_object('status', 'paid', 'billNo', (select bill_no from bills where id = b1),
+  -- the sheet that paid gets its result back from the state — also when the paying id is an
+  -- earlier one it sent (Check bill gave it a new id meanwhile); any other sheet does not
+  if pos_checkout_state(b1, array[v_checkout]) is distinct from jsonb_build_object('status', 'paid', 'billNo', (select bill_no from bills where id = b1),
        'mergedIntoBillNo', null, 'totals', null, 'result', v_res)
-     or pos_checkout_state(b1, gen_random_uuid())->'result' is distinct from 'null'::jsonb then
-    raise exception 'FAIL H1 paid: %', pos_checkout_state(b1, v_checkout);
+     or pos_checkout_state(b1, array[v_checkout, gen_random_uuid()])->'result' is distinct from v_res
+     or pos_checkout_state(b1, array[gen_random_uuid(), v_checkout])->'result' is distinct from v_res
+     or pos_checkout_state(b1, array[gen_random_uuid()])->'result' is distinct from 'null'::jsonb
+     or pos_checkout_state(b1, null)->'result' is distinct from 'null'::jsonb then
+    raise exception 'FAIL H1 paid: %', pos_checkout_state(b1, array[v_checkout]);
   end if;
 
   -- ── H3. an item void touches its bill (a bills event for the other iPads) ───
@@ -1542,6 +1565,12 @@ begin
     jsonb_build_array(jsonb_build_object('productId', v_plate, 'variantId', v_plate_v)), gen_random_uuid());
   b5 := (select bill_id from orders where id = v_id);
   if not (void_bill(b5, 'Customer left', v_sup, '2468')->>'ok')::boolean then raise exception 'FAIL H5 bill void between shifts'; end if;
+  -- H1: the checkout state of a voided bill — no totals, no result
+  v_res := pos_checkout_state(b5, array[gen_random_uuid()]);
+  if v_res is distinct from jsonb_build_object('status', 'voided', 'billNo', (select bill_no from bills where id = b5),
+       'mergedIntoBillNo', null, 'totals', null, 'result', null) then
+    raise exception 'FAIL H1 voided: %', v_res;
+  end if;
   update order_items set voided_at = c1 + interval '2 milliseconds' where bill_id = b5;
   update bills set closed_at = c1 + interval '2 milliseconds' where id = b5;
   -- a void at the very moment of the close belongs to shift 1 (its report is frozen), never to shift 2
@@ -1617,14 +1646,18 @@ begin
     raise exception 'FAIL H6 my PIN wrong: %', v_res;
   end if;
   v_res := set_my_pos_pin('1357', '2468');          -- called on its own: a condition's subqueries may run before it
+  -- a new PIN starts every pair afresh: A's lock and every count against the approver are gone
   if not (v_res->>'ok')::boolean
-     or (select failed_attempts from pos_pin_attempts where approver_id = v_sup and caller_id = v_sup) is distinct from 0
+     or exists (select 1 from pos_pin_attempts where approver_id = v_sup)
      or (select failed_attempts from staff_pos_pins where staff_id = v_sup) is distinct from 0 then
-    raise exception 'FAIL H6 my PIN: %', v_res;
+    raise exception 'FAIL H6 my PIN: % %', v_res, (select json_agg(p) from pos_pin_attempts p where p.approver_id = v_sup);
   end if;
   -- a day without a try forgets the count: 4 old failures + 1 new = "4 tries left", not a lock
-  update pos_pin_attempts set failed_attempts = 4, locked_until = null, updated_at = now() - interval '2 days'
-   where approver_id = v_sup and caller_id = v_a;
+  -- (the new PIN deleted A's row: insert it again)
+  insert into pos_pin_attempts(approver_id, caller_id, failed_attempts, locked_until, updated_at)
+  values (v_sup, v_a, 4, null, now() - interval '2 days')
+  on conflict (approver_id, caller_id) do update
+     set failed_attempts = excluded.failed_attempts, locked_until = excluded.locked_until, updated_at = excluded.updated_at;
   perform pg_temp.act(v_a);
   v_id := place_counter_order(v_t3.id, 'dine_in', null,
     jsonb_build_array(jsonb_build_object('productId', v_tea, 'variantId', v_tea_v)), gen_random_uuid());
@@ -1716,7 +1749,8 @@ rollback;
    with:
 
 ```sql
-  if (select failed_attempts from pos_pin_attempts where approver_id = v_sup and caller_id = v_sup) <> 0 then
+  -- a new PIN deletes every wrong-try row against this approver (hardening H6)
+  if exists (select 1 from pos_pin_attempts where approver_id = v_sup) then
     raise exception 'FAIL pin: counter not reset';
   end if;
 ```
@@ -1795,7 +1829,7 @@ In `supabase/migration-2026-10-24-pos-shifts-verify.sql` make exactly these repl
      or exists (select 1 from pos_pin_attempts where approver_id = v_sup and failed_attempts <> 0) then
 ```
 
-- [ ] **Step 3: Local checks.** Run: `grep -c "VERIFY OK" supabase/migration-2026-10-25-pos-hardening-verify.sql` — Expected: `3` (header, notice, final select). Run: `grep -c "perform pg_temp.expect_error" supabase/migration-2026-10-25-pos-hardening-verify.sql` — Expected: `2` (H1 another branch, and the H2 loop over six refused replays). Run: `grep -n "insert into staff" -B3 supabase/migration-2026-10-25-pos-hardening-verify.sql | grep -c "act(v_owner)"` — Expected: `1` (the staff are inserted after the claims are set to the owner). Run: `grep -c "staff_pos_pins where staff_id = v_sup) <> \|update staff_pos_pins" supabase/migration-2026-10-24-pos-checkout-verify.sql` — Expected: `0`. Run: `npx vitest run` — Expected: 100 files, 881 tests pass (the scan ignores `-verify` files; `bill.test.ts` still finds the 23 vectors in the checkout verify).
+- [ ] **Step 3: Local checks.** Run: `grep -c "VERIFY OK" supabase/migration-2026-10-25-pos-hardening-verify.sql` — Expected: `3` (header, notice, final select). Run: `grep -c "perform pg_temp.expect_error" supabase/migration-2026-10-25-pos-hardening-verify.sql` — Expected: `2` (H1 another branch, and the H2 loop over six refused replays). Run: `grep -n "insert into staff" -B3 supabase/migration-2026-10-25-pos-hardening-verify.sql | grep -c "act(v_owner)"` — Expected: `1` (the staff are inserted after the claims are set to the owner). Run: `grep -cE 'staff_pos_pins where staff_id = v_sup\) <> |update staff_pos_pins' supabase/migration-2026-10-24-pos-checkout-verify.sql` — Expected: `0`. Run: `npx vitest run` — Expected: 100 files, 881 tests pass (the scan ignores `-verify` files; `bill.test.ts` still finds the 23 vectors in the checkout verify).
 
 - [ ] **Step 4: Commit**
 
@@ -1806,30 +1840,30 @@ git commit -m "test(pos): hardening verify; checkout and shifts verify follow th
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 5 (controller, craft-os-dev — dashboard SQL editor in the owner's Chrome tab; the implementer does not touch the database):** confirm the top bar reads **craft-os-dev** (`egznnbjmicebbhwasloy`) — never the prod project. Load each file with `window.monaco.editor.getModels()[0].setValue(...)` and run it with `cmd+Return`, in order:
-  1. `supabase/migration-2026-10-25-pos-hardening.sql` → result `pos hardening applied`. Run it a second time → the same (idempotent).
-  2. `supabase/migration-2026-10-25-pos-hardening-verify.sql` → `VERIFY OK`.
-  3. The regression scripts, each → `VERIFY OK`: `migration-2026-10-24-pos-shifts-verify.sql`, `migration-2026-10-24-pos-checkout-verify.sql`, `migration-2026-10-23-pos-ordering-verify.sql`, `migration-2026-10-22-pos-menu-verify.sql`, `migration-2026-10-24-pos-catalogs-verify.sql`, `migration-2026-10-24-pos-menu-editor-verify.sql`, `migration-2026-10-24-pos-slots-photos-verify.sql`.
-  4. Read-only spot check: `select order_type, count(*), sum((takeaway_fee_sen > 0)::int) from order_items group by 1` → no null row; every row with a fee is `takeaway`.
+- [ ] **Step 5 (controller, craft-os-dev — dashboard SQL editor in the owner's Chrome tab; the implementer does not touch the database):** the migration is already applied (Task 1 Step 9). Confirm the top bar reads **craft-os-dev** (`egznnbjmicebbhwasloy`) — never the prod project. Load each file with `window.monaco.editor.getModels()[0].setValue(...)` and run it with `cmd+Return`, in order:
+  1. `supabase/migration-2026-10-25-pos-hardening-verify.sql` → `VERIFY OK`.
+  2. The regression scripts, each → `VERIFY OK`: `migration-2026-10-24-pos-shifts-verify.sql`, `migration-2026-10-24-pos-checkout-verify.sql`, `migration-2026-10-23-pos-ordering-verify.sql`, `migration-2026-10-22-pos-menu-verify.sql`, `migration-2026-10-24-pos-catalogs-verify.sql`, `migration-2026-10-24-pos-menu-editor-verify.sql`, `migration-2026-10-24-pos-slots-photos-verify.sql`.
+  3. Read-only spot checks of the backfill: `select order_type, count(*), sum((takeaway_fee_sen > 0)::int) from order_items group by 1` → no null row; every row with a fee is `takeaway`. And `select count(*) from order_items oi join bills b on b.id = oi.bill_id where oi.order_type = 'dine_in' and b.order_type = 'takeaway'` → `0` (no takeaway item labelled dine-in).
 
-  A `FAIL …` row names the check; fix the SQL in the worktree (never edit the scripts to pass), re-run 1–3, and commit the fix with the task's files.
+  A `FAIL …` row names the check; fix the SQL in the worktree (never edit the scripts to pass), re-apply the migration (Task 1 Step 9), re-run 1–2, and commit the fix with the task's files.
 
 ---
 
-### Task 4: The pure rules — the sheet follows its bill; the unsure-reply state machine
+### Task 4: The pure rules — the sheet follows its bill; the unsure-reply state machine; one "no reply" classifier
 
 **Model tier:** cheap.
 
 **Files:**
 - Create: `src/features/pos/checkout/follow.ts`, `src/features/pos/checkout/follow.test.ts`, `src/features/pos/checkout/paySession.ts`, `src/features/pos/checkout/paySession.test.ts`
-- Modify: `src/features/pos/checkout/checkoutApi.ts`
+- Modify: `src/features/pos/checkout/checkoutApi.ts`, `src/features/pos/checkout/rpcResult.ts`, `src/features/pos/checkout/rpcResult.test.ts`, `src/features/pos/shift/shift.ts`, `src/features/pos/shift/shift.test.ts`, `src/features/pos/shift/CloseShiftSheet.tsx`
 
 **Interfaces:**
 - Consumes: `pos_checkout_state` (Task 1); `BillTotals` (`bill.ts`); `CheckoutResult`, `parseCheckoutResult` (`rpcResult.ts`).
 - Produces (Task 5 uses exactly these):
   - `follow.ts`: `type BillStatus = 'open'|'paid'|'voided'|'merged'`; `interface CheckoutState { status; billNo: string; mergedIntoBillNo: string|null; totals: BillTotals|null; result: CheckoutResult|null }`; `type FollowAction = {kind:'keep'} | {kind:'paidHere'; result} | {kind:'lock'; note: string} | {kind:'reload'; totals: BillTotals; note: string|null}`; `followBill(state: CheckoutState, shownTotalSen: number|null): FollowAction`; `parseCheckoutState(data: unknown): CheckoutState`; constants `PAID_ELSEWHERE`, `VOIDED_ELSEWHERE`, `BILL_CHANGED`, `mergedElsewhere(billNo)`.
-  - `paySession.ts`: `type PayPhase = 'editing'|'paying'|'unsure'|'checking'`; `interface PaySession { phase; checkoutId: string }`; `type PayEvent = {type:'send'}|{type:'refused'}|{type:'noReply'}|{type:'check'}|{type:'checkedOpen'; newCheckoutId: string}|{type:'checkEnded'}`; `newPaySession(id)`, `nextPay(s, e)`, `linesLocked(s)`; constants `UNSURE`, `CHECKED_OPEN`.
-  - `checkoutApi.ts`: `fetchCheckoutState(billId: string, checkoutId: string): Promise<CheckoutState>`.
+  - `paySession.ts`: `type PayPhase = 'editing'|'paying'|'unsure'|'checking'`; `interface PaySession { phase; checkoutId: string; earlierIds: string[] }`; `type PayEvent = {type:'send'}|{type:'refused'}|{type:'noReply'}|{type:'check'}|{type:'checkedOpen'; newCheckoutId: string}|{type:'checkEnded'}`; `newPaySession(id)`, `nextPay(s, e)`, `linesLocked(s)`, `checkoutIds(s): string[]` (every id the sheet has used, oldest first); constants `UNSURE`, `CHECKED_OPEN`.
+  - `checkoutApi.ts`: `fetchCheckoutState(billId: string, checkoutIds: string[]): Promise<CheckoutState>`.
+  - `rpcResult.ts`: `looksOffline(message: string): boolean` — the one "no reply" classifier (the checkout sheet, `shift.ts` and `CloseShiftSheet.tsx` use it).
 
 - [ ] **Step 1: Write the failing tests.** Create `src/features/pos/checkout/follow.test.ts`:
 
@@ -1892,29 +1926,36 @@ Create `src/features/pos/checkout/paySession.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { CHECKED_OPEN, UNSURE, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
+import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
 
 const run = (s: PaySession, ...events: PayEvent[]) => events.reduce(nextPay, s)
 const start = newPaySession('id-1')
 
 describe('nextPay — payment attempts of one checkout', () => {
   it('a refusal goes back to editing with the same id', () => {
-    expect(run(start, { type: 'send' }, { type: 'refused' })).toEqual({ phase: 'editing', checkoutId: 'id-1' })
+    expect(run(start, { type: 'send' }, { type: 'refused' })).toEqual({ phase: 'editing', checkoutId: 'id-1', earlierIds: [] })
   })
   it('no reply locks the lines; Try again sends the same id', () => {
     const unsure = run(start, { type: 'send' }, { type: 'noReply' })
-    expect(unsure).toEqual({ phase: 'unsure', checkoutId: 'id-1' })
+    expect(unsure).toEqual({ phase: 'unsure', checkoutId: 'id-1', earlierIds: [] })
     expect(linesLocked(unsure)).toBe(true)
-    expect(run(unsure, { type: 'send' })).toEqual({ phase: 'paying', checkoutId: 'id-1' })
+    expect(run(unsure, { type: 'send' })).toEqual({ phase: 'paying', checkoutId: 'id-1', earlierIds: [] })
   })
   it('Check bill finding the bill open unlocks the lines with a new id', () => {
     const open = run(start, { type: 'send' }, { type: 'noReply' }, { type: 'check' }, { type: 'checkedOpen', newCheckoutId: 'id-2' })
-    expect(open).toEqual({ phase: 'editing', checkoutId: 'id-2' })
+    expect(open).toEqual({ phase: 'editing', checkoutId: 'id-2', earlierIds: ['id-1'] })
     expect(linesLocked(open)).toBe(false)
   })
   it('Check bill that does not find the bill open stays unsure, same id', () => {
     expect(run(start, { type: 'send' }, { type: 'noReply' }, { type: 'check' }, { type: 'checkEnded' }))
-      .toEqual({ phase: 'unsure', checkoutId: 'id-1' })
+      .toEqual({ phase: 'unsure', checkoutId: 'id-1', earlierIds: [] })
+  })
+  it('keeps every id it used, so a late first payment still shows as paid by this sheet', () => {
+    const twice = run(start,
+      { type: 'send' }, { type: 'noReply' }, { type: 'check' }, { type: 'checkedOpen', newCheckoutId: 'id-2' },
+      { type: 'send' }, { type: 'noReply' }, { type: 'check' }, { type: 'checkedOpen', newCheckoutId: 'id-3' })
+    expect(checkoutIds(twice)).toEqual(['id-1', 'id-2', 'id-3'])
+    expect(checkoutIds(start)).toEqual(['id-1'])
   })
   it('ignores events that do not fit (a double tap, a late reply)', () => {
     const paying = run(start, { type: 'send' })
@@ -1932,7 +1973,69 @@ describe('nextPay — payment attempts of one checkout', () => {
 })
 ```
 
-- [ ] **Step 2: Run them to verify they fail.** Run: `npx vitest run src/features/pos/checkout/follow.test.ts src/features/pos/checkout/paySession.test.ts` — Expected: FAIL, `Failed to load url ./follow` and `Failed to load url ./paySession`.
+"No reply" is one shared classifier for every POS sheet. In `src/features/pos/checkout/rpcResult.test.ts` make exactly these replacements (each old text occurs once, in this order):
+
+1. Replace:
+
+```ts
+import { parseCheckoutResult, parseRefundResult, unwrapAction } from './rpcResult'
+```
+
+   with:
+
+```ts
+import { looksOffline, parseCheckoutResult, parseRefundResult, unwrapAction } from './rpcResult'
+```
+
+2. Replace:
+
+```ts
+  it('refuses a reply without the recorded amount', () => {
+    expect(() => parseRefundResult({ ok: true, refundedSen: 1300, slipQueued: true })).toThrow('Unexpected reply')
+  })
+})
+```
+
+   with:
+
+```ts
+  it('refuses a reply without the recorded amount', () => {
+    expect(() => parseRefundResult({ ok: true, refundedSen: 1300, slipQueued: true })).toThrow('Unexpected reply')
+  })
+})
+
+describe('looksOffline — a request with no reply, in every browser', () => {
+  it('takes a dropped connection or a timeout for no reply (Safari, on every iPad, says "Load failed")', () => {
+    for (const m of ['TypeError: Load failed', 'TypeError: Failed to fetch', 'NetworkError when attempting to fetch resource.',
+      'TimeoutError: signal timed out', 'AbortError: The operation was aborted.']) {
+      expect(looksOffline(m), m).toBe(true)
+    }
+  })
+  it('never takes a refusal of the server for no reply', () => {
+    for (const m of ['This bill is already paid', 'Payments (RM 1.00) do not match the total (RM 2.00)',
+      "This payment was already recorded with other amounts — check Today's bills", 'Wrong PIN — 4 tries left']) {
+      expect(looksOffline(m), m).toBe(false)
+    }
+  })
+})
+```
+
+In `src/features/pos/shift/shift.test.ts` make exactly this replacement (the old text occurs once):
+
+1. Replace:
+
+```ts
+    expect(moveRefusal('TypeError: Failed to fetch')).toBe('unsure')
+```
+
+   with:
+
+```ts
+    expect(moveRefusal('TypeError: Failed to fetch')).toBe('unsure')
+    expect(moveRefusal('TypeError: Load failed')).toBe('unsure')     // Safari, on every iPad
+```
+
+- [ ] **Step 2: Run them to verify they fail.** Run: `npx vitest run src/features/pos/checkout/follow.test.ts src/features/pos/checkout/paySession.test.ts src/features/pos/checkout/rpcResult.test.ts src/features/pos/shift/shift.test.ts` — Expected: FAIL — `Failed to load url ./follow` and `Failed to load url ./paySession`; in `rpcResult.test.ts` the two `looksOffline` tests fail (`looksOffline is not a function`); in `shift.test.ts` the `moveRefusal` test fails (`expected 'nothing' to be 'unsure'`: the old pattern misses "Load failed").
 
 - [ ] **Step 3: Write the rules.** Create `src/features/pos/checkout/follow.ts`:
 
@@ -1950,7 +2053,7 @@ export interface CheckoutState {
   billNo: string
   mergedIntoBillNo: string | null
   totals: BillTotals | null       // open bills only
-  result: CheckoutResult | null   // when THIS sheet's checkout id paid the bill
+  result: CheckoutResult | null   // when one of THIS sheet's checkout ids paid the bill
 }
 
 export type FollowAction =
@@ -2010,14 +2113,17 @@ Create `src/features/pos/checkout/paySession.ts`:
  *  unsure   — no reply: lines locked; Try again (same lines, same id) or Check bill
  *  checking — Check bill is re-reading the bill
  *  An unsure send may still land on the server, so its id is kept until Check bill finds
- *  the bill open; only then are the lines unlocked with a NEW id. A refusal recorded
- *  nothing under the id, so editing goes on with the same one (a late first attempt that
- *  lands meanwhile makes the server refuse other lines under it). */
+ *  the bill open; only then are the lines unlocked with a NEW id — and the old one moves to
+ *  earlierIds, because that first attempt can still commit later: the bill is re-read with
+ *  every id (checkoutIds), so the sheet shows its own paid result, never "paid on another
+ *  iPad". A refusal recorded nothing under the id, so editing goes on with the same one (a
+ *  late first attempt that lands meanwhile makes the server refuse other lines under it). */
 export type PayPhase = 'editing' | 'paying' | 'unsure' | 'checking'
 
 export interface PaySession {
   phase: PayPhase
   checkoutId: string
+  earlierIds: string[]   // ids Check bill replaced, oldest first
 }
 
 export type PayEvent =
@@ -2028,7 +2134,7 @@ export type PayEvent =
   | { type: 'checkedOpen'; newCheckoutId: string } // the bill is still open: unlock with a new id
   | { type: 'checkEnded' }                         // Check bill did not find it open (no answer, paid or closed)
 
-export const newPaySession = (checkoutId: string): PaySession => ({ phase: 'editing', checkoutId })
+export const newPaySession = (checkoutId: string): PaySession => ({ phase: 'editing', checkoutId, earlierIds: [] })
 
 /** An event that does not fit the phase changes nothing (a double tap, a late reply). */
 export function nextPay(s: PaySession, e: PayEvent): PaySession {
@@ -2042,7 +2148,7 @@ export function nextPay(s: PaySession, e: PayEvent): PaySession {
     case 'check':
       return s.phase === 'unsure' ? { ...s, phase: 'checking' } : s
     case 'checkedOpen':
-      return s.phase === 'checking' ? { phase: 'editing', checkoutId: e.newCheckoutId } : s
+      return s.phase === 'checking' ? { phase: 'editing', checkoutId: e.newCheckoutId, earlierIds: [...s.earlierIds, s.checkoutId] } : s
     case 'checkEnded':
       return s.phase === 'checking' ? { ...s, phase: 'unsure' } : s
   }
@@ -2051,9 +2157,88 @@ export function nextPay(s: PaySession, e: PayEvent): PaySession {
 /** Method buttons, amounts and remove buttons are locked in every phase but editing. */
 export const linesLocked = (s: PaySession): boolean => s.phase !== 'editing'
 
+/** Every checkout id this sheet has used, oldest first: pos_checkout_state shows the paid
+ *  result when any of them paid the bill. */
+export const checkoutIds = (s: PaySession): string[] => [...s.earlierIds, s.checkoutId]
+
 export const UNSURE = 'Not sure the payment went through (no reply). Press Try again — it will not be charged twice — or Check bill.'
 export const CHECKED_OPEN = 'The bill is still open — the payment was not recorded. Check the lines and press Pay.'
 ```
+
+The one "no reply" classifier. In `src/features/pos/checkout/rpcResult.ts` make exactly this replacement (the old text occurs once):
+
+1. Replace:
+
+```ts
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
+```
+
+   with:
+
+```ts
+/** A request that got no reply, as postgrest-js reports the browser's network failure
+ *  ("${name}: ${message}"): Chrome "TypeError: Failed to fetch", Firefox "TypeError: NetworkError
+ *  when attempting to fetch resource.", Safari — every iPad — "TypeError: Load failed", or a
+ *  timeout / abort. The request may still have landed, so the sheet keeps its id and a resend is
+ *  safe. The one classifier of the POS sheets (checkout, close shift, pay in / pay out); every
+ *  refusal of the server has other words. */
+export const looksOffline = (m: string) => /load failed|fetch|network|timeout|abort|signal/i.test(m)
+
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
+```
+
+The shift sheets drop their copy. In `src/features/pos/shift/shift.ts` make exactly these replacements (each old text occurs once, in this order):
+
+1. Replace:
+
+```ts
+import { parseRinggit } from '../checkout/tender'
+```
+
+   with:
+
+```ts
+import { looksOffline } from '../checkout/rpcResult'   // the one "no reply" classifier (knows Safari's "Load failed")
+import { parseRinggit } from '../checkout/tender'
+```
+
+2. Replace:
+
+```ts
+/** What happened after a request with no reply: the id makes a resend safe. */
+export const looksOffline = (m: string) => /fetch|network|timeout|abort|signal/i.test(m)
+
+/** After a refused pay in / pay out, what is recorded under its id: 'unsure' (no reply — keep the
+```
+
+   with:
+
+```ts
+/** After a refused pay in / pay out, what is recorded under its id: 'unsure' (no reply — keep the
+```
+
+In `src/features/pos/shift/CloseShiftSheet.tsx` make exactly this replacement (the old text occurs once):
+
+1. Replace:
+
+```tsx
+import { closeShift } from './shiftApi'
+import ZReportView from './ZReportView'
+import {
+  approvalNote, closeShiftError, countProblem, looksOffline, openBillsWarning, printedNote, varianceLabel,
+```
+
+   with:
+
+```tsx
+import { looksOffline } from '../checkout/rpcResult'
+import { closeShift } from './shiftApi'
+import ZReportView from './ZReportView'
+import {
+  approvalNote, closeShiftError, countProblem, openBillsWarning, printedNote, varianceLabel,
+```
+
+Run: `grep -rl "fetch|network" src | sort` — Expected: `src/features/pos/checkout/CheckoutSheet.tsx` and `src/features/pos/checkout/rpcResult.ts` (the sheet's own copy goes when Task 5 rewrites it).
 
 - [ ] **Step 4: The RPC wrapper.** In `src/features/pos/checkout/checkoutApi.ts` make exactly these replacements (each old text occurs once, in this order):
 
@@ -2080,9 +2265,10 @@ import { parseCheckoutState, type CheckoutState } from './follow'
 
 ```ts
 /** The bill as the checkout sheet follows it (pos_checkout_state): its status, the totals
- *  while it is open, and the checkout result when checkoutId paid it. */
-export async function fetchCheckoutState(billId: string, checkoutId: string): Promise<CheckoutState> {
-  const { data, error } = await supabase.rpc('pos_checkout_state', { p_bill_id: billId, p_checkout_id: checkoutId })
+ *  while it is open, and the checkout result when one of checkoutIds (every id the sheet
+ *  has used — paySession's checkoutIds) paid it. */
+export async function fetchCheckoutState(billId: string, checkoutIds: string[]): Promise<CheckoutState> {
+  const { data, error } = await supabase.rpc('pos_checkout_state', { p_bill_id: billId, p_checkout_ids: checkoutIds })
   if (error) fail(error)
   return parseCheckoutState(data)
 }
@@ -2090,13 +2276,13 @@ export async function fetchCheckoutState(billId: string, checkoutId: string): Pr
 /** A timeout or dropped connection throws — the sheet then offers Pay again with the
 ```
 
-- [ ] **Step 5: Run the tests and the gates.** Run: `npx vitest run src/features/pos/checkout/follow.test.ts src/features/pos/checkout/paySession.test.ts` — Expected: PASS, 2 files, 13 tests. Run: `npx vitest run` — Expected: 102 files, 894 tests pass. Run: `npx tsc -b` — Expected: no output.
+- [ ] **Step 5: Run the tests and the gates.** Run: `npx vitest run src/features/pos/checkout/follow.test.ts src/features/pos/checkout/paySession.test.ts src/features/pos/checkout/rpcResult.test.ts src/features/pos/shift/shift.test.ts` — Expected: PASS, 4 files, 40 tests. Run: `npx vitest run` — Expected: 102 files, 897 tests pass. Run: `npx tsc -b` — Expected: no output.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/features/pos/checkout/follow.ts src/features/pos/checkout/follow.test.ts src/features/pos/checkout/paySession.ts src/features/pos/checkout/paySession.test.ts src/features/pos/checkout/checkoutApi.ts
-git commit -m "feat(pos-checkout): rules for a checkout that follows its bill and locks after an unsure reply
+git add src/features/pos/checkout/follow.ts src/features/pos/checkout/follow.test.ts src/features/pos/checkout/paySession.ts src/features/pos/checkout/paySession.test.ts src/features/pos/checkout/checkoutApi.ts src/features/pos/checkout/rpcResult.ts src/features/pos/checkout/rpcResult.test.ts src/features/pos/shift/shift.ts src/features/pos/shift/shift.test.ts src/features/pos/shift/CloseShiftSheet.tsx
+git commit -m "feat(pos-checkout): rules for a checkout that follows its bill and locks after an unsure reply; one no-reply classifier that knows Safari's Load failed
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -2113,7 +2299,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Modify: `src/features/pos/order/PosPage.tsx`
 
 **Interfaces:**
-- Consumes: Task 4's `followBill`, `FollowAction`, `nextPay`, `newPaySession`, `linesLocked`, `UNSURE`, `CHECKED_OPEN`, `fetchCheckoutState`; `PosPage`'s `refreshKey` (bumped by every bills event, order and sweep).
+- Consumes: Task 4's `followBill`, `FollowAction`, `nextPay`, `newPaySession`, `linesLocked`, `checkoutIds`, `UNSURE`, `CHECKED_OPEN`, `fetchCheckoutState`, `looksOffline`; `PosPage`'s `refreshKey` (bumped by every bills event, order and sweep).
 - Produces: `CheckoutSheet` props `{ branchId, bill, title, refreshKey: number, onClose, onPaid }`.
 
 - [ ] **Step 1: Split the totals panel out.** Create `src/features/pos/checkout/CheckoutTotals.tsx`:
@@ -2152,14 +2338,14 @@ import type { BillTotals } from './bill'
 import { checkoutBill, fetchCheckoutState, fetchPaymentMethods, type CheckoutResult } from './checkoutApi'
 import CheckoutTotals from './CheckoutTotals'
 import { followBill, type FollowAction } from './follow'
-import { CHECKED_OPEN, UNSURE, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
+import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
+import { looksOffline } from './rpcResult'
 import {
   changeSen, lineProblem, parseRinggit, payProblem, quickTenders, remainingSen, toPayments,
   type TenderLine, type TenderMethod,
 } from './tender'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
-const looksOffline = (m: string) => /fetch|network|timeout|abort|signal/i.test(m)
 
 export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClose, onPaid }: {
   branchId: string
@@ -2184,6 +2370,7 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
   const [session, setSession] = useState<PaySession>(() => newPaySession(crypto.randomUUID()))
   const sessionRef = useRef(session)
   const totalsRef = useRef<BillTotals | null>(null)
+  const loadFailed = useRef(false)       // the first read failed: its error shows until a read succeeds
   const readSeq = useRef(0)
   const keySeq = useRef(0)
 
@@ -2203,15 +2390,18 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
       if (a.note) setChangeNote(a.note)
     }
   }
-  // Re-read the bill; a reply older than the latest read is dropped. A failed read changes
-  // nothing — the next event or sweep tries again (the first one shows its error).
+  // Re-read the bill with every id this sheet used (its own late payment is never "elsewhere");
+  // a reply older than the latest read is dropped. A failed read changes nothing — the next
+  // event or sweep tries again (a failed first load shows its error until a read succeeds).
   const follow = async () => {
     const seq = ++readSeq.current
     try {
-      const state = await fetchCheckoutState(bill.id, sessionRef.current.checkoutId)
-      if (seq === readSeq.current) apply(followBill(state, totalsRef.current?.totalSen ?? null))
+      const state = await fetchCheckoutState(bill.id, checkoutIds(sessionRef.current))
+      if (seq !== readSeq.current) return
+      apply(followBill(state, totalsRef.current?.totalSen ?? null))
+      if (loadFailed.current) { loadFailed.current = false; setError(null) }
     } catch (e) {
-      if (seq === readSeq.current && !totalsRef.current) setError(msg(e))
+      if (seq === readSeq.current && !totalsRef.current) { loadFailed.current = true; setError(msg(e)) }
     }
   }
 
@@ -2279,7 +2469,7 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
     step({ type: 'check' }); setError(null)
     ++readSeq.current                                   // a re-read still on its way is dropped
     try {
-      const a = followBill(await fetchCheckoutState(bill.id, sessionRef.current.checkoutId), totalsRef.current?.totalSen ?? null)
+      const a = followBill(await fetchCheckoutState(bill.id, checkoutIds(sessionRef.current)), totalsRef.current?.totalSen ?? null)
       apply(a)
       if (a.kind === 'keep' || a.kind === 'reload') { step({ type: 'checkedOpen', newCheckoutId: crypto.randomUUID() }); setError(CHECKED_OPEN) }
       else step({ type: 'checkEnded' })                 // paid here (the result shows) or closed elsewhere (the lock shows)
@@ -2402,7 +2592,7 @@ export default function CheckoutSheet({ branchId, bill, title, refreshKey, onClo
         <CheckoutSheet branchId={branchId} bill={checkout} refreshKey={refreshKey}
 ```
 
-- [ ] **Step 4: Gates.** Run: `npx vitest run` — Expected: 102 files, 894 tests pass. Run: `npx tsc -b` — Expected: no output. Run: `wc -l src/features/pos/checkout/CheckoutSheet.tsx src/features/pos/checkout/CheckoutTotals.tsx` — Expected: `241` and `21`.
+- [ ] **Step 4: Gates.** Run: `npx vitest run` — Expected: 102 files, 897 tests pass. Run: `npx tsc -b` — Expected: no output. Run: `wc -l src/features/pos/checkout/CheckoutSheet.tsx src/features/pos/checkout/CheckoutTotals.tsx` — Expected: `245` and `21`. Run: `grep -rl "fetch|network" src` — Expected: `src/features/pos/checkout/rpcResult.ts` only (one "no reply" pattern).
 
 - [ ] **Step 5: Commit**
 
@@ -2418,8 +2608,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   2. B: T2 → two items → Send. A: open T2's bill panel. B: void one item (approver + PIN). A's panel drops it within 2 s (no 15 s wait).
   3. A: T2 → Checkout (open). B: add an item to T2. A: totals reload with "The bill changed on another iPad — check the total."; a line already entered stays and **Pay** stays disabled until the lines match.
   4. B: Void bill T2 while A's checkout is open → A: "This bill was voided on another iPad.". A takeaway merged into T3 while A's checkout of the takeaway is open → "This bill was merged into <T3's bill no> on another iPad.".
-  5. A: Takeaway → an item with a packaging fee → Send; T3 → Merge → the takeaway: T3's panel and checkout show "Takeaway packaging" and the same total as the two bills apart (± the rounding).
-  6. Unsure reply: A: a bill → Checkout → add a line → DevTools → Network → **Offline** → Pay → "Not sure the payment went through (no reply). Press Try again — it will not be charged twice — or Check bill.", method buttons, amounts and remove disabled, Try again / Check bill / Back shown. **No throttling** → Check bill → "The bill is still open — the payment was not recorded. Check the lines and press Pay." and the lines unlock → Pay → paid. Once more on another bill: Offline → Pay → No throttling → **Try again** → paid (the same checkout id: the lines never unlocked).
+  5. A: Takeaway → an item with a packaging fee → Send; T3 → Merge → the takeaway: T3's panel and checkout show "Takeaway packaging", and before rounding the merged bill equals the two bills apart, except up to 1 sen per service-charge or SST rate the two bills share (each rate is rounded on the whole bill).
+  6. Unsure reply: A: a bill → Checkout → add a line → DevTools → Network → **Offline** → Pay → "Not sure the payment went through (no reply). Press Try again — it will not be charged twice — or Check bill.", method buttons, amounts and remove disabled, Try again / Check bill / Back shown. **No throttling** → Check bill → "The bill is still open — the payment was not recorded. Check the lines and press Pay." and the lines unlock → Pay → paid. Once more on another bill: Offline → Pay → No throttling → **Try again** → paid (the same checkout id: the lines never unlocked). Chrome reports the dropped request as "Failed to fetch"; Safari — every pilot iPad — as "Load failed", so the on-site run repeats this check once on an iPad (Safari, Wi-Fi off): run sheet step 15. If the iPad shows "TypeError: Load failed" instead of "Not sure the payment went through…", the lock does not work on Safari — stop and report.
   7. SQL (read-only): `select status, checkout_id is not null from bills where id = '<the bill of 6>'` → `paid|t`; `select count(*) from payments where bill_id = '<same>'` → the number of lines entered (nothing twice).
 
 ---
@@ -2714,7 +2904,7 @@ waiting) instead of printed on start. `TICKET_COLS` is the paper width in charac
 (48 on the ZyWell ZY301).
 ````
 
-- [ ] **Step 5: Tests and checks.** Run: `npx vitest run tools/print-agent/` — Expected: PASS, the existing printer-status tests and `branch.test.ts` (5 tests). Run: `node --experimental-strip-types --no-warnings -e "import('./tools/print-agent/branch.ts').then((m) => console.log(typeof m.branchIdFrom))"` — Expected: `function`. Run (no `--env-file`, so no real `.env` is read; nothing reaches the network): `BRANCH_ID= SUPABASE_URL=https://egznnbjmicebbhwasloy.supabase.co SUPABASE_ANON_KEY=x node --experimental-strip-types --no-warnings tools/print-agent/agent.ts 2>&1 | head -1` — Expected: `Error: Missing BRANCH_ID in tools/print-agent/.env — the id of the branch this agent prints for (branches.id)`. Run: `npx vitest run` — Expected: 103 files, 899 tests pass. Run: `npx tsc -b` — Expected: no output (the agent is outside `tsconfig`; Vitest and the node runs above check it).
+- [ ] **Step 5: Tests and checks.** Run: `npx vitest run tools/print-agent/` — Expected: PASS, the existing printer-status tests and `branch.test.ts` (5 tests). Run: `node --experimental-strip-types --no-warnings -e "import('./tools/print-agent/branch.ts').then((m) => console.log(typeof m.branchIdFrom))"` — Expected: `function`. Run (no `--env-file`, so no real `.env` is read; nothing reaches the network): `BRANCH_ID= SUPABASE_URL=https://egznnbjmicebbhwasloy.supabase.co SUPABASE_ANON_KEY=x node --experimental-strip-types --no-warnings tools/print-agent/agent.ts 2>&1 | head -1` — Expected: `Error: Missing BRANCH_ID in tools/print-agent/.env — the id of the branch this agent prints for (branches.id)`. Run: `npx vitest run` — Expected: 103 files, 902 tests pass. Run: `npx tsc -b` — Expected: no output (the agent is outside `tsconfig`; Vitest and the node runs above check it).
 
 - [ ] **Step 6: Commit**
 
@@ -2976,6 +3166,13 @@ const TA = bill('takeaway', null, taItems)
 const T1m = bill('dine_in', 'T1', [...t1Counter, ...t1Qr, ...taItems])
 const T6 = bill('dine_in', 'T6', t6Items)
 const T3 = bill('dine_in', 'T3', [{ p: P1, qty: 1, where: 'dine_in' }])
+// merged vs apart before rounding: equal, except up to 1 sen per service-charge or SST rate both bills
+// share (each rate is rounded once on the whole bill) — the sheet prints any difference
+const apartSen = T1b.beforeRoundingSen + TA.beforeRoundingSen
+const mergeGap = T1m.beforeRoundingSen - apartSen
+const mergeNote = `Before rounding: T1 ${rm(T1b.beforeRoundingSen)} + takeaway ${rm(TA.beforeRoundingSen)} = ${rm(apartSen)}` + (mergeGap === 0
+  ? `, the merged bill's own ${rm(T1m.beforeRoundingSen)}.`
+  : `; the merged bill is ${rm(T1m.beforeRoundingSen)} — ${rm(Math.abs(mergeGap))} ${mergeGap > 0 ? 'more' : 'less'}, as expected: service charge and SST are rounded once per rate on the whole bill.`)
 
 // ── payments, refund, cash ──────────────────────────────────────────────────
 const t5Received = (Math.floor(T5.totalSen / 1000) + 1) * 1000      // the next RM 10 above: there is change
@@ -3060,7 +3257,7 @@ const steps: Step[] = [
   ['6', 'B', '**Move table** T2 → **T5**.', `T2 free, T5 occupied. T5: ${totalLine(T5)}.`],
   ['7', 'A', `**Takeaway** → 1 × ${md(P2.nameSnapshot)} + 1 × ${md(P1.nameSnapshot)} → Send. Note its bill number.`,
     `Takeaway prices. Takeaway: ${totalLine(TA)}.`],
-  ['8', 'A', "T1 → **Merge** → choose the takeaway bill.", `T1 keeps the takeaway's packaging fee: ${totalLine(T1m)}. (T1 ${rm(T1b.beforeRoundingSen)} + takeaway ${rm(TA.beforeRoundingSen)} before rounding = ${rm(T1m.beforeRoundingSen)}.)`],
+  ['8', 'A', "T1 → **Merge** → choose the takeaway bill.", `T1 keeps the takeaway's packaging fee: ${totalLine(T1m)}. (${mergeNote})`],
   ['9', 'A + B', `A: T5 → **Checkout** (leave the sheet open). B: T5 → Checkout → ${md(CASH)} → cash received **RM ${money(t5Received)}** → Pay.`,
     `B: change **${rm(t5Change)}**, receipt prints. A's sheet locks with the red note "This bill was paid on another iPad — do not charge the card terminal." — only **Close** works. A taps Close.`],
   ['10', 'A', `T1 → Checkout → ${md(CARD)} **RM ${money(t1Card)}** → Add; ${md(CASH)} **RM ${money(t1Cash)}**, cash received **RM ${money(t1Received)}** → Add → Pay ${rm(T1m.totalSen)}.`,
@@ -3073,8 +3270,8 @@ const steps: Step[] = [
     'Each sheet says it was recorded.'],
   ['14', 'A (offline spell)', `Turn A's Wi-Fi off. **T6**, pax 1 → 1 × ${md(P1.nameSnapshot)} → Send. Wi-Fi on.`,
     `While off: "1 order waiting to send". After: it sends by itself, ticket on ${P1.printRoute ?? '-'}. T6: ${totalLine(T6)}.`],
-  ['15', 'A (unsure reply)', `T6 → Checkout → ${md(QR)} ${rm(T6.totalSen)} → Add. Wi-Fi off → **Pay**. Wi-Fi on → **Check bill** → **Pay**.`,
-    'Off: "Not sure the payment went through…", method buttons, amounts and remove locked, only Try again / Check bill / Back. Check bill: "The bill is still open — the payment was not recorded. Check the lines and press Pay." Pay: paid, receipt prints.'],
+  ['15', 'A (unsure reply, on the iPad)', `On iPad A (Safari): T6 → Checkout → ${md(QR)} ${rm(T6.totalSen)} → Add. Wi-Fi off → **Pay**. Wi-Fi on → **Check bill** → **Pay**.`,
+    'Off: "Not sure the payment went through…", method buttons, amounts and remove locked, only Try again / Check bill / Back. (Safari reports the dropped request as "Load failed": if the sheet shows "TypeError: Load failed" with the lines unlocked instead, the unsure-reply lock fails on the iPad — fail this step.) Check bill: "The bill is still open — the payment was not recorded. Check the lines and press Pay." Pay: paid, receipt prints.'],
   ['16', 'A', `**Close shift** → count the drawer: enter **RM ${money(expectedCash)}** → Close.`,
     'No open bills warned. Closes at once (variance 0.00). The Z report prints on the receipt printer and shows on screen — compare it with the next section.'],
 ]
@@ -3099,8 +3296,13 @@ sheet. Bill numbers are not known in advance: bills are named by their table.
   **Approve POS voids & refunds** and a POS PIN is the approver for every "approver + PIN" below.
 - The print agent runs with \`BRANCH_ID=${facts.branchId}\` and a login of Demo staff; the ZY301 is on
   with paper. Receipts go to ${settings.receiptRoute ?? '— no receipt printer set (set one in POS settings first)'}.
-- When the facts were read: shift open **${facts.openShift ? 'yes — close it first' : 'no'}**, open bills
-  **${facts.openBills}**${facts.openBills ? ' — void or pay them first' : ''}. A phone with a camera for the QR order.
+- Close any open shift of Demo and pay or void every open bill **before** the facts are read (\`facts.sql\`).
+  If you do it afterwards, run \`facts.sql\` again and regenerate this sheet: the expected Z report counts
+  the voids since the last close. When the facts were read: shift open **${facts.openShift ? 'yes — close it, then regenerate' : 'no'}**,
+  open bills **${facts.openBills}**${facts.openBills ? ' — clear them, then regenerate' : ''}.
+- Wrong PINs are counted per **login**: five wrong tries lock that login out of the approver for 10 minutes
+  on every iPad signed in with it. Give each cashier their own login on the pilot iPads.
+- A phone with a camera for the QR order.
 - Cash variance limit RM ${money(settings.cashVarianceLimitSen)}; SST registered: ${settings.sstRegistered ? 'yes' : 'no'};
   cash rounding: ${settings.cashRounding}.
 
@@ -3134,8 +3336,10 @@ ${steps.map((s) => `| ${s[0]} | ${s[3]} | | |`).join('\n')}
 
 ## Regenerating this sheet
 
-1. Run \`tools/run-sheet/facts.sql\` in the SQL editor of **craft-os-dev** (read-only) right before
-   the run, and save its one \`facts\` cell as a JSON file. Make no other voids on Demo after that.
+1. Close any open shift of Demo and clear its open bills first. Then run \`tools/run-sheet/facts.sql\` in
+   the SQL editor of **craft-os-dev** (read-only) right before the run, and save its one \`facts\` cell as a
+   JSON file. Make no other voids and close no shift on Demo after that — if you do, run it again and
+   regenerate.
 2. \`node --experimental-strip-types --no-warnings tools/run-sheet/figures.ts <facts.json> docs/pos/2026-10-25-simulated-run-sheet.md\`
 `
 writeFileSync(outPath, out)
@@ -3283,7 +3487,7 @@ Create `tools/run-sheet/facts.example.json` (a made-up menu, for checking the ge
 }
 ```
 
-- [ ] **Step 3: Check the generator on the fixture, then commit the tools.** Run: `mkdir -p .superpowers/sdd && node --experimental-strip-types --no-warnings tools/run-sheet/figures.ts tools/run-sheet/facts.example.json .superpowers/sdd/run-sheet-example.md` — Expected: `wrote .superpowers/sdd/run-sheet-example.md: T1 RM 101.50, T5 RM 21.90, T6 RM 13.90, expected cash RM 273.40` (the figures a full SQL run of these steps on this menu produced while planning). Run: `grep -c "| Expected cash | 273.40 |" .superpowers/sdd/run-sheet-example.md` — Expected: `1`. Run: `grep -c "undefined\|NaN" .superpowers/sdd/run-sheet-example.md` — Expected: `0`. Run: `npx vitest run` — Expected: 103 files, 899 tests pass. Run: `npx tsc -b` — Expected: no output.
+- [ ] **Step 3: Check the generator on the fixture, then commit the tools.** Run: `mkdir -p .superpowers/sdd && node --experimental-strip-types --no-warnings tools/run-sheet/figures.ts tools/run-sheet/facts.example.json .superpowers/sdd/run-sheet-example.md` — Expected: `wrote .superpowers/sdd/run-sheet-example.md: T1 RM 101.50, T5 RM 21.90, T6 RM 13.90, expected cash RM 273.40` (the figures a full SQL run of these steps on this menu produced while planning). Run: `grep -c "| Expected cash | 273.40 |" .superpowers/sdd/run-sheet-example.md` — Expected: `1`. Run: `grep -c "undefined\|NaN" .superpowers/sdd/run-sheet-example.md` — Expected: `0`. Run: `npx vitest run` — Expected: 103 files, 902 tests pass. Run: `npx tsc -b` — Expected: no output.
 
 ```bash
 git add tools/run-sheet/facts.sql tools/run-sheet/facts.ts tools/run-sheet/figures.ts tools/run-sheet/facts.example.json
@@ -3292,7 +3496,7 @@ git commit -m "feat(pos): run-sheet generator — figures from the Demo menu fac
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 4 (controller, craft-os-dev — dashboard SQL editor, read-only; the implementer does not touch the database):** confirm **craft-os-dev**. Load `tools/run-sheet/facts.sql` and run it. Copy the single `facts` cell into `.superpowers/sdd/run-sheet-facts.json` (git-ignored) in the worktree and hand it to the implementer. If `openShift` is true or `openBills` is not 0, tell the owner the sheet asks them to close / clear those first (the sheet says so too).
+- [ ] **Step 4 (controller, craft-os-dev — dashboard SQL editor, read-only; the implementer does not touch the database):** confirm **craft-os-dev**. **Before** running the query, Demo must have no open shift and no open bill: ask the owner to close the shift and pay or void the open bills first (closing a shift moves "the last close", and voiding adds voids, both of which the expected Z report counts). Then load `tools/run-sheet/facts.sql` and run it. Copy the single `facts` cell into `.superpowers/sdd/run-sheet-facts.json` (git-ignored) in the worktree and hand it to the implementer. If `openShift` is true or `openBills` is not 0 anyway, or a shift is closed or a void made on Demo after the query ran, run the query again and regenerate the sheet (Step 5) — the sheet says so too.
 
 - [ ] **Step 5: Generate the sheet and commit it.** Run: `mkdir -p docs/pos && node --experimental-strip-types --no-warnings tools/run-sheet/figures.ts .superpowers/sdd/run-sheet-facts.json docs/pos/2026-10-25-simulated-run-sheet.md` — Expected: `wrote docs/pos/2026-10-25-simulated-run-sheet.md: T1 RM …, T5 RM …, T6 RM …, expected cash RM …`. Read the sheet once: five products with real Demo names and prices, every step has an expectation, the Z report section and the results table are there; `grep -c "undefined\|NaN" docs/pos/2026-10-25-simulated-run-sheet.md` → `0`. Commit:
 
@@ -3308,10 +3512,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ## Open points (not in this plan)
 
 - `print_jobs_update` RLS policy: any signed-in staff member can still UPDATE the lifecycle columns of any branch's job directly (not through the RPCs). Outside the spec; a follow-up can drop the policy and the column grant now that every lifecycle change goes through the `security definer` RPCs.
-- Prod rollout order (owner): shifts schema → shifts functions → this migration → deploy; then set `BRANCH_ID` in the shop agent's `.env`.
+- Prod rollout order (owner): shifts schema → shifts functions → this migration → deploy. The print agent stays dev-only (`assertDevDatabase`): it gets its `BRANCH_ID` on prod when the agent is cleared for prod — not in this plan.
+- Prod pre-check before the migration (read-only; the backfill gives a takeaway merged into an **open** table bill its packaging fee and the fee's SST, so such a bill's total rises when the migration runs): `select count(*) from order_items oi join bills b on b.id = oi.bill_id where b.status = 'open' and b.order_type = 'dine_in' and oi.takeaway_fee_sen > 0` → `0`, or the owner settles those bills first (or tells the cashiers their totals will change).
 
 ## Self-review (done while planning)
 
 - Spec coverage: §1 → Tasks 1 (`pos_checkout_state`), 4, 5; §2 → Tasks 1 (`checkout_bill`, `pos_checkout_same_payments`), 4, 5; §3 → Task 1 (`void_order_item`, `bills.updated_at`) and Task 5 Step 6.2; §4 → Tasks 1 (column, trigger, backfill, `pos_compute_bill`, `pos_bill_totals`), 2; §5 → Task 1 (`pos_shift_report`, heading); §6 → Task 1 (`pos_pin_attempts`, `pos_pin_attempt`, `set_my_pos_pin`); §7 → Tasks 1 (RPCs) and 6; §8 → Task 7; SQL rules → Task 1 (STOP guard, re-run notes, notify, grants); Testing → Task 3 (verify + regression), Tasks 2, 4, 6 (Vitest), Task 5 Step 6 (browser).
 - Placeholders: none — every code step carries its full text; the run sheet's figures come from the controller's query by the committed generator (a data dependency, stated in Task 7).
-- Names: `pos_checkout_state`, `CheckoutState`, `followBill`, `FollowAction`, `PaySession`, `nextPay`, `checkEnded`, `fetchCheckoutState`, `branchIdFrom`, `isAgentJob`, `loginBranchProblem` are spelled the same in every task.
+- Names: `pos_checkout_state` (`p_checkout_ids uuid[]`), `CheckoutState`, `followBill`, `FollowAction`, `PaySession` (`earlierIds`), `nextPay`, `checkEnded`, `checkoutIds`, `fetchCheckoutState`, `looksOffline`, `branchIdFrom`, `isAgentJob`, `loginBranchProblem` are spelled the same in every task.
+- After the review (`.superpowers/sdd/hardening-plan-review.md`): I1 (Safari's "Load failed" — one shared `looksOffline`), M1 (a new PIN clears the approver's wrong tries), M2 (merged = apart up to 1 sen per shared rate), M3 (`p_checkout_ids`), M4 (backfill note and prod pre-check), M5 (apply on dev at the end of Task 1), M6 (voided state; takeaway-labelled-dine-in check), M7 (facts after closing the shift), M8 (agent dev-only), M9 (heading capitals recorded), M10 (load error cleared, one login per cashier, `grep -cE`) are applied.
