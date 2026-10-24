@@ -1,15 +1,17 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { fetchApprovers, fetchReasonTemplate, type Approval, type Approver } from './checkoutApi'
 import { DEFAULT_TEMPLATE, reasonProblem, type ReasonAction, type ReasonTemplate } from './reasons'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'Clear', '0', '⌫']
 
-/** Reason + approver + PIN, for voids and refunds. The PIN is checked by the
- *  protected RPC itself (onApprove), never by a separate call. */
-export default function ApprovalDialog({ branchId, action, title, summary, extra, extraProblem, approveDisabled, onApprove, onClose, onDone }: {
+/** Reason + approver + PIN, for voids, refunds, pay outs and a cash variance. The PIN is
+ *  checked by the protected RPC itself (onApprove), never by a separate call. */
+export default function ApprovalDialog({ branchId, action, askReason = true, reasonMissing, title, summary, extra, extraProblem, approveDisabled, onApprove, onClose, onDone }: {
   branchId: string
-  action: ReasonAction
+  action: ReasonAction | null           // null: no reason template (a reason is required, any wording)
+  askReason?: boolean                   // false: the reason was asked before (pay out)
+  reasonMissing?: string                // action null: the server's words for an empty reason
   title: string                         // "Void item"
   summary: string                       // "2 × Coffee Latte (COLD) · RM 26.00"
   extra?: ReactNode                     // refund: amount + method fields
@@ -27,9 +29,10 @@ export default function ApprovalDialog({ branchId, action, title, summary, extra
   const [pin, setPin] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const running = useRef(false)                    // a second tap in the same render must not send twice
 
   useEffect(() => {
-    fetchReasonTemplate(branchId, action).then((t) => setTemplate(t ?? DEFAULT_TEMPLATE), (e) => setError(msg(e)))
+    if (action) fetchReasonTemplate(branchId, action).then((t) => setTemplate(t ?? DEFAULT_TEMPLATE), (e) => setError(msg(e)))
     fetchApprovers().then((a) => {
       setApprovers(a)
       if (a.length === 1 && a[0].hasPin) setApproverId(a[0].staffId)
@@ -45,17 +48,19 @@ export default function ApprovalDialog({ branchId, action, title, summary, extra
   }
 
   const approve = async () => {
-    const problem = extraProblem ?? reasonProblem(template, reason)
+    const problem = extraProblem
+      ?? (!askReason ? null : action === null && reasonMissing && !reason.trim() ? reasonMissing : reasonProblem(template, reason))
       ?? (!approverId ? 'Choose who approves' : null)
       ?? (pin.length < 4 ? 'Enter the approver\'s PIN (4 to 6 digits)' : null)
     if (problem) { setError(problem); return }
-    setBusy(true); setError(null)
+    if (running.current) return
+    running.current = true; setBusy(true); setError(null)
     try {
       await onApprove({ reason: reason.trim(), approverId, pin })
       onDone()
     } catch (e) {
       setError(msg(e)); setPin('')
-    } finally { setBusy(false) }
+    } finally { running.current = false; setBusy(false) }
   }
 
   return (
@@ -67,7 +72,7 @@ export default function ApprovalDialog({ branchId, action, title, summary, extra
             <p className="text-sm text-brown-muted">{summary}</p>
           </div>
           {extra}
-          <div>
+          {askReason && <div>
             <div className="text-xs font-semibold uppercase text-brown-muted">Reason{template.compulsory ? '' : ' (optional)'}</div>
             <div className="mt-1 flex flex-wrap gap-2">
               {template.reasons.map((r) => (
@@ -77,9 +82,9 @@ export default function ApprovalDialog({ branchId, action, title, summary, extra
             </div>
             {template.allowOther && (
               <input className="mt-2 w-full rounded border border-border p-2 text-sm" placeholder={template.reasons.length ? 'Other reason' : 'Reason'}
-                value={other} onChange={(e) => { setOther(e.target.value); setChoice(''); setError(null) }} />
+                aria-label="Reason" value={other} onChange={(e) => { setOther(e.target.value); setChoice(''); setError(null) }} />
             )}
-          </div>
+          </div>}
           <div>
             <div className="text-xs font-semibold uppercase text-brown-muted">Approved by</div>
             {approvers === null && <p className="text-sm text-brown-muted">Loading…</p>}
