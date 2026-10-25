@@ -173,6 +173,7 @@ const productRows = [
   ['P3', P3, P3.required.length > 0 ? `0% SST — ${opt(P3)}` : '0% SST'],
   ['P4', P4, `food with a required choice — ${opt(P4)}`], ['P5', P5, 'coffee — the QR order'],
 ] as const
+const noRoute = [P1, P2, P3, P4, P5].some((p) => p.printRoute === null)    // ask for routes only when one is missing
 const out = `# Simulated business run — POS pre-pilot (Demo branch)
 
 Date: 2026-10-25 · Project: **craft-os-dev** · Branch: Demo (\`${facts.branchId}\`)
@@ -189,9 +190,9 @@ sheet. Bill numbers are not known in advance: bills are named by their table.
   **Approve POS voids & refunds** and a POS PIN is the approver for every "approver + PIN" below.
 - The print agent runs with \`BRANCH_ID=${facts.branchId}\` and a login of Demo staff; the ZY301 is on
   with paper. Receipts go to ${settings.receiptRoute ?? '— no receipt printer set (set one in POS settings first)'}.
-- Set a print route (Bar or Kitchen) on /menu for P1–P5 (or their categories' products), then regenerate
+${noRoute ? `- Set a print route (Bar or Kitchen) on /menu for P1–P5 (or their categories' products), then regenerate
   this sheet so the ticket lines name the printer. A product without a route prints no ticket.
-- Close any open shift of Demo and pay or void every open bill **before** the facts are read (\`facts.sql\`).
+` : ''}- Close any open shift of Demo and pay or void every open bill **before** the facts are read (\`facts.sql\`).
   If you do it afterwards, run \`facts.sql\` again and regenerate this sheet: the expected Z report counts
   the voids since the last close. When the facts were read: shift open **${facts.openShift ? 'yes — close it, then regenerate' : 'no'}**,
   open bills **${facts.openBills}**${facts.openBills ? ' — clear them, then regenerate' : ''}.

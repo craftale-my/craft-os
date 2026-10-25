@@ -14,8 +14,6 @@ sheet. Bill numbers are not known in advance: bills are named by their table.
   **Approve POS voids & refunds** and a POS PIN is the approver for every "approver + PIN" below.
 - The print agent runs with `BRANCH_ID=918afa23-e0d8-41b4-8ca3-19b3447479a6` and a login of Demo staff; the ZY301 is on
   with paper. Receipts go to Bar.
-- Set a print route (Bar or Kitchen) on /menu for P1–P5 (or their categories' products), then regenerate
-  this sheet so the ticket lines name the printer. A product without a route prints no ticket.
 - Close any open shift of Demo and pay or void every open bill **before** the facts are read (`facts.sql`).
   If you do it afterwards, run `facts.sql` again and regenerate this sheet: the expected Z report counts
   the voids since the last close. When the facts were read: shift open **no**,
