@@ -79,7 +79,7 @@ export function PageHeader({ title, count, hint, children }: {
 }
 
 /** /menu tables: a box that scrolls on its own (so the header can stick), row hover, numbers right-aligned. */
-export const tableBoxCls = 'max-h-[calc(100vh-14rem)] overflow-auto rounded-xl border border-border bg-card'
+export const tableBoxCls = 'max-h-[calc(100dvh-14rem)] overflow-auto rounded-xl border border-border bg-card'
 export const tableCls = 'w-full text-sm'
 export const theadCls = 'sticky top-0 z-10 bg-card text-left text-brown-muted shadow-[0_1px_0_theme(colors.border)]'
 export const thCls = 'px-3 py-2 font-medium'

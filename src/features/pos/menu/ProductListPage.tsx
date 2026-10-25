@@ -96,7 +96,7 @@ export default function ProductListPage() {
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
-          <button className="text-sm underline" onClick={() => void load()}>Try again</button>
+          <button className="text-sm underline" disabled={busy || uploadingId !== null} onClick={() => void load()}>Try again</button>
         </div>
       )}
       <OutcomeLine outcome={outcome} />

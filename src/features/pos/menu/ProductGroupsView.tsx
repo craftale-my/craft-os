@@ -52,7 +52,7 @@ export default function ProductGroupsView<V extends number | string | null>({ cf
     : null
   const isNone = openGroup !== null && openGroup.value === cfg.none
 
-  const show = (value: V) => { setOpen({ value }); setPicking(false); setOutcome(null) }
+  const show = (value: V) => { setOpen({ value }); setPicking(false); setNewText(null); setOutcome(null) }
   const back = () => { setOpen(null); setPicking(false); setOutcome(null) }
 
   const write = async (ids: string[], value: V, ok: string) => {
@@ -119,7 +119,7 @@ export default function ProductGroupsView<V extends number | string | null>({ cf
                     <span className="text-brown-muted"> · {plural(g.products.length)}</span>
                   </td>
                   <td className={`${tdCls} text-right`}>
-                    <button className={linkBtnCls} onClick={(e) => { e.stopPropagation(); show(g.value) }}>Open</button>
+                    <button className={linkBtnCls} aria-label={`Open ${g.label}`} onClick={(e) => { e.stopPropagation(); show(g.value) }}>Open</button>
                   </td>
                 </tr>
               ))}

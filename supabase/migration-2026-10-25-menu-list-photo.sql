@@ -2,6 +2,9 @@
 -- Craft OS — menu back-office tidy-up (2026-10-25): the Products list shows photos.
 -- Run on craft-os-dev after migration-2026-10-24-pos-menu-editor-fn.sql and
 -- migration-2026-10-24-pos-slots-photos.sql. Idempotent — safe to re-run.
+-- Prod: run it after the slots-photos and editor-fn files and BEFORE the deploy that carries the
+-- new Products page (the page reads image_path / image_updated_at from this function); the STOP
+-- guard below enforces that order.
 -- Plan: docs/superpowers/plans/2026-10-25-menu-backoffice-tidy.md
 -- Design: docs/superpowers/specs/2026-10-25-menu-backoffice-tidy-design.md §3
 --
@@ -19,7 +22,7 @@ do $$ begin
                   where table_schema = 'public' and table_name = 'menu_products' and column_name = 'image_path')
      or not exists (select 1 from information_schema.columns
                   where table_schema = 'public' and table_name = 'menu_products' and column_name = 'image_updated_at') then
-    raise exception 'STOP: menu_products.image_path is missing — run migration-2026-10-24-pos-slots-photos.sql first';
+    raise exception 'STOP: menu_products.image_path or image_updated_at is missing — run migration-2026-10-24-pos-slots-photos.sql first';
   end if;
   if to_regprocedure('menu_require_editor()') is null then
     raise exception 'STOP: run migration-2026-10-24-pos-menu-editor-fn.sql first (menu_require_editor is missing)';

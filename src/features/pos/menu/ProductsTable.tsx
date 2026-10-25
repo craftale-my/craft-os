@@ -9,6 +9,9 @@ import { productThumbUrl } from './photoUpload'
 import { numCls, rowCls, tableBoxCls, tableCls, tdCls, thCls, theadCls } from './editorUi'
 
 const stop = (e: MouseEvent) => e.stopPropagation()
+/** The tick cell is one label, so a tap anywhere in it ticks the box (and never opens the editor). */
+const tickCellCls = 'flex h-full min-h-12 w-14 cursor-pointer items-center justify-center'
+const tickCls = 'h-5 w-5 cursor-pointer'
 
 /** The Products page's one flat table (Feedme's layout). A click on a row opens the product editor;
  *  the tick box and the photo do their own thing instead. */
@@ -31,9 +34,11 @@ export default function ProductsTable({ rows, catalogs, selected, locked, upload
       <table className={tableCls}>
         <thead className={theadCls}>
           <tr>
-            <th className={`${thCls} w-10`}>
-              <input type="checkbox" aria-label="Select every product shown" disabled={locked || rows.length === 0}
-                checked={head === 'all'} ref={(el) => { if (el) el.indeterminate = head === 'some' }} onChange={onToggleAll} />
+            <th className={`${thCls} w-14 p-0`}>
+              <label className={tickCellCls}>
+                <input type="checkbox" className={tickCls} aria-label="Select every product shown" disabled={locked || rows.length === 0}
+                  checked={head === 'all'} ref={(el) => { if (el) el.indeterminate = head === 'some' }} onChange={onToggleAll} />
+              </label>
             </th>
             <th className={`${thCls} w-16`}>Photo</th>
             <th className={thCls}>Product</th>
@@ -52,9 +57,11 @@ export default function ProductsTable({ rows, catalogs, selected, locked, upload
             const variants = variantCountText(p.menu_variants)
             return (
               <tr key={p.id} className={`${rowCls} cursor-pointer ${p.is_active ? '' : 'text-brown-faint'}`} onClick={() => onOpen(p.id)}>
-                <td className={tdCls} onClick={stop}>
-                  <input type="checkbox" aria-label={`Select ${p.name}`} disabled={locked}
-                    checked={selected.has(p.id)} onChange={() => onToggle(p.id)} />
+                <td className="p-0 align-middle" onClick={stop}>
+                  <label className={tickCellCls}>
+                    <input type="checkbox" className={tickCls} aria-label={`Select ${p.name}`} disabled={locked}
+                      checked={selected.has(p.id)} onChange={() => onToggle(p.id)} />
+                  </label>
                 </td>
                 <td className={tdCls} onClick={stop}>
                   <button type="button" disabled={locked} onClick={() => onPhoto(p.id)}

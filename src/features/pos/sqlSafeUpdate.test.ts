@@ -185,7 +185,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(sql).toMatch(/'image_path', p\.image_path, 'image_updated_at', p\.image_updated_at/)
     expect(sql).toMatch(/revoke all on function menu_product_list\(\) from public, anon;/)
     expect(sql).toMatch(/grant execute on function menu_product_list\(\) to authenticated;/)
-    expect(sql).toMatch(/raise exception 'STOP: menu_products\.image_path is missing/)
+    expect(sql).toMatch(/raise exception 'STOP: menu_products\.image_path or image_updated_at is missing/)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
   })
 })
