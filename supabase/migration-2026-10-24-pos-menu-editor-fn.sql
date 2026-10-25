@@ -13,6 +13,9 @@
 -- group, and a catalog's add-on price override (orders snapshot names and prices).
 -- Every DELETE / UPDATE has a WHERE: Supabase's API role runs pg-safeupdate
 -- (src/features/pos/sqlSafeUpdate.test.ts scans this file).
+-- Re-run note (2026-10-25): menu_product_list is canonical in
+-- migration-2026-10-25-menu-list-photo.sql (it adds each product's photo). Re-running
+-- this file brings back the list without photos — re-run that file afterwards.
 -- ============================================================================
 
 do $$ begin

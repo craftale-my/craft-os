@@ -15,11 +15,15 @@ export interface MenuProductRow {
   takeaway_fee_sen: number
   sort_order: number
   category_id: string | null
+  /** the product photo: a path in the menu-images bucket, and when it was set (the thumbnail's cache-buster) */
+  image_path: string | null
+  image_updated_at: string | null
   category: { name: string; sort_order: number } | null
   menu_variants: MenuVariantRow[]
   catalog_ids: string[]
 }
-export type ProductPatch = Partial<Pick<MenuProductRow, 'sst_rate_bp' | 'print_route'>>
+/** What the Products page's bulk bar and the Takeaway fees / Print routes pages change. */
+export type ProductPatch = Partial<Pick<MenuProductRow, 'sst_rate_bp' | 'print_route' | 'takeaway_fee_sen' | 'is_active'>>
 
 /** Every product, switched-off ones too, in one call (menu_product_list: one JSON
  *  value, so PostgREST's 1000-row cap never cuts the list short). Edit menu only. */
@@ -29,7 +33,7 @@ export async function fetchMenu(): Promise<MenuProductRow[]> {
   return (data ?? []) as MenuProductRow[]
 }
 
-/** One patch for many products (e.g. a whole category's print route), written in
+/** One patch for many products (the bulk bar, Takeaway fees, Print routes), written in
  *  chunks of at most 100 ids so the request URL stays short. A chunk that fails
  *  stops the rest; chunks already written stay written. */
 export async function updateProducts(ids: string[], patch: ProductPatch): Promise<void> {

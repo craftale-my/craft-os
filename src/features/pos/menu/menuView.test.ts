@@ -5,8 +5,8 @@ import type { MenuProductRow } from './menuApi'
 function row(over: Partial<MenuProductRow>): MenuProductRow {
   return {
     id: over.name ?? 'x', name: 'x', is_active: true, is_addon: false, sst_rate_bp: 600, print_route: null,
-    takeaway_fee_sen: 0, sort_order: 0, category_id: 'tea', category: { name: 'TEA', sort_order: 0 }, menu_variants: [],
-    catalog_ids: [], ...over,
+    takeaway_fee_sen: 0, sort_order: 0, category_id: 'tea', category: { name: 'TEA', sort_order: 0 }, image_path: null,
+    image_updated_at: null, menu_variants: [], catalog_ids: [], ...over,
   }
 }
 const v = (price_sen: number, is_active = true) => ({ id: String(price_sen), name: 'v', price_sen, is_active, sort_order: 0 })

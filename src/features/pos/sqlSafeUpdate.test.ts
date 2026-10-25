@@ -7,7 +7,8 @@ import { readFileSync, readdirSync } from 'node:fs'
 // function body for such a statement.
 
 const SUPABASE = new URL('../../../supabase/', import.meta.url)
-const POS_MIGRATION = /^migration-.*-pos-.*\.sql$/
+// the menu back-office's own migrations (migration-*-menu-*.sql) are scanned too
+const POS_MIGRATION = /^migration-.*-(pos|menu)-.*\.sql$/
 
 /** Comments removed and string literals emptied; dollar quotes kept, since a
  *  function body is code. Line breaks are kept so error lines still match. */
@@ -122,6 +123,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-24-pos-shifts.sql',
       'migration-2026-10-24-pos-shifts-fn.sql',
       'migration-2026-10-25-pos-hardening.sql',
+      'migration-2026-10-25-menu-list-photo.sql',
     ]))
   })
 
@@ -174,5 +176,16 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'order_items_order_type', 'checkout_bill', 'void_order_item', 'pos_pin_attempt', 'set_my_pos_pin',
       'claim_print_job', 'finish_print_job', 'requeue_print_job',
     ]))
+  })
+
+  it('scans the menu back-office tidy-up: menu_product_list with photos, same grants, a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-10-25-menu-list-photo.sql', SUPABASE), 'utf8')
+    expect(functionBodies(sql).map((b) => b.name)).toEqual(['menu_product_list'])
+    expect(sql).toMatch(/security definer set search_path = public, pg_temp as \$\$/)
+    expect(sql).toMatch(/'image_path', p\.image_path, 'image_updated_at', p\.image_updated_at/)
+    expect(sql).toMatch(/revoke all on function menu_product_list\(\) from public, anon;/)
+    expect(sql).toMatch(/grant execute on function menu_product_list\(\) to authenticated;/)
+    expect(sql).toMatch(/raise exception 'STOP: menu_products\.image_path is missing/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
   })
 })
