@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { UNCATEGORISED, formatPrice, groupMenu, menuTab, soldIn, type MenuFilter } from './menuView'
+import { MENU_TABS, UNCATEGORISED, formatPrice, groupMenu, menuTab, soldIn, type MenuFilter } from './menuView'
 import type { MenuProductRow } from './menuApi'
 
 function row(over: Partial<MenuProductRow>): MenuProductRow {
@@ -28,8 +28,18 @@ describe('soldIn', () => {
   })
 })
 
-describe('menuTab', () => {
-  it('maps every /menu path to its tab', () => {
+describe('the /menu sub-menu', () => {
+  it("lists the pages in Feedme's order", () => {
+    expect(MENU_TABS.map((t) => t.label)).toEqual([
+      'Products', 'Categories', 'Add-on groups', 'Takeaway fees', 'Schedules', 'Print routes', 'Catalogs', 'Import from Feedme',
+    ])
+    expect(MENU_TABS.map((t) => t.to)).toEqual([
+      '/menu', '/menu/categories', '/menu/groups', '/menu/takeaway-fees', '/menu/schedules', '/menu/print-routes',
+      '/menu/catalogs', '/menu/import',
+    ])
+  })
+
+  it('highlights the page a path belongs to', () => {
     expect(menuTab('/menu')).toBe('products')
     expect(menuTab('/menu/')).toBe('products')
     expect(menuTab('/menu/products/new')).toBe('products')
@@ -38,7 +48,13 @@ describe('menuTab', () => {
     expect(menuTab('/menu/categories')).toBe('categories')
     expect(menuTab('/menu/schedules')).toBe('schedules')
     expect(menuTab('/menu/schedules/abc')).toBe('schedules')
+    expect(menuTab('/menu/takeaway-fees')).toBe('fees')
+    expect(menuTab('/menu/print-routes')).toBe('routes')
     expect(menuTab('/menu/import')).toBe('import')
+  })
+
+  it('every item highlights itself', () => {
+    for (const t of MENU_TABS) expect(menuTab(t.to)).toBe(t.id)
   })
 })
 

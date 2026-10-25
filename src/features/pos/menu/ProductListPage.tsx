@@ -4,7 +4,6 @@ import { Link } from 'react-router-dom'
 import { fetchMenu, updateProducts, type MenuProductRow, type ProductPatch } from './menuApi'
 import { fetchLookups, type MenuLookups } from './menuEditorApi'
 import { PRINT_ROUTES, SST_CHOICES, UNCATEGORISED, formatPrice, groupMenu, soldIn, type MenuFilter } from './menuView'
-import MenuTabs from './MenuTabs'
 import { OutcomeLine, btnCls, errorText, inputCls, type Outcome } from './editorUi'
 
 /** /menu — the master product list. Each row opens the product editor; SST and the
@@ -54,12 +53,11 @@ export default function ProductListPage() {
     }
   }
 
-  if (rows === null && !loadError) return <div className="mx-auto max-w-6xl space-y-4 p-6"><MenuTabs /><p className="text-sm">Loading menu…</p></div>
+  if (rows === null && !loadError) return <div className="mx-auto max-w-6xl space-y-4 p-6"><p className="text-sm">Loading menu…</p></div>
 
   const set = (patch: Partial<MenuFilter>) => setFilter((f) => ({ ...f, ...patch }))
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-6">
-      <MenuTabs />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Products</h1>

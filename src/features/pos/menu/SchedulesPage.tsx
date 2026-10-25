@@ -4,8 +4,7 @@ import { Link } from 'react-router-dom'
 import { deleteSchedule, fetchSchedules, reorderSchedules, type ScheduleSummary } from './slotsApi'
 import { reorderedIds } from './listAdmin'
 import { windowLabel } from './timeSlots'
-import MenuTabs from './MenuTabs'
-import { OutcomeLine, btnCls, errorText, linkBtnCls, type Outcome } from './editorUi'
+import { OutcomeLine, PageHeader, btnCls, errorText, linkBtnCls, type Outcome } from './editorUi'
 
 /** /menu/schedules — Feedme's Scheduler: named time slots, each ticked on the products that
  *  follow it. Reorder and delete here (each outcome on its own row — a delete's above the
@@ -81,17 +80,10 @@ export default function SchedulesPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-6">
-      <MenuTabs />
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-semibold">Schedules</h1>
-          <p className="text-sm text-brown-muted">
-            A product that follows a schedule sells only inside its time windows: hidden on QR and greyed out at the counter
-            outside them. A product that follows none sells at any time.
-          </p>
-        </div>
+      <PageHeader title="Schedules" count={schedules?.length}
+        hint="A product that follows a schedule sells only inside its time windows: hidden on QR and greyed out at the counter outside them. A product that follows none sells at any time.">
         <Link to="/menu/schedules/new" className={btnCls}>New schedule</Link>
-      </div>
+      </PageHeader>
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />

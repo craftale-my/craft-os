@@ -3,8 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchLookups, reorderCategories, saveCategory, setCategoryActive, type LookupCategory } from './menuEditorApi'
 import { listNameProblem, reorderedIds } from './listAdmin'
 import { cleanName } from './menuForms'
-import MenuTabs from './MenuTabs'
-import { OutcomeLine, btnCls, errorText, inputCls, linkBtnCls, type Outcome } from './editorUi'
+import { OutcomeLine, PageHeader, btnCls, errorText, inputCls, linkBtnCls, type Outcome } from './editorUi'
 
 /** /menu/categories — create, rename, reorder (the order of the pad and QR) and switch
  *  categories on or off. Each action shows its outcome on its own row; one runs at a time.
@@ -91,11 +90,7 @@ export default function CategoriesPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-6">
-      <MenuTabs />
-      <div>
-        <h1 className="text-2xl font-semibold">Categories</h1>
-        <p className="text-sm text-brown-muted">The order here is the order of the counter and the QR menu.</p>
-      </div>
+      <PageHeader title="Categories" count={categories?.length} hint="The order here is the order of the counter and the QR menu." />
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />

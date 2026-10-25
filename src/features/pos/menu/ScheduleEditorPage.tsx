@@ -6,10 +6,9 @@ import { fetchScheduleDetail, fetchSchedules, saveSchedule, type ScheduleSummary
 import {
   emptyScheduleForm, scheduleFormFromDetail, scheduleFormUnsaved, schedulePayload, scheduleProblems, type ScheduleForm, type ScheduleSection,
 } from './scheduleForm'
-import MenuTabs from './MenuTabs'
 import WindowsSection from './schedule/WindowsSection'
 import ProductsSection from './schedule/ProductsSection'
-import { OutcomeLine, Section, btnCls, errorText, inputCls, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
+import { OutcomeLine, PageHeader, Section, btnCls, errorText, inputCls, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
 
 /** /menu/schedules/new and /menu/schedules/:id — a named schedule (Feedme's Scheduler):
  *  its time windows and the products that follow it, saved at once by menu_save_schedule.
@@ -95,11 +94,9 @@ export default function ScheduleEditorPage({ scheduleId }: { scheduleId: string 
   const set = (patch: Partial<ScheduleForm>) => form && change({ ...form, ...patch })
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
-      <MenuTabs />
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 className="text-2xl font-semibold">{scheduleId ? form?.name || 'Schedule' : 'New schedule'}</h1>
+      <PageHeader title={scheduleId ? form?.name || 'Schedule' : 'New schedule'}>
         <Link to="/menu/schedules" className="text-sm underline">Back to schedules</Link>
-      </div>
+      </PageHeader>
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />

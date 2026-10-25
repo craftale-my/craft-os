@@ -5,14 +5,13 @@ import { fetchLookups, fetchProductDetail, saveProduct, type MenuLookups } from 
 import {
   emptyProductForm, productFormDirty, productFormFromDetail, productPayload, productProblems, type ProductForm, type ProductSection,
 } from './productForm'
-import MenuTabs from './MenuTabs'
 import DetailsSection from './product/DetailsSection'
 import VariantsSection from './product/VariantsSection'
 import GroupsSection from './product/GroupsSection'
 import CatalogsSection from './product/CatalogsSection'
 import PhotoSection from './product/PhotoSection'
 import TimeSlotsSection from './product/TimeSlotsSection'
-import { OutcomeLine, btnCls, errorText, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
+import { OutcomeLine, PageHeader, btnCls, errorText, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
 
 /** /menu/products/new and /menu/products/:id. Everything is saved at once by
  *  menu_save_product (one transaction); a problem shows in its own section, the
@@ -88,11 +87,9 @@ export default function ProductEditorPage({ productId }: { productId: string | n
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
-      <MenuTabs />
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 className="text-2xl font-semibold">{productId ? form?.name || 'Product' : 'New product'}</h1>
+      <PageHeader title={productId ? form?.name || 'Product' : 'New product'}>
         <Link to="/menu" className="text-sm underline">Back to products</Link>
-      </div>
+      </PageHeader>
       {feedmeId && (
         <p className="text-xs text-brown-muted">
           Imported from Feedme. Craft OS is the master of the menu: importing again overwrites what you change here.

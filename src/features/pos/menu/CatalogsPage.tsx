@@ -6,8 +6,7 @@ import {
 } from './menuEditorApi'
 import { catalogUseText, copyName, listNameProblem, reorderedIds } from './listAdmin'
 import { cleanName } from './menuForms'
-import MenuTabs from './MenuTabs'
-import { OutcomeLine, btnCls, errorText, inputCls, linkBtnCls, type Outcome } from './editorUi'
+import { OutcomeLine, PageHeader, btnCls, errorText, inputCls, linkBtnCls, type Outcome } from './editorUi'
 
 type Editing = { id: string; mode: 'rename' | 'duplicate'; name: string } | null
 
@@ -92,14 +91,8 @@ export default function CatalogsPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
-      <MenuTabs />
-      <div>
-        <h1 className="text-2xl font-semibold">Catalogs</h1>
-        <p className="text-sm text-brown-muted">
-          A catalog picks products from the menu and sells them at its own prices. Which catalog a branch uses for each
-          kind of order is set in POS settings.
-        </p>
-      </div>
+      <PageHeader title="Catalogs" count={catalogs?.length}
+        hint="A catalog picks products from the menu and sells them at its own prices. Which catalog a branch uses for each kind of order is set in POS settings." />
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />

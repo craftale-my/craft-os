@@ -1,5 +1,6 @@
 // src/features/pos/menu/MenuRoutes.tsx
 import { Navigate, Route, Routes, useParams } from 'react-router-dom'
+import MenuShell from './MenuShell'
 import ProductListPage from './ProductListPage'
 import ProductEditorPage from './ProductEditorPage'
 import CatalogsPage from './CatalogsPage'
@@ -32,24 +33,26 @@ function GroupEditorRoute() {
   return <GroupEditorPage key={id ?? 'new'} groupId={id ?? null} />
 }
 
-/** Everything under /menu (App.tsx gates it on Edit menu). */
+/** Everything under /menu (App.tsx gates it on Edit menu), inside the sub-menu frame. */
 export default function MenuRoutes() {
   return (
-    <Routes>
-      <Route index element={<ProductListPage />} />
-      <Route path="products/new" element={<ProductEditorRoute />} />
-      <Route path="products/:id" element={<ProductEditorRoute />} />
-      <Route path="catalogs" element={<CatalogsPage />} />
-      <Route path="catalogs/:id" element={<CatalogGridRoute />} />
-      <Route path="groups" element={<GroupListPage />} />
-      <Route path="groups/new" element={<GroupEditorRoute />} />
-      <Route path="groups/:id" element={<GroupEditorRoute />} />
-      <Route path="categories" element={<CategoriesPage />} />
-      <Route path="schedules" element={<SchedulesPage />} />
-      <Route path="schedules/new" element={<ScheduleEditorRoute />} />
-      <Route path="schedules/:id" element={<ScheduleEditorRoute />} />
-      <Route path="import" element={<MenuImportPage />} />
-      <Route path="*" element={<Navigate to="/menu" replace />} />
-    </Routes>
+    <MenuShell>
+      <Routes>
+        <Route index element={<ProductListPage />} />
+        <Route path="products/new" element={<ProductEditorRoute />} />
+        <Route path="products/:id" element={<ProductEditorRoute />} />
+        <Route path="catalogs" element={<CatalogsPage />} />
+        <Route path="catalogs/:id" element={<CatalogGridRoute />} />
+        <Route path="groups" element={<GroupListPage />} />
+        <Route path="groups/new" element={<GroupEditorRoute />} />
+        <Route path="groups/:id" element={<GroupEditorRoute />} />
+        <Route path="categories" element={<CategoriesPage />} />
+        <Route path="schedules" element={<SchedulesPage />} />
+        <Route path="schedules/new" element={<ScheduleEditorRoute />} />
+        <Route path="schedules/:id" element={<ScheduleEditorRoute />} />
+        <Route path="import" element={<MenuImportPage />} />
+        <Route path="*" element={<Navigate to="/menu" replace />} />
+      </Routes>
+    </MenuShell>
   )
 }

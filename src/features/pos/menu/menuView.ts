@@ -14,14 +14,17 @@ export const CATALOG_AVAILABILITY_LABELS: Record<Availability, string> = {
   counter_only: 'Counter only',
 }
 
-/** The /menu sub-navigation. `menuTab()` decides which tab a path belongs to. */
-export type MenuTab = 'products' | 'catalogs' | 'groups' | 'categories' | 'schedules' | 'import'
-export const MENU_TABS: { id: Exclude<MenuTab, 'import'>; label: string; to: string }[] = [
+/** The /menu sub-menu, in Feedme's order. `menuTab()` decides which item a path belongs to. */
+export type MenuTab = 'products' | 'categories' | 'groups' | 'fees' | 'schedules' | 'routes' | 'catalogs' | 'import'
+export const MENU_TABS: { id: MenuTab; label: string; to: string }[] = [
   { id: 'products', label: 'Products', to: '/menu' },
-  { id: 'catalogs', label: 'Catalogs', to: '/menu/catalogs' },
-  { id: 'groups', label: 'Add-on groups', to: '/menu/groups' },
   { id: 'categories', label: 'Categories', to: '/menu/categories' },
+  { id: 'groups', label: 'Add-on groups', to: '/menu/groups' },
+  { id: 'fees', label: 'Takeaway fees', to: '/menu/takeaway-fees' },
   { id: 'schedules', label: 'Schedules', to: '/menu/schedules' },
+  { id: 'routes', label: 'Print routes', to: '/menu/print-routes' },
+  { id: 'catalogs', label: 'Catalogs', to: '/menu/catalogs' },
+  { id: 'import', label: 'Import from Feedme', to: '/menu/import' },
 ]
 export function menuTab(pathname: string): MenuTab {
   const rest = pathname.replace(/^\/menu\/?/, '')
@@ -29,6 +32,8 @@ export function menuTab(pathname: string): MenuTab {
   if (rest.startsWith('groups')) return 'groups'
   if (rest.startsWith('categories')) return 'categories'
   if (rest.startsWith('schedules')) return 'schedules'
+  if (rest.startsWith('takeaway-fees')) return 'fees'
+  if (rest.startsWith('print-routes')) return 'routes'
   if (rest.startsWith('import')) return 'import'
   return 'products'
 }

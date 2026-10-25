@@ -3,9 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchCatalogGrid, type CatalogGrid, type GridProduct } from './menuEditorApi'
 import { gridSections, type GridShow } from './catalogGrid'
-import MenuTabs from './MenuTabs'
 import GridRow from './catalog/GridRow'
-import { OutcomeLine, errorText, inputCls } from './editorUi'
+import { OutcomeLine, PageHeader, errorText, inputCls } from './editorUi'
 
 /** /menu/catalogs/:id — every product with this catalog's availability and prices,
  *  one row saved at a time. The route remounts this page per catalog (MenuRoutes keys it). */
@@ -35,14 +34,10 @@ export default function CatalogGridPage({ catalogId }: { catalogId: string }) {
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-6">
-      <MenuTabs />
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-semibold">{grid?.catalog.name ?? 'Catalog'}{grid && !grid.catalog.isActive ? ' (off)' : ''}</h1>
-          {grid && <p className="text-sm text-brown-muted">Sells {sold} of {grid.products.length} products. Grey prices are the default prices.</p>}
-        </div>
+      <PageHeader title={`${grid?.catalog.name ?? 'Catalog'}${grid && !grid.catalog.isActive ? ' (off)' : ''}`}
+        hint={grid ? `Sells ${sold} of ${grid.products.length} products. Grey prices are the default prices.` : undefined}>
         <Link to="/menu/catalogs" className="text-sm underline">Back to catalogs</Link>
-      </div>
+      </PageHeader>
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />

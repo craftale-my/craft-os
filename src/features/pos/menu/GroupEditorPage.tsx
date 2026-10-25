@@ -3,9 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchGroupDetail, fetchLookups, saveGroup, type GroupDetail, type MenuLookups } from './menuEditorApi'
 import { emptyGroupForm, groupFormDirty, groupFormFromDetail, groupPayload, groupProblems, type GroupForm, type GroupSection } from './groupForm'
-import MenuTabs from './MenuTabs'
 import OptionsSection from './group/OptionsSection'
-import { OutcomeLine, Section, btnCls, errorText, inputCls, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
+import { OutcomeLine, PageHeader, Section, btnCls, errorText, inputCls, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
 
 /** /menu/groups/new and /menu/groups/:id. Saved at once by menu_save_group. */
 export default function GroupEditorPage({ groupId }: { groupId: string | null }) {
@@ -78,11 +77,9 @@ export default function GroupEditorPage({ groupId }: { groupId: string | null })
   const set = (patch: Partial<GroupForm>) => form && change({ ...form, ...patch })
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
-      <MenuTabs />
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 className="text-2xl font-semibold">{groupId ? form?.name || 'Add-on group' : 'New add-on group'}</h1>
+      <PageHeader title={groupId ? form?.name || 'Add-on group' : 'New add-on group'}>
         <Link to="/menu/groups" className="text-sm underline">Back to add-on groups</Link>
-      </div>
+      </PageHeader>
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />

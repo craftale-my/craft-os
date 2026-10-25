@@ -2,8 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchLookups, type LookupGroup } from './menuEditorApi'
-import MenuTabs from './MenuTabs'
-import { OutcomeLine, btnCls, errorText } from './editorUi'
+import { OutcomeLine, PageHeader, btnCls, errorText, numCls, rowCls, tableBoxCls, tableCls, tdCls, thCls, theadCls } from './editorUi'
 
 /** /menu/groups — every add-on group, switched-off ones last. */
 export default function GroupListPage() {
@@ -22,14 +21,10 @@ export default function GroupListPage() {
   const sorted = [...(groups ?? [])].sort((a, b) => Number(b.isActive) - Number(a.isActive))
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
-      <MenuTabs />
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Add-on groups</h1>
-          <p className="text-sm text-brown-muted">Choices offered with a product (milk, sugar level, extra shot…), with a price per catalog.</p>
-        </div>
+      <PageHeader title="Add-on groups" count={groups?.length}
+        hint="Choices offered with a product (milk, sugar level, extra shot…), with a price per catalog.">
         <Link to="/menu/groups/new" className={btnCls}>New add-on group</Link>
-      </div>
+      </PageHeader>
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
@@ -39,21 +34,26 @@ export default function GroupListPage() {
       {groups === null && !loadError && <p className="text-sm">Loading…</p>}
       {groups?.length === 0 && <p className="rounded border border-border p-6 text-sm">No add-on groups yet.</p>}
       {sorted.length > 0 && (
-        <table className="w-full rounded border border-border bg-card text-sm">
-          <thead className="text-left text-brown-muted">
-            <tr><th className="px-4 py-2">Group</th><th className="px-4 py-2">Choose</th><th className="px-4 py-2">Options on</th><th className="px-4 py-2">Used by</th></tr>
-          </thead>
-          <tbody>
-            {sorted.map((g) => (
-              <tr key={g.id} className={`border-t border-border ${g.isActive ? '' : 'text-brown-faint'}`}>
-                <td className="px-4 py-2"><Link to={`/menu/groups/${g.id}`} className="hover:underline">{g.name}</Link>{g.isActive ? '' : ' (off)'}</td>
-                <td className="px-4 py-2">{g.min}–{g.max}</td>
-                <td className="px-4 py-2">{g.optionCount}</td>
-                <td className="px-4 py-2">{g.productCount} product{g.productCount === 1 ? '' : 's'}</td>
+        <div className={tableBoxCls}>
+          <table className={tableCls}>
+            <thead className={theadCls}>
+              <tr>
+                <th className={thCls}>Group</th><th className={thCls}>Choose</th>
+                <th className={`${thCls} ${numCls}`}>Options on</th><th className={thCls}>Used by</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {sorted.map((g) => (
+                <tr key={g.id} className={`${rowCls} ${g.isActive ? '' : 'text-brown-faint'}`}>
+                  <td className={tdCls}><Link to={`/menu/groups/${g.id}`} className="hover:underline">{g.name}</Link>{g.isActive ? '' : ' (off)'}</td>
+                  <td className={tdCls}>{g.min}–{g.max}</td>
+                  <td className={`${tdCls} ${numCls}`}>{g.optionCount}</td>
+                  <td className={tdCls}>{g.productCount} product{g.productCount === 1 ? '' : 's'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )

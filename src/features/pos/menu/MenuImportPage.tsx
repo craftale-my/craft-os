@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { buildCatalogsImport, readFeedmeExport, type CatalogsImport } from './feedmeExport'
 import { countCatalogs, importFeedme, type ImportReport } from './menuApi'
 import { IMPORT_CONFIRM_WORD, MASTER_WARNING_INTRO, MASTER_WARNING_KEPT, MASTER_WARNING_LOSSES, canImport, catalogSummary } from './importView'
-import MenuTabs from './MenuTabs'
+import { PageHeader } from './editorUi'
 import PhotoImportSection from './PhotoImportSection'
 
 type Stage =
@@ -57,8 +57,7 @@ export default function MenuImportPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-6">
-      <MenuTabs />
-      <h1 className="text-2xl font-semibold">Import menu from Feedme</h1>
+      <PageHeader title="Import menu from Feedme" />
       <p className="text-sm text-gray-500">
         In the Feedme portal go to Menu → Products → Export and choose the downloaded <code>books_….zip</code>.
         The import loads every product from the “Default Catalog” sheet and every Feedme catalog with its own products
