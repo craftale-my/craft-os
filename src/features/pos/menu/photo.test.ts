@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   PHOTO_MAX_HEIGHT, PHOTO_MAX_INPUT_BYTES, PHOTO_MAX_WIDTH, PHOTO_QUALITY, imageTypeFromName, photoInputProblem, photoPath, resizeTarget,
+  versionedPhotoUrl,
 } from './photo'
 
 describe('photo rules', () => {
@@ -41,5 +42,13 @@ describe('photo rules', () => {
     expect(imageTypeFromName('8812.webp')).toBe('image/webp')
     expect(imageTypeFromName('notes.txt')).toBe('')
     expect(imageTypeFromName('8812')).toBe('')
+  })
+  it('versions a photo URL by when the photo was set, so a cached older picture never shows', () => {
+    const url = 'https://x.supabase.co/storage/v1/object/public/menu-images/products/p/abcdefgh.webp'
+    const ms = Date.parse('2026-10-25T03:00:00.123Z')
+    expect(versionedPhotoUrl(url, '2026-10-25T03:00:00.123456+00:00')).toBe(`${url}?v=${ms}`)
+    expect(versionedPhotoUrl(`${url}?a=1`, '2026-10-25T03:00:00.123Z')).toBe(`${url}?a=1&v=${ms}`)
+    expect(versionedPhotoUrl(url, null)).toBe(url)
+    expect(versionedPhotoUrl(url, 'not a date')).toBe(url)
   })
 })

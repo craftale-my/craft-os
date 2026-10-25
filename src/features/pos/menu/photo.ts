@@ -44,3 +44,11 @@ export function photoPath(productId: string, mime: PhotoMime, random: string): s
   if (name.length < 8) throw new Error('A photo name needs at least 8 letters or digits')
   return `products/${productId}/${name}.${mime === 'image/webp' ? 'webp' : 'jpg'}`
 }
+
+/** The public URL with the time the photo was set as a version (?v=<ms>), so a browser never shows
+ *  a cached older picture; unchanged when that time is missing or unreadable. */
+export function versionedPhotoUrl(url: string, updatedAt: string | null): string {
+  const ms = updatedAt ? Date.parse(updatedAt) : NaN
+  if (Number.isNaN(ms)) return url
+  return `${url}${url.includes('?') ? '&' : '?'}v=${ms}`
+}

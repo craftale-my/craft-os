@@ -4,10 +4,12 @@
  *  import's Photos step. The rules themselves are in photo.ts, the canvas work in photoResize.ts. */
 import { supabase } from '../../../shared/lib/supabase'
 import { fetchProductExtras, setProductImage } from './slotsApi'
-import { PHOTO_BUCKET, photoInputProblem, photoPath } from './photo'
+import { PHOTO_BUCKET, photoInputProblem, photoPath, versionedPhotoUrl } from './photo'
 import { resizePhoto } from './photoResize'
 
 export const publicPhotoUrl = (path: string): string => supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path).data.publicUrl
+/** A list thumbnail (Products, Takeaway fees, Print routes): the public URL, versioned by when the photo was set. */
+export const productThumbUrl = (path: string, updatedAt: string | null): string => versionedPhotoUrl(publicPhotoUrl(path), updatedAt)
 
 /** Resizes and uploads a new file, points the product at it, then deletes the file it replaced.
  *  Returns a warning when only that last clean-up failed (the photo itself is saved).
