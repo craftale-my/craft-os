@@ -13,11 +13,11 @@ const [factsPath, outPath] = process.argv.slice(2)
 if (!factsPath || !outPath) throw new Error('Usage: figures.ts <facts.json> <out.md>')
 const facts = readFacts(factsPath)
 const pick = (bucket: 'plain' | 'fee' | 'zero' | 'set', i: number, what: string) => pickProduct(facts, bucket, i, what)
-const P1 = pick('plain', 0, '6% SST item without a packaging fee, on the takeaway and QR menus')
-const P5 = pick('plain', 1, 'second 6% SST item without a packaging fee, on the QR menu')
-const P2 = pick('fee', 0, 'item with a packaging fee on the takeaway menu')
-const P3 = pick('zero', 0, '0% SST item (no choice, or one choice per required group)')
-const P4 = pick('set', 0, 'set meal (one required choice per group)')
+const P1 = pick('plain', 0, 'coffee on the takeaway and QR menus (Bar)')
+const P5 = pick('plain', 1, 'second coffee on the takeaway and QR menus (Bar)')
+const P2 = pick('fee', 0, 'food with a packaging fee (Kitchen)')
+const P3 = pick('zero', 0, '0% SST item')
+const P4 = pick('set', 0, 'food with a required choice (Kitchen)')
 const method = (kinds: string[], what: string) => methodName(facts, kinds, what)
 const CASH = method(['cash'], 'cash')
 const CARD = method(['card'], 'card')
@@ -121,11 +121,13 @@ const zLines = [
   ['Pay in: Float top-up', money(PAY_IN)], ['Pay out: Ice', money(-PAY_OUT)],
   ['Expected cash', money(expectedCash)], ['Counted cash', money(expectedCash)], ['Variance', '0.00'],
   ['VOIDS SINCE THE LAST CLOSE', ''],
-  ...(facts.earlierVoids.items || facts.earlierVoidBills
-    ? [[`(before this run: ${facts.earlierVoids.items} item(s), ${facts.earlierVoidBills} bill(s))`, money(facts.earlierVoids.valueSen)]] : []),
-  ...(withBetween ? [[`1 ${P1.nameSnapshot} (T9, step 1)`, money(unit({ p: P1, qty: 1, where: 'dine_in' }))], ['Bill (T9) voided, Test bill', '']] : []),
+  // the printed report lists every item void first (by time), then the bill voids (by time)
+  ...(facts.earlierVoids.items ? [[`(before this run: ${facts.earlierVoids.items} item void(s))`, money(facts.earlierVoids.valueSen)]] : []),
+  ...(withBetween ? [[`1 ${P1.nameSnapshot} (T9, step 1)`, money(unit({ p: P1, qty: 1, where: 'dine_in' }))]] : []),
   [`1 ${P3.nameSnapshot} (T2, step 5)`, money(unit(t2Items[1]))],
   [`1 ${P1.nameSnapshot} (T3, step 11)`, money(unit({ p: P1, qty: 1, where: 'dine_in' }))],
+  ...(facts.earlierVoidBills ? [[`(before this run: ${facts.earlierVoidBills} bill void(s))`, '']] : []),
+  ...(withBetween ? [['Bill (T9) voided, Test bill', '']] : []),
   ['Bill (T3) voided, Customer left', ''],
   ['REFUNDS', ''], [`(T5's bill) ${CASH}, Quality complaint`, money(refund)],
   ['PRODUCT SALES', ''], ...productLines.map((l) => [l, '']),
@@ -167,9 +169,9 @@ const steps: Step[] = [
 ]
 
 const productRows = [
-  ['P1', P1, 'counter, takeaway and the offline order'], ['P2', P2, 'with a packaging fee'],
+  ['P1', P1, 'coffee — counter, takeaway and the offline order'], ['P2', P2, 'food with a packaging fee'],
   ['P3', P3, P3.required.length > 0 ? `0% SST — ${opt(P3)}` : '0% SST'],
-  ['P4', P4, `set meal — ${opt(P4)}`], ['P5', P5, 'the QR order'],
+  ['P4', P4, `food with a required choice — ${opt(P4)}`], ['P5', P5, 'coffee — the QR order'],
 ] as const
 const out = `# Simulated business run — POS pre-pilot (Demo branch)
 

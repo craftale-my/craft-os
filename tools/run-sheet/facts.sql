@@ -5,7 +5,7 @@ cat as (select bc.role, bc.catalog_id from branch_catalogs bc, br where bc.branc
 sold as (select s.product_id from branch_menu_status s, br where s.branch_id = br.id and s.is_sold_out),
 prod as (
   select p.id, p.name, p.sst_rate_bp, p.takeaway_fee_sen, p.print_route,
-         coalesce(mc.sort_order, 0) as cat_sort, p.sort_order,
+         coalesce(mc.sort_order, 0) as cat_sort, mc.name as category, p.sort_order,
          p.name || case when v.feedme_variant_key <> '' then ' (' || v.name || ')' else '' end as name_snapshot,
          (select cvp.price_sen from catalog_variant_prices cvp join cat on cat.catalog_id = cvp.catalog_id and cat.role = 'dine_in'
            where cvp.variant_id = v.id) as dine_in_sen,
@@ -40,21 +40,24 @@ prod as (
                   where cp.product_id = p.id and cp.availability = 'all')
 ),
 bucketed as (
-  select b.bucket, x.*, row_number() over (partition by b.bucket order by x.cat_sort, x.sort_order, x.name) as n
+  select b.bucket, x.*, row_number() over (partition by b.bucket
+           order by case when b.bucket = 'plain' and x.category in ('MILK COFFEE', 'BLACK') then 0 else 1 end,
+                    x.cat_sort, x.sort_order, x.name) as n
     from prod x
     cross join lateral (values
-      (case when x.sst_rate_bp = 600 and x.takeaway_fee_sen = 0 and x.required = '[]'::jsonb and x.takeaway_avail = 'all'
-             and x.qr_avail = 'all' and x.dine_in_sen > 0 and x.takeaway_sen > 0 and x.qr_sen > 0 then 'plain' end),
-      (case when x.sst_rate_bp > 0 and x.takeaway_fee_sen > 0 and x.required = '[]'::jsonb and x.takeaway_avail = 'all'
-             and x.dine_in_sen > 0 and x.takeaway_sen > 0 then 'fee' end),
+      (case when x.sst_rate_bp = 600 and x.required = '[]'::jsonb and x.takeaway_avail = 'all' and x.qr_avail = 'all'
+             and x.dine_in_sen > 0 and x.takeaway_sen > 0 and x.qr_sen > 0 and x.print_route = 'Bar' then 'plain' end),
+      (case when x.sst_rate_bp = 600 and x.takeaway_fee_sen > 0 and x.required = '[]'::jsonb and x.takeaway_avail = 'all'
+             and x.dine_in_sen > 0 and x.takeaway_sen > 0 and x.print_route = 'Kitchen' then 'fee' end),
       (case when x.sst_rate_bp = 0 and x.dine_in_sen > 0
              and not exists (select 1 from jsonb_array_elements(x.required) r
                               where (r->>'minSelect')::int <> 1 or r->'option' is null or r->'option' = 'null'::jsonb) then 'zero' end),
-      (case when x.required <> '[]'::jsonb and x.dine_in_sen > 0
+      (case when x.required <> '[]'::jsonb and x.dine_in_sen > 0 and x.sst_rate_bp = 600 and x.print_route = 'Kitchen'
              and not exists (select 1 from jsonb_array_elements(x.required) r
                               where (r->>'minSelect')::int <> 1 or r->'option' is null or r->'option' = 'null'::jsonb) then 'set' end)
     ) as b(bucket)
    where b.bucket is not null and not x.has_time_slots
+     and x.name !~ '^[0-9]' and x.name not like '[TEST]%'
 )
 select jsonb_pretty(jsonb_build_object(
   'branchId', (select id from br),
