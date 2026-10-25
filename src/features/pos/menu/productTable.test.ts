@@ -94,6 +94,20 @@ describe('tableReducer', () => {
     const s = tableReducer(tableReducer(start, { type: 'toggle', id: 'a' }), { type: 'toggle', id: 'b' })
     expect(tableReducer(s, { type: 'clear' }).selected.size).toBe(0)
   })
+
+  it('prune drops ticks on rows no longer visible and keeps the rest', () => {
+    const s = ['a', 'b', 'c'].reduce((acc, id) => tableReducer(acc, { type: 'toggle', id }), start)
+    const pruned = tableReducer(s, { type: 'prune', visible: ['b', 'c', 'z'] })
+    expect([...pruned.selected].sort()).toEqual(['b', 'c'])
+    expect(pruned.filter).toBe(s.filter)
+    expect(tableReducer(s, { type: 'prune', visible: [] }).selected.size).toBe(0)
+  })
+
+  it('prune returns the same state when nothing is dropped (no re-render loop)', () => {
+    const s = tableReducer(start, { type: 'toggle', id: 'a' })
+    expect(tableReducer(s, { type: 'prune', visible: ['a', 'b'] })).toBe(s)
+    expect(tableReducer(start, { type: 'prune', visible: [] })).toBe(start)
+  })
 })
 
 describe('headerState', () => {

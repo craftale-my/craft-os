@@ -52,6 +52,7 @@ export type TableAction =
   | { type: 'toggle'; id: string }
   | { type: 'toggleAll'; visibleIds: string[] }
   | { type: 'clear' }
+  | { type: 'prune'; visible: string[] }
 
 const NONE: ReadonlySet<string> = new Set()
 
@@ -71,6 +72,12 @@ export function tableReducer(s: TableState, a: TableAction): TableState {
     }
     case 'clear':
       return { ...s, selected: NONE }
+    case 'prune': {
+      // after a reload: ticks on rows that are no longer shown (e.g. just switched off) are dropped
+      const shown = new Set(a.visible)
+      const kept = [...s.selected].filter((id) => shown.has(id))
+      return kept.length === s.selected.size ? s : { ...s, selected: new Set(kept) }
+    }
   }
 }
 

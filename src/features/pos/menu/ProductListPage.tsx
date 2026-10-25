@@ -1,5 +1,5 @@
 // src/features/pos/menu/ProductListPage.tsx
-import { useMemo, useReducer, useRef, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { updateProducts, type ProductPatch } from './menuApi'
 import { fetchProductExtras } from './slotsApi'
@@ -27,6 +27,8 @@ export default function ProductListPage() {
 
   const visible = useMemo(() => tableRows(rows ?? [], state.filter), [rows, state.filter])
   const routes = useMemo(() => routeChoices(rows ?? []), [rows])
+  // a reload can hide ticked rows (e.g. switched off by a write that then failed): drop their ticks
+  useEffect(() => { dispatch({ type: 'prune', visible: visible.map((r) => r.id) }) }, [visible])
   const set = (patch: Partial<MenuFilter>) => dispatch({ type: 'filter', patch })
   const locked = busy || uploadingId !== null || rows === null
 
@@ -43,7 +45,7 @@ export default function ProductListPage() {
       dispatch({ type: 'clear' })
       setOutcome({ kind: 'ok', text: `${what} for ${ids.length} product${ids.length === 1 ? '' : 's'}` })
     } catch (e) {
-      setOutcome({ kind: 'error', text: errorText(e) })
+      setOutcome({ kind: 'error', text: `${errorText(e).replace(/[.!?\s]*$/, '')}. Some products may already be changed — check the list.` })
     } finally {
       await load()
       busyRef.current = false
@@ -120,7 +122,7 @@ export default function ProductListPage() {
       </div>
 
       {state.selected.size > 0 && (
-        <BulkBar count={state.selected.size} routes={routes} busy={busy}
+        <BulkBar count={state.selected.size} routes={routes} busy={busy || uploadingId !== null}
           onApply={(patch, what) => void apply(patch, what)} onClear={() => dispatch({ type: 'clear' })} />
       )}
 
