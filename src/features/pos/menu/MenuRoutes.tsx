@@ -11,6 +11,8 @@ import CategoriesPage from './CategoriesPage'
 import SchedulesPage from './SchedulesPage'
 import ScheduleEditorPage from './ScheduleEditorPage'
 import MenuImportPage from './MenuImportPage'
+import TakeawayFeesPage from './TakeawayFeesPage'
+import PrintRoutesPage from './PrintRoutesPage'
 
 /** A fresh editor per product: nothing typed for one product can leak into another. */
 function ProductEditorRoute() {
@@ -47,6 +49,8 @@ export default function MenuRoutes() {
         <Route path="groups/new" element={<GroupEditorRoute />} />
         <Route path="groups/:id" element={<GroupEditorRoute />} />
         <Route path="categories" element={<CategoriesPage />} />
+        <Route path="takeaway-fees" element={<TakeawayFeesPage />} />
+        <Route path="print-routes" element={<PrintRoutesPage />} />
         <Route path="schedules" element={<SchedulesPage />} />
         <Route path="schedules/new" element={<ScheduleEditorRoute />} />
         <Route path="schedules/:id" element={<ScheduleEditorRoute />} />
