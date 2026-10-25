@@ -189,7 +189,19 @@ describe('details', () => {
     expect(problems(f)).toEqual([
       { section: 'details', message: 'Product name is too long (at most 120 characters)' },
       { section: 'details', message: 'Internal name is too long (at most 120 characters)' },
-      { section: 'details', message: 'Enter the takeaway fee in RM, e.g. 0.50' },
+      { section: 'details', message: 'Enter the fee in RM, e.g. 1.50' },
     ])
+  })
+
+  it('takes the takeaway fee by the bulk bar rules: no comma, at most RM 10.00, an empty box is refused as before', () => {
+    const feeMessages = (text: string) => problems({ ...saved(), takeawayFee: text }).map((p) => p.message)
+    expect(feeMessages('1,50')).toEqual(['Enter the fee in RM, e.g. 1.50'])
+    expect(feeMessages('10.01')).toEqual(['A packaging fee can be at most RM 10.00'])
+    expect(feeMessages('')).toEqual(['Enter the fee in RM, e.g. 1.50'])
+    expect(feeMessages('1.50')).toEqual([])
+    expect(feeMessages('0')).toEqual([])
+    expect(feeMessages('10.00')).toEqual([])
+    expect(productPayload({ ...saved(), takeawayFee: '1.50' }, saved()).takeawayFeeSen).toBe(150)
+    expect(() => productPayload({ ...saved(), takeawayFee: '1,50' }, saved())).toThrow()
   })
 })

@@ -5,6 +5,7 @@
 import type { Availability } from './feedmeExport'
 import type { ProductDetail, ProductDetails, ProductPayload } from './menuEditorApi'
 import { cleanName, inputToSen, moveItem, nameProblem, nextRef, senToInput } from './menuForms'
+import { parseFeeSen } from './productGroups'
 
 /** A variant row. `ref` is the variant id once saved, new-N before. Prices are box text. */
 export interface VariantForm { ref: string; id: string | null; name: string; price: string; isActive: boolean }
@@ -146,7 +147,9 @@ export function productProblems(f: ProductForm, catalogName: (id: string) => str
   if (!f.categoryId) add('details', 'Choose a category')
   if (f.internalName.trim().length > 120) add('details', 'Internal name is too long (at most 120 characters)')
   if (f.description.trim().length > 1000) add('details', 'Description is too long (at most 1000 characters)')
-  if (inputToSen(f.takeawayFee) === null) add('details', 'Enter the takeaway fee in RM, e.g. 0.50')
+  // the same rule as the Takeaway fees page's bulk bar: no commas, at most RM 10.00 (an empty box is refused, as it always was)
+  const fee = parseFeeSen(f.takeawayFee, { allowZero: true })
+  if ('problem' in fee) add('details', fee.problem)
 
   if (f.variants.length > MAX_VARIANTS) add('variants', `Too many variants (at most ${MAX_VARIANTS})`)
   for (const v of f.variants) {
@@ -186,7 +189,7 @@ function catalogKey(f: ProductForm, c: CatalogForm | undefined): string {
 }
 
 /** The product's own fields as menu_save_product takes them. */
-function details(f: ProductForm, sen: (text: string) => number): ProductDetails {
+function details(f: ProductForm, feeSen: (text: string) => number): ProductDetails {
   return {
     name: cleanName(f.name),
     internalName: f.internalName.trim() || null,
@@ -194,7 +197,7 @@ function details(f: ProductForm, sen: (text: string) => number): ProductDetails 
     categoryId: f.categoryId,
     sstRateBp: f.sstRateBp,
     printRoute: f.printRoute,
-    takeawayFeeSen: sen(f.takeawayFee),
+    takeawayFeeSen: feeSen(f.takeawayFee),
     isActive: f.isActive,
     isAddon: f.isAddon,
   }
@@ -217,11 +220,19 @@ export function productPayload(f: ProductForm, loaded: ProductForm | null = null
     if (v === null) throw new Error(`"${text}" is not an amount in RM`)
     return v
   }
+  const feeSen = (text: string): number => {
+    const r = parseFeeSen(text, { allowZero: true })
+    if ('problem' in r) throw new Error(`"${text}" is not a valid takeaway fee: ${r.problem}`)
+    return r.value
+  }
   const isNew = f.id === null || loaded === null
-  const mine = details(f, sen)
+  const mine = details(f, feeSen)
   let changed: Partial<ProductDetails> = mine
   if (!isNew) {
-    const before = details(loaded, (t) => inputToSen(t) ?? -1)
+    const before = details(loaded, (t) => {
+      const r = parseFeeSen(t, { allowZero: true })
+      return 'value' in r ? r.value : -1
+    })
     changed = Object.fromEntries((Object.keys(mine) as (keyof ProductDetails)[])
       .filter((k) => mine[k] !== before[k]).map((k) => [k, mine[k]])) as Partial<ProductDetails>
   }

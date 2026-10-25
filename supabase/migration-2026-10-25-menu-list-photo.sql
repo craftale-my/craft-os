@@ -2,9 +2,7 @@
 -- Craft OS — menu back-office tidy-up (2026-10-25): the Products list shows photos.
 -- Run on craft-os-dev after migration-2026-10-24-pos-menu-editor-fn.sql and
 -- migration-2026-10-24-pos-slots-photos.sql. Idempotent — safe to re-run.
--- Prod: run it after the slots-photos and editor-fn files and BEFORE the deploy that carries the
--- new Products page (the page reads image_path / image_updated_at from this function); the STOP
--- guard below enforces that order.
+-- Prod: run it after the slots-photos and editor-fn files (the STOP guard enforces that); either side of the deploy is safe — until it runs, the Products page just shows no photos.
 -- Plan: docs/superpowers/plans/2026-10-25-menu-backoffice-tidy.md
 -- Design: docs/superpowers/specs/2026-10-25-menu-backoffice-tidy-design.md §3
 --

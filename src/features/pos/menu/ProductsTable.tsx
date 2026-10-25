@@ -10,7 +10,9 @@ import { numCls, rowCls, tableBoxCls, tableCls, tdCls, thCls, theadCls } from '.
 
 const stop = (e: MouseEvent) => e.stopPropagation()
 /** The tick cell is one label, so a tap anywhere in it ticks the box (and never opens the editor). */
-const tickCellCls = 'flex h-full min-h-12 w-14 cursor-pointer items-center justify-center'
+const tickCellCls = 'absolute inset-0 flex h-full w-full cursor-pointer items-center justify-center'
+/** The td/th that holds it: no padding, a minimum size, and `relative` so the label fills the whole cell however tall the row is. */
+const tickTdCls = 'relative h-12 min-h-12 w-14 min-w-14 p-0 align-middle'
 const tickCls = 'h-5 w-5 cursor-pointer'
 
 /** The Products page's one flat table (Feedme's layout). A click on a row opens the product editor;
@@ -34,7 +36,7 @@ export default function ProductsTable({ rows, catalogs, selected, locked, upload
       <table className={tableCls}>
         <thead className={theadCls}>
           <tr>
-            <th className={`${thCls} w-14 p-0`}>
+            <th className="relative h-12 min-h-12 w-14 min-w-14 p-0 font-medium">
               <label className={tickCellCls}>
                 <input type="checkbox" className={tickCls} aria-label="Select every product shown" disabled={locked || rows.length === 0}
                   checked={head === 'all'} ref={(el) => { if (el) el.indeterminate = head === 'some' }} onChange={onToggleAll} />
@@ -57,7 +59,7 @@ export default function ProductsTable({ rows, catalogs, selected, locked, upload
             const variants = variantCountText(p.menu_variants)
             return (
               <tr key={p.id} className={`${rowCls} cursor-pointer ${p.is_active ? '' : 'text-brown-faint'}`} onClick={() => onOpen(p.id)}>
-                <td className="p-0 align-middle" onClick={stop}>
+                <td className={tickTdCls} onClick={stop}>
                   <label className={tickCellCls}>
                     <input type="checkbox" className={tickCls} aria-label={`Select ${p.name}`} disabled={locked}
                       checked={selected.has(p.id)} onChange={() => onToggle(p.id)} />
