@@ -5,7 +5,7 @@ import { fetchBillItems, type BillItemRow, type OpenBillRow } from '../order/pos
 import type { BillTotals } from './bill'
 import { checkoutBill, fetchCheckoutState, fetchPaymentMethods, type CheckoutResult } from './checkoutApi'
 import CheckoutTotals from './CheckoutTotals'
-import { followBill, type FollowAction } from './follow'
+import { BILL_CHANGED, followBill, type FollowAction } from './follow'
 import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
 import { looksOffline } from './rpcResult'
 import {
@@ -41,6 +41,8 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   const [tab, setTab] = useState<PayTab | null>(null)
   const [method, setMethod] = useState<TenderMethod | null>(null)
   const [entry, setEntry] = useState('')            // the number pad: cash received (whole bill) or this payment's amount (split)
+  const [entryFresh, setEntryFresh] = useState(false) // split: the entry was pre-filled, so the next digit replaces it
+  const [tenderedText, setTenderedText] = useState('') // split, cash: cash received for this part ('' = exact)
   const [reference, setReference] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [methodsError, setMethodsError] = useState<string | null>(null)
@@ -53,6 +55,10 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   const loadFailed = useRef(false)
   const readSeq = useRef(0)
   const keySeq = useRef(0)
+  // The total the cashier is paying against with Split off: set by the first load, moved only by a
+  // Pay that found the bill changed. Pay never records a total the cashier has not seen (a card run
+  // or cash counted for the old total must not be booked as the new one).
+  const payingForRef = useRef<number | null>(null)
 
   // ── the Checkout sheet's follow logic, unchanged ──
   const step = (e: PayEvent): PaySession => {
@@ -67,6 +73,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     else if (a.kind === 'lock') { setLockNote(a.note); setMethod(null); setError(null); setChangeNote(null) }
     else if (a.kind === 'reload') {
       totalsRef.current = a.totals
+      if (payingForRef.current === null) payingForRef.current = a.totals.totalSen
       setTotals(a.totals)
       if (a.note) setChangeNote(a.note)
     }
@@ -110,22 +117,23 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
 
   const pick = (m: TenderMethod) => {
     if (locked) return
-    setMethod(m); setError(null); setReference('')
-    setEntry(split ? money(left) : '')
+    setMethod(m); setError(null); setReference(''); setTenderedText('')
+    setEntry(split ? money(left) : ''); setEntryFresh(split)
   }
-  useEffect(() => {                                  // the first method of the first tab, once they are loaded
-    if (!method && !lockNote && tabs[0]) setMethod(tabs[0].methods[0])
-  }, [methods]) // eslint-disable-line react-hooks/exhaustive-deps
+  // A tab only shows its methods: the cashier taps the method itself before Pay (none is pre-chosen)
   const chooseTab = (t: PayTab) => {
-    const g = tabs.find((x) => x.tab === t)
-    if (!g || locked) return
-    setTab(t); pick(g.methods[0])
+    if (!tabs.some((x) => x.tab === t) || locked) return
+    setTab(t); setMethod(null); setError(null); setReference(''); setTenderedText('')
+    setEntry(''); setEntryFresh(false)
   }
   const toggleSplit = () => {
     if (locked) return
     const next = !split
-    setSplit(next); setLines([]); setError(null); setReference('')
-    setEntry(next ? money(total) : '')
+    setSplit(next); setLines([]); setError(null); setReference(''); setTenderedText('')
+    setEntry(next ? money(total) : ''); setEntryFresh(next)
+  }
+  const pressKey = (k: string) => {
+    setEntry((t) => numpadPress(entryFresh && k !== '⌫' ? '' : t, k)); setEntryFresh(false)
   }
 
   // Split: add one payment (CheckoutSheet's add, unchanged rules)
@@ -133,13 +141,20 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     if (!method || locked) return
     const amountSen = parseRinggit(entry)
     if (amountSen === null) { setError('Enter the amount'); return }
-    const tenderedSen = method.kind === 'cash' && tenderedOverride !== undefined ? tenderedOverride : null
+    let tenderedSen: number | null = null
+    if (method.kind === 'cash') {
+      if (tenderedOverride !== undefined) tenderedSen = tenderedOverride
+      else if (tenderedText.trim()) {
+        tenderedSen = parseRinggit(tenderedText)
+        if (tenderedSen === null) { setError('Enter the cash received'); return }
+      }
+    }
     const line = { method, amountSen, tenderedSen, reference: reference.trim() || null }
     const problem = lineProblem(line, left)
     if (problem) { setError(problem); return }
     const next = [...lines, { ...line, key: String(++keySeq.current) }]
-    setLines(next); setReference(''); setError(null)
-    setEntry(money(remainingSen(total, next)))
+    setLines(next); setReference(''); setTenderedText(''); setError(null)
+    setEntry(money(remainingSen(total, next))); setEntryFresh(true)
   }
 
   // Pay (editing) and Try again (unsure): Try again resends the SAME lines under the session's id
@@ -158,11 +173,21 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     } catch (e) {
       const m = msg(e)
       if (looksOffline(m)) { step({ type: 'noReply' }); setError(UNSURE); void follow() }
-      else { step({ type: 'refused' }); setError(m); void follow() }
+      else {
+        step({ type: 'refused' }); setError(m)
+        if (!split) setLines([])                         // a refused one-go payment does not linger
+        void follow()
+      }
     }
   }
   const pay = () => {
     if (session.phase === 'unsure' || split) { void send(lines); return }
+    if (payingForRef.current !== null && payingForRef.current !== total) {
+      // the bill changed since the cashier started: show it, and take a second, deliberate Pay
+      payingForRef.current = total
+      setError(BILL_CHANGED); setReference(''); setEntry('')
+      return
+    }
     if (total === 0) { void send([]); return }          // RM 0.00 closes with no payment, as on the Checkout sheet
     if (!method) { setError('Choose how the bill is paid'); return }
     const r = singleLines(method, total, entry, reference)
@@ -178,7 +203,10 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     try {
       const a = followBill(await fetchCheckoutState(bill.id, checkoutIds(sessionRef.current)), totalsRef.current?.totalSen ?? null)
       apply(a)
-      if (a.kind === 'keep' || a.kind === 'reload') { step({ type: 'checkedOpen', newCheckoutId: crypto.randomUUID() }); setError(CHECKED_OPEN) }
+      if (a.kind === 'keep' || a.kind === 'reload') {
+        step({ type: 'checkedOpen', newCheckoutId: crypto.randomUUID() }); setError(CHECKED_OPEN)
+        if (!split) setLines([])                         // the one-go payment is rebuilt by the next Pay
+      }
       else step({ type: 'checkEnded' })
     } catch (e) {
       step({ type: 'checkEnded' }); setError(`Could not check the bill: ${msg(e)}`)
@@ -251,6 +279,12 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
           )}
           {split && <div className="mt-1 text-sm text-brown-muted">This payment RM {entry || '0'}</div>}
         </div>
+        {split && method?.kind === 'cash' && !locked && (
+          <label className="mx-auto mt-3 block w-full max-w-sm text-sm">Cash received (RM)
+            <input inputMode="decimal" placeholder="exact" className="mt-1 h-12 w-full rounded-xl border border-border-mid px-3 text-base"
+              value={tenderedText} onChange={(e) => setTenderedText(e.target.value)} />
+          </label>
+        )}
         {method?.needsReference && !locked && (
           <label className="mx-auto mt-3 block w-full max-w-sm text-sm">Reference
             <input className="mt-1 h-12 w-full rounded-xl border border-border-mid px-3 text-base" value={reference} onChange={(e) => setReference(e.target.value)} />
@@ -271,7 +305,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
           <div className="mt-3 flex min-h-0 flex-1 gap-3">
             <div className="grid flex-1 grid-cols-3 content-start gap-2">
               {NUMPAD_KEYS.map((k) => (
-                <button key={k} type="button" className={key} disabled={busy} onClick={() => setEntry((t) => numpadPress(t, k))}>{k}</button>
+                <button key={k} type="button" className={key} disabled={busy} onClick={() => pressKey(k)}>{k}</button>
               ))}
             </div>
             <div className="flex w-40 flex-col gap-2">
@@ -282,7 +316,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
                 <button key={n} type="button" className={key} disabled={busy}
                   onClick={() => (split ? add(n) : setEntry((n / 100).toFixed(0)))}>RM {n / 100}</button>
               ))}
-              <button type="button" className={key} disabled={busy} onClick={() => setEntry('')}>C</button>
+              <button type="button" className={key} disabled={busy} onClick={() => { setEntry(''); setEntryFresh(false) }}>C</button>
               {split && (
                 <button type="button" onClick={() => add()} disabled={busy}
                   className="min-h-14 rounded-xl bg-brown-dark font-semibold text-cream disabled:opacity-40">Add {method?.name}</button>
