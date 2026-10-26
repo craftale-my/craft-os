@@ -1,13 +1,16 @@
 import { useState, useEffect } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import {
   money, qty, formatPoText, outstandingQty, isReceivable, lineOverReceived, canCloseShort, shortfallLines,
+  isInternalSupplier, canAccessBranch, inTransitQty, toShipQty, transferValue, shippedUnitCost,
+  transferStatusLabel, formatDateTimeMYT, formatUnitCost,
 } from '../../shared/lib/procurement'
 import { useCan } from '../../shared/lib/permissions'
+import { useAuth } from '../auth/AuthContext'
 import { PoStatusBadge } from './PurchaseOrders'
-import { OverDeliveredBadge } from './badges'
-import type { PurchaseOrder, PurchaseOrderItem, Receiving } from '../../shared/types'
+import { OverDeliveredBadge, InternalBadge, TransferStatusBadge } from './badges'
+import type { PoShipment, PurchaseOrder, PurchaseOrderItem, Receiving } from '../../shared/types'
 
 const DATE_TIME: Intl.DateTimeFormatOptions = {
   day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -152,8 +155,20 @@ export default function PurchaseOrderDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { can } = useCan()
+  const { staff } = useAuth()
+  const location = useLocation()
+  // Set by the ship screen after a successful shipment.
+  const [toast, setToast] = useState((location.state as { toast?: string } | null)?.toast ?? '')
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(''), 3000)
+    return () => clearTimeout(t)
+  }, [toast])
 
   const [po, setPo] = useState<PurchaseOrder | null>(null)
+  // Internal POs only: every HQ shipment, oldest first.
+  const [shipments, setShipments] = useState<PoShipment[]>([])
   const [lines, setLines] = useState<PurchaseOrderItem[]>([])
   // Every delivery against this PO, oldest first.
   const [receivings, setReceivings] = useState<Receiving[]>([])
@@ -183,7 +198,19 @@ export default function PurchaseOrderDetailPage() {
     ])
 
     if (!poRes.data) { setNotFound(true); setLoading(false); return }
-    setPo(poRes.data as PurchaseOrder)
+    const order = poRes.data as PurchaseOrder
+    // Shipments exist only on internal POs; supplier POs skip the query.
+    if (isInternalSupplier(order.supplier)) {
+      const { data: shipData } = await supabase
+        .from('po_shipments')
+        .select('*, shipper:staff!po_shipments_shipped_by_fkey(id,name), items:po_shipment_items(*)')
+        .eq('po_id', id)
+        .order('shipped_at', { ascending: true })
+      setShipments((shipData as PoShipment[]) ?? [])
+    } else {
+      setShipments([])
+    }
+    setPo(order)
     setLines((lineRes.data as PurchaseOrderItem[]) ?? [])
     setCafeName((settingsRes.data?.cafe_name as string) || 'Craft Cafe')
     setReceivings((recRes.data as Receiving[]) ?? [])
@@ -275,8 +302,42 @@ export default function PurchaseOrderDetailPage() {
   const lineById = new Map(lines.map(l => [l.id, l]))
   const isClosedShort = po.status === 'closed_short'
   const isReceived = po.status === 'received' || po.status === 'partially_received' || isClosedShort
-  // Supervisors (no manage_procurement) never see Close short.
-  const showCloseShort = canCloseShort(po.status, can('manage_procurement'))
+
+  // ── Internal PO (transfer from HQ) ──
+  const internal = isInternalSupplier(po.supplier)
+  // HQ staff can read internal POs addressed to them but cannot act on the
+  // requesting branch's order — only ship it. Supplier POs are only ever
+  // visible to their own branch (RLS), so they are not gated here.
+  const ownsPo = !internal || canAccessBranch(staff, po.branch_id)
+  const canShip = internal && canAccessBranch(staff, po.supplier?.internal_branch_id)
+  const shipmentLinesByPoItem = new Map<string, { qty_shipped: number; unit_cost: number | null }[]>()
+  for (const sh of shipments) {
+    for (const si of sh.items ?? []) {
+      const list = shipmentLinesByPoItem.get(si.po_item_id) ?? []
+      list.push({ qty_shipped: Number(si.qty_shipped), unit_cost: si.unit_cost == null ? null : Number(si.unit_cost) })
+      shipmentLinesByPoItem.set(si.po_item_id, list)
+    }
+  }
+  const convOf = (l: PurchaseOrderItem) => Number(l.conversion_rate_used ?? l.item?.conversion_rate ?? 0)
+  const costOf = (l: PurchaseOrderItem) => shippedUnitCost(shipmentLinesByPoItem.get(l.id) ?? [])
+  const lostValueOf = (l: PurchaseOrderItem) =>
+    transferValue(Number(l.transit_loss_quantity ?? 0), convOf(l), costOf(l))
+  const anyShipped = lines.some(l => Number(l.shipped_quantity ?? 0) > 0)
+  const totalInTransit = lines.reduce((s, l) => s + inTransitQty(l), 0)
+  const totalToShip = lines.reduce((s, l) => s + toShipQty(l, po.status), 0)
+  const totalLost = lines.reduce((s, l) => s + Number(l.transit_loss_quantity ?? 0), 0)
+  const totalLostValue = lines.reduce((s, l) => s + (lostValueOf(l) ?? 0), 0)
+  const transferLabel = internal ? transferStatusLabel(po.status, lines) : ''
+
+  // Supervisors (no manage_procurement) never see Close short. On an internal
+  // PO close_po_short refuses while goods are on the road, so hide it then.
+  const showCloseShort = ownsPo && canCloseShort(po.status, can('manage_procurement'))
+    && !(internal && totalInTransit > 0)
+  // Internal: receive only what HQ has shipped.
+  const showReceive = ownsPo && isReceivable(po.status) && (!internal || totalInTransit > 0)
+  // A PO with shipped goods cannot be cancelled (DB guard).
+  const showCancel = ownsPo && po.status === 'sent' && !(internal && anyShipped)
+  const showShip = canShip && totalToShip > 0
 
   return (
     <div className="min-h-screen bg-cream-light">
@@ -287,29 +348,62 @@ export default function PurchaseOrderDetailPage() {
           </Link>
           <div className="flex items-start justify-between gap-4 flex-wrap mt-1">
             <div>
-              <h1 className="text-2xl font-bold text-brown-dark">{po.po_number}</h1>
+              <h1 className="text-2xl font-bold text-brown-dark flex items-center gap-2">
+                {po.po_number}
+                {internal && <InternalBadge />}
+              </h1>
               <p className="text-sm text-brown-muted">
                 {po.supplier?.name ?? '—'} · {po.branch?.name ?? '—'}
               </p>
             </div>
-            <PoStatusBadge status={po.status} />
+            <div className="flex items-center gap-2">
+              {internal && <TransferStatusBadge label={transferLabel} />}
+              <PoStatusBadge status={po.status} />
+            </div>
           </div>
         </div>
+
+        {internal && (
+          <section className="rounded-xl border border-[#2E6E9E40] bg-[#2E6E9E0D] p-4 space-y-1">
+            <h2 className="text-sm font-bold text-[#2E6E9E]">Internal transfer from {po.supplier?.name ?? 'HQ'}</h2>
+            <p className="text-xs text-brown-muted">
+              HQ ships the goods to {po.branch?.name ?? 'the branch'}; stock moves at HQ's cost when shipped and
+              enters the branch when received. Prices on the order are estimates.
+            </p>
+            {po.delivery_fee != null && (
+              <p className="text-xs text-brown-dark">
+                Delivery fee: <span className="font-semibold">{money(Number(po.delivery_fee))}</span>
+                <span className="text-brown-faint"> · recorded only, not in item cost</span>
+              </p>
+            )}
+            {!ownsPo && (
+              <p className="text-xs text-brown-faint">You're viewing this as HQ — only shipping is done from here.</p>
+            )}
+          </section>
+        )}
 
         {error && (
           <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">{error}</p>
         )}
 
         {/* Actions */}
-        <div className="flex gap-2 flex-wrap">
-          {po.status === 'draft' && (
+        <div className="flex gap-2 flex-wrap items-center">
+          {showShip && (
+            <Link
+              to={`/procurement/transfers/${po.id}/ship`}
+              className="px-4 py-2 rounded-xl bg-[#2E6E9E] text-white text-sm font-semibold hover:bg-[#24587F] transition-colors"
+            >
+              Ship
+            </Link>
+          )}
+          {ownsPo && po.status === 'draft' && (
             <>
               <button
                 onClick={markSent}
                 disabled={busy}
                 className="px-4 py-2 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors disabled:opacity-60"
               >
-                {busy ? '…' : 'Mark as Sent'}
+                {busy ? '…' : internal ? 'Send to HQ' : 'Mark as Sent'}
               </button>
               <button
                 onClick={deleteDraft}
@@ -320,7 +414,10 @@ export default function PurchaseOrderDetailPage() {
               </button>
             </>
           )}
-          {isReceivable(po.status) && (
+          {ownsPo && internal && isReceivable(po.status) && totalInTransit === 0 && totalToShip > 0 && (
+            <span className="text-xs text-brown-muted">Waiting for HQ to ship.</span>
+          )}
+          {showReceive && (
             <Link
               to={`/procurement/receiving/${po.id}`}
               className="px-4 py-2 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors"
@@ -336,7 +433,7 @@ export default function PurchaseOrderDetailPage() {
               Close short
             </button>
           )}
-          {po.status === 'sent' && (
+          {showCancel && (
             <>
               <button
                 onClick={cancelOrder}
@@ -361,6 +458,88 @@ export default function PurchaseOrderDetailPage() {
           </section>
         )}
 
+        {internal ? (
+          <Card title="Transfer Lines">
+            <div className="overflow-x-auto -mx-1">
+              <table className="w-full text-sm min-w-[640px]">
+                <thead>
+                  <tr className="text-left text-xs text-brown-faint border-b border-[#EDE5D8]">
+                    <th className="px-1 py-2 font-semibold">Item</th>
+                    <th className="px-1 py-2 font-semibold text-right">Ordered</th>
+                    <th className="px-1 py-2 font-semibold text-right">Shipped</th>
+                    <th className="px-1 py-2 font-semibold text-right">Received</th>
+                    <th className="px-1 py-2 font-semibold text-right">In transit</th>
+                    <th className="px-1 py-2 font-semibold text-right">Lost in transit</th>
+                    <th className="px-1 py-2 font-semibold text-right">Shipped cost</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#F0E8DC]">
+                  {lines.map(l => {
+                    const unit = l.item?.purchase_unit ?? ''
+                    const inTransit = inTransitQty(l)
+                    const lost = Number(l.transit_loss_quantity ?? 0)
+                    const lostValue = lostValueOf(l)
+                    const cost = costOf(l)
+                    return (
+                      <tr key={l.id} className={lost > 0 ? 'bg-[#FCF0EC]' : ''}>
+                        <td className="px-1 py-2.5">
+                          <p className="font-medium text-brown-dark">{l.item?.name ?? 'Unknown item'}</p>
+                          <p className="text-[10px] text-brown-faint">Est. {money(l.unit_price)} / {unit}</p>
+                        </td>
+                        <td className="px-1 py-2.5 text-right whitespace-nowrap text-brown-dark">
+                          {qty(l.quantity_ordered)} {unit}
+                        </td>
+                        <td className="px-1 py-2.5 text-right whitespace-nowrap text-brown-dark">
+                          {qty(Number(l.shipped_quantity ?? 0))}
+                        </td>
+                        <td className="px-1 py-2.5 text-right whitespace-nowrap text-brown-dark">
+                          {qty(Number(l.received_quantity))}
+                        </td>
+                        <td className="px-1 py-2.5 text-right whitespace-nowrap">
+                          {inTransit > 0
+                            ? <span className="font-semibold text-[#2E6E9E]">{qty(inTransit)}</span>
+                            : <span className="text-brown-faint">0</span>}
+                        </td>
+                        <td className="px-1 py-2.5 text-right whitespace-nowrap">
+                          {lost > 0 ? (
+                            <span className="font-bold text-[#9E4A30]">
+                              {qty(lost)} {unit}
+                              {lostValue != null && <span className="block text-[10px]">{money(lostValue)}</span>}
+                            </span>
+                          ) : <span className="text-brown-faint">0</span>}
+                        </td>
+                        <td className="px-1 py-2.5 text-right whitespace-nowrap text-xs text-brown-muted">
+                          {formatUnitCost(cost, l.item?.base_unit ?? '')}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-[#EDE5D8]">
+                    <td className="px-1 py-3 text-xs font-semibold text-brown-muted" colSpan={6}>
+                      Est. order total
+                    </td>
+                    <td className="px-1 py-3 text-right font-bold text-brown-dark">{money(po.total_amount)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            {totalLost > 0 && (
+              <p className="mt-3 text-sm font-bold text-[#9E4A30] bg-[#9E4A3014] border border-[#9E4A3040] rounded-lg px-3 py-2">
+                Lost in transit: {money(totalLostValue)}
+                <span className="block text-xs font-normal">
+                  Valued at the shipped cost. The lost quantity can be re-shipped by HQ, or the order closed short.
+                </span>
+              </p>
+            )}
+            {po.notes && (
+              <p className="text-xs text-brown-muted mt-3 pt-3 border-t border-[#EDE5D8]">
+                <span className="font-semibold">Notes:</span> {po.notes}
+              </p>
+            )}
+          </Card>
+        ) : (
         <Card title="Order Lines">
           <div className="overflow-x-auto -mx-1">
             <table className="w-full text-sm min-w-[520px]">
@@ -435,6 +614,43 @@ export default function PurchaseOrderDetailPage() {
             </p>
           )}
         </Card>
+        )}
+
+        {internal && shipments.length > 0 && (
+          <Card title="Shipments from HQ">
+            <ol className="divide-y divide-[#F0E8DC]">
+              {shipments.map((sh, i) => (
+                <li key={sh.id} className="py-4 first:pt-0 last:pb-0 space-y-2 text-sm">
+                  <h3 className="font-semibold text-brown-dark">Shipment {i + 1}</h3>
+                  <p className="text-brown-muted">
+                    {formatDateTimeMYT(sh.shipped_at)}
+                    {' · Shipped by '}
+                    <span className="font-medium text-brown-dark">{sh.shipper?.name ?? '—'}</span>
+                  </p>
+                  {sh.notes && <p className="text-xs text-brown-muted">{sh.notes}</p>}
+                  <ul className="text-xs space-y-1">
+                    {(sh.items ?? []).map(si => {
+                      const line = lineById.get(si.po_item_id)
+                      const cost = si.unit_cost == null ? null : Number(si.unit_cost)
+                      return (
+                        <li key={si.id} className="flex justify-between gap-3 text-brown-dark">
+                          <span>{line?.item?.name ?? 'Unknown item'}</span>
+                          <span className="whitespace-nowrap">
+                            {qty(Number(si.quantity))} {line?.item?.purchase_unit}
+                            <span className="text-brown-muted">
+                              {' · '}{formatUnitCost(cost, line?.item?.base_unit ?? '')}
+                              {cost != null && ` · ${money(Number(si.qty_shipped) * cost)}`}
+                            </span>
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </li>
+              ))}
+            </ol>
+          </Card>
+        )}
 
         {receivings.length > 0 && (
           <Card title="Receiving History">
@@ -443,7 +659,13 @@ export default function PurchaseOrderDetailPage() {
                 <li key={rec.id} className="py-4 first:pt-0 last:pb-0 space-y-2 text-sm">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="font-semibold text-brown-dark">Delivery {i + 1}</h3>
-                    {rec.has_discrepancy && (
+                    {internal ? (
+                      (rec.items ?? []).some(ri => Number(ri.transit_loss ?? 0) > 0) && (
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#9E4A3020] text-[#9E4A30]">
+                          Lost in transit
+                        </span>
+                      )
+                    ) : rec.has_discrepancy && (
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#9E4A3020] text-[#9E4A30]">
                         Shortage
                       </span>
@@ -462,6 +684,23 @@ export default function PurchaseOrderDetailPage() {
                       {rec.items.map(ri => {
                         const line = lineById.get(ri.po_item_id)
                         const none = ri.actual_quantity === 0
+                        if (internal) {
+                          const lost = Number(ri.transit_loss ?? 0)
+                          return (
+                            <li key={ri.id} className={`flex justify-between gap-3 ${none ? 'text-brown-faint' : 'text-brown-dark'}`}>
+                              <span>{line?.item?.name ?? 'Unknown item'}</span>
+                              <span className="whitespace-nowrap">
+                                {qty(Number(ri.actual_quantity))} of {qty(Number(ri.expected_quantity))} {line?.item?.purchase_unit}
+                                {lost > 0 && (
+                                  <span className="text-[#9E4A30] font-semibold">
+                                    {' · '}{qty(lost)} lost
+                                    {` (${money(lost * Number(ri.unit_price))})`}
+                                  </span>
+                                )}
+                              </span>
+                            </li>
+                          )
+                        }
                         return (
                           <li
                             key={ri.id}
@@ -495,7 +734,7 @@ export default function PurchaseOrderDetailPage() {
                   )}
 
                   <div className="flex gap-3 pt-1">
-                    <PhotoThumb url={rec.invoice_photo_url} label="Invoice" />
+                    <PhotoThumb url={rec.invoice_photo_url} label={internal ? 'Delivery' : 'Invoice'} />
                     {rec.goods_photo_url && <PhotoThumb url={rec.goods_photo_url} label="Goods" />}
                   </div>
                 </li>
@@ -504,7 +743,7 @@ export default function PurchaseOrderDetailPage() {
           </Card>
         )}
 
-        {po.status !== 'received' && !isClosedShort && (
+        {!internal && po.status !== 'received' && !isClosedShort && (
           <Card
             title="Send to Supplier"
             action={
@@ -527,6 +766,12 @@ export default function PurchaseOrderDetailPage() {
           </Card>
         )}
       </div>
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-[#3D2410] text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-xl">
+          ✅ {toast}
+        </div>
+      )}
 
       {closeOpen && (
         <CloseShortDialog

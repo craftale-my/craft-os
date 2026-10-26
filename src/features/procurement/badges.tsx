@@ -6,3 +6,28 @@ export function OverDeliveredBadge() {
     </span>
   )
 }
+
+/** Blue pill for an internal PO (a transfer from HQ, not a supplier order). */
+export function InternalBadge() {
+  return (
+    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#2E6E9E20] text-[#2E6E9E] whitespace-nowrap">
+      Internal
+    </span>
+  )
+}
+
+/** Pill with a transfer status label (Awaiting shipment / In transit / …). */
+export function TransferStatusBadge({ label }: { label: string }) {
+  const tone = label === 'In transit'
+    ? 'bg-[#2E6E9E20] text-[#2E6E9E]'
+    : label === 'Received with loss'
+    ? 'bg-[#9E4A3020] text-[#9E4A30]'
+    : label === 'Received'
+    ? 'bg-[#3D7A5020] text-[#3D7A50]'
+    : 'bg-[#C4813A20] text-[#C4813A]'
+  return (
+    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap ${tone}`}>
+      {label}
+    </span>
+  )
+}

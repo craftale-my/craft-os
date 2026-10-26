@@ -7,6 +7,9 @@ import {
   unitCostPerBase, ledgerValue, movingAverageCost, formatUnitCost,
   overQty, lineOverReceived, deliveryNeedsNote, canCloseShort, shortfallLines,
   weekStartMYT, validateWastage, sumWastage,
+  isInternalSupplier, canAccessBranch, inTransitQty, toShipQty, transferValue, inTransitValue, transitLossValue,
+  shippedUnitCost, transitShortQty, validateShipLines, validateInternalReceipt, transferStatus, transferStatusLabel,
+  parseTransferNote, roundQty,
 } from './procurement'
 import type { InventoryBalance, InventoryValuation, Item, PoStatus } from '../types'
 
@@ -757,5 +760,302 @@ describe('sumWastage', () => {
   it('treats numeric strings from PostgREST as numbers', () => {
     const rows = [{ item_id: 'beans', branch_id: 'b1', value: '1.25' as unknown as number }]
     expect(sumWastage(rows, { branchId: 'all', department: 'all', items }).total).toBe(1.25)
+  })
+})
+
+// ─── Internal transfers ───────────────────────────────────────────────────────
+
+describe('isInternalSupplier', () => {
+  it('is true only for the HQ row (internal_branch_id set)', () => {
+    expect(isInternalSupplier({ internal_branch_id: 'cheras' })).toBe(true)
+    expect(isInternalSupplier({ internal_branch_id: null })).toBe(false)
+    expect(isInternalSupplier({})).toBe(false)
+    expect(isInternalSupplier(null)).toBe(false)
+    expect(isInternalSupplier(undefined)).toBe(false)
+  })
+})
+
+describe('canAccessBranch', () => {
+  const sup = { rank: 'supervisor' as const, system_role: 'supervisor' as const, branch_id: 'puchong' }
+
+  it('lets a branch user see only their own branch', () => {
+    expect(canAccessBranch(sup, 'puchong')).toBe(true)
+    expect(canAccessBranch(sup, 'cheras')).toBe(false)
+  })
+
+  it('lets manager-tier and HR roles see every branch', () => {
+    for (const role of ['owner', 'admin', 'manager', 'hr'] as const) {
+      expect(canAccessBranch({ rank: 'senior', system_role: role, branch_id: null }, 'cheras')).toBe(true)
+    }
+    expect(canAccessBranch({ rank: 'manager', system_role: 'staff', branch_id: null }, 'cheras')).toBe(true)
+  })
+
+  it('refuses without a staff row, a branch, or a branch id', () => {
+    expect(canAccessBranch(null, 'cheras')).toBe(false)
+    expect(canAccessBranch({ ...sup, branch_id: null }, 'cheras')).toBe(false)
+    expect(canAccessBranch(sup, null)).toBe(false)
+  })
+})
+
+describe('transfer line math', () => {
+  const line = { quantity_ordered: 10, shipped_quantity: 6, received_quantity: 3, transit_loss_quantity: 1 }
+
+  it('in transit = shipped − received − lost, never negative', () => {
+    expect(inTransitQty(line)).toBe(2)
+    expect(inTransitQty({ ...line, received_quantity: 9 })).toBe(0)
+    expect(inTransitQty({ quantity_ordered: 5, received_quantity: 0 })).toBe(0)
+  })
+
+  it('to ship = ordered − shipped + lost while the PO is open', () => {
+    expect(toShipQty(line, 'sent')).toBe(5)
+    expect(toShipQty(line, 'partially_received')).toBe(5)
+    expect(toShipQty({ ...line, shipped_quantity: 12 }, 'sent')).toBe(0)
+  })
+
+  it('to ship is 0 on a draft, received, cancelled or closed-short PO', () => {
+    for (const s of ['draft', 'received', 'cancelled', 'closed_short'] as PoStatus[]) {
+      expect(toShipQty(line, s)).toBe(0)
+    }
+  })
+
+  it('values in transit and lost at the shipped cost per base unit', () => {
+    // 2 bags in transit × 1000 g × RM 0.05/g = RM 100; 1 bag lost = RM 50
+    expect(inTransitValue(line, 1000, 0.05)).toBeCloseTo(100)
+    expect(transitLossValue(line, 1000, 0.05)).toBeCloseTo(50)
+  })
+
+  it('has no value without a shipped cost', () => {
+    expect(inTransitValue(line, 1000, null)).toBeNull()
+    expect(transitLossValue(line, 1000, undefined)).toBeNull()
+    expect(transferValue(2, 1000, null)).toBeNull()
+  })
+
+  it('treats numeric strings from PostgREST as numbers', () => {
+    const raw = { quantity_ordered: '10', shipped_quantity: '6', received_quantity: '3', transit_loss_quantity: '1' }
+    expect(inTransitQty(raw as unknown as typeof line)).toBe(2)
+  })
+
+  it('weights the shipped cost over a line\'s shipments, ignoring uncosted ones', () => {
+    expect(shippedUnitCost([
+      { qty_shipped: 1000, unit_cost: 0.04 },
+      { qty_shipped: 3000, unit_cost: 0.08 },
+      { qty_shipped: 500, unit_cost: null },
+    ])).toBeCloseTo(0.07)
+    expect(shippedUnitCost([])).toBeNull()
+    expect(shippedUnitCost([{ qty_shipped: 10, unit_cost: null }])).toBeNull()
+  })
+
+  it('short in transit is never negative', () => {
+    expect(transitShortQty(5, 3)).toBe(2)
+    expect(transitShortQty(5, 5)).toBe(0)
+    expect(transitShortQty(5, 7)).toBe(0)
+  })
+})
+
+describe('validateShipLines', () => {
+  it('accepts a shipment within what is left to ship', () => {
+    expect(validateShipLines([{ quantity: 3, toShip: 5 }, { quantity: 0, toShip: 2 }])).toBeNull()
+    expect(validateShipLines([{ quantity: 5, toShip: 5 }])).toBeNull()
+  })
+
+  it('refuses a negative or non-numeric quantity', () => {
+    expect(validateShipLines([{ quantity: -1, toShip: 5 }])).toMatch(/zero or more/)
+    expect(validateShipLines([{ quantity: NaN, toShip: 5 }])).toMatch(/zero or more/)
+  })
+
+  it('refuses more than is left to ship', () => {
+    expect(validateShipLines([{ quantity: 6, toShip: 5, name: 'Beans', unit: 'bag' }]))
+      .toBe('Cannot ship 6 bag for Beans: only 5 bag left to ship')
+  })
+
+  it('needs at least one line above zero', () => {
+    expect(validateShipLines([{ quantity: 0, toShip: 5 }])).toMatch(/Nothing to ship/)
+    expect(validateShipLines([])).toMatch(/Nothing to ship/)
+  })
+})
+
+describe('validateInternalReceipt', () => {
+  const ok = { lines: [{ inTransit: 4, actual: 4 }], note: '', hasPhoto: true }
+
+  it('accepts a full receipt with a photo and no note', () => {
+    expect(validateInternalReceipt(ok)).toBeNull()
+  })
+
+  it('requires the delivery photo', () => {
+    expect(validateInternalReceipt({ ...ok, hasPhoto: false })).toBe('A delivery photo is required')
+  })
+
+  it('refuses more than is in transit, or a negative quantity', () => {
+    expect(validateInternalReceipt({ ...ok, lines: [{ inTransit: 4, actual: 5 }] })).toMatch(/only 4 shipped/)
+    expect(validateInternalReceipt({ ...ok, lines: [{ inTransit: 4, actual: -1 }] })).toMatch(/zero or more/)
+  })
+
+  it('requires a note when anything is short (lost in transit)', () => {
+    const short = { ...ok, lines: [{ inTransit: 4, actual: 3 }] }
+    expect(validateInternalReceipt(short)).toMatch(/note is required/)
+    expect(validateInternalReceipt({ ...short, note: '   ' })).toMatch(/note is required/)
+    expect(validateInternalReceipt({ ...short, note: 'One bag torn, discarded' })).toBeNull()
+  })
+
+  it('accepts receiving nothing of a line as long as it is explained', () => {
+    expect(validateInternalReceipt({ lines: [{ inTransit: 2, actual: 0 }], note: 'Never arrived', hasPhoto: true })).toBeNull()
+  })
+
+  it('refuses when nothing is in transit', () => {
+    expect(validateInternalReceipt({ ...ok, lines: [] })).toMatch(/Nothing is in transit/)
+  })
+})
+
+describe('transferStatus', () => {
+  const base = { quantity_ordered: 10, shipped_quantity: 0, received_quantity: 0, transit_loss_quantity: 0 }
+
+  it('passes draft, cancelled and closed short through', () => {
+    expect(transferStatus('draft', [base])).toBe('draft')
+    expect(transferStatus('cancelled', [base])).toBe('cancelled')
+    expect(transferStatus('closed_short', [base])).toBe('closed_short')
+  })
+
+  it('awaits shipment until HQ ships something', () => {
+    expect(transferStatus('sent', [base])).toBe('awaiting_shipment')
+    expect(transferStatusLabel('sent', [base])).toBe('Awaiting shipment')
+  })
+
+  it('is in transit while anything is on the road', () => {
+    expect(transferStatus('sent', [{ ...base, shipped_quantity: 4 }])).toBe('in_transit')
+    expect(transferStatus('partially_received', [
+      { ...base, shipped_quantity: 10, received_quantity: 6 },
+    ])).toBe('in_transit')
+  })
+
+  it('is partly received when shipped goods arrived and the rest is not shipped yet', () => {
+    expect(transferStatus('partially_received', [{ ...base, shipped_quantity: 4, received_quantity: 4 }]))
+      .toBe('partly_received')
+  })
+
+  it('is received when everything arrived', () => {
+    const done = { ...base, shipped_quantity: 10, received_quantity: 10 }
+    expect(transferStatus('received', [done])).toBe('received')
+    expect(transferStatusLabel('received', [done])).toBe('Received')
+  })
+
+  it('is received with loss once shipped goods are settled and some were lost', () => {
+    const lost = { ...base, shipped_quantity: 10, received_quantity: 8, transit_loss_quantity: 2 }
+    expect(transferStatus('partially_received', [lost])).toBe('received_with_loss')
+    expect(transferStatusLabel('partially_received', [lost])).toBe('Received with loss')
+  })
+})
+
+describe('transfer quantities with fractional amounts', () => {
+  // 3 − 2.9 − 0.1 is 5.55e-17 in floating point; the DB's numeric says 0.
+  const line = { quantity_ordered: 3, shipped_quantity: 3, received_quantity: 2.9, transit_loss_quantity: 0.1 }
+
+  it('has nothing in transit once shipped goods are received or lost', () => {
+    expect(inTransitQty(line)).toBe(0)
+    expect(transferStatus('partially_received', [line])).toBe('received_with_loss')
+  })
+
+  it('leaves exactly the lost quantity to re-ship', () => {
+    expect(toShipQty(line, 'partially_received')).toBe(0.1)
+  })
+
+  it('reads no shortage when the actual matches what is in transit', () => {
+    expect(transitShortQty(0.1 + 0.2, 0.3)).toBe(0)
+  })
+
+  it('rounds to 6 decimals without producing -0', () => {
+    expect(roundQty(3 - 2.9 - 0.1)).toBe(0)
+    expect(Object.is(roundQty(-1e-9), 0)).toBe(true)
+    expect(roundQty(1.23456789)).toBe(1.234568)
+  })
+})
+
+describe('parseTransferNote', () => {
+  it('reads the branch and PO number ship_internal_po writes', () => {
+    expect(parseTransferNote('To Puchong · PO-20261027-003')).toEqual({ branch: 'Puchong', poNumber: 'PO-20261027-003' })
+  })
+
+  it('copes with a branch name containing spaces and a missing PO number', () => {
+    expect(parseTransferNote('To Taman Puteri Puchong')).toEqual({ branch: 'Taman Puteri Puchong', poNumber: null })
+  })
+
+  it('returns null for anything else', () => {
+    expect(parseTransferNote(null)).toBeNull()
+    expect(parseTransferNote('Damaged on arrival')).toBeNull()
+  })
+})
+
+// Regression: internal transfers must not change how supplier POs behave. The
+// supplier helpers ignore the new shipped / transit-loss fields entirely.
+describe('supplier-PO helpers are unchanged by internal transfers', () => {
+  // A supplier PO line read back from the DB now carries the new columns at 0.
+  function withTransferCols<T extends object>(l: T) {
+    return { ...l, shipped_quantity: 0, transit_loss_quantity: 0 }
+  }
+
+  it('outstanding is ordered − received, ignoring shipped / lost', () => {
+    expect(outstandingQty(withTransferCols({ quantity_ordered: 10, received_quantity: 4 }))).toBe(6)
+    const odd = { quantity_ordered: 10, received_quantity: 4, shipped_quantity: 9, transit_loss_quantity: 3 }
+    expect(outstandingQty(odd)).toBe(6)
+    expect(outstandingQty({ quantity_ordered: 10, received_quantity: 12 })).toBe(0)
+  })
+
+  it('over-delivery is still measured against outstanding and needs a note', () => {
+    expect(overQty(3, 5)).toBe(2)
+    expect(overQty(3, 2)).toBe(0)
+    expect(lineOverReceived(withTransferCols({ quantity_ordered: 10, received_quantity: 11 }))).toBe(1)
+    expect(deliveryNeedsNote([{ outstanding: 3, actual: 4 }])).toBe(true)
+    expect(deliveryNeedsNote([{ outstanding: 3, actual: 2 }])).toBe(false)
+  })
+
+  it('a shortage stays outstanding (not lost) and keeps the PO partially received', () => {
+    expect(calcShortage(10, 7)).toBe(3)
+    const next = applyDelivery([withTransferCols({ id: 'a', quantity_ordered: 10, received_quantity: 0 })], [
+      { po_item_id: 'a', actual_quantity: 7 },
+    ])
+    expect(next[0].received_quantity).toBe(7)
+    expect(next[0].transit_loss_quantity).toBe(0)
+    expect(outstandingQty(next[0])).toBe(3)
+    expect(deriveCumulativePoStatus(next)).toBe('partially_received')
+    expect(shortfallLines(next).map(l => l.id)).toEqual(['a'])
+  })
+
+  it('receivable statuses and close short are as before', () => {
+    const all: PoStatus[] = ['draft', 'sent', 'partially_received', 'received', 'cancelled', 'closed_short']
+    expect(all.filter(isReceivable)).toEqual(['sent', 'partially_received'])
+    expect(canCloseShort('partially_received', true)).toBe(true)
+    expect(canCloseShort('partially_received', false)).toBe(false)
+    expect(canCloseShort('sent', true)).toBe(false)
+  })
+
+  it('PO totals and the WhatsApp text are byte-for-byte as before', () => {
+    const lines = [
+      { item: { name: 'Coffee Beans', purchase_unit: 'bag' }, quantity_ordered: 12, unit_price: 45 },
+      { item: { name: 'Oat Milk', purchase_unit: 'carton' }, quantity_ordered: 2, unit_price: 10.5 },
+    ]
+    expect(poTotal(lines)).toBe(561)
+    const text = formatPoText(
+      { po_number: 'PO-20260729-001', created_at: '2026-07-29T02:00:00Z', notes: 'Deliver before 10am' },
+      { name: 'ABC Trading' }, 'Cheras', 'Craft Cafe', lines,
+    )
+    expect(text).toBe([
+      '*PURCHASE ORDER*',
+      'PO-20260729-001',
+      'Craft Cafe · Cheras',
+      'Supplier: ABC Trading',
+      'Date: 29 Jul 2026',
+      '',
+      '1. Coffee Beans',
+      '   12 bag × RM 45.00 = RM 540.00',
+      '2. Oat Milk',
+      '   2 carton × RM 10.50 = RM 21.00',
+      '',
+      '*TOTAL: RM 561.00*',
+      '',
+      'Notes: Deliver before 10am',
+    ].join('\n'))
+  })
+
+  it('a supplier is never internal unless internal_branch_id is set', () => {
+    expect(isInternalSupplier({ internal_branch_id: null })).toBe(false)
   })
 })

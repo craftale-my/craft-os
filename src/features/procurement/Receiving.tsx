@@ -4,8 +4,9 @@ import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import {
   money, qty, calcShortage, priceDelta, toBaseUnits, outstandingQty, applyDelivery, isReceivable,
-  overQty, deliveryNeedsNote,
+  overQty, deliveryNeedsNote, isInternalSupplier,
 } from '../../shared/lib/procurement'
+import InternalReceiving from './InternalReceiving'
 import type { PurchaseOrder, PurchaseOrderItem, ReceivingLineInput } from '../../shared/types'
 
 const inputCls =
@@ -186,6 +187,8 @@ export default function ReceivingPage() {
   const [problem, setProblem] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  // Internal PO (transfer from HQ): received by InternalReceiving instead.
+  const [internal, setInternal] = useState(false)
 
   useEffect(() => {
     if (!poId) return
@@ -195,7 +198,7 @@ export default function ReceivingPage() {
       const [poRes, lineRes] = await Promise.all([
         supabase
           .from('purchase_orders')
-          .select('*, supplier:suppliers(id,name), branch:branches(id,name)')
+          .select('*, supplier:suppliers(id,name,internal_branch_id), branch:branches(id,name)')
           .eq('id', poId)
           .maybeSingle(),
         supabase.from('purchase_order_items').select('*, item:items(*)').eq('po_id', poId),
@@ -213,6 +216,12 @@ export default function ReceivingPage() {
             ? 'This order was closed short — nothing more can be received on it.'
             : `This order has already been closed (${order.status.replace('_', ' ')}).`,
         )
+        setLoading(false)
+        return
+      }
+
+      if (isInternalSupplier(order.supplier)) {
+        setInternal(true)
         setLoading(false)
         return
       }
@@ -323,6 +332,8 @@ export default function ReceivingPage() {
   }
 
   if (!po) return null
+
+  if (internal) return <InternalReceiving po={po} />
 
   const totals = lines.reduce((acc, l) => {
     const s = states[l.id] ?? DEFAULT_STATE

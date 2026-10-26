@@ -34,6 +34,8 @@ import PurchaseOrderNewPage from './features/procurement/PurchaseOrderNew'
 import PurchaseOrderDetailPage from './features/procurement/PurchaseOrderDetail'
 import ReceivingListPage from './features/procurement/ReceivingList'
 import ReceivingPage from './features/procurement/Receiving'
+import TransfersPage from './features/procurement/Transfers'
+import TransferShipPage from './features/procurement/TransferShip'
 import WastagePage from './features/procurement/Wastage'
 import InventoryPage from './features/procurement/Inventory'
 import InventoryDetailPage from './features/procurement/InventoryDetail'
@@ -339,6 +341,24 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><ReceivingPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/transfers"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><TransfersPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/transfers/:poId/ship"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><TransferShipPage /></AppLayout>
           </ProtectedRoute>
         }
       />

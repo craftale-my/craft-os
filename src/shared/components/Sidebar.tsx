@@ -4,7 +4,7 @@ import {
   User, Target, CheckSquare, ClipboardList, FolderKanban,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network,
-  ShoppingBasket, Truck, Package, ShoppingCart, PackageCheck, Boxes, Trash2,
+  ShoppingBasket, Truck, Package, ShoppingCart, PackageCheck, Boxes, Trash2, ArrowLeftRight,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -39,6 +39,7 @@ const ICONS: Record<string, LucideIcon> = {
   'proc-items': Package,
   'proc-orders': ShoppingCart,
   'proc-receiving': PackageCheck,
+  'proc-transfers': ArrowLeftRight,
   'proc-wastage': Trash2,
   'proc-inventory': Boxes,
   settings: Settings,

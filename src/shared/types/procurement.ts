@@ -18,6 +18,11 @@ export interface Supplier {
   payment_terms: string | null
   status: ProcurementStatus
   created_at: string
+  /**
+   * Set on the HQ supplier row: the branch that supplies it. A PO to such a
+   * supplier is an internal PO (branch → HQ transfer). Null for real suppliers.
+   */
+  internal_branch_id?: string | null
 }
 
 // ─── Items ────────────────────────────────────────────────────────────────────
@@ -120,6 +125,8 @@ export interface PurchaseOrder {
   closed_by: string | null
   closed_at: string | null
   close_reason: string | null
+  /** RM, internal POs only (e.g. Lalamove). Recorded only — never allocated into item cost. */
+  delivery_fee?: number | null
   supplier?: Supplier | null
   branch?: { id: string; name: string } | null
   creator?: { id: string; name: string } | null
@@ -139,6 +146,13 @@ export interface PurchaseOrderItem {
   shortage_quantity: number
   /** Pack size (base units per purchase unit) stamped when the line was created; frozen. */
   conversion_rate_used: number | null
+  /**
+   * Internal POs: purchase units shipped by HQ so far. Set only by the
+   * ship_internal_po / submit_receiving RPCs — never send it in an insert or update.
+   */
+  shipped_quantity?: number
+  /** Internal POs: purchase units lost in transit (shipped but never arrived). RPC-only. */
+  transit_loss_quantity?: number
   item?: Item | null
 }
 
@@ -173,6 +187,8 @@ export interface ReceivingItem {
   conversion_rate_used: number | null
   /** Purchase units beyond what was outstanding when this delivery arrived (>= 0). */
   over_quantity: number
+  /** Internal POs: purchase units shipped but not arrived with this receipt. */
+  transit_loss?: number
 }
 
 /** One line of the submit_receiving RPC payload. */
@@ -182,15 +198,79 @@ export interface ReceivingLineInput {
   unit_price: number
 }
 
+// ─── Internal transfers (internal POs to HQ) ──────────────────────────────────
+
+/** One ship_internal_po call. Select-only for clients. */
+export interface PoShipment {
+  id: string
+  po_id: string
+  from_branch_id: string
+  shipped_by: string | null
+  shipped_at: string
+  notes: string | null
+  shipper?: { id: string; name: string } | null
+  items?: PoShipmentItem[]
+}
+
+export interface PoShipmentItem {
+  id: string
+  shipment_id: string
+  po_item_id: string
+  item_id: string
+  /** Purchase units of the PO line. */
+  quantity: number
+  /** Base units. */
+  qty_shipped: number
+  /** RM per base unit: HQ's moving-average cost when shipped. */
+  unit_cost: number | null
+  /** The matching transfer_out row in inventory_transactions. */
+  transaction_id: string | null
+}
+
+/**
+ * Row of the po_transfer_lines view: one per internal PO line. Quantities in
+ * the line's purchase unit; values in RM.
+ */
+export interface PoTransferLine {
+  po_item_id: string
+  po_id: string
+  po_number: string
+  po_status: PoStatus
+  from_branch_id: string
+  to_branch_id: string
+  item_id: string
+  /** Base units per purchase unit. */
+  conversion_rate: number
+  quantity_ordered: number
+  shipped_quantity: number
+  received_quantity: number
+  transit_loss_quantity: number
+  in_transit_quantity: number
+  to_ship_quantity: number
+  /** RM per base unit, weighted over the line's shipments. Null before anything shipped. */
+  shipped_unit_cost: number | null
+  in_transit_value: number | null
+  transit_loss_value: number | null
+}
+
+/** One line of the ship_internal_po RPC payload. */
+export interface ShipLineInput {
+  po_item_id: string
+  /** Purchase units. Zero lines are skipped by the RPC. */
+  quantity: number
+}
+
 // ─── Inventory ────────────────────────────────────────────────────────────────
 
 /** Phase 2 will add production / sales / stocktake. */
-export type InventoryTransactionType = 'stock_in' | 'adjustment' | 'wastage'
+export type InventoryTransactionType = 'stock_in' | 'adjustment' | 'wastage' | 'transfer_out' | 'transfer_in'
 
 export const TRANSACTION_TYPE_LABELS: Record<InventoryTransactionType, string> = {
-  stock_in:   'Stock In',
-  adjustment: 'Adjustment',
-  wastage:    'Wastage',
+  stock_in:     'Stock In',
+  adjustment:   'Adjustment',
+  wastage:      'Wastage',
+  transfer_out: 'Transfer out',
+  transfer_in:  'Transfer in',
 }
 
 export interface InventoryTransaction {
@@ -209,6 +289,8 @@ export interface InventoryTransaction {
   unit_cost: number | null
   /** Reason code on wastage / adjustment rows (e.g. a {@link WastageReason}). */
   reason: string | null
+  /** transfer_out / transfer_in rows: the po_shipments id that pairs them. */
+  transfer_id?: string | null
   item?: Item | null
   creator?: { id: string; name: string } | null
 }

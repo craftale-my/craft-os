@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import { money, qty, poTotal } from '../../shared/lib/procurement'
+import { money, qty, poTotal, isInternalSupplier } from '../../shared/lib/procurement'
 import type { Item, Supplier, Branch } from '../../shared/types'
 
 const inputCls =
@@ -30,6 +30,8 @@ export default function PurchaseOrderNewPage() {
   const [supplierId, setSupplierId] = useState('')
   const [branchId, setBranchId] = useState('')
   const [notes, setNotes] = useState('')
+  // Internal POs only: RM, optional. Recorded on the PO, never in item cost.
+  const [deliveryFee, setDeliveryFee] = useState('')
   const [lines, setLines] = useState<Record<string, DraftLine>>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -49,16 +51,28 @@ export default function PurchaseOrderNewPage() {
     load()
   }, [allBranches, staff?.branch_id])
 
+  const supplier = suppliers.find(s => s.id === supplierId) ?? null
+  // Internal PO: the supplier row is HQ, so the order is a transfer from HQ.
+  const internal = isInternalSupplier(supplier)
+
+  // A branch cannot order from itself: hide the HQ row when ordering for HQ.
+  const supplierOptions = suppliers.filter(s => !s.internal_branch_id || s.internal_branch_id !== branchId)
+
+  // Switching the branch to HQ while HQ is the supplier would be refused by the DB.
+  useEffect(() => {
+    if (supplier?.internal_branch_id && supplier.internal_branch_id === branchId) setSupplierId('')
+  }, [branchId, supplier?.internal_branch_id])
+
   // Reload the item list whenever the supplier changes; clear any typed lines
   // so quantities can't carry over onto a different supplier's order.
   useEffect(() => {
     if (!supplierId) { setItems([]); setLines({}); return }
     let cancelled = false
     async function loadItems() {
-      const { data } = await supabase
-        .from('items')
-        .select('*')
-        .eq('supplier_id', supplierId)
+      // HQ can send any active item; a supplier only the items it supplies.
+      let query = supabase.from('items').select('*')
+      if (!internal) query = query.eq('supplier_id', supplierId)
+      const { data } = await query
         .eq('status', 'active')
         .order('name')
       if (cancelled) return
@@ -67,7 +81,7 @@ export default function PurchaseOrderNewPage() {
     }
     loadItems()
     return () => { cancelled = true }
-  }, [supplierId])
+  }, [supplierId, internal])
 
   function setLine(itemId: string, patch: Partial<DraftLine>) {
     setLines(prev => {
@@ -99,6 +113,8 @@ export default function PurchaseOrderNewPage() {
     if (!branchId) return setError('Pick a branch for this order.')
     if (activeLines.length === 0) return setError('Enter a quantity for at least one item.')
     if (activeLines.some(l => l.unit_price < 0)) return setError('Unit price cannot be negative.')
+    const fee = internal && deliveryFee.trim() !== '' ? Number(deliveryFee) : null
+    if (fee != null && !(fee >= 0)) return setError('Delivery fee must be zero or more.')
 
     setSaving(true)
     setError('')
@@ -114,6 +130,8 @@ export default function PurchaseOrderNewPage() {
         total_amount: total,
         notes: notes.trim() || null,
         sent_at: markSent ? new Date().toISOString() : null,
+        // Supplier POs send exactly the same payload as before.
+        ...(internal ? { delivery_fee: fee } : {}),
       })
       .select()
       .single()
@@ -180,11 +198,20 @@ export default function PurchaseOrderNewPage() {
               <label className={labelCls}>Supplier *</label>
               <select className={inputCls} value={supplierId} onChange={e => setSupplierId(e.target.value)}>
                 <option value="">Select a supplier…</option>
-                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {supplierOptions.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {isInternalSupplier(s) ? `Internal — ${s.name}` : s.name}
+                  </option>
+                ))}
               </select>
               {suppliers.length === 0 && (
                 <p className="text-xs text-brown-faint mt-1">
                   No active suppliers. <Link to="/procurement/suppliers" className="text-[#C4813A] hover:underline">Add one first.</Link>
+                </p>
+              )}
+              {internal && (
+                <p className="text-xs text-[#2E6E9E] mt-1">
+                  Internal transfer — HQ ships it and sets the actual cost when shipping.
                 </p>
               )}
             </div>
@@ -209,15 +236,19 @@ export default function PurchaseOrderNewPage() {
         {supplierId && (
           <section className="bg-white rounded-xl border border-[#E8DDD0] overflow-hidden">
             <div className="px-5 pt-5 pb-3">
-              <h2 className="text-sm font-bold text-brown-dark">Items from this supplier</h2>
+              <h2 className="text-sm font-bold text-brown-dark">
+                {internal ? 'Items to request from HQ' : 'Items from this supplier'}
+              </h2>
               <p className="text-xs text-brown-faint mt-0.5">
-                Leave a quantity blank to skip that item. Prices default to the last price paid.
+                {internal
+                  ? 'Leave a quantity blank to skip that item. Est. prices are the last price paid; HQ sets the actual cost when shipping.'
+                  : 'Leave a quantity blank to skip that item. Prices default to the last price paid.'}
               </p>
             </div>
 
             {items.length === 0 ? (
               <p className="px-5 pb-6 text-xs text-brown-faint">
-                This supplier has no active items.{' '}
+                {internal ? 'There are no active items.' : 'This supplier has no active items.'}{' '}
                 <Link to="/procurement/items" className="text-[#C4813A] hover:underline">Add some in Items.</Link>
               </p>
             ) : (
@@ -227,7 +258,7 @@ export default function PurchaseOrderNewPage() {
                     <tr className="text-left text-xs text-brown-faint border-y border-[#EDE5D8] bg-[#FBF6EE]">
                       <th className="px-5 py-2.5 font-semibold">Item</th>
                       <th className="px-3 py-2.5 font-semibold w-32">Quantity</th>
-                      <th className="px-3 py-2.5 font-semibold w-32">Unit Price</th>
+                      <th className="px-3 py-2.5 font-semibold w-32">{internal ? 'Est. price' : 'Unit Price'}</th>
                       <th className="px-5 py-2.5 font-semibold text-right w-28">Line Total</th>
                     </tr>
                   </thead>
@@ -286,7 +317,7 @@ export default function PurchaseOrderNewPage() {
         {activeLines.length > 0 && (
           <section className="bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4">
             <div>
-              <label className={labelCls}>Notes for the supplier</label>
+              <label className={labelCls}>{internal ? 'Notes for HQ' : 'Notes for the supplier'}</label>
               <textarea
                 rows={2}
                 className={`${inputCls} resize-none`}
@@ -296,10 +327,28 @@ export default function PurchaseOrderNewPage() {
               />
             </div>
 
+            {internal && (
+              <div>
+                <label htmlFor="po-delivery-fee" className={labelCls}>Delivery fee (RM, optional)</label>
+                <input
+                  id="po-delivery-fee"
+                  type="number" step="0.01" min="0"
+                  className={`${inputCls} w-40`}
+                  value={deliveryFee}
+                  onChange={e => setDeliveryFee(e.target.value)}
+                  placeholder="0.00"
+                />
+                <p className="text-xs text-brown-faint mt-1">
+                  E.g. Lalamove. Recorded on the order only — not added to item cost.
+                </p>
+              </div>
+            )}
+
             <div className="flex items-center justify-between pt-1 border-t border-[#EDE5D8]">
               <div className="pt-3">
                 <p className="text-xs text-brown-faint">{activeLines.length} item{activeLines.length > 1 ? 's' : ''}</p>
                 <p className="text-xl font-bold text-brown-dark">{money(total)}</p>
+                {internal && <p className="text-[10px] text-brown-faint">Estimate — HQ sets the actual cost</p>}
               </div>
               <div className="flex gap-2 pt-3 flex-wrap justify-end">
                 <button
@@ -314,7 +363,7 @@ export default function PurchaseOrderNewPage() {
                   disabled={saving || supervisorHasNoBranch}
                   className="px-4 py-2.5 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors disabled:opacity-60"
                 >
-                  {saving ? 'Saving…' : 'Save & Mark as Sent'}
+                  {saving ? 'Saving…' : internal ? 'Send to HQ' : 'Save & Mark as Sent'}
                 </button>
               </div>
             </div>

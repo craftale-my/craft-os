@@ -1,18 +1,25 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { money, isReceivable } from '../../shared/lib/procurement'
+import { money, isReceivable, isInternalSupplier, canAccessBranch, inTransitQty } from '../../shared/lib/procurement'
+import { useAuth } from '../auth/AuthContext'
 import { PoStatusBadge } from './PurchaseOrders'
-import { OverDeliveredBadge } from './badges'
+import { OverDeliveredBadge, InternalBadge } from './badges'
 import type { PurchaseOrder, Receiving } from '../../shared/types'
 
 type ListedPo = PurchaseOrder & { receivings?: Pick<Receiving, 'has_over_delivery'>[] | null }
+
+/** Internal POs: whether anything shipped by HQ is waiting to be received. */
+function hasInTransit(o: ListedPo): boolean {
+  return (o.items ?? []).some(l => inTransitQty(l) > 0)
+}
 
 function hasOverDelivery(o: ListedPo): boolean {
   return (o.receivings ?? []).some(r => r.has_over_delivery)
 }
 
 export default function ReceivingListPage() {
+  const { staff } = useAuth()
   const [pending, setPending] = useState<ListedPo[]>([])
   const [recent, setRecent] = useState<ListedPo[]>([])
   const [loading, setLoading] = useState(true)
@@ -21,17 +28,23 @@ export default function ReceivingListPage() {
     async function load() {
       const { data } = await supabase
         .from('purchase_orders')
-        .select('*, supplier:suppliers(id,name), branch:branches(id,name), receivings(has_over_delivery)')
+        .select(
+          '*, supplier:suppliers(id,name,internal_branch_id), branch:branches(id,name), receivings(has_over_delivery), ' +
+          'items:purchase_order_items(quantity_ordered,received_quantity,shipped_quantity,transit_loss_quantity)',
+        )
         .in('status', ['sent', 'received', 'partially_received', 'closed_short'])
         .order('created_at', { ascending: false })
-      const all = (data as ListedPo[]) ?? []
+      // HQ may read internal POs addressed to it, but only the requesting
+      // branch receives them — keep them out of HQ's queue.
+      const all = ((data as unknown as ListedPo[]) ?? [])
+        .filter(o => !isInternalSupplier(o.supplier) || canAccessBranch(staff, o.branch_id))
       setPending(all.filter(o => isReceivable(o.status)))
       // Finished orders: fully received, or closed short (never receivable again).
       setRecent(all.filter(o => o.status === 'received' || o.status === 'closed_short').slice(0, 10))
       setLoading(false)
     }
     load()
-  }, [])
+  }, [staff?.id])
 
   return (
     <div className="min-h-screen bg-cream-light">
@@ -60,11 +73,21 @@ export default function ReceivingListPage() {
                 <div className="space-y-2">
                   {pending.map(o => {
                     const partial = o.status === 'partially_received'
+                    const internal = isInternalSupplier(o.supplier)
+                    const moving = internal && hasInTransit(o)
                     return (
                       <div key={o.id} className="bg-white rounded-xl border border-[#E8DDD0] p-4 flex items-center gap-3 flex-wrap">
                         <div className="flex-1 min-w-[180px]">
                           <p className="text-sm font-semibold text-brown-dark flex items-center gap-2 flex-wrap">
                             {o.po_number}
+                            {internal && <InternalBadge />}
+                            {internal && (
+                              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                moving ? 'bg-[#2E6E9E20] text-[#2E6E9E]' : 'bg-[#8B735520] text-[#8B7355]'
+                              }`}>
+                                {moving ? 'In transit' : 'Awaiting shipment'}
+                              </span>
+                            )}
                             {partial && (
                               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#C4813A20] text-[#C4813A]">
                                 Partially received

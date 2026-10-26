@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { qty, money, isBelowAlert, formatUnitCost } from '../../shared/lib/procurement'
+import { qty, money, isBelowAlert, formatUnitCost, parseTransferNote } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryTransaction, InventoryValuation } from '../../shared/types'
 import { TRANSACTION_TYPE_LABELS, WASTAGE_REASON_LABELS } from '../../shared/types'
 import type { WastageReason } from '../../shared/types'
@@ -9,6 +9,27 @@ import type { WastageReason } from '../../shared/types'
 /** Reason codes are wastage reasons today; show anything else as stored. */
 function reasonLabel(reason: string): string {
   return WASTAGE_REASON_LABELS[reason as WastageReason] ?? reason
+}
+
+function isTransfer(t: InventoryTransaction): boolean {
+  return t.transaction_type === 'transfer_out' || t.transaction_type === 'transfer_in'
+}
+
+/** Receipt id → where a transfer_in came from (the internal PO it was received on). */
+type TransferSource = Map<string, { poId: string; poNumber: string; from: string }>
+
+/** "to Puchong · PO-…" / "from Craft Cafe HQ (Cheras) · PO-…", or null when unknown. */
+function transferCounterpart(t: InventoryTransaction, sources: TransferSource): string | null {
+  if (t.transaction_type === 'transfer_out') {
+    const parsed = parseTransferNote(t.notes)
+    if (!parsed) return null
+    return `to ${parsed.branch}${parsed.poNumber ? ` · ${parsed.poNumber}` : ''}`
+  }
+  if (t.transaction_type === 'transfer_in' && t.reference_id) {
+    const src = sources.get(t.reference_id)
+    return src ? `from ${src.from} · ${src.poNumber}` : null
+  }
+  return null
 }
 
 export default function InventoryDetailPage() {
@@ -20,6 +41,7 @@ export default function InventoryDetailPage() {
   const [branches, setBranches] = useState<Branch[]>([])
   const [balances, setBalances] = useState<InventoryValuation[]>([])
   const [txns, setTxns] = useState<InventoryTransaction[]>([])
+  const [transferSources, setTransferSources] = useState<TransferSource>(new Map())
   const [branchFilter, setBranchFilter] = useState<string>(branchParam ?? 'all')
   const [loading, setLoading] = useState(true)
 
@@ -43,7 +65,24 @@ export default function InventoryDetailPage() {
       setItem(itemRes.data as Item | null)
       setBranches((branchRes.data as Branch[]) ?? [])
       setBalances((balRes.data as InventoryValuation[]) ?? [])
-      setTxns((txnRes.data as InventoryTransaction[]) ?? [])
+      const rows = (txnRes.data as InventoryTransaction[]) ?? []
+      setTxns(rows)
+
+      // transfer_in rows point at a receipt; look up its internal PO for the label.
+      const receiptIds = [...new Set(rows
+        .filter(t => t.transaction_type === 'transfer_in' && t.reference_id)
+        .map(t => t.reference_id as string))]
+      if (receiptIds.length > 0) {
+        const { data } = await supabase
+          .from('receivings')
+          .select('id, po:purchase_orders(id, po_number, supplier:suppliers(name))')
+          .in('id', receiptIds)
+        if (cancelled) return
+        type Row = { id: string; po: { id: string; po_number: string; supplier: { name: string } | null } | null }
+        setTransferSources(new Map(((data as unknown as Row[]) ?? [])
+          .filter(r => r.po)
+          .map(r => [r.id, { poId: r.po!.id, poNumber: r.po!.po_number, from: r.po!.supplier?.name ?? 'HQ' }])))
+      }
       setLoading(false)
     }
 
@@ -141,7 +180,13 @@ export default function InventoryDetailPage() {
                           {reasonLabel(t.reason)}
                         </span>
                       )}
-                      {t.reference_type && t.reference_type !== t.transaction_type && (
+                      {isTransfer(t) ? (
+                        transferCounterpart(t, transferSources) && (
+                          <span className="text-xs text-[#2E6E9E] font-normal ml-2">
+                            {transferCounterpart(t, transferSources)}
+                          </span>
+                        )
+                      ) : t.reference_type && t.reference_type !== t.transaction_type && (
                         <span className="text-xs text-brown-faint font-normal ml-2">
                           from {t.reference_type}
                         </span>
@@ -154,7 +199,10 @@ export default function InventoryDetailPage() {
                       {' · '}{branchName(t.branch_id)}
                       {t.creator?.name && ` · ${t.creator.name}`}
                     </p>
-                    {t.notes && <p className="text-xs text-brown-muted italic mt-0.5">{t.notes}</p>}
+                    {/* A transfer_out note is the counterpart, already shown above. */}
+                    {t.notes && !(t.transaction_type === 'transfer_out' && parseTransferNote(t.notes)) && (
+                      <p className="text-xs text-brown-muted italic mt-0.5">{t.notes}</p>
+                    )}
                   </div>
                   <span className={`text-sm font-bold whitespace-nowrap ${
                     Number(t.quantity) >= 0 ? 'text-[#3D7A50]' : 'text-[#9E4A30]'

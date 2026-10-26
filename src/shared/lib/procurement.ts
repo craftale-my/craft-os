@@ -1,6 +1,6 @@
 import type {
-  InventoryBalance, InventoryValuation, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Supplier,
-  WastageLog,
+  InventoryBalance, InventoryValuation, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Staff,
+  Supplier, WastageLog,
 } from '../types'
 import { WASTAGE_REASONS } from '../types'
 
@@ -364,6 +364,214 @@ export function sumWastage(logs: WastageValueRow[], { branchId, department, item
     byItem.set(log.item_id, (byItem.get(log.item_id) ?? 0) + v)
   }
   return { total, byItem }
+}
+
+// ─── Internal transfers ───────────────────────────────────────────────────────
+// A PO to the HQ supplier row (suppliers.internal_branch_id set) is an internal
+// PO: HQ ships it (ship_internal_po), the branch receives it. Everything below
+// mirrors migration-2026-10-27-internal-transfers.sql; the RPCs stay authoritative.
+// The supplier-PO helpers above are deliberately untouched by this.
+
+/** Whether the supplier is the HQ row, i.e. a PO to it is an internal transfer. */
+export function isInternalSupplier(
+  supplier: Pick<Supplier, 'internal_branch_id'> | null | undefined,
+): boolean {
+  return !!supplier?.internal_branch_id
+}
+
+/**
+ * Frontend mirror of SQL can_access_branch(): manager-tier and HR roles see
+ * every branch, everyone else only their own. UI gate only — RLS decides.
+ */
+export function canAccessBranch(
+  staff: Pick<Staff, 'rank' | 'system_role' | 'branch_id'> | null | undefined,
+  branchId: string | null | undefined,
+): boolean {
+  if (!staff || !branchId) return false
+  if (staff.rank === 'manager') return true
+  if (['owner', 'admin', 'manager', 'hr'].includes(staff.system_role)) return true
+  return staff.branch_id != null && staff.branch_id === branchId
+}
+
+/** Quantities of an internal PO line, in purchase units. */
+export interface TransferQtyLine {
+  quantity_ordered: number
+  shipped_quantity?: number | null
+  received_quantity: number
+  transit_loss_quantity?: number | null
+}
+
+function n(v: number | null | undefined): number {
+  const x = Number(v ?? 0)
+  return Number.isFinite(x) ? x : 0
+}
+
+/**
+ * A quantity rounded to 6 decimals, so float noise from subtracting
+ * (3 − 2.9 − 0.1 = 5.55e-17) reads as 0 like the DB's exact numeric. Never -0.
+ */
+export function roundQty(x: number): number {
+  return Math.round(x * 1e6) / 1e6 + 0
+}
+
+/** Shipped but neither received nor recorded lost. Never negative. */
+export function inTransitQty(line: TransferQtyLine): number {
+  return Math.max(roundQty(n(line.shipped_quantity) - n(line.received_quantity) - n(line.transit_loss_quantity)), 0)
+}
+
+/**
+ * What HQ can still ship. Lost quantity counts as not shipped (HQ may re-send
+ * it). Zero unless the PO is sent / partially received, like the view.
+ */
+export function toShipQty(line: TransferQtyLine, status: PoStatus): number {
+  if (!isReceivable(status)) return 0
+  return Math.max(roundQty(n(line.quantity_ordered) - n(line.shipped_quantity) + n(line.transit_loss_quantity)), 0)
+}
+
+/**
+ * RM value of `quantity` purchase units at a shipped cost per base unit.
+ * Null when there is no shipped cost (nothing shipped, or uncosted at HQ).
+ */
+export function transferValue(
+  quantity: number,
+  conversionRate: number | null | undefined,
+  shippedUnitCost: number | null | undefined,
+): number | null {
+  if (shippedUnitCost == null) return null
+  return n(quantity) * n(conversionRate) * n(shippedUnitCost)
+}
+
+/** RM in transit on a line at its shipped cost — po_transfer_lines.in_transit_value. */
+export function inTransitValue(
+  line: TransferQtyLine,
+  conversionRate: number | null | undefined,
+  shippedUnitCost: number | null | undefined,
+): number | null {
+  return transferValue(inTransitQty(line), conversionRate, shippedUnitCost)
+}
+
+/** RM lost in transit on a line at its shipped cost — po_transfer_lines.transit_loss_value. */
+export function transitLossValue(
+  line: TransferQtyLine,
+  conversionRate: number | null | undefined,
+  shippedUnitCost: number | null | undefined,
+): number | null {
+  return transferValue(n(line.transit_loss_quantity), conversionRate, shippedUnitCost)
+}
+
+/**
+ * Weighted shipped cost per base unit over a line's shipments — what the view
+ * and receive_internal_po use. Null when no costed shipment exists.
+ */
+export function shippedUnitCost(shipments: { qty_shipped: number; unit_cost: number | null }[]): number | null {
+  const costed = shipments.filter(s => s.unit_cost != null)
+  const qtySum = costed.reduce((s, x) => s + n(x.qty_shipped), 0)
+  if (!(qtySum > 0)) return null
+  return costed.reduce((s, x) => s + n(x.qty_shipped) * n(x.unit_cost), 0) / qtySum
+}
+
+/**
+ * Problem with a shipment, or null if it can be submitted. Quantities are in
+ * purchase units; `quantity` NaN = not a number. Mirrors ship_internal_po's
+ * quantity checks; the on-hand check is left to the RPC (and a UI warning).
+ */
+export function validateShipLines(
+  lines: { quantity: number; toShip: number; name?: string; unit?: string }[],
+): string | null {
+  for (const l of lines) {
+    const label = l.name ? ` for ${l.name}` : ''
+    if (!Number.isFinite(l.quantity) || l.quantity < 0) return `Enter zero or more${label}`
+    if (l.quantity > l.toShip) {
+      const unit = l.unit ? ` ${l.unit}` : ''
+      return `Cannot ship ${qty(l.quantity)}${unit}${label}: only ${qty(l.toShip)}${unit} left to ship`
+    }
+  }
+  if (!lines.some(l => l.quantity > 0)) return 'Nothing to ship — enter a quantity on at least one line'
+  return null
+}
+
+/** Purchase units short on a received internal line: in transit − actual. Never negative. */
+export function transitShortQty(inTransit: number, actual: number): number {
+  return Math.max(roundQty(n(inTransit) - n(actual)), 0)
+}
+
+/**
+ * Problem with a receipt on an internal PO, or null if it can be submitted.
+ * Mirrors receive_internal_po: a delivery photo, actual ≤ in transit, and a
+ * note whenever anything is short (recorded as lost in transit).
+ */
+export function validateInternalReceipt({ lines, note, hasPhoto }: {
+  /** Every line with goods in transit, in purchase units. */
+  lines: { inTransit: number; actual: number; name?: string }[]
+  note: string | null
+  hasPhoto: boolean
+}): string | null {
+  if (lines.length === 0) return 'Nothing is in transit on this purchase order yet'
+  for (const l of lines) {
+    const label = l.name ? ` for ${l.name}` : ''
+    if (!Number.isFinite(l.actual) || l.actual < 0) return `Enter zero or more${label}`
+    if (l.actual > l.inTransit) {
+      return `Cannot receive ${qty(l.actual)}${label}: only ${qty(l.inTransit)} shipped and not yet received`
+    }
+  }
+  if (!hasPhoto) return 'A delivery photo is required'
+  if (lines.some(l => transitShortQty(l.inTransit, l.actual) > 0) && !note?.trim()) {
+    return 'A note is required when less arrived than was shipped'
+  }
+  return null
+}
+
+export type TransferStatus =
+  | 'draft' | 'cancelled' | 'closed_short'
+  | 'awaiting_shipment' | 'in_transit' | 'partly_received' | 'received' | 'received_with_loss'
+
+export const TRANSFER_STATUS_LABELS: Record<TransferStatus, string> = {
+  draft:              'Draft',
+  cancelled:          'Cancelled',
+  closed_short:       'Closed short',
+  awaiting_shipment:  'Awaiting shipment',
+  in_transit:         'In transit',
+  partly_received:    'Partly received',
+  received:           'Received',
+  received_with_loss: 'Received with loss',
+}
+
+/**
+ * Where an internal PO stands from the transfer's point of view. Goods on the
+ * road win over everything else; a PO whose shipped goods have all been
+ * settled with some lost reads "Received with loss" (the lost part can still
+ * be re-sent or closed short).
+ */
+export function transferStatus(status: PoStatus, lines: TransferQtyLine[]): TransferStatus {
+  if (status === 'draft' || status === 'cancelled' || status === 'closed_short') return status
+  if (lines.some(l => inTransitQty(l) > 0)) return 'in_transit'
+  if (!lines.some(l => n(l.shipped_quantity) > 0)) return 'awaiting_shipment'
+  if (lines.some(l => n(l.transit_loss_quantity) > 0)) return 'received_with_loss'
+  if (lines.every(l => outstandingQty(l) === 0)) return 'received'
+  return 'partly_received'
+}
+
+export function transferStatusLabel(status: PoStatus, lines: TransferQtyLine[]): string {
+  return TRANSFER_STATUS_LABELS[transferStatus(status, lines)]
+}
+
+/**
+ * Counterpart of a transfer ledger row, from the notes ship_internal_po writes
+ * on transfer_out ("To <branch> · <PO number>"). Null when the notes don't
+ * follow that shape.
+ */
+export function parseTransferNote(notes: string | null | undefined): { branch: string; poNumber: string | null } | null {
+  const m = /^To (.+?)(?: · (\S+))?$/.exec((notes ?? '').trim())
+  if (!m) return null
+  return { branch: m[1], poNumber: m[2] ?? null }
+}
+
+/** Date and time in Malaysia: `27 Oct 2026, 14:05`. */
+export function formatDateTimeMYT(iso: string): string {
+  return new Date(iso).toLocaleString('en-GB', {
+    timeZone: 'Asia/Kuala_Lumpur',
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
 }
 
 /** Ordered value of a PO line. */

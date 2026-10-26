@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { money } from '../../shared/lib/procurement'
+import { money, isInternalSupplier, canAccessBranch } from '../../shared/lib/procurement'
+import { useAuth } from '../auth/AuthContext'
+import { InternalBadge } from './badges'
 import type { PurchaseOrder, PoStatus } from '../../shared/types'
 import { PO_STATUS_LABELS, PO_STATUS_COLORS } from '../../shared/types'
 
@@ -31,7 +33,8 @@ export function PoStatusBadge({ status }: { status: PoStatus }) {
 }
 
 export default function PurchaseOrdersPage() {
-  const [orders, setOrders] = useState<PurchaseOrder[]>([])
+  const { staff } = useAuth()
+  const [loaded, setLoaded] = useState<PurchaseOrder[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<PoStatus | 'all'>('all')
   const [search, setSearch] = useState('')
@@ -39,13 +42,17 @@ export default function PurchaseOrdersPage() {
   async function load() {
     const { data } = await supabase
       .from('purchase_orders')
-      .select('*, supplier:suppliers(id,name), branch:branches(id,name)')
+      .select('*, supplier:suppliers(id,name,internal_branch_id), branch:branches(id,name)')
       .order('created_at', { ascending: false })
-    setOrders((data as PurchaseOrder[]) ?? [])
+    setLoaded((data as PurchaseOrder[]) ?? [])
     setLoading(false)
   }
 
   useEffect(() => { load() }, [])
+
+  // RLS also lets HQ read internal POs addressed to it; those belong to the
+  // requesting branch's list (HQ ships them from Transfers), not HQ's.
+  const orders = loaded.filter(o => !isInternalSupplier(o.supplier) || canAccessBranch(staff, o.branch_id))
 
   const term = search.trim().toLowerCase()
   const visible = orders
@@ -138,7 +145,12 @@ export default function PurchaseOrdersPage() {
                         {o.po_number}
                       </Link>
                     </td>
-                    <td className="px-4 py-3 text-brown-muted">{o.supplier?.name ?? '—'}</td>
+                    <td className="px-4 py-3 text-brown-muted">
+                      <span className="flex items-center gap-2">
+                        {o.supplier?.name ?? '—'}
+                        {isInternalSupplier(o.supplier) && <InternalBadge />}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 text-xs text-brown-muted">{o.branch?.name ?? '—'}</td>
                     <td className="px-4 py-3 text-right whitespace-nowrap text-brown-dark">{money(o.total_amount)}</td>
                     <td className="px-4 py-3"><PoStatusBadge status={o.status} /></td>
