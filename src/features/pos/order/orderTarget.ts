@@ -12,6 +12,10 @@ export type OrderTarget =
 
 export const targetOrderType = (t: OrderTarget): OrderType => (t.kind === 'table' ? 'dine_in' : 'takeaway')
 
+/** Which table or takeaway bill the order screen is on. The pax chosen for an empty table keeps it;
+ *  a move or merge changes it, so the screen (and its unsent drafts) starts again on the new bill. */
+export const targetKey = (t: OrderTarget): string => (t.kind === 'table' ? `table:${t.tableId}` : `takeaway:${t.billId ?? 'new'}`)
+
 /** The open bill the target is on, or null (an empty table, a new takeaway, a bill closed meanwhile). */
 export function targetBill(t: OrderTarget, bills: OpenBillRow[]): OpenBillRow | null {
   if (t.kind === 'table') return bills.find((b) => b.table_id === t.tableId) ?? null

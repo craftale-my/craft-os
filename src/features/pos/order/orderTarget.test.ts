@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { billTitle, shownPax, takesNewItems, targetBill, targetOrderType, targetTitle } from './orderTarget'
+import { billTitle, shownPax, takesNewItems, targetBill, targetKey, targetOrderType, targetTitle } from './orderTarget'
 import type { OpenBillRow } from './posApi'
 
 const bill = (id: string, table_id: string | null, pax: number | null = null): OpenBillRow =>
@@ -33,5 +33,12 @@ describe('order targets', () => {
     expect(billTitle(null, '261026-002', tables)).toBe('Takeaway 261026-002')
     expect(targetTitle({ kind: 'takeaway', billId: null }, null, tables)).toBe('New takeaway')
     expect(targetTitle({ kind: 'table', tableId: 't2', pax: 3 }, null, tables)).toBe('Table T2')
+  })
+  it('a key per table or takeaway bill: the pax chosen does not change it, a move or merge does', () => {
+    expect(targetKey({ kind: 'table', tableId: 't1', pax: null })).toBe(targetKey({ kind: 'table', tableId: 't1', pax: 3 }))
+    expect(targetKey({ kind: 'table', tableId: 't1', pax: null })).not.toBe(targetKey({ kind: 'table', tableId: 't2', pax: null }))
+    expect(targetKey({ kind: 'takeaway', billId: '002' })).not.toBe(targetKey({ kind: 'takeaway', billId: '003' }))
+    expect(targetKey({ kind: 'takeaway', billId: null })).not.toBe(targetKey({ kind: 'takeaway', billId: '002' }))
+    expect(targetKey({ kind: 'table', tableId: '002', pax: null })).not.toBe(targetKey({ kind: 'takeaway', billId: '002' }))
   })
 })
