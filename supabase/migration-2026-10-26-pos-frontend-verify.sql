@@ -31,7 +31,8 @@ declare
   v_branch uuid; v_branch2 uuid;
   v_t1 dining_tables; v_t2 dining_tables; v_t3 dining_tables;
   v_cat uuid; v_catalog uuid; v_plate uuid; v_plate_v uuid;
-  b1 uuid; b2 uuid; b3 uuid; b4 uuid; v_id uuid;
+  b1 uuid; b2 uuid; b3 uuid; b4 uuid; b5 uuid; v_id uuid; v_o2 uuid;
+  v_tf uuid;
   n integer; m integer; r record;
 begin
   -- ── A. schema, grants, search_path, the guard's body ──────────────────────
@@ -62,6 +63,7 @@ begin
   insert into dining_tables(branch_id, label, area, sort_order) values (v_branch, 'F1', 'Patio', 1) returning * into v_t1;
   insert into dining_tables(branch_id, label, sort_order) values (v_branch, 'F2', 2) returning * into v_t2;
   insert into dining_tables(branch_id, label, sort_order) values (v_branch, 'F3', 3) returning * into v_t3;
+  insert into dining_tables(branch_id, label, sort_order) values (v_branch2, 'FAR1', 1) returning id into v_tf;
   insert into menu_categories(name, sort_order) values ('VERIFY F FOOD', 900) returning id into v_cat;
   insert into menu_products(name, category_id, sst_rate_bp, takeaway_fee_sen) values ('Verify F Plate', v_cat, 600, 100) returning id into v_plate;
   insert into menu_variants(product_id, feedme_variant_key, name, price_sen) values (v_plate, '', 'Regular', 2000) returning id into v_plate_v;
@@ -112,15 +114,17 @@ begin
   b1 := (select bill_id from orders where id = v_id);
   v_id := place_counter_order(v_t1.id, 'dine_in', null,
     jsonb_build_array(jsonb_build_object('productId', v_plate, 'variantId', v_plate_v)), gen_random_uuid());
+  v_o2 := v_id;                                                      -- the table's second order (voided below)
   v_id := place_counter_order(null, 'takeaway', null,
     jsonb_build_array(jsonb_build_object('productId', v_plate, 'variantId', v_plate_v)), gen_random_uuid());
   b2 := (select bill_id from orders where id = v_id);
   b3 := open_table(v_t2.id, 3);                                      -- open, nothing on it yet
+  perform pg_temp.act(v_far);
+  b5 := open_table(v_tf, 2);                                         -- an open bill of the other branch: must not be listed
+  perform pg_temp.act(v_a);
   -- one line of the table's second order voided (set by hand: the void path is checked elsewhere)
   reset role;
-  update order_items set voided_at = now()
-   where id = (select oi.id from order_items oi join orders o on o.id = oi.order_id
-                where oi.bill_id = b1 order by o.placed_at desc, oi.id limit 1);
+  update order_items set voided_at = now() where order_id = v_o2;
   perform pg_temp.act(v_a);
   set local role authenticated;
   select count(*), count(*) filter (where
@@ -131,6 +135,9 @@ begin
     from pos_open_bill_summaries(v_branch) s;
   reset role;
   if n <> 3 or m <> 3 then raise exception 'FAIL F2: % rows, % matching pos_bill_totals (expected 3 and 3)', n, m; end if;
+  if exists (select 1 from pos_open_bill_summaries(v_branch) s where s.bill_id = b5) then
+    raise exception 'FAIL F2: a bill of another branch is listed';
+  end if;
   -- the table: 2 × 20.00 + SST 6% 2.40 = 42.40 (the voided plate does not count)
   if (select s.total_sen from pos_open_bill_summaries(v_branch) s where s.bill_id = b1) is distinct from 4240 then
     raise exception 'FAIL F2: table total is not 42.40';
@@ -160,6 +167,7 @@ begin
   perform pos_set_bill_pax(b1, 5);
   if (select pax from bills where id = b1) is distinct from 5 then raise exception 'FAIL F3: pax was not changed'; end if;
   perform pg_temp.expect_error(format('select pos_set_bill_pax(%L, 0)', b1), 'Invalid number of guests', 'F3 zero guests');
+  perform pg_temp.expect_error(format('select pos_set_bill_pax(%L, null)', b1), 'Invalid number of guests', 'F3 null guests');
   perform pg_temp.expect_error(format('select pos_set_bill_pax(%L, 100)', b1), 'Invalid number of guests', 'F3 100 guests');
   perform pg_temp.expect_error(format('select pos_set_bill_pax(%L, 2)', b2), 'Bill not found', 'F3 a merged bill');
   v_id := place_counter_order(null, 'takeaway', null,
