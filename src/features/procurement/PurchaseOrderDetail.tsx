@@ -389,7 +389,6 @@ export default function PurchaseOrderDetailPage() {
                     <tr key={l.id}>
                       <td className="px-1 py-2.5">
                         <p className="font-medium text-brown-dark">{l.item?.name ?? 'Unknown item'}</p>
-                        {l.item?.name_zh && <p className="text-xs text-brown-faint">{l.item.name_zh}</p>}
                       </td>
                       <td className="px-1 py-2.5 text-right whitespace-nowrap text-brown-dark">
                         {qty(l.quantity_ordered)} {l.item?.purchase_unit}

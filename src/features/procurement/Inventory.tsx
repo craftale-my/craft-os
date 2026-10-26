@@ -184,7 +184,6 @@ export default function InventoryPage() {
                         >
                           {item.name}
                         </Link>
-                        {item.name_zh && <p className="text-xs text-brown-faint">{item.name_zh}</p>}
                       </td>
                       <td className="px-4 py-3 text-xs text-brown-muted whitespace-nowrap">
                         {item.department ? ITEM_DEPARTMENT_LABELS[item.department] : '—'}

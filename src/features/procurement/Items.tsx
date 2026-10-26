@@ -42,7 +42,6 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
 }) {
   const [form, setForm] = useState({
     name: item?.name ?? '',
-    name_zh: item?.name_zh ?? '',
     category: (item?.category ?? 'raw') as ItemCategory,
     department: (item?.department ?? '') as ItemDepartment | '',
     supplier_id: item?.supplier_id ?? '',
@@ -72,7 +71,6 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
     setError('')
     const payload = {
       name: form.name.trim(),
-      name_zh: form.name_zh.trim() || null,
       category: form.category,
       department: form.department || null,
       supplier_id: form.supplier_id || null,
@@ -101,15 +99,9 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
         <div className="px-6 py-5 space-y-4">
           {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelCls}>Item Name *</label>
-              <input className={inputCls} value={form.name} onChange={set('name')} placeholder="Coffee Beans" />
-            </div>
-            <div>
-              <label className={labelCls}>Chinese Name</label>
-              <input className={inputCls} value={form.name_zh} onChange={set('name_zh')} />
-            </div>
+          <div>
+            <label className={labelCls}>Item Name *</label>
+            <input className={inputCls} value={form.name} onChange={set('name')} placeholder="Coffee Beans" />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -277,9 +269,7 @@ export default function ItemsPage() {
   const visible = items
     .filter(i => showInactive || i.status === 'active')
     .filter(i => categoryFilter === 'all' || i.category === categoryFilter)
-    .filter(i => !term
-      || i.name.toLowerCase().includes(term)
-      || (i.name_zh ?? '').toLowerCase().includes(term))
+    .filter(i => !term || i.name.toLowerCase().includes(term))
 
   return (
     <div className="min-h-screen bg-cream-light">
@@ -363,7 +353,6 @@ export default function ItemsPage() {
                         <Link to={`/procurement/items/${i.id}`} className="font-medium text-brown-dark hover:text-[#C4813A] transition-colors">
                           {i.name}
                         </Link>
-                        {i.name_zh && <p className="text-xs text-brown-faint">{i.name_zh}</p>}
                       </td>
                       <td className="px-4 py-3 text-xs text-brown-muted">{ITEM_CATEGORY_LABELS[i.category]}</td>
                       <td className="px-4 py-3 text-xs text-brown-muted">

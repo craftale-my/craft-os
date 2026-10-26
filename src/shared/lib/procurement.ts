@@ -257,9 +257,7 @@ export function buildStockRows({ items, balances, branchId, department, search }
   return items
     .filter(i => department === 'all'
       || (department === 'unassigned' ? i.department == null : i.department === department))
-    .filter(i => !term
-      || i.name.toLowerCase().includes(term)
-      || (i.name_zh ?? '').toLowerCase().includes(term))
+    .filter(i => !term || i.name.toLowerCase().includes(term))
     .map(item => {
       const balance = totals.get(item.id) ?? 0
       const value = values.size > 0
@@ -315,7 +313,7 @@ export function formatPoText(
   supplier: Pick<Supplier, 'name'> | null | undefined,
   branchName: string,
   cafeName: string,
-  lines: { item: Pick<Item, 'name' | 'name_zh' | 'purchase_unit'>; quantity_ordered: number; unit_price: number }[],
+  lines: { item: Pick<Item, 'name' | 'purchase_unit'>; quantity_ordered: number; unit_price: number }[],
 ): string {
   const out: string[] = []
   out.push('*PURCHASE ORDER*')
@@ -326,8 +324,7 @@ export function formatPoText(
   out.push('')
 
   lines.forEach((l, i) => {
-    const name = l.item.name_zh ? `${l.item.name} (${l.item.name_zh})` : l.item.name
-    out.push(`${i + 1}. ${name}`)
+    out.push(`${i + 1}. ${l.item.name}`)
     out.push(
       `   ${qty(l.quantity_ordered)} ${l.item.purchase_unit}` +
       ` × ${money(l.unit_price)} = ${money(l.quantity_ordered * l.unit_price)}`,

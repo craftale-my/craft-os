@@ -68,7 +68,6 @@ function LineRow({ line, state, onChange }: {
     <div className="bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4">
       <div>
         <p className="text-base font-semibold text-brown-dark">{line.item?.name ?? 'Unknown item'}</p>
-        {line.item?.name_zh && <p className="text-xs text-brown-faint">{line.item.name_zh}</p>}
       </div>
 
       {/* What is still outstanding is the benchmark this delivery is judged against. */}

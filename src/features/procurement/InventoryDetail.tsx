@@ -84,7 +84,6 @@ export default function InventoryDetailPage() {
             ← Inventory
           </Link>
           <h1 className="text-2xl font-bold text-brown-dark mt-1">{item.name}</h1>
-          {item.name_zh && <p className="text-sm text-brown-muted">{item.name_zh}</p>}
         </div>
 
         <section className="bg-white rounded-xl border border-[#E8DDD0] p-5">

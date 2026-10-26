@@ -103,7 +103,6 @@ export default function ItemDetailPage() {
           <div className="flex items-start justify-between gap-4 flex-wrap mt-1">
             <div>
               <h1 className="text-2xl font-bold text-brown-dark">{item.name}</h1>
-              {item.name_zh && <p className="text-sm text-brown-muted">{item.name_zh}</p>}
             </div>
             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
               item.status === 'active' ? 'bg-[#EBF5EE] text-[#3D7A50]' : 'bg-[#F0E8DC] text-brown-faint'

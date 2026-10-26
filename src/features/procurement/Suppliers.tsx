@@ -171,7 +171,7 @@ export default function SuppliersPage() {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold text-brown-dark">Suppliers</h1>
-            <p className="text-sm text-brown-faint mt-0.5">供应商管理 · Who you buy from.</p>
+            <p className="text-sm text-brown-faint mt-0.5">Who you buy from.</p>
           </div>
           <button
             onClick={() => setModalTarget('new')}

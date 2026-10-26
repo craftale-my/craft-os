@@ -51,6 +51,7 @@ export const BASE_UNIT_SUGGESTIONS = ['g', 'kg', 'ml', 'L', 'pcs']
 export interface Item {
   id: string
   name: string
+  /** Legacy column; not shown in the UI. */
   name_zh: string | null
   category: ItemCategory
   department: ItemDepartment | null

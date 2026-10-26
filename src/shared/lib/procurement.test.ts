@@ -378,6 +378,11 @@ describe('buildStockRows', () => {
     expect(buildStockRows({ ...base, search: '  cOfFeE ' }).map(r => r.item.id)).toEqual(['beans'])
   })
 
+  it('does not match the legacy name_zh column', () => {
+    const blend = makeItem({ id: 'blend', name: 'House Blend', name_zh: 'Kopi' })
+    expect(buildStockRows({ ...base, items: [blend], search: 'kopi' })).toEqual([])
+  })
+
   it('counts stock exactly at the threshold as low', () => {
     const rows = buildStockRows({ ...base, branchId: 'b1' })
     expect(rows.find(r => r.item.id === 'flour')?.low).toBe(true)
@@ -610,8 +615,8 @@ describe('qty', () => {
 describe('formatPoText', () => {
   const po = { po_number: 'PO-20260729-001', created_at: '2026-07-29T02:00:00Z', notes: null }
   const lines = [
-    { item: { name: 'Coffee Beans', name_zh: 'Kopi', purchase_unit: 'bag' }, quantity_ordered: 12, unit_price: 45 },
-    { item: { name: 'Oat Milk', name_zh: null, purchase_unit: 'carton' }, quantity_ordered: 2, unit_price: 10.5 },
+    { item: { name: 'Coffee Beans', purchase_unit: 'bag' }, quantity_ordered: 12, unit_price: 45 },
+    { item: { name: 'Oat Milk', purchase_unit: 'carton' }, quantity_ordered: 2, unit_price: 10.5 },
   ]
 
   it('includes the header, every line and the total', () => {
@@ -619,16 +624,16 @@ describe('formatPoText', () => {
     expect(text).toContain('PO-20260729-001')
     expect(text).toContain('Craft Cafe · Cheras')
     expect(text).toContain('Supplier: ABC Trading')
-    expect(text).toContain('1. Coffee Beans (Kopi)')
+    expect(text).toContain('1. Coffee Beans')
     expect(text).toContain('12 bag × RM 45.00 = RM 540.00')
     expect(text).toContain('2. Oat Milk')
     expect(text).toContain('*TOTAL: RM 561.00*')
   })
 
-  it('omits the secondary name when the item has none', () => {
+  it('lists each item by its name only', () => {
     const text = formatPoText(po, { name: 'ABC Trading' }, 'Cheras', 'Craft Cafe', lines)
+    expect(text).toContain('1. Coffee Beans\n')
     expect(text).toContain('2. Oat Milk\n')
-    expect(text).not.toContain('Oat Milk (')
   })
 
   it('appends notes only when present', () => {

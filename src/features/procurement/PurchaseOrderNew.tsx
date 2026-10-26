@@ -157,15 +157,15 @@ export default function PurchaseOrderNewPage() {
             ← Purchase Orders
           </Link>
           <h1 className="text-2xl font-bold text-brown-dark mt-1">New Purchase Order</h1>
-          <p className="text-sm text-brown-faint mt-0.5">下单 · Pick a supplier, then enter quantities.</p>
+          <p className="text-sm text-brown-faint mt-0.5">Pick a supplier, then enter quantities.</p>
         </div>
 
         {supervisorHasNoBranch && (
           <div className="bg-[#FCF0EC] border border-[#C0624A40] rounded-xl px-4 py-3">
-            <p className="text-sm text-[#9E4A30] font-semibold">你的账号还没有绑定分店</p>
+            <p className="text-sm text-[#9E4A30] font-semibold">Your account has no branch yet</p>
             <p className="text-xs text-[#9E4A30] mt-1">
-              采购单必须归属到一个分店,库存才记得上账。请让 manager 在 Staff Management
-              里给你设置 branch,然后再回来下单。
+              A purchase order must belong to a branch so stock is posted correctly. Ask a manager
+              to set your branch in Staff Management, then come back.
             </p>
           </div>
         )}
@@ -244,7 +244,6 @@ export default function PurchaseOrderNewPage() {
                           <td className="px-5 py-3">
                             <p className="font-medium text-brown-dark">{item.name}</p>
                             <p className="text-xs text-brown-faint">
-                              {item.name_zh ? `${item.name_zh} · ` : ''}
                               1 {item.purchase_unit} = {qty(item.conversion_rate)} {item.base_unit}
                             </p>
                           </td>
