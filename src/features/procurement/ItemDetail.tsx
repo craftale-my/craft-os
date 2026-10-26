@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { PriceHistoryChart } from '../../shared/components/PriceHistoryChart'
-import { money, qty, isBelowAlert, toPurchaseUnits } from '../../shared/lib/procurement'
+import {
+  money, qty, isBelowAlert, toPurchaseUnits, unitCostPerBase, formatUnitCost,
+} from '../../shared/lib/procurement'
 import type { Item, ItemPriceHistory, InventoryBalance, Branch } from '../../shared/types'
 import { ITEM_CATEGORY_LABELS } from '../../shared/types'
 
@@ -30,6 +32,8 @@ export default function ItemDetailPage() {
   const [history, setHistory] = useState<ItemPriceHistory[]>([])
   const [balances, setBalances] = useState<InventoryBalance[]>([])
   const [branches, setBranches] = useState<Branch[]>([])
+  /** unit_cost of the latest costed stock_in ledger row; null = no receipt yet. */
+  const [lastReceiptCost, setLastReceiptCost] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
 
@@ -38,11 +42,20 @@ export default function ItemDetailPage() {
     let cancelled = false
 
     async function load() {
-      const [itemRes, histRes, balRes, branchRes] = await Promise.all([
+      const [itemRes, histRes, balRes, branchRes, costRes] = await Promise.all([
         supabase.from('items').select('*, supplier:suppliers(id,name,phone,whatsapp)').eq('id', id).maybeSingle(),
         supabase.from('item_price_history').select('*').eq('item_id', id).order('recorded_at'),
         supabase.from('inventory_balances').select('*').eq('item_id', id),
         supabase.from('branches').select('*').eq('is_active', true).order('name'),
+        supabase
+          .from('inventory_transactions')
+          .select('unit_cost')
+          .eq('item_id', id)
+          .eq('transaction_type', 'stock_in')
+          .not('unit_cost', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
       ])
       if (cancelled) return
       if (!itemRes.data) { setNotFound(true); setLoading(false); return }
@@ -50,6 +63,8 @@ export default function ItemDetailPage() {
       setHistory((histRes.data as ItemPriceHistory[]) ?? [])
       setBalances((balRes.data as InventoryBalance[]) ?? [])
       setBranches((branchRes.data as Branch[]) ?? [])
+      const cost = (costRes.data as { unit_cost: number | null } | null)?.unit_cost
+      setLastReceiptCost(cost == null ? null : Number(cost))
       setLoading(false)
     }
 
@@ -109,11 +124,17 @@ export default function ItemDetailPage() {
             <Field label="Low Stock Alert" value={
               item.min_stock_alert > 0 ? `${qty(item.min_stock_alert)} ${item.base_unit}` : 'Not set'
             } />
-            <Field label="Unit Cost" value={
-              item.latest_price == null
-                ? '—'
-                : `${money(item.latest_price / item.conversion_rate)} / ${item.base_unit}`
-            } />
+            {lastReceiptCost != null ? (
+              <Field label="Unit cost (last receipt)" value={formatUnitCost(lastReceiptCost, item.base_unit)} />
+            ) : (
+              <Field label="Unit cost (catalogue price)" value={formatUnitCost(
+                unitCostPerBase(
+                  item.latest_price == null ? null : Number(item.latest_price),
+                  Number(item.conversion_rate),
+                ),
+                item.base_unit,
+              )} />
+            )}
           </div>
         </Card>
 

@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { qty, money, isBelowAlert } from '../../shared/lib/procurement'
-import type { Item, Branch, InventoryTransaction, InventoryBalance } from '../../shared/types'
+import { qty, money, isBelowAlert, formatUnitCost } from '../../shared/lib/procurement'
+import type { Item, Branch, InventoryTransaction, InventoryValuation } from '../../shared/types'
 import { TRANSACTION_TYPE_LABELS } from '../../shared/types'
 
 export default function InventoryDetailPage() {
@@ -12,7 +12,7 @@ export default function InventoryDetailPage() {
 
   const [item, setItem] = useState<Item | null>(null)
   const [branches, setBranches] = useState<Branch[]>([])
-  const [balances, setBalances] = useState<InventoryBalance[]>([])
+  const [balances, setBalances] = useState<InventoryValuation[]>([])
   const [txns, setTxns] = useState<InventoryTransaction[]>([])
   const [branchFilter, setBranchFilter] = useState<string>(branchParam ?? 'all')
   const [loading, setLoading] = useState(true)
@@ -25,7 +25,7 @@ export default function InventoryDetailPage() {
       const [itemRes, branchRes, balRes, txnRes] = await Promise.all([
         supabase.from('items').select('*').eq('id', itemId).maybeSingle(),
         supabase.from('branches').select('*').eq('is_active', true).order('name'),
-        supabase.from('inventory_balances').select('*').eq('item_id', itemId),
+        supabase.from('inventory_valuation').select('*').eq('item_id', itemId),
         supabase
           .from('inventory_transactions')
           .select('*, creator:staff!inventory_transactions_created_by_fkey(id,name)')
@@ -36,7 +36,7 @@ export default function InventoryDetailPage() {
       if (cancelled) return
       setItem(itemRes.data as Item | null)
       setBranches((branchRes.data as Branch[]) ?? [])
-      setBalances((balRes.data as InventoryBalance[]) ?? [])
+      setBalances((balRes.data as InventoryValuation[]) ?? [])
       setTxns((txnRes.data as InventoryTransaction[]) ?? [])
       setLoading(false)
     }
@@ -68,6 +68,13 @@ export default function InventoryDetailPage() {
     ? balances.reduce((s, b) => s + Number(b.balance), 0)
     : Number(balances.find(b => b.branch_id === branchFilter)?.balance ?? 0)
   const low = isBelowAlert(shownBalance, item.min_stock_alert)
+  // Ledger value over the same rows the balance counts.
+  const valuedRows = (branchFilter === 'all' ? balances : balances.filter(b => b.branch_id === branchFilter))
+    .filter(b => b.stock_value != null)
+  const shownValue = valuedRows.length > 0
+    ? valuedRows.reduce((s, b) => s + Number(b.stock_value), 0)
+    : null
+  const shownAvgCost = shownValue != null && shownBalance > 0 ? shownValue / shownBalance : null
 
   return (
     <div className="min-h-screen bg-cream-light">
@@ -148,10 +155,10 @@ export default function InventoryDetailPage() {
               ))}
             </div>
           )}
-          {item.latest_price != null && item.conversion_rate > 0 && (
+          {shownValue != null && (
             <p className="text-xs text-brown-faint mt-3 pt-3 border-t border-[#EDE5D8]">
-              Valued at {money((item.latest_price / item.conversion_rate) * shownBalance)} using the latest price
-              ({money(item.latest_price)} / {item.purchase_unit}).
+              Valued at {money(shownValue)}
+              {shownAvgCost != null && <> at average cost {formatUnitCost(shownAvgCost, item.base_unit)}</>}.
             </p>
           )}
         </section>

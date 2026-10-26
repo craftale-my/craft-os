@@ -4,8 +4,9 @@ import {
   priceDelta, isBelowAlert, poTotal, formatPoText, qty,
   stockValue, buildStockRows,
   outstandingQty, deriveCumulativePoStatus, applyDelivery, isReceivable,
+  unitCostPerBase, ledgerValue, movingAverageCost, formatUnitCost,
 } from './procurement'
-import type { InventoryBalance, Item } from '../types'
+import type { InventoryBalance, InventoryValuation, Item } from '../types'
 
 function makeItem(overrides: Partial<Item> & Pick<Item, 'id' | 'name'>): Item {
   return {
@@ -305,6 +306,182 @@ describe('buildStockRows', () => {
     const rows = buildStockRows(base)
     expect(rows.find(r => r.item.id === 'beans')?.value).toBeCloseTo(127.5)
     expect(rows.find(r => r.item.id === 'flour')?.value).toBeNull()
+  })
+
+  it('falls back to the latest price with plain balances, with an average cost', () => {
+    const rows = buildStockRows(base)
+    // 85 per 1000 g bag ⇒ 0.085 / g
+    expect(rows.find(r => r.item.id === 'beans')?.avgCost).toBeCloseTo(0.085)
+    expect(rows.find(r => r.item.id === 'flour')?.avgCost).toBeNull()
+    expect(rows.find(r => r.item.id === 'cups')?.avgCost).toBeNull()
+  })
+})
+
+describe('unitCostPerBase', () => {
+  it('scales the purchase-unit price down to one base unit', () => {
+    expect(unitCostPerBase(42, 250)).toBeCloseTo(0.168)
+  })
+
+  it('is null without a price or a positive rate', () => {
+    expect(unitCostPerBase(null, 250)).toBeNull()
+    expect(unitCostPerBase(42, null)).toBeNull()
+    expect(unitCostPerBase(42, 0)).toBeNull()
+    expect(unitCostPerBase(42, -5)).toBeNull()
+  })
+
+  it('treats a zero price as a zero cost', () => {
+    expect(unitCostPerBase(0, 250)).toBe(0)
+  })
+})
+
+describe('ledgerValue', () => {
+  it('keeps the receipt cost when the item conversion rate is edited later', () => {
+    // 4 bags of 250 g at RM 42 ⇒ 1000 g at 0.168 / g = RM 168
+    const ledger = [{ quantity: 1000, unit_cost: unitCostPerBase(42, 250) }]
+    expect(ledgerValue(ledger)).toBeCloseTo(168)
+
+    // Supplier moves the bag to 200 g; the item's rate is edited to 200.
+    const editedRate = 200
+    expect(ledgerValue(ledger)).toBeCloseTo(168)
+    // The deprecated live-rate valuation re-prices the same stock.
+    expect(stockValue(1000, 42, editedRate)).toBeCloseTo(210)
+  })
+
+  it('sums receipts at different prices', () => {
+    expect(ledgerValue([
+      { quantity: 24000, unit_cost: 0.012 },
+      { quantity: 6000, unit_cost: 0.0125 },
+    ])).toBeCloseTo(363)
+  })
+
+  it('subtracts negative adjustments at their stamped cost', () => {
+    expect(ledgerValue([
+      { quantity: 1000, unit_cost: 0.1 },
+      { quantity: -200, unit_cost: 0.1 },
+    ])).toBeCloseTo(80)
+  })
+
+  it('counts rows without a cost as zero', () => {
+    expect(ledgerValue([
+      { quantity: 1000, unit_cost: 0.1 },
+      { quantity: 500, unit_cost: null },
+    ])).toBeCloseTo(100)
+  })
+
+  it('accepts numeric strings from PostgREST', () => {
+    const rows = [{ quantity: '1000', unit_cost: '0.168' }] as unknown as { quantity: number; unit_cost: number }[]
+    expect(ledgerValue(rows)).toBeCloseTo(168)
+  })
+
+  it('is zero for no rows', () => {
+    expect(ledgerValue([])).toBe(0)
+  })
+})
+
+describe('movingAverageCost', () => {
+  it('weights each receipt by quantity', () => {
+    expect(movingAverageCost([
+      { quantity: 24000, unit_cost: 0.012 },
+      { quantity: 6000, unit_cost: 0.0125 },
+    ])).toBeCloseTo(0.0121, 6)
+  })
+
+  it('is unchanged by an adjustment at the average cost', () => {
+    expect(movingAverageCost([
+      { quantity: 24000, unit_cost: 0.012 },
+      { quantity: 6000, unit_cost: 0.0125 },
+      { quantity: -10000, unit_cost: 0.0121 },
+    ])).toBeCloseTo(0.0121, 6)
+  })
+
+  it('is null when nothing is held', () => {
+    expect(movingAverageCost([])).toBeNull()
+    expect(movingAverageCost([
+      { quantity: 500, unit_cost: 0.1 },
+      { quantity: -500, unit_cost: 0.1 },
+    ])).toBeNull()
+    expect(movingAverageCost([
+      { quantity: 500, unit_cost: 0.1 },
+      { quantity: -800, unit_cost: 0.1 },
+    ])).toBeNull()
+  })
+
+  it('dilutes the average with uncosted rows', () => {
+    expect(movingAverageCost([
+      { quantity: 1000, unit_cost: 0.1 },
+      { quantity: 1000, unit_cost: null },
+    ])).toBeCloseTo(0.05)
+  })
+})
+
+describe('formatUnitCost', () => {
+  it('shows four decimals per base unit', () => {
+    expect(formatUnitCost(0.085, 'g')).toBe('RM 0.0850 / g')
+    expect(formatUnitCost(0.0121, 'ml')).toBe('RM 0.0121 / ml')
+  })
+
+  it('shows a dash when unknown', () => {
+    expect(formatUnitCost(null, 'g')).toBe('—')
+  })
+})
+
+describe('buildStockRows with valuation rows', () => {
+  const beans = makeItem({ id: 'beans', name: 'Coffee Beans', conversion_rate: 200, latest_price: 42 })
+  const milk = makeItem({ id: 'milk', name: 'Milk', base_unit: 'ml', latest_price: 12 })
+  const cups = makeItem({ id: 'cups', name: 'Paper Cups', base_unit: 'pcs', latest_price: 30 })
+  const items = [beans, milk, cups]
+  const valuation: InventoryValuation[] = [
+    // b1: 1000 g received at 0.168 / g (250 g bags) — the item is now 200 g bags.
+    { item_id: 'beans', branch_id: 'b1', balance: 1000, stock_value: 168, avg_unit_cost: 0.168, uncosted_rows: 0 },
+    { item_id: 'beans', branch_id: 'b2', balance: 500, stock_value: 100, avg_unit_cost: 0.2, uncosted_rows: 0 },
+    { item_id: 'milk', branch_id: 'b1', balance: 30000, stock_value: 363, avg_unit_cost: 0.0121, uncosted_rows: 0 },
+    { item_id: 'milk', branch_id: 'b2', balance: 0, stock_value: 0, avg_unit_cost: null, uncosted_rows: 0 },
+    { item_id: 'cups', branch_id: 'b1', balance: -5, stock_value: -1, avg_unit_cost: null, uncosted_rows: 0 },
+  ]
+  const base = { items, balances: valuation, branchId: 'all', department: 'all' as const, search: '' }
+
+  it('uses the ledger value for one branch, not the live rate', () => {
+    const rows = buildStockRows({ ...base, branchId: 'b1' })
+    const beansRow = rows.find(r => r.item.id === 'beans')
+    expect(beansRow?.value).toBeCloseTo(168)
+    expect(beansRow?.avgCost).toBeCloseTo(0.168)
+    // The deprecated valuation would say 210.
+    expect(stockValue(1000, 42, 200)).toBeCloseTo(210)
+    const milkRow = rows.find(r => r.item.id === 'milk')
+    expect(milkRow?.value).toBeCloseTo(363)
+    expect(milkRow?.avgCost).toBeCloseTo(0.0121, 6)
+  })
+
+  it("sums ledger values across branches for 'all'", () => {
+    const beansRow = buildStockRows(base).find(r => r.item.id === 'beans')
+    expect(beansRow?.balance).toBe(1500)
+    expect(beansRow?.value).toBeCloseTo(268)
+    expect(beansRow?.avgCost).toBeCloseTo(268 / 1500)
+  })
+
+  it('has no average cost at zero or negative balance', () => {
+    const rows = buildStockRows({ ...base, branchId: 'b2' })
+    expect(rows.find(r => r.item.id === 'milk')?.avgCost).toBeNull()
+    expect(rows.find(r => r.item.id === 'milk')?.value).toBe(0)
+    const cupsRow = buildStockRows({ ...base, branchId: 'b1' }).find(r => r.item.id === 'cups')
+    expect(cupsRow?.balance).toBe(-5)
+    expect(cupsRow?.avgCost).toBeNull()
+  })
+
+  it('values items without a counted valuation row at zero, not the latest price', () => {
+    // b2 has no cups row; latest price would give a non-null value.
+    const cupsRow = buildStockRows({ ...base, branchId: 'b2' }).find(r => r.item.id === 'cups')
+    expect(cupsRow?.value).toBe(0)
+    expect(cupsRow?.avgCost).toBeNull()
+  })
+
+  it('accepts numeric strings from PostgREST', () => {
+    const asStrings = [
+      { item_id: 'beans', branch_id: 'b1', balance: '1000', stock_value: '168', avg_unit_cost: '0.168', uncosted_rows: '0' },
+    ] as unknown as InventoryValuation[]
+    const beansRow = buildStockRows({ ...base, balances: asStrings }).find(r => r.item.id === 'beans')
+    expect(beansRow?.value).toBeCloseTo(168)
+    expect(beansRow?.avgCost).toBeCloseTo(0.168)
   })
 })
 

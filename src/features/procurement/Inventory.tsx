@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import { qty, money, buildStockRows } from '../../shared/lib/procurement'
+import { qty, money, buildStockRows, formatUnitCost } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
-import type { Item, Branch, InventoryBalance } from '../../shared/types'
+import type { Item, Branch, InventoryValuation } from '../../shared/types'
 import { ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS } from '../../shared/types'
 
 const inputCls =
@@ -19,8 +19,8 @@ function pillCls(active: boolean) {
   }`
 }
 
-const COLUMNS = ['Item', 'Department', 'On Hand', 'Min Alert', 'Latest Price', 'Stock Value', 'Status']
-const RIGHT_ALIGNED = new Set(['On Hand', 'Min Alert', 'Latest Price', 'Stock Value'])
+const COLUMNS = ['Item', 'Department', 'On Hand', 'Min Alert', 'Latest Price', 'Avg Cost', 'Stock Value', 'Status']
+const RIGHT_ALIGNED = new Set(['On Hand', 'Min Alert', 'Latest Price', 'Avg Cost', 'Stock Value'])
 
 export default function InventoryPage() {
   const { staff } = useAuth()
@@ -29,7 +29,7 @@ export default function InventoryPage() {
 
   const [items, setItems] = useState<Item[]>([])
   const [branches, setBranches] = useState<Branch[]>([])
-  const [balances, setBalances] = useState<InventoryBalance[]>([])
+  const [balances, setBalances] = useState<InventoryValuation[]>([])
   const [branchFilter, setBranchFilter] = useState<string>('all')
   const [department, setDepartment] = useState<StockDepartmentFilter>('all')
   const [search, setSearch] = useState('')
@@ -42,13 +42,13 @@ export default function InventoryPage() {
       const [itemRes, branchRes, balRes] = await Promise.all([
         supabase.from('items').select('*').eq('status', 'active').order('name'),
         supabase.from('branches').select('*').eq('is_active', true).order('name'),
-        supabase.from('inventory_balances').select('*'),
+        supabase.from('inventory_valuation').select('*'),
       ])
       const err = itemRes.error ?? branchRes.error ?? balRes.error
       if (err) setError(err.message)
       setItems((itemRes.data as Item[]) ?? [])
       setBranches((branchRes.data as Branch[]) ?? [])
-      setBalances((balRes.data as InventoryBalance[]) ?? [])
+      setBalances((balRes.data as InventoryValuation[]) ?? [])
       setLoading(false)
     }
     load()
@@ -160,6 +160,9 @@ export default function InventoryPage() {
               {' · '}
               Total value <span className="font-semibold text-brown-dark">{money(totalValue)}</span>
             </p>
+            <p className="text-xs text-brown-faint -mt-4">
+              Stock value uses the cost stamped on each receipt (moving average).
+            </p>
 
             <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-x-auto">
               <table className="w-full text-sm min-w-[860px]">
@@ -171,7 +174,7 @@ export default function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F0E8DC]">
-                  {rows.map(({ item, balance, low, value }) => (
+                  {rows.map(({ item, balance, low, value, avgCost }) => (
                     <tr key={item.id} className={low ? 'bg-[#FCF0EC]' : ''}>
                       <td className="px-4 py-3">
                         <Link
@@ -197,6 +200,9 @@ export default function InventoryPage() {
                         {item.latest_price != null
                           ? `${money(Number(item.latest_price))} / ${item.purchase_unit}`
                           : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap text-xs text-brown-muted">
+                        {formatUnitCost(avgCost, item.base_unit)}
                       </td>
                       <td className="px-4 py-3 text-right whitespace-nowrap text-xs text-brown-muted">
                         {value != null ? money(value) : '—'}

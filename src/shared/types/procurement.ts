@@ -128,6 +128,8 @@ export interface PurchaseOrderItem {
   unit_price: number
   received_quantity: number
   shortage_quantity: number
+  /** Pack size (base units per purchase unit) stamped when the line was created; frozen. */
+  conversion_rate_used: number | null
   item?: Item | null
 }
 
@@ -155,6 +157,8 @@ export interface ReceivingItem {
   shortage: number
   /** Price off this delivery's invoice — may differ from the ordered price. */
   unit_price: number
+  /** Pack size the delivery was converted with (the PO line's stamped rate). */
+  conversion_rate_used: number | null
 }
 
 /** One line of the submit_receiving RPC payload. */
@@ -186,6 +190,8 @@ export interface InventoryTransaction {
   created_by: string | null
   created_at: string
   notes: string | null
+  /** RM per base unit, stamped at write time. */
+  unit_cost: number | null
   item?: Item | null
   creator?: { id: string; name: string } | null
 }
@@ -195,4 +201,19 @@ export interface InventoryBalance {
   item_id: string
   branch_id: string
   balance: number
+}
+
+/**
+ * Row of the inventory_valuation view — same rows as inventory_balances, plus
+ * the ledger value (sum of quantity × stamped unit_cost).
+ */
+export interface InventoryValuation {
+  item_id: string
+  branch_id: string
+  balance: number
+  /** RM. */
+  stock_value: number
+  /** RM per base unit. Null when balance <= 0. */
+  avg_unit_cost: number | null
+  uncosted_rows: number
 }

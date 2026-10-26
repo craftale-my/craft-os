@@ -1,5 +1,5 @@
 import type {
-  InventoryBalance, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Supplier,
+  InventoryBalance, InventoryValuation, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Supplier,
 } from '../types'
 
 /** Purchase units → base units. `1 bag = 2000 g` ⇒ toBaseUnits(3, 2000) = 6000. */
@@ -119,10 +119,61 @@ export function isBelowAlert(balance: number, minStockAlert: number): boolean {
  * Value of stock held, using the latest price. `latestPrice` is per purchase
  * unit and `balance` is in base units, so the price is scaled down first.
  * Null when there is no price or the conversion rate is unusable.
+ *
+ * @deprecated Values every unit at the latest price through the LIVE
+ * conversion rate, so editing the rate re-prices historical stock. Use the
+ * ledger ({@link ledgerValue} / the inventory_valuation view); kept only as a
+ * fallback when no ledger value is available.
  */
 export function stockValue(balance: number, latestPrice: number | null, conversionRate: number): number | null {
   if (latestPrice == null || !(conversionRate > 0)) return null
   return (latestPrice / conversionRate) * balance
+}
+
+/**
+ * Cost per base unit from a price per purchase unit. `RM 42 per 250 g bag` ⇒
+ * unitCostPerBase(42, 250) = 0.168. Null when there is no price or the rate
+ * is not positive.
+ */
+export function unitCostPerBase(pricePerPurchaseUnit: number | null, conversionRate: number | null): number | null {
+  if (pricePerPurchaseUnit == null || conversionRate == null) return null
+  const rate = Number(conversionRate)
+  if (!(rate > 0)) return null
+  return Number(pricePerPurchaseUnit) / rate
+}
+
+interface CostedLedgerRow {
+  /** Base units. Positive = in, negative = out. */
+  quantity: number
+  /** RM per base unit, stamped when the row was written. */
+  unit_cost: number | null
+}
+
+/**
+ * Value of a set of ledger rows: sum of quantity × stamped unit_cost. Rows
+ * without a cost contribute 0. Never derived from the live conversion rate.
+ */
+export function ledgerValue(rows: CostedLedgerRow[]): number {
+  return rows.reduce(
+    (sum, r) => sum + (r.unit_cost == null ? 0 : Number(r.quantity) * Number(r.unit_cost)),
+    0,
+  )
+}
+
+/**
+ * Moving weighted average cost per base unit: ledger value / quantity held.
+ * Null when nothing is held (sum of quantity <= 0).
+ */
+export function movingAverageCost(rows: CostedLedgerRow[]): number | null {
+  const held = rows.reduce((sum, r) => sum + Number(r.quantity), 0)
+  if (!(held > 0)) return null
+  return ledgerValue(rows) / held
+}
+
+/** Cost per base unit, 4 decimals: `RM 0.0850 / g`. '—' when unknown. */
+export function formatUnitCost(n: number | null, baseUnit: string): string {
+  if (n == null || !Number.isFinite(Number(n))) return '—'
+  return `RM ${Number(n).toFixed(4)} / ${baseUnit}`
 }
 
 export type StockDepartmentFilter = 'all' | ItemDepartment | 'unassigned'
@@ -133,25 +184,44 @@ export interface StockRow {
   balance: number
   low: boolean
   value: number | null
+  /** RM per base unit: value / balance. Null when nothing is held or there is no value. */
+  avgCost: number | null
+}
+
+/** The row's ledger value (inventory_valuation row), or null when it carries none. */
+function ledgerStockValue(row: InventoryBalance | InventoryValuation): number | null {
+  if (!('stock_value' in row)) return null
+  const raw = (row as { stock_value: unknown }).stock_value
+  if (raw == null || raw === '') return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
 }
 
 /**
  * Rows for the Stock on Hand page. `branchId` 'all' sums every branch the
  * viewer can see; otherwise only that branch counts. Low stock sorts first,
  * then by name — the point of the screen is surfacing what needs reordering.
+ *
+ * Value comes from the ledger: the sum of `stock_value` over the counted
+ * inventory_valuation rows. Only when no counted row carries a `stock_value`
+ * (plain inventory_balances rows) does it fall back to the deprecated
+ * latest-price {@link stockValue}.
  */
 export function buildStockRows({ items, balances, branchId, department, search }: {
   items: Item[]
-  balances: InventoryBalance[]
+  balances: (InventoryBalance | InventoryValuation)[]
   /** A branch id, or 'all'. */
   branchId: string
   department: StockDepartmentFilter
   search: string
 }): StockRow[] {
   const totals = new Map<string, number>()
+  const values = new Map<string, number>()
   for (const b of balances) {
     if (branchId !== 'all' && b.branch_id !== branchId) continue
     totals.set(b.item_id, (totals.get(b.item_id) ?? 0) + Number(b.balance))
+    const v = ledgerStockValue(b)
+    if (v != null) values.set(b.item_id, (values.get(b.item_id) ?? 0) + v)
   }
 
   const term = search.trim().toLowerCase()
@@ -163,11 +233,19 @@ export function buildStockRows({ items, balances, branchId, department, search }
       || (i.name_zh ?? '').toLowerCase().includes(term))
     .map(item => {
       const balance = totals.get(item.id) ?? 0
+      const value = values.size > 0
+        ? values.get(item.id) ?? 0
+        : stockValue(
+          balance,
+          item.latest_price == null ? null : Number(item.latest_price),
+          Number(item.conversion_rate),
+        )
       return {
         item,
         balance,
         low: isBelowAlert(balance, item.min_stock_alert),
-        value: stockValue(balance, item.latest_price, item.conversion_rate),
+        value,
+        avgCost: balance > 0 && value != null ? value / balance : null,
       }
     })
     .sort((a, b) => {

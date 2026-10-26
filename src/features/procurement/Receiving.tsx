@@ -52,7 +52,8 @@ function LineRow({ line, state, onChange }: {
   const shortage = qtyError ? 0 : calcShortage(outstanding, actual)
   const price = priceFor(line, state)
   const delta = priceDelta(line.unit_price, price)
-  const conv = line.item?.conversion_rate ?? 0
+  // The PO line's stamped pack size is what submit_receiving converts with.
+  const conv = Number(line.conversion_rate_used ?? line.item?.conversion_rate ?? 0)
 
   return (
     <div className="bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4">
