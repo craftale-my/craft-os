@@ -7,6 +7,7 @@ import {
   transferStatusLabel, formatDateTimeMYT, formatUnitCost,
 } from '../../shared/lib/procurement'
 import { useCan } from '../../shared/lib/permissions'
+import { useSignedPhotoUrls } from '../../shared/lib/useSignedPhotoUrls'
 import { useAuth } from '../auth/AuthContext'
 import { PoStatusBadge } from './PurchaseOrders'
 import { OverDeliveredBadge, InternalBadge, TransferStatusBadge } from './badges'
@@ -32,14 +33,19 @@ function Card({ title, action, children }: {
   )
 }
 
-/** Receiving photo thumbnail. A broken URL degrades to a same-size placeholder. */
-function PhotoThumb({ url, label }: { url: string; label: string }) {
+/**
+ * Receiving photo thumbnail. `url` is the signed URL: undefined while signing,
+ * null when the photo cannot be shown. A broken URL degrades to the same placeholder.
+ */
+function PhotoThumb({ url, label }: { url: string | null | undefined; label: string }) {
   const [failed, setFailed] = useState(false)
-  if (failed) {
+  if (url === undefined || url === null || failed) {
     return (
       <div>
         <div className="w-20 h-20 rounded-lg border border-dashed border-[#D4C5B0] bg-[#FBF6EE] flex items-center justify-center text-center px-1">
-          <span className="text-[10px] text-brown-faint">Photo unavailable</span>
+          {url === undefined
+            ? <span className="text-[10px] text-brown-faint">Loading…</span>
+            : <span className="text-[10px] text-brown-faint">Photo unavailable</span>}
         </div>
         <p className="text-[10px] text-brown-faint text-center mt-1">{label}</p>
       </div>
@@ -271,6 +277,11 @@ export default function PurchaseOrderDetailPage() {
       setError('Could not copy automatically — select the text and copy it manually.')
     }
   }
+
+  // One signing call for every receipt photo on the page (private bucket).
+  const { urls: photoUrls } = useSignedPhotoUrls(
+    receivings.flatMap(r => [r.invoice_photo_url, r.goods_photo_url]),
+  )
 
   if (loading) {
     return <div className="min-h-screen bg-cream-light px-4 py-8 text-center text-sm text-brown-faint">Loading…</div>
@@ -734,8 +745,8 @@ export default function PurchaseOrderDetailPage() {
                   )}
 
                   <div className="flex gap-3 pt-1">
-                    <PhotoThumb url={rec.invoice_photo_url} label={internal ? 'Delivery' : 'Invoice'} />
-                    {rec.goods_photo_url && <PhotoThumb url={rec.goods_photo_url} label="Goods" />}
+                    <PhotoThumb url={photoUrls[rec.invoice_photo_url]} label={internal ? 'Delivery' : 'Invoice'} />
+                    {rec.goods_photo_url && <PhotoThumb url={photoUrls[rec.goods_photo_url]} label="Goods" />}
                   </div>
                 </li>
               ))}

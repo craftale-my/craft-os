@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
+import { RECEIVING_PHOTOS_BUCKET } from '../../shared/lib/photos'
+import { useSignedPhotoUrls } from '../../shared/lib/useSignedPhotoUrls'
 import { money, qty, validateWastage, weekStartMYT } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog, WastageReason } from '../../shared/types'
@@ -13,7 +15,6 @@ const inputCls =
   'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
 const labelCls = 'block text-xs font-semibold text-brown-medium mb-1'
 
-const PHOTO_BUCKET = 'receiving-photos'
 const MYT_OFFSET_MS = 8 * 60 * 60 * 1000
 
 function pillCls(active: boolean) {
@@ -36,8 +37,29 @@ function formatLoggedAt(iso: string): string {
   })
 }
 
-function photoUrl(path: string): string {
-  return supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path).data.publicUrl
+/** Wastage photo thumbnail. `url` is the signed URL: undefined while signing, null when unavailable. */
+function WastagePhoto({ url }: { url: string | null | undefined }) {
+  const [failed, setFailed] = useState(false)
+  if (url === undefined || url === null || failed) {
+    return (
+      <div
+        className="flex-shrink-0 w-12 h-12 rounded-lg border border-dashed border-[#D4C5B0] bg-[#FBF6EE] flex items-center justify-center text-center"
+        title={url === undefined ? 'Loading photo' : 'Photo unavailable'}
+      >
+        {url !== undefined && <span className="text-[9px] leading-tight text-brown-faint">Photo unavailable</span>}
+      </div>
+    )
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="flex-shrink-0" aria-label="Open photo">
+      <img
+        src={url}
+        alt=""
+        onError={() => setFailed(true)}
+        className="w-12 h-12 rounded-lg object-cover border border-[#EDE5D8]"
+      />
+    </a>
+  )
 }
 
 /** On-hand and average cost of one item at the selected branch. */
@@ -170,6 +192,9 @@ export default function WastagePage() {
 
   const branchName = branches.find(b => b.id === branchId)?.name ?? '—'
   const staffHasNoBranch = !allBranches && !staff?.branch_id
+  // Batch-sign this week's thumbnails (private bucket).
+  const { urls: photoUrls } = useSignedPhotoUrls(logs.map(l => l.photo_path))
+
   const weekTotal = logs.reduce((sum, l) => sum + (l.value == null ? 0 : Number(l.value)), 0)
 
   function selectItem(id: string) {
@@ -191,7 +216,7 @@ export default function WastagePage() {
       const ext = photo.name.split('.').pop() ?? 'jpg'
       const path = `wastage/${branchId}/${todayMYT()}/${crypto.randomUUID()}.${ext}`
       const { error: upErr } = await supabase.storage
-        .from(PHOTO_BUCKET)
+        .from(RECEIVING_PHOTOS_BUCKET)
         .upload(path, photo, { contentType: photo.type })
       if (upErr) {
         setSubmitting(false)
@@ -455,21 +480,7 @@ export default function WastagePage() {
             <div className="divide-y divide-[#F0E8DC] border-t border-[#EDE5D8]">
               {logs.map(l => (
                 <div key={l.id} className="flex items-start gap-3 py-3">
-                  {l.photo_path && (
-                    <a
-                      href={photoUrl(l.photo_path)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex-shrink-0"
-                      aria-label="Open photo"
-                    >
-                      <img
-                        src={photoUrl(l.photo_path)}
-                        alt=""
-                        className="w-12 h-12 rounded-lg object-cover border border-[#EDE5D8]"
-                      />
-                    </a>
-                  )}
+                  {l.photo_path && <WastagePhoto url={photoUrls[l.photo_path]} />}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-brown-dark">
                       {l.item?.name ?? 'Unknown item'}

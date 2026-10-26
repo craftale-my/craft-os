@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
+import { RECEIVING_PHOTOS_BUCKET } from '../../shared/lib/photos'
 import { useAuth } from '../auth/AuthContext'
 import {
   money, qty, toBaseUnits, transferValue, transitShortQty, validateInternalReceipt, canAccessBranch,
@@ -89,10 +90,11 @@ export default function InternalReceiving({ po }: { po: PurchaseOrder }) {
     const ext = file.name.split('.').pop() ?? 'jpg'
     const path = `${po.id}/${Date.now()}-${kind}.${ext}`
     const { error: upErr } = await supabase.storage
-      .from('receiving-photos')
+      .from(RECEIVING_PHOTOS_BUCKET)
       .upload(path, file, { contentType: file.type })
     if (upErr) { setError(`Could not upload the ${kind} photo: ${upErr.message}`); return null }
-    return supabase.storage.from('receiving-photos').getPublicUrl(path).data.publicUrl
+    // The bucket is private: submit the storage path, never a URL.
+    return path
   }
 
   if (loading) {
@@ -125,19 +127,19 @@ export default function InternalReceiving({ po }: { po: PurchaseOrder }) {
     setSubmitting(true)
     setError('')
 
-    const photoUrl = await uploadPhoto(photoFile, 'delivery')
-    if (!photoUrl) { setSubmitting(false); return }
-    let goodsUrl: string | null = null
+    const photoPath = await uploadPhoto(photoFile, 'delivery')
+    if (!photoPath) { setSubmitting(false); return }
+    let goodsPath: string | null = null
     if (goodsFile) {
-      goodsUrl = await uploadPhoto(goodsFile, 'goods')
-      if (!goodsUrl) { setSubmitting(false); return }
+      goodsPath = await uploadPhoto(goodsFile, 'goods')
+      if (!goodsPath) { setSubmitting(false); return }
     }
 
     // unit_price is ignored for internal POs: stock enters at the shipped cost.
     const { error: rpcErr } = await supabase.rpc('submit_receiving', {
       p_po_id: po.id,
-      p_invoice_photo_url: photoUrl,
-      p_goods_photo_url: goodsUrl,
+      p_invoice_photo_url: photoPath,
+      p_goods_photo_url: goodsPath,
       p_notes: notes.trim() || null,
       p_lines: moving.map((l, i) => ({ po_item_id: l.line.id, actual_quantity: checks[i].actual })),
     })

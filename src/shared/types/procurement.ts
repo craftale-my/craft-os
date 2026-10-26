@@ -169,7 +169,9 @@ export interface Receiving {
   po_id: string
   received_by: string | null
   received_at: string
+  /** Storage path inside the private 'receiving-photos' bucket, despite the column name. */
   invoice_photo_url: string
+  /** Storage path inside the private 'receiving-photos' bucket, despite the column name. */
   goods_photo_url: string | null
   notes: string | null
   /** Something is still short after this delivery. */
@@ -350,7 +352,7 @@ export interface WastageLog {
   reason: WastageReason
   /** Required when reason is 'other'. */
   note: string | null
-  /** Path inside the public 'receiving-photos' bucket. */
+  /** Path inside the private 'receiving-photos' bucket (shown via signed URLs). */
   photo_path: string | null
   /** RM per base unit: the branch's moving-average cost when logged. */
   unit_cost: number | null

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
+import { RECEIVING_PHOTOS_BUCKET } from '../../shared/lib/photos'
 import { useAuth } from '../auth/AuthContext'
 import {
   money, qty, calcShortage, priceDelta, toBaseUnits, outstandingQty, applyDelivery, isReceivable,
@@ -253,10 +254,11 @@ export default function ReceivingPage() {
     const ext = file.name.split('.').pop() ?? 'jpg'
     const path = `${poId}/${Date.now()}-${kind}.${ext}`
     const { error: upErr } = await supabase.storage
-      .from('receiving-photos')
+      .from(RECEIVING_PHOTOS_BUCKET)
       .upload(path, file, { contentType: file.type })
     if (upErr) { setError(`Could not upload the ${kind} photo: ${upErr.message}`); return null }
-    return supabase.storage.from('receiving-photos').getPublicUrl(path).data.publicUrl
+    // The bucket is private: submit the storage path, never a URL.
+    return path
   }
 
   // Every visible line is sent, including zeros (= nothing arrived this time).
@@ -287,21 +289,21 @@ export default function ReceivingPage() {
     setSubmitting(true)
     setError('')
 
-    const invoiceUrl = await uploadPhoto(invoiceFile, 'invoice')
-    if (!invoiceUrl) { setSubmitting(false); return }
+    const invoicePath = await uploadPhoto(invoiceFile, 'invoice')
+    if (!invoicePath) { setSubmitting(false); return }
 
-    let goodsUrl: string | null = null
+    let goodsPath: string | null = null
     if (goodsFile) {
-      goodsUrl = await uploadPhoto(goodsFile, 'goods')
-      if (!goodsUrl) { setSubmitting(false); return }
+      goodsPath = await uploadPhoto(goodsFile, 'goods')
+      if (!goodsPath) { setSubmitting(false); return }
     }
 
     // One RPC so the receiving record, stock movements, price history and PO
     // status all land in a single transaction.
     const { error: rpcErr } = await supabase.rpc('submit_receiving', {
       p_po_id: po.id,
-      p_invoice_photo_url: invoiceUrl,
-      p_goods_photo_url: goodsUrl,
+      p_invoice_photo_url: invoicePath,
+      p_goods_photo_url: goodsPath,
       p_notes: notes.trim() || null,
       p_lines: payload,
     })
