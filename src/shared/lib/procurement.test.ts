@@ -6,6 +6,7 @@ import {
   outstandingQty, deriveCumulativePoStatus, applyDelivery, isReceivable,
   unitCostPerBase, ledgerValue, movingAverageCost, formatUnitCost,
   overQty, lineOverReceived, deliveryNeedsNote, canCloseShort, shortfallLines,
+  weekStartMYT, validateWastage, sumWastage,
 } from './procurement'
 import type { InventoryBalance, InventoryValuation, Item, PoStatus } from '../types'
 
@@ -644,5 +645,117 @@ describe('formatPoText', () => {
 
   it('handles a missing supplier without crashing', () => {
     expect(formatPoText(po, null, 'Cheras', 'Craft Cafe', lines)).toContain('Supplier: —')
+  })
+})
+
+describe('weekStartMYT', () => {
+  it('puts Sunday 23:30 MYT in the week that started the previous Monday', () => {
+    // Sun 1 Nov 2026 23:30 MYT = 15:30 UTC
+    expect(weekStartMYT(new Date('2026-11-01T15:30:00Z')).toISOString()).toBe('2026-10-25T16:00:00.000Z')
+  })
+
+  it('starts a new week at Monday 00:00 MYT exactly', () => {
+    // Mon 2 Nov 2026 00:00 MYT = Sun 1 Nov 16:00 UTC
+    const monday = new Date('2026-11-01T16:00:00Z')
+    expect(weekStartMYT(monday).toISOString()).toBe('2026-11-01T16:00:00.000Z')
+    expect(weekStartMYT(new Date(monday.getTime() - 1)).toISOString()).toBe('2026-10-25T16:00:00.000Z')
+  })
+
+  it('treats Sunday 16:30 UTC as Monday 00:30 MYT', () => {
+    expect(weekStartMYT(new Date('2026-11-01T16:30:00Z')).toISOString()).toBe('2026-11-01T16:00:00.000Z')
+  })
+
+  it('handles mid-week times', () => {
+    // Wed 28 Oct 2026 10:00 MYT
+    expect(weekStartMYT(new Date('2026-10-28T02:00:00Z')).toISOString()).toBe('2026-10-25T16:00:00.000Z')
+  })
+})
+
+describe('validateWastage', () => {
+  const ok = { quantity: 200, reason: 'expired', note: null, onHand: 500, baseUnit: 'g' }
+
+  it('accepts a valid entry', () => {
+    expect(validateWastage(ok)).toBeNull()
+  })
+
+  it('requires a quantity greater than zero', () => {
+    expect(validateWastage({ ...ok, quantity: 0 })).toBe('Quantity must be greater than zero')
+    expect(validateWastage({ ...ok, quantity: -1 })).toBe('Quantity must be greater than zero')
+    expect(validateWastage({ ...ok, quantity: NaN })).toBe('Quantity must be greater than zero')
+  })
+
+  it('rejects more than is on hand, allows exactly what is on hand', () => {
+    expect(validateWastage({ ...ok, quantity: 600 }))
+      .toBe('Cannot log 600 g of wastage: only 500 g on hand at this branch')
+    expect(validateWastage({ ...ok, quantity: 500 })).toBeNull()
+    expect(validateWastage({ ...ok, onHand: 0, quantity: 1 }))
+      .toBe('Cannot log 1 g of wastage: only 0 g on hand at this branch')
+  })
+
+  it('leaves the stock check to the RPC when on-hand is unknown', () => {
+    expect(validateWastage({ ...ok, onHand: null, quantity: 1e6 })).toBeNull()
+  })
+
+  it('requires a note for Other only', () => {
+    expect(validateWastage({ ...ok, reason: 'other', note: '  ' })).toBe('A note is required when the reason is Other')
+    expect(validateWastage({ ...ok, reason: 'other', note: 'Dropped tray' })).toBeNull()
+    expect(validateWastage({ ...ok, reason: 'damaged', note: null })).toBeNull()
+  })
+
+  it('requires one of the four reasons', () => {
+    expect(validateWastage({ ...ok, reason: null })).toBe('Pick a reason')
+    expect(validateWastage({ ...ok, reason: 'stolen' })).toBe('Unknown wastage reason: stolen')
+    for (const r of ['expired', 'damaged', 'production_error']) {
+      expect(validateWastage({ ...ok, reason: r })).toBeNull()
+    }
+  })
+})
+
+describe('sumWastage', () => {
+  const items = [
+    makeItem({ id: 'beans', name: 'Beans', department: 'cafe_bar' }),
+    makeItem({ id: 'flour', name: 'Flour', department: 'bakery' }),
+    makeItem({ id: 'misc', name: 'Misc', department: null }),
+  ]
+  const logs = [
+    { item_id: 'beans', branch_id: 'b1', value: 10 },
+    { item_id: 'beans', branch_id: 'b2', value: 5 },
+    { item_id: 'flour', branch_id: 'b1', value: 2.5 },
+    { item_id: 'misc', branch_id: 'b1', value: 1 },
+    { item_id: 'flour', branch_id: 'b1', value: null },
+    // Item no longer active — not in `items`.
+    { item_id: 'gone', branch_id: 'b1', value: 4 },
+  ]
+
+  it('sums every row for all branches and departments', () => {
+    const { total, byItem } = sumWastage(logs, { branchId: 'all', department: 'all', items })
+    expect(total).toBe(22.5)
+    expect(byItem.get('beans')).toBe(15)
+    expect(byItem.get('flour')).toBe(2.5)
+    expect(byItem.get('gone')).toBe(4)
+  })
+
+  it('filters by branch', () => {
+    const { total, byItem } = sumWastage(logs, { branchId: 'b2', department: 'all', items })
+    expect(total).toBe(5)
+    expect(byItem.get('beans')).toBe(5)
+    expect(byItem.has('flour')).toBe(false)
+  })
+
+  it('filters by department', () => {
+    expect(sumWastage(logs, { branchId: 'all', department: 'cafe_bar', items }).total).toBe(15)
+    expect(sumWastage(logs, { branchId: 'b1', department: 'bakery', items }).total).toBe(2.5)
+    expect(sumWastage(logs, { branchId: 'all', department: 'kitchen', items }).total).toBe(0)
+  })
+
+  it("'unassigned' matches items without a department, not unknown items", () => {
+    const { total, byItem } = sumWastage(logs, { branchId: 'all', department: 'unassigned', items })
+    expect(total).toBe(1)
+    expect(byItem.has('gone')).toBe(false)
+  })
+
+  it('treats numeric strings from PostgREST as numbers', () => {
+    const rows = [{ item_id: 'beans', branch_id: 'b1', value: '1.25' as unknown as number }]
+    expect(sumWastage(rows, { branchId: 'all', department: 'all', items }).total).toBe(1.25)
   })
 })

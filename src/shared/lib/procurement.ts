@@ -1,6 +1,8 @@
 import type {
   InventoryBalance, InventoryValuation, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Supplier,
+  WastageLog,
 } from '../types'
+import { WASTAGE_REASONS } from '../types'
 
 /** Purchase units → base units. `1 bag = 2000 g` ⇒ toBaseUnits(3, 2000) = 6000. */
 export function toBaseUnits(quantity: number, conversionRate: number): number {
@@ -279,6 +281,89 @@ export function buildStockRows({ items, balances, branchId, department, search }
       if (a.low !== b.low) return a.low ? -1 : 1
       return a.item.name.localeCompare(b.item.name)
     })
+}
+
+// ─── Wastage ──────────────────────────────────────────────────────────────────
+
+/** Asia/Kuala_Lumpur is UTC+8 all year (no DST). */
+const MYT_OFFSET_MS = 8 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Monday 00:00 Asia/Kuala_Lumpur of the week containing `now`, as a UTC
+ * instant. `Sun 23:30 MYT` belongs to the Monday six days earlier; `Mon 00:00
+ * MYT` starts a new week.
+ */
+export function weekStartMYT(now: Date): Date {
+  // Shift into MYT wall-clock time, then read it with the UTC getters.
+  const local = new Date(now.getTime() + MYT_OFFSET_MS)
+  const sinceMonday = (local.getUTCDay() + 6) % 7
+  const localMidnight = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate())
+  return new Date(localMidnight - sinceMonday * DAY_MS - MYT_OFFSET_MS)
+}
+
+/**
+ * Problem with a wastage entry, or null if it can be submitted. Mirrors the
+ * log_wastage RPC's checks (in the same order) so the form can say so before
+ * submitting; the RPC stays authoritative. `onHand` null = not known, so the
+ * stock check is left to the RPC.
+ */
+export function validateWastage({ quantity, reason, note, onHand, baseUnit = '' }: {
+  /** Base units. NaN when the field is empty or not a number. */
+  quantity: number
+  reason: string | null
+  note: string | null
+  onHand: number | null
+  baseUnit?: string
+}): string | null {
+  if (!Number.isFinite(quantity) || quantity <= 0) return 'Quantity must be greater than zero'
+  if (!reason) return 'Pick a reason'
+  if (!(WASTAGE_REASONS as string[]).includes(reason)) return `Unknown wastage reason: ${reason}`
+  if (reason === 'other' && !note?.trim()) return 'A note is required when the reason is Other'
+  if (onHand != null && quantity > onHand) {
+    const unit = baseUnit ? ` ${baseUnit}` : ''
+    return `Cannot log ${qty(quantity)}${unit} of wastage: only ${qty(Math.max(onHand, 0))}${unit} on hand at this branch`
+  }
+  return null
+}
+
+type WastageValueRow = Pick<WastageLog, 'item_id' | 'branch_id' | 'value'>
+
+export interface WastageTotals {
+  /** RM. */
+  total: number
+  /** RM per item id. Items without wastage are absent. */
+  byItem: Map<string, number>
+}
+
+/**
+ * Wastage value of `logs` for the Stock on Hand filters. `branchId` 'all'
+ * counts every row; `department` matches {@link buildStockRows}, judged by
+ * the item's department in `items`. Logs for items not in `items` (e.g. an
+ * item made inactive since) only count under 'all'. Rows without a value
+ * (uncosted item) contribute 0.
+ */
+export function sumWastage(logs: WastageValueRow[], { branchId, department, items }: {
+  branchId: string
+  department: StockDepartmentFilter
+  items: Pick<Item, 'id' | 'department'>[]
+}): WastageTotals {
+  const deptOf = new Map(items.map(i => [i.id, i.department]))
+  const byItem = new Map<string, number>()
+  let total = 0
+  for (const log of logs) {
+    if (branchId !== 'all' && log.branch_id !== branchId) continue
+    if (department !== 'all') {
+      if (!deptOf.has(log.item_id)) continue
+      const d = deptOf.get(log.item_id) ?? null
+      if (department === 'unassigned' ? d != null : d !== department) continue
+    }
+    const v = log.value == null ? 0 : Number(log.value)
+    if (!Number.isFinite(v)) continue
+    total += v
+    byItem.set(log.item_id, (byItem.get(log.item_id) ?? 0) + v)
+  }
+  return { total, byItem }
 }
 
 /** Ordered value of a PO line. */

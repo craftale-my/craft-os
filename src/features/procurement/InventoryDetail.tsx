@@ -3,7 +3,13 @@ import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { qty, money, isBelowAlert, formatUnitCost } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryTransaction, InventoryValuation } from '../../shared/types'
-import { TRANSACTION_TYPE_LABELS } from '../../shared/types'
+import { TRANSACTION_TYPE_LABELS, WASTAGE_REASON_LABELS } from '../../shared/types'
+import type { WastageReason } from '../../shared/types'
+
+/** Reason codes are wastage reasons today; show anything else as stored. */
+function reasonLabel(reason: string): string {
+  return WASTAGE_REASON_LABELS[reason as WastageReason] ?? reason
+}
 
 export default function InventoryDetailPage() {
   const { itemId } = useParams<{ itemId: string }>()
@@ -129,8 +135,13 @@ export default function InventoryDetailPage() {
                 <div key={t.id} className="flex items-center gap-3 py-3 flex-wrap">
                   <div className="flex-1 min-w-[160px]">
                     <p className="text-sm font-medium text-brown-dark">
-                      {TRANSACTION_TYPE_LABELS[t.transaction_type]}
-                      {t.reference_type && (
+                      {TRANSACTION_TYPE_LABELS[t.transaction_type] ?? t.transaction_type}
+                      {t.reason && (
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-[#9E4A3014] text-[#9E4A30] ml-2">
+                          {reasonLabel(t.reason)}
+                        </span>
+                      )}
+                      {t.reference_type && t.reference_type !== t.transaction_type && (
                         <span className="text-xs text-brown-faint font-normal ml-2">
                           from {t.reference_type}
                         </span>

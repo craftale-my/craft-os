@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import { qty, money, buildStockRows, formatUnitCost } from '../../shared/lib/procurement'
+import { qty, money, buildStockRows, formatUnitCost, sumWastage, weekStartMYT } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
-import type { Item, Branch, InventoryValuation } from '../../shared/types'
+import type { Item, Branch, InventoryValuation, WastageLog } from '../../shared/types'
 import { ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS } from '../../shared/types'
 
 const inputCls =
@@ -20,8 +20,8 @@ function pillCls(active: boolean) {
   }`
 }
 
-const COLUMNS = ['Item', 'Department', 'On Hand', 'Min Alert', 'Latest Price', 'Avg Cost', 'Stock Value', 'Status']
-const RIGHT_ALIGNED = new Set(['On Hand', 'Min Alert', 'Latest Price', 'Avg Cost', 'Stock Value'])
+const COLUMNS = ['Item', 'Department', 'On Hand', 'Min Alert', 'Latest Price', 'Avg Cost', 'Stock Value', 'Wastage (wk)', 'Status']
+const RIGHT_ALIGNED = new Set(['On Hand', 'Min Alert', 'Latest Price', 'Avg Cost', 'Stock Value', 'Wastage (wk)'])
 
 export default function InventoryPage() {
   const { staff } = useAuth()
@@ -31,6 +31,7 @@ export default function InventoryPage() {
   const [items, setItems] = useState<Item[]>([])
   const [branches, setBranches] = useState<Branch[]>([])
   const [balances, setBalances] = useState<InventoryValuation[]>([])
+  const [wastage, setWastage] = useState<Pick<WastageLog, 'item_id' | 'branch_id' | 'value'>[]>([])
   const [branchFilter, setBranchFilter] = useState<string>('all')
   const [department, setDepartment] = useState<StockDepartmentFilter>('all')
   const [search, setSearch] = useState('')
@@ -40,16 +41,21 @@ export default function InventoryPage() {
 
   useEffect(() => {
     async function load() {
-      const [itemRes, branchRes, balRes] = await Promise.all([
+      const [itemRes, branchRes, balRes, wasteRes] = await Promise.all([
         supabase.from('items').select('*').eq('status', 'active').order('name'),
         supabase.from('branches').select('*').eq('is_active', true).order('name'),
         supabase.from('inventory_valuation').select('*'),
+        supabase
+          .from('wastage_logs')
+          .select('item_id, branch_id, value')
+          .gte('created_at', weekStartMYT(new Date()).toISOString()),
       ])
-      const err = itemRes.error ?? branchRes.error ?? balRes.error
+      const err = itemRes.error ?? branchRes.error ?? balRes.error ?? wasteRes.error
       if (err) setError(err.message)
       setItems((itemRes.data as Item[]) ?? [])
       setBranches((branchRes.data as Branch[]) ?? [])
       setBalances((balRes.data as InventoryValuation[]) ?? [])
+      setWastage((wasteRes.data as Pick<WastageLog, 'item_id' | 'branch_id' | 'value'>[]) ?? [])
       setLoading(false)
     }
     load()
@@ -70,6 +76,13 @@ export default function InventoryPage() {
     const all = buildStockRows({ items, balances, branchId, department, search })
     return lowOnly ? all.filter(r => r.low) : all
   }, [items, balances, branchId, department, search, lowOnly])
+
+  // This week's wastage follows the branch and department filters only — not
+  // the search box or "Low stock only", so the total doesn't swing as you type.
+  const weekWastage = useMemo(
+    () => sumWastage(wastage, { branchId, department, items }),
+    [wastage, branchId, department, items],
+  )
 
   const lowCount = rows.filter(r => r.low).length
   const totalValue = rows.reduce((sum, r) => sum + (r.value ?? 0), 0)
@@ -160,13 +173,15 @@ export default function InventoryPage() {
               <span className={lowCount > 0 ? 'text-[#9E4A30] font-semibold' : ''}>{lowCount} low</span>
               {' · '}
               Total value <span className="font-semibold text-brown-dark">{money(totalValue)}</span>
+              {' · '}
+              Wastage this week <span className="font-semibold text-brown-dark">{money(weekWastage.total)}</span>
             </p>
             <p className="text-xs text-brown-faint -mt-4">
               Stock value uses the cost stamped on each receipt (moving average).
             </p>
 
             <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-x-auto">
-              <table className="w-full text-sm min-w-[860px]">
+              <table className="w-full text-sm min-w-[960px]">
                 <thead>
                   <tr className="text-left text-xs text-brown-faint border-b border-[#EDE5D8]">
                     {COLUMNS.map(c => (
@@ -206,6 +221,11 @@ export default function InventoryPage() {
                       </td>
                       <td className="px-4 py-3 text-right whitespace-nowrap text-xs text-brown-muted">
                         {value != null ? money(value) : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap text-xs text-brown-muted">
+                        {(weekWastage.byItem.get(item.id) ?? 0) > 0
+                          ? money(weekWastage.byItem.get(item.id) ?? 0)
+                          : '—'}
                       </td>
                       <td className="px-4 py-3">
                         {low ? (

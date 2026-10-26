@@ -184,12 +184,13 @@ export interface ReceivingLineInput {
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 
-/** Phase 2 will add production / sales / wastage / stocktake. */
-export type InventoryTransactionType = 'stock_in' | 'adjustment'
+/** Phase 2 will add production / sales / stocktake. */
+export type InventoryTransactionType = 'stock_in' | 'adjustment' | 'wastage'
 
 export const TRANSACTION_TYPE_LABELS: Record<InventoryTransactionType, string> = {
   stock_in:   'Stock In',
   adjustment: 'Adjustment',
+  wastage:    'Wastage',
 }
 
 export interface InventoryTransaction {
@@ -206,6 +207,8 @@ export interface InventoryTransaction {
   notes: string | null
   /** RM per base unit, stamped at write time. */
   unit_cost: number | null
+  /** Reason code on wastage / adjustment rows (e.g. a {@link WastageReason}). */
+  reason: string | null
   item?: Item | null
   creator?: { id: string; name: string } | null
 }
@@ -230,4 +233,43 @@ export interface InventoryValuation {
   /** RM per base unit. Null when balance <= 0. */
   avg_unit_cost: number | null
   uncosted_rows: number
+}
+
+// ─── Wastage ──────────────────────────────────────────────────────────────────
+
+export type WastageReason = 'expired' | 'damaged' | 'production_error' | 'other'
+
+export const WASTAGE_REASONS: WastageReason[] = ['expired', 'damaged', 'production_error', 'other']
+
+export const WASTAGE_REASON_LABELS: Record<WastageReason, string> = {
+  expired:          'Expired',
+  damaged:          'Damaged',
+  production_error: 'Production error',
+  other:            'Other',
+}
+
+/** Row of wastage_logs — written only through the log_wastage RPC. */
+export interface WastageLog {
+  id: string
+  branch_id: string
+  item_id: string
+  /** Base units, > 0. */
+  quantity: number
+  reason: WastageReason
+  /** Required when reason is 'other'. */
+  note: string | null
+  /** Path inside the public 'receiving-photos' bucket. */
+  photo_path: string | null
+  /** RM per base unit: the branch's moving-average cost when logged. */
+  unit_cost: number | null
+  /** RM: quantity × unit_cost. Null when the item had no cost. */
+  value: number | null
+  /** 05:00 MYT cutoff (business_date_of). */
+  business_date: string
+  /** The matching inventory_transactions row. */
+  transaction_id: string | null
+  created_by: string | null
+  created_at: string
+  item?: Pick<Item, 'id' | 'name' | 'base_unit' | 'department'> | null
+  creator?: { id: string; name: string } | null
 }

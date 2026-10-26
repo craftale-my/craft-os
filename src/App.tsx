@@ -34,6 +34,7 @@ import PurchaseOrderNewPage from './features/procurement/PurchaseOrderNew'
 import PurchaseOrderDetailPage from './features/procurement/PurchaseOrderDetail'
 import ReceivingListPage from './features/procurement/ReceivingList'
 import ReceivingPage from './features/procurement/Receiving'
+import WastagePage from './features/procurement/Wastage'
 import InventoryPage from './features/procurement/Inventory'
 import InventoryDetailPage from './features/procurement/InventoryDetail'
 
@@ -338,6 +339,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><ReceivingPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/wastage"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><WastagePage /></AppLayout>
           </ProtectedRoute>
         }
       />
