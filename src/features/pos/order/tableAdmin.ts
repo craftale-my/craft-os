@@ -21,3 +21,14 @@ export function openBillMessage(label: string, billNo: string): string {
 export function friendlyDbMessage(msg: string): string {
   return msg.includes('duplicate key value') ? 'That label is already used by another table.' : msg
 }
+
+export const AREA_MAX = 40
+
+/** A table's area as typed in POS settings: trimmed with inner spaces collapsed; empty = no area
+ *  (null). At most 40 characters, the dining_tables_area_check limit (counted as Postgres does). */
+export function normalizeArea(text: string): { area: string | null } | { problem: string } {
+  const area = text.trim().replace(/\s+/g, ' ')
+  if (!area) return { area: null }
+  if ([...area].length > AREA_MAX) return { problem: `An area name is at most ${AREA_MAX} characters` }
+  return { area }
+}

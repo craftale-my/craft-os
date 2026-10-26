@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addTableAction, friendlyDbMessage, openBillMessage, renameConflict } from './tableAdmin'
+import { addTableAction, friendlyDbMessage, normalizeArea, openBillMessage, renameConflict } from './tableAdmin'
 
 const active = [{ id: 'a', label: 'T1' }, { id: 'b', label: 'T2' }]
 
@@ -19,5 +19,12 @@ describe('tableAdmin', () => {
     expect(openBillMessage('T3', 'B-12')).toBe('Table T3 has an open bill (B-12) — close it before removing the table.')
     expect(friendlyDbMessage('duplicate key value violates unique constraint "x"')).toBe('That label is already used by another table.')
     expect(friendlyDbMessage('boom')).toBe('boom')
+  })
+  it('normalizeArea', () => {
+    expect(normalizeArea('  Patio  ')).toEqual({ area: 'Patio' })
+    expect(normalizeArea('Main   hall')).toEqual({ area: 'Main hall' })
+    expect(normalizeArea('   ')).toEqual({ area: null })
+    expect(normalizeArea('x'.repeat(40))).toEqual({ area: 'x'.repeat(40) })
+    expect(normalizeArea('x'.repeat(41))).toEqual({ problem: 'An area name is at most 40 characters' })
   })
 })

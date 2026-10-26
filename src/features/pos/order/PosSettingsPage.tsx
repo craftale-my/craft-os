@@ -8,7 +8,7 @@ import { fetchRoutes, fetchTables, insertTestPrint, type TableRow } from './posA
 import type { PrintRoute, PrinterKind } from '../print/adapter'
 import { qrLink, newQrToken } from './qrLink'
 import { PRINT_ROUTES } from '../menu/menuView'
-import { addTableAction, friendlyDbMessage, openBillMessage, renameConflict } from './tableAdmin'
+import { addTableAction, friendlyDbMessage, normalizeArea, openBillMessage, renameConflict } from './tableAdmin'
 import CheckoutSettings from '../checkout/CheckoutSettings'
 import MenuCatalogsSection from './MenuCatalogsSection'
 import ShiftSettingsSection from '../shift/ShiftSettingsSection'
@@ -93,6 +93,13 @@ export default function PosSettingsPage() {
     if (!window.confirm(`New QR code for ${t.label}? The printed card for this table must be replaced.`)) return
     void run(async () => { check(await supabase.from('dining_tables').update({ qr_token: newQrToken() }).eq('id', t.id).select('id'), 'New QR code') })
   }
+  // the home screen's area tabs: empty = no area (the table is only under All)
+  const saveArea = (t: TableRow, text: string) => {
+    const r = normalizeArea(text)
+    if ('problem' in r) { setError(r.problem); return }
+    if (r.area === t.area) return
+    void run(async () => { check(await supabase.from('dining_tables').update({ area: r.area }).eq('id', t.id).select('id'), 'Saving the area') })
+  }
   const showCard = async (t: TableRow) => {
     const url = qrLink(window.location.origin, t.qr_token, import.meta.env.DEV)
     try {
@@ -126,16 +133,18 @@ export default function PosSettingsPage() {
 
       <section className="rounded-xl border border-border bg-card p-4">
         <h2 className="font-semibold">Tables</h2>
+        <p className="text-xs text-brown-muted">The area groups tables into tabs on the POS home screen, in table order. Leave it empty for a table that is only under All.</p>
         <div className="mt-2 flex gap-2">
           <input className="rounded border border-border p-2 text-sm" placeholder="New table label, e.g. T11" value={newLabel} onChange={(e) => setNewLabel(e.target.value)} />
           <button onClick={() => void addTable()} className="rounded bg-brown-btn px-3 py-2 text-sm text-white hover:bg-brown-btn-hover">Add table</button>
         </div>
         <table className="mt-3 w-full text-sm">
-          <thead><tr className="text-left text-xs text-brown-muted"><th>Label</th><th>QR</th><th></th></tr></thead>
+          <thead><tr className="text-left text-xs text-brown-muted"><th>Label</th><th>Area</th><th>QR</th><th></th></tr></thead>
           <tbody>
             {tables.map((t) => (
               <tr key={t.id} className="border-t border-border">
                 <td className="py-2 font-medium">{t.label}{t.qr_paused && <span className="ml-2 text-xs text-amber-700">paused</span>}</td>
+                <td><AreaField key={`${t.id}:${t.area ?? ''}`} table={t} onSave={(text) => saveArea(t, text)} /></td>
                 <td><button className="underline" onClick={() => void showCard(t)}>Show QR card</button></td>
                 <td className="space-x-3 text-right text-xs">
                   <button className="underline" onClick={() => rename(t)}>Rename</button>
@@ -186,5 +195,17 @@ export default function PosSettingsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+/** A table's area, saved when the field loses focus or Enter is pressed. Remounted (by its key)
+ *  when the saved area changes, so it always starts from what is stored. */
+function AreaField({ table, onSave }: { table: TableRow; onSave: (text: string) => void }) {
+  const [text, setText] = useState(table.area ?? '')
+  return (
+    <input aria-label={`Area of table ${table.label}`} className="w-36 rounded border border-border p-1 text-sm" placeholder="No area"
+      maxLength={60} value={text} onChange={(e) => setText(e.target.value)}
+      onBlur={() => { if (text.trim() !== (table.area ?? '')) onSave(text) }}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} />
   )
 }
