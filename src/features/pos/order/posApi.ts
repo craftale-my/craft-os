@@ -7,6 +7,9 @@ import { counterOrderArgs, toSendResult, type QueuedOrder, type SendResult, type
 import { buildPosMenu, type CatalogRows, type GroupRow, type LinkRow, type PosMenu, type ProductRow, type SoldOutRow } from './cart'
 import type { BranchCatalogRow, BranchCatalogSettings, BranchCatalogs, CatalogRow } from './catalogs'
 import { menuWindows, type MenuWindows, type MenuWindowsJson } from './padSlots'
+import { parseBillSummaries, type BillSummary } from './billSummaries'
+import { padProductInfo, type PadProductInfo, type PadProductRow } from './padInfo'
+import { productThumbUrl } from '../menu/photoUpload'
 
 const SEND_TIMEOUT_MS = 8000
 
@@ -14,7 +17,11 @@ function fail(error: { message: string } | null): never {
   throw new Error(error?.message ?? 'Unknown error')
 }
 
-export interface TableRow { id: string; label: string; qr_token: string; qr_paused: boolean; is_active: boolean; sort_order: number }
+export interface TableRow {
+  id: string; label: string; qr_token: string; qr_paused: boolean; is_active: boolean; sort_order: number
+  /** the floor area for the home screen's tabs (null = only under All) */
+  area: string | null
+}
 export interface OpenBillRow { id: string; bill_no: string; table_id: string | null; order_type: OrderType; pax: number | null; opened_at: string }
 export interface BillItemRow {
   id: string
@@ -85,10 +92,42 @@ export async function saveBranchCatalogs(s: BranchCatalogSettings): Promise<void
 
 export async function fetchTables(branchId: string): Promise<TableRow[]> {
   const { data, error } = await supabase.from('dining_tables')
-    .select('id, label, qr_token, qr_paused, is_active, sort_order')
+    .select('id, label, qr_token, qr_paused, is_active, sort_order, area')
     .eq('branch_id', branchId).eq('is_active', true).order('sort_order').order('label')
   if (error) fail(error)
-  return data ?? []
+  return (data ?? []) as TableRow[]
+}
+
+/** Every open bill of the branch with the total checkout would charge (pos_bill_totals) and its
+ *  live item count, keyed by bill id. Staff of the branch only. */
+export async function fetchOpenBillSummaries(branchId: string): Promise<Map<string, BillSummary>> {
+  const { data, error } = await supabase.rpc('pos_open_bill_summaries', { p_branch_id: branchId })
+  if (error) fail(error)
+  return parseBillSummaries(data)
+}
+
+/** The bill an order landed on, by the id this iPad gave it; null while it has not reached the
+ *  server (still in this iPad's queue). Send & pay uses it to open Payment on the right bill. */
+export async function fetchOrderBillId(clientOrderId: string): Promise<string | null> {
+  const { data, error } = await supabase.from('orders').select('bill_id').eq('client_order_id', clientOrderId).maybeSingle()
+  if (error) fail(error)
+  return (data as { bill_id: string } | null)?.bill_id ?? null
+}
+
+/** SST rate, packaging fee and photo of every orderable product (padInfo.ts), read 1000 rows at a
+ *  time so PostgREST's row cap never cuts the list short. */
+export async function fetchPadProductInfo(): Promise<Map<string, PadProductInfo>> {
+  const rows: PadProductRow[] = []
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase.from('menu_products')
+      .select('id, sst_rate_bp, takeaway_fee_sen, image_path, image_updated_at')
+      .eq('is_active', true).eq('is_addon', false).order('id').range(from, from + 999)
+    if (error) fail(error)
+    const page = (data ?? []) as PadProductRow[]
+    rows.push(...page)
+    if (page.length < 1000) break
+  }
+  return padProductInfo(rows, productThumbUrl)
 }
 
 export async function fetchOpenBills(branchId: string): Promise<OpenBillRow[]> {

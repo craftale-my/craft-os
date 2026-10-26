@@ -124,6 +124,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-24-pos-shifts-fn.sql',
       'migration-2026-10-25-pos-hardening.sql',
       'migration-2026-10-25-menu-list-photo.sql',
+      'migration-2026-10-26-pos-frontend.sql',
     ]))
   })
 
@@ -187,5 +188,18 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(sql).toMatch(/grant execute on function menu_product_list\(\) to authenticated;/)
     expect(sql).toMatch(/raise exception 'STOP: menu_products\.image_path or image_updated_at is missing/)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
+  })
+
+  it('scans the Feedme-layout front end additions: the guard, the bill summaries and pax, staff-only grants', () => {
+    const sql = readFileSync(new URL('migration-2026-10-26-pos-frontend.sql', SUPABASE), 'utf8')
+    expect(functionBodies(sql).map((b) => b.name)).toEqual(['dining_tables_guard', 'pos_open_bill_summaries', 'pos_set_bill_pax'])
+    expect(sql).toMatch(/revoke all on function pos_open_bill_summaries\(uuid\) from public, anon;/)
+    expect(sql).toMatch(/grant execute on function pos_open_bill_summaries\(uuid\) to authenticated;/)
+    expect(sql).toMatch(/revoke all on function pos_set_bill_pax\(uuid, integer\) from public, anon;/)
+    expect(sql).toMatch(/grant execute on function pos_set_bill_pax\(uuid, integer\) to authenticated;/)
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-25-pos-hardening\.sql first/)
+    const verify = readFileSync(new URL('migration-2026-10-26-pos-frontend-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
 })

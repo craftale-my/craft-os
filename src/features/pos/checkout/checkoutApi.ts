@@ -256,6 +256,12 @@ export async function refundBill(refundId: string, billId: string, amountSen: nu
   return parseRefundResult(data)
 }
 
+/** Change the guests of an open dine-in bill (pos_set_bill_pax: 1–99, staff of its branch). */
+export async function setBillPax(billId: string, pax: number): Promise<void> {
+  const { error } = await supabase.rpc('pos_set_bill_pax', { p_bill_id: billId, p_pax: pax })
+  if (error) fail(error)
+}
+
 export async function openTable(tableId: string, pax: number | null): Promise<string> {
   const { data, error } = await supabase.rpc('open_table', { p_table_id: tableId, p_pax: pax })
   if (error) fail(error)
