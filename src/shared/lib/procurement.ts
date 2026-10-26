@@ -1,6 +1,8 @@
-import type { Item, PurchaseOrder, PurchaseOrderItem, PoStatus, Supplier } from '../types'
+import type {
+  InventoryBalance, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Supplier,
+} from '../types'
 
-/** Purchase units → base units. `1 包 = 2000 g` ⇒ toBaseUnits(3, 2000) = 6000. */
+/** Purchase units → base units. `1 bag = 2000 g` ⇒ toBaseUnits(3, 2000) = 6000. */
 export function toBaseUnits(quantity: number, conversionRate: number): number {
   return quantity * conversionRate
 }
@@ -47,6 +49,67 @@ export function priceDelta(orderedPrice: number, actualPrice: number): PriceDelt
 export function isBelowAlert(balance: number, minStockAlert: number): boolean {
   if (minStockAlert <= 0) return false
   return balance <= minStockAlert
+}
+
+/**
+ * Value of stock held, using the latest price. `latestPrice` is per purchase
+ * unit and `balance` is in base units, so the price is scaled down first.
+ * Null when there is no price or the conversion rate is unusable.
+ */
+export function stockValue(balance: number, latestPrice: number | null, conversionRate: number): number | null {
+  if (latestPrice == null || !(conversionRate > 0)) return null
+  return (latestPrice / conversionRate) * balance
+}
+
+export type StockDepartmentFilter = 'all' | ItemDepartment | 'unassigned'
+
+export interface StockRow {
+  item: Item
+  /** Base units. */
+  balance: number
+  low: boolean
+  value: number | null
+}
+
+/**
+ * Rows for the Stock on Hand page. `branchId` 'all' sums every branch the
+ * viewer can see; otherwise only that branch counts. Low stock sorts first,
+ * then by name — the point of the screen is surfacing what needs reordering.
+ */
+export function buildStockRows({ items, balances, branchId, department, search }: {
+  items: Item[]
+  balances: InventoryBalance[]
+  /** A branch id, or 'all'. */
+  branchId: string
+  department: StockDepartmentFilter
+  search: string
+}): StockRow[] {
+  const totals = new Map<string, number>()
+  for (const b of balances) {
+    if (branchId !== 'all' && b.branch_id !== branchId) continue
+    totals.set(b.item_id, (totals.get(b.item_id) ?? 0) + Number(b.balance))
+  }
+
+  const term = search.trim().toLowerCase()
+  return items
+    .filter(i => department === 'all'
+      || (department === 'unassigned' ? i.department == null : i.department === department))
+    .filter(i => !term
+      || i.name.toLowerCase().includes(term)
+      || (i.name_zh ?? '').toLowerCase().includes(term))
+    .map(item => {
+      const balance = totals.get(item.id) ?? 0
+      return {
+        item,
+        balance,
+        low: isBelowAlert(balance, item.min_stock_alert),
+        value: stockValue(balance, item.latest_price, item.conversion_rate),
+      }
+    })
+    .sort((a, b) => {
+      if (a.low !== b.low) return a.low ? -1 : 1
+      return a.item.name.localeCompare(b.item.name)
+    })
 }
 
 /** Ordered value of a PO line. */

@@ -351,6 +351,16 @@ function AppRoutes() {
         }
       />
 
+      {/* Alias for the Stock on Hand page. */}
+      <Route
+        path="/procurement/stock"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <Navigate to="/procurement/inventory" replace />
+          </ProtectedRoute>
+        }
+      />
+
       <Route
         path="/procurement/inventory/:itemId"
         element={
