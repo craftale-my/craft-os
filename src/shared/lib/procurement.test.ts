@@ -2,11 +2,30 @@ import { describe, it, expect } from 'vitest'
 import {
   toBaseUnits, toPurchaseUnits, calcShortage, derivePoStatus,
   priceDelta, isBelowAlert, poTotal, formatPoText, qty,
+  stockValue, buildStockRows,
 } from './procurement'
+import type { InventoryBalance, Item } from '../types'
+
+function makeItem(overrides: Partial<Item> & Pick<Item, 'id' | 'name'>): Item {
+  return {
+    name_zh: null,
+    category: 'raw',
+    department: null,
+    supplier_id: null,
+    purchase_unit: 'bag',
+    base_unit: 'g',
+    conversion_rate: 1000,
+    latest_price: null,
+    min_stock_alert: 0,
+    status: 'active',
+    created_at: '2026-10-01T00:00:00Z',
+    ...overrides,
+  }
+}
 
 describe('unit conversion', () => {
   it('converts purchase units to base units', () => {
-    // 1 包 = 2000 g
+    // 1 bag = 2000 g
     expect(toBaseUnits(3, 2000)).toBe(6000)
   })
 
@@ -94,6 +113,100 @@ describe('isBelowAlert', () => {
   })
 })
 
+describe('stockValue', () => {
+  it('prices base units off the per-purchase-unit price', () => {
+    // RM 85 per 1000 g bag, 2500 g on hand
+    expect(stockValue(2500, 85, 1000)).toBeCloseTo(212.5)
+  })
+
+  it('is null without a price', () => {
+    expect(stockValue(2500, null, 1000)).toBeNull()
+  })
+
+  it('is null when the conversion rate is zero or negative', () => {
+    expect(stockValue(2500, 85, 0)).toBeNull()
+    expect(stockValue(2500, 85, -1)).toBeNull()
+  })
+
+  it('is zero for an empty shelf with a price', () => {
+    expect(stockValue(0, 85, 1000)).toBe(0)
+  })
+})
+
+describe('buildStockRows', () => {
+  const beans = makeItem({ id: 'beans', name: 'Coffee Beans', department: 'cafe_bar', latest_price: 85, min_stock_alert: 1000 })
+  const flour = makeItem({ id: 'flour', name: 'Flour', department: 'bakery', min_stock_alert: 500 })
+  const cups = makeItem({ id: 'cups', name: 'Paper Cups', department: null, base_unit: 'pcs' })
+  const items = [cups, flour, beans]
+  const balances: InventoryBalance[] = [
+    { item_id: 'beans', branch_id: 'b1', balance: 800 },
+    { item_id: 'beans', branch_id: 'b2', balance: 700 },
+    { item_id: 'flour', branch_id: 'b1', balance: 500 },
+    { item_id: 'flour', branch_id: 'b2', balance: 2000 },
+    { item_id: 'cups', branch_id: 'b1', balance: 0 },
+  ]
+  const base = { items, balances, branchId: 'all', department: 'all' as const, search: '' }
+
+  it('sums every branch when branchId is all', () => {
+    const rows = buildStockRows(base)
+    expect(rows.find(r => r.item.id === 'beans')?.balance).toBe(1500)
+    expect(rows.find(r => r.item.id === 'flour')?.balance).toBe(2500)
+  })
+
+  it('counts only the chosen branch otherwise', () => {
+    const rows = buildStockRows({ ...base, branchId: 'b2' })
+    expect(rows.find(r => r.item.id === 'beans')?.balance).toBe(700)
+    expect(rows.find(r => r.item.id === 'cups')?.balance).toBe(0)
+  })
+
+  it('treats items without a balance row as zero', () => {
+    const rows = buildStockRows({ ...base, balances: [] })
+    expect(rows.every(r => r.balance === 0)).toBe(true)
+  })
+
+  it('filters by department', () => {
+    expect(buildStockRows({ ...base, department: 'bakery' }).map(r => r.item.id)).toEqual(['flour'])
+    expect(buildStockRows({ ...base, department: 'kitchen' })).toEqual([])
+  })
+
+  it("filters items without a department under 'unassigned'", () => {
+    expect(buildStockRows({ ...base, department: 'unassigned' }).map(r => r.item.id)).toEqual(['cups'])
+  })
+
+  it('searches by name, case-insensitively', () => {
+    expect(buildStockRows({ ...base, search: '  cOfFeE ' }).map(r => r.item.id)).toEqual(['beans'])
+  })
+
+  it('counts stock exactly at the threshold as low', () => {
+    const rows = buildStockRows({ ...base, branchId: 'b1' })
+    expect(rows.find(r => r.item.id === 'flour')?.low).toBe(true)
+  })
+
+  it('never flags an item with a zero threshold', () => {
+    const rows = buildStockRows(base)
+    const cupsRow = rows.find(r => r.item.id === 'cups')
+    expect(cupsRow?.balance).toBe(0)
+    expect(cupsRow?.low).toBe(false)
+  })
+
+  it('sorts low stock first, then by name', () => {
+    const zest = makeItem({ id: 'zest', name: 'Zest', min_stock_alert: 100 })
+    const rows = buildStockRows({ ...base, items: [...items, zest], branchId: 'b2' })
+    // b2: beans 700 and zest 0 are low; flour and cups are not
+    expect(rows.map(r => r.item.id)).toEqual(['beans', 'zest', 'flour', 'cups'])
+  })
+
+  it('is alphabetical when nothing is low', () => {
+    expect(buildStockRows(base).map(r => r.item.id)).toEqual(['beans', 'flour', 'cups'])
+  })
+
+  it('attaches the stock value, or null without a price', () => {
+    const rows = buildStockRows(base)
+    expect(rows.find(r => r.item.id === 'beans')?.value).toBeCloseTo(127.5)
+    expect(rows.find(r => r.item.id === 'flour')?.value).toBeNull()
+  })
+})
+
 describe('poTotal', () => {
   it('sums line totals', () => {
     expect(poTotal([
@@ -120,8 +233,8 @@ describe('qty', () => {
 describe('formatPoText', () => {
   const po = { po_number: 'PO-20260729-001', created_at: '2026-07-29T02:00:00Z', notes: null }
   const lines = [
-    { item: { name: 'Coffee Beans', name_zh: '咖啡豆', purchase_unit: '包' }, quantity_ordered: 12, unit_price: 45 },
-    { item: { name: 'Oat Milk', name_zh: null, purchase_unit: '箱' }, quantity_ordered: 2, unit_price: 10.5 },
+    { item: { name: 'Coffee Beans', name_zh: 'Kopi', purchase_unit: 'bag' }, quantity_ordered: 12, unit_price: 45 },
+    { item: { name: 'Oat Milk', name_zh: null, purchase_unit: 'carton' }, quantity_ordered: 2, unit_price: 10.5 },
   ]
 
   it('includes the header, every line and the total', () => {
@@ -129,13 +242,13 @@ describe('formatPoText', () => {
     expect(text).toContain('PO-20260729-001')
     expect(text).toContain('Craft Cafe · Cheras')
     expect(text).toContain('Supplier: ABC Trading')
-    expect(text).toContain('1. Coffee Beans (咖啡豆)')
-    expect(text).toContain('12 包 × RM 45.00 = RM 540.00')
+    expect(text).toContain('1. Coffee Beans (Kopi)')
+    expect(text).toContain('12 bag × RM 45.00 = RM 540.00')
     expect(text).toContain('2. Oat Milk')
     expect(text).toContain('*TOTAL: RM 561.00*')
   })
 
-  it('omits the Chinese name when the item has none', () => {
+  it('omits the secondary name when the item has none', () => {
     const text = formatPoText(po, { name: 'ABC Trading' }, 'Cheras', 'Craft Cafe', lines)
     expect(text).toContain('2. Oat Milk\n')
     expect(text).not.toContain('Oat Milk (')
