@@ -52,8 +52,8 @@ export default function ShiftsDrawer({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between border-b border-border p-4">
           <h2 className="text-lg font-semibold">{open ? `Shift closed ${formatMyt(open.closedAt)}` : 'Shifts'}</h2>
           <div className="flex gap-2">
-            {open && <button onClick={back} className="rounded border border-border px-3 py-1 text-sm">Back</button>}
-            <button onClick={onClose} className="rounded border border-border px-3 py-1 text-sm">Close</button>
+            {open && <button onClick={back} className="rounded border border-border min-h-11 px-3 py-1 text-sm">Back</button>}
+            <button onClick={onClose} className="rounded border border-border min-h-11 px-3 py-1 text-sm">Close</button>
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-3 text-sm">

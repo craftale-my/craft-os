@@ -47,7 +47,7 @@ type Dialog =
  *  and void bill with approval, close an empty bill, move, merge, pause QR, open for QR. */
 export default function OrderScreen({
   branchId, target, tables, bills, summaries, refreshKey, billing, shiftOpen, lastCatalogs, initialLines, initialCatalogId,
-  submit, onCatalogs, onTarget, onBack, onSent, onPay, onSendAndPay, onChanged, onDraftCount,
+  submit, onCatalogs, onTarget, onBack, onSent, onPay, onSendAndPay, onChanged, onDraftCount, onSending,
 }: {
   branchId: string
   target: OrderTarget
@@ -69,6 +69,7 @@ export default function OrderScreen({
   onSendAndPay: (clientOrderId: string) => Promise<void>   // rejects with the words to show
   onChanged: () => Promise<void> | void      // a bill action changed something: reload
   onDraftCount: (n: number) => void          // PosPage guards leaving through the menu
+  onSending: (busy: boolean) => void         // ...and keeps the menu shut while an order is being sent
 }) {
   const orderType = targetOrderType(target)
   const bill = targetBill(target, bills)
@@ -274,6 +275,8 @@ export default function OrderScreen({
     } finally { sendingRef.current = false; setSending(false) }
   }
   const send = async () => { if (await sendDrafts()) onSent() }
+  useEffect(() => { onSending(sending) }, [sending]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onSending(false), []) // eslint-disable-line react-hooks/exhaustive-deps
   const sendAndPay = async () => {
     const id = await sendDrafts()
     if (!id) return

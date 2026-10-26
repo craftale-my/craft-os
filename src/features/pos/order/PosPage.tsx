@@ -14,8 +14,9 @@ import type { BranchCatalogs } from './catalogs'
 import { padFromRejected } from './rejectedOrder'
 import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
-import { discardQuestion, QUEUED_NOT_SENT } from './billView'
+import { discardQuestion } from './billView'
 import { billTitle, targetBill, targetKey, targetTitle, type OrderTarget } from './orderTarget'
+import { onSession, payOutcome, retarget, type Screen } from './posScreen'
 import HomeScreen from './HomeScreen'
 import QueueStrip from './QueueStrip'
 import OrderScreen from './OrderScreen'
@@ -33,16 +34,6 @@ import PaxDialog from '../shell/PaxDialog'
 import { menuItems, type MenuItem } from '../shell/shellMenu'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
-
-/** Which POS screen is up. An order screen is keyed by its session and its table or takeaway bill
- *  (targetKey): Select pax keeps the screen, a move or merge starts it again on the new bill, so
- *  unsent drafts never follow onto another bill; a new session (opened from home, Payment's
- *  Cancel) starts clean. */
-type Screen =
-  | { kind: 'home' }
-  | { kind: 'order'; session: number; target: OrderTarget; lines?: OrderLine[]; catalogId?: string | null }
-  | { kind: 'payment'; bill: OpenBillRow; back: OrderTarget }
-  | { kind: 'transaction' }
 
 /** /pos — the Feedme-layout POS (docs/superpowers/specs/2026-10-26-pos-feedme-frontend-design.md).
  *  Owns the data every screen shares (tables, open bills and their summaries, billing config,
@@ -74,9 +65,10 @@ export default function PosPage() {
   const shift = useShiftOpen(refreshKey)
   const reqId = useRef(0)
   const session = useRef(0)
-  const screenRef = useRef(screen)                  // Send & pay's awaits check the cashier is still on that order screen
+  const screenRef = useRef(screen)                  // late order-screen callbacks check the cashier is still on that session
   screenRef.current = screen
   const draftCount = useRef(0)                      // the order screen's unsent items, for the menu's guard
+  const orderSending = useRef(false)                // the order screen is sending: the menu stays shut until it is done
   const openBillIdRef = useRef<string | null>(null)
   // checkout ids this iPad sent per bill: a reopened Payment re-reads with them, so an unsure payment
   // that lands late shows as paid here. Dropped once the bill is paid or no longer open.
@@ -133,17 +125,22 @@ export default function PosPage() {
   const goHome = () => { editingFrom.current = null; draftCount.current = 0; setScreen({ kind: 'home' }) }
   const openOrder = (target: OrderTarget, lines?: OrderLine[], catalogId?: string | null) => {
     setNotice(null)
+    editingFrom.current = null                      // editRejected sets it again after opening
     draftCount.current = lines?.reduce((n, l) => n + l.qty, 0) ?? 0
     setScreen({ kind: 'order', session: ++session.current, target, lines, catalogId })
   }
-  /** The order screen's target changed: the pax chosen for an empty table keeps the screen; a move or
-   *  merge onto another bill starts it again there, without the drafts or the rejected order being edited. */
-  const changeTarget = (t: OrderTarget) => {
-    if (screen.kind !== 'order') return
-    if (targetKey(t) === targetKey(screen.target)) { setScreen({ ...screen, target: t }); return }
-    editingFrom.current = null; draftCount.current = 0
-    setScreen({ kind: 'order', session: screen.session, target: t })
+  /** The order screen of `sess` changed target (retarget): a move or merge onto another bill starts it
+   *  again there, without the drafts or the rejected order being edited. A late call from a screen
+   *  the cashier already left does nothing. */
+  const changeTarget = (sess: number, t: OrderTarget) => {
+    const { screen: next, restarted } = retarget(screenRef.current, sess, t)
+    if (next === screenRef.current) return
+    if (restarted) { editingFrom.current = null; draftCount.current = 0 }
+    screenRef.current = next
+    setScreen(next)
   }
+  /** Back or a finished send from the order screen of `sess`: home, unless the cashier already left it. */
+  const homeFrom = (sess: number) => { if (onSession(screenRef.current, sess)) goHome() }
   /** Leave the order screen through the menu: unsent items are asked about first (spec §2). */
   const leave = (go: () => void) => {
     if (screen.kind === 'order' && draftCount.current > 0) {
@@ -192,21 +189,23 @@ export default function PosPage() {
   }
 
   /** Send & pay: the order reached the server → Payment on the bill it landed on. Still only queued
-   *  on this iPad (offline) → back home with QUEUED_NOT_SENT, so Payment never opens without it. */
-  const sendAndPay = async (clientOrderId: string, target: OrderTarget, onSession: number) => {
-    const stillHere = () => { const s = screenRef.current; return s.kind === 'order' && s.session === onSession }
-    const billId = await fetchOrderBillId(clientOrderId)
-    if (!stillHere()) return                                   // the cashier left meanwhile: no screen jumps
-    if (!billId) { goHome(); setNotice(QUEUED_NOT_SENT); return }
-    setRefreshKey((k) => k + 1)
-    const fresh = await reload()
-    if (!stillHere()) return
-    if (!fresh) throw new Error('Could not load the bill — press Payment again.')
-    const bill = fresh.find((b) => b.id === billId)
-    if (!bill) throw new Error('This bill is no longer open — check it on the home screen.')
+   *  on this iPad, or the lookup failed (offline) → home with QUEUED_NOT_SENT (payOutcome), so
+   *  Payment never opens without the order and the cashier is never left on an empty cart. */
+  const sendAndPay = async (clientOrderId: string, target: OrderTarget, sess: number) => {
+    let billId: string | null = null
+    try { billId = await fetchOrderBillId(clientOrderId) } catch { billId = null }
+    if (!onSession(screenRef.current, sess)) return            // the cashier left meanwhile: no screen jumps
+    let fresh: OpenBillRow[] | null = null
+    if (billId) {
+      setRefreshKey((k) => k + 1)
+      fresh = await reload()
+      if (!onSession(screenRef.current, sess)) return
+    }
+    const out = payOutcome(billId, fresh, target)
+    if (out.kind === 'home') { goHome(); setNotice(out.notice); return }
     loadBilling()
     draftCount.current = 0
-    setScreen({ kind: 'payment', bill, back: target.kind === 'takeaway' ? { kind: 'takeaway', billId } : target })
+    setScreen({ kind: 'payment', bill: out.bill, back: out.back })
   }
 
   if (!staff) return null
@@ -254,13 +253,14 @@ export default function PosPage() {
           lastCatalogs={branchCatalogs} initialLines={screen.lines} initialCatalogId={screen.catalogId}
           submit={submit}
           onCatalogs={setBranchCatalogs}
-          onTarget={changeTarget}
-          onBack={goHome}
-          onSent={() => { goHome(); bump() }}
+          onTarget={(t) => changeTarget(screen.session, t)}
+          onBack={() => homeFrom(screen.session)}
+          onSent={() => { homeFrom(screen.session); bump() }}
           onPay={(bill) => { loadBilling(); setScreen({ kind: 'payment', bill, back: screen.target }) }}
           onSendAndPay={(id) => sendAndPay(id, screen.target, screen.session)}
           onChanged={async () => { setRefreshKey((k) => k + 1); await reload() }}
-          onDraftCount={(n) => { draftCount.current = n }} />
+          onDraftCount={(n) => { draftCount.current = n }}
+          onSending={(busy) => { orderSending.current = busy }} />
       )}
       {screen.kind === 'transaction' && <TransactionScreen branchId={branchId} />}
       {screen.kind === 'payment' && (
@@ -272,7 +272,7 @@ export default function PosPage() {
           onPaid={() => { checkoutIdsByBill.current.delete(screen.bill.id); goHome(); bump() }} />
       )}
       {screen.kind !== 'payment' && (
-        <BottomBar title={title} staffName={staff.name} onMenu={() => setMenuOpen(true)} onStaff={() => setStaffOpen(true)} />
+        <BottomBar title={title} staffName={staff.name} onMenu={() => { if (!orderSending.current) setMenuOpen(true) }} onStaff={() => setStaffOpen(true)} />
       )}
       {menuOpen && <GridMenu items={items} current={current} onPick={pickMenu} onClose={() => setMenuOpen(false)} />}
       {/* always mounted, hidden when closed: the one print host and shift bar of this iPad live in it */}
