@@ -18,7 +18,7 @@ vi.mock('./checkoutApi', () => ({
 vi.mock('../order/posApi', () => ({ fetchBillItems: api.fetchBillItems }))
 
 import PaymentScreen from './PaymentScreen'
-import { BILL_CHANGED } from './follow'
+import { billChangedAtPay } from './follow'
 import { CHECKED_OPEN } from './paySession'
 
 const totals = {
@@ -151,10 +151,12 @@ describe('PaymentScreen', () => {
     openWith(changed)
     rerender(screenAt(1, onPaid))
     await flush()
+    press('1'); press('5'); press('0')
     press('Pay RM 120.00')
     await flush()
     expect(api.checkoutBill).not.toHaveBeenCalled()
-    expect(screen.getByRole('alert').textContent).toBe(BILL_CHANGED)
+    expect(screen.getByText('Received exact · Change RM 0.00')).toBeTruthy()      // the cash received was cleared
+    expect(screen.getByRole('alert').textContent).toBe(billChangedAtPay({ kind: 'cash', needsReference: false }))
     press('Pay RM 120.00')
     await flush()
     expect(api.checkoutBill).toHaveBeenCalledTimes(1)
@@ -173,7 +175,7 @@ describe('PaymentScreen', () => {
     press('Pay RM 120.00')
     await flush()
     expect(api.checkoutBill).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('alert').textContent).toBe(BILL_CHANGED)
+    expect(screen.getByRole('alert').textContent).toBe(billChangedAtPay({ kind: 'cash', needsReference: false }))
   })
 
   it('Check bill finds the bill still open: the next Pay goes under a NEW checkout id', async () => {
@@ -211,5 +213,19 @@ describe('PaymentScreen', () => {
       { methodId: 'm-cash', amountSen: 5000, tenderedSen: 10000, reference: null },
       { methodId: 'm-cash', amountSen: 5670, tenderedSen: null, reference: null },
     ])
+  })
+  it('payment methods that fail to load offer a Retry that loads them again', async () => {
+    api.fetchPaymentMethods.mockRejectedValueOnce(new Error('Failed to fetch'))
+    renderScreen()
+    await flush()
+    expect(screen.getByRole('alert').textContent).toContain('Failed to fetch')
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    expect(retry.className).toContain('min-h-11')
+    const before = api.fetchPaymentMethods.mock.calls.length
+    fireEvent.click(retry)
+    await flush()
+    expect(api.fetchPaymentMethods.mock.calls.length).toBe(before + 1)
+    expect(screen.getByRole('button', { name: 'Cash' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   })
 })

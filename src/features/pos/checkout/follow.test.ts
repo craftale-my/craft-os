@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BillTotals } from './bill'
-import { BILL_CHANGED, PAID_ELSEWHERE, VOIDED_ELSEWHERE, followBill, parseCheckoutState, type CheckoutState } from './follow'
+import { BILL_CHANGED, billChangedAtPay, PAID_ELSEWHERE, VOIDED_ELSEWHERE, followBill, parseCheckoutState, type CheckoutState } from './follow'
 
 const totals = (totalSen: number): BillTotals => ({
   subtotalSen: totalSen, serviceChargeSen: 0, sstSen: 0, takeawayFeeSen: 0, beforeRoundingSen: totalSen,
@@ -48,5 +48,17 @@ describe('parseCheckoutState', () => {
       { status: 'paid', billNo: 'x', mergedIntoBillNo: null, totals: null, result: { billId: 'b' } }]) {
       expect(() => parseCheckoutState(bad)).toThrow('Unexpected reply from the server')
     }
+  })
+})
+
+describe('billChangedAtPay', () => {
+  it('Pay cleared what was entered for the old total: check the new total, enter it again, tap Pay', () => {
+    expect(billChangedAtPay({ kind: 'cash', needsReference: false }))
+      .toBe('The bill changed on another iPad — check the new total, enter the cash received again, then tap Pay.')
+    expect(billChangedAtPay({ kind: 'card', needsReference: true }))
+      .toBe('The bill changed on another iPad — check the new total, enter the reference again, then tap Pay.')
+    expect(billChangedAtPay({ kind: 'card', needsReference: false }))
+      .toBe('The bill changed on another iPad — check the new total, then tap Pay again.')
+    expect(billChangedAtPay(null)).toBe('The bill changed on another iPad — check the new total, then tap Pay again.')
   })
 })

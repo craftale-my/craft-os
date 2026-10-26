@@ -24,6 +24,15 @@ export const PAID_ELSEWHERE = 'This bill was paid on another iPad — do not cha
 export const VOIDED_ELSEWHERE = 'This bill was voided on another iPad.'
 export const mergedElsewhere = (billNo: string | null) => `This bill was merged into ${billNo ?? 'another bill'} on another iPad.`
 export const BILL_CHANGED = 'The bill changed on another iPad — check the total.'
+/** Pay found the bill changed since the cashier started: Pay cleared what was entered for the old
+ *  total (the cash received, the reference), so the notice asks for it again before the second,
+ *  deliberate Pay. */
+export function billChangedAtPay(method: { kind: string; needsReference: boolean } | null): string {
+  const again = method?.kind === 'cash' ? 'enter the cash received again, then tap Pay'
+    : method?.needsReference ? 'enter the reference again, then tap Pay'
+    : 'then tap Pay again'
+  return `The bill changed on another iPad — check the new total, ${again}.`
+}
 
 /** shownTotalSen: the total on screen now (null before the first load). */
 export function followBill(state: CheckoutState, shownTotalSen: number | null): FollowAction {

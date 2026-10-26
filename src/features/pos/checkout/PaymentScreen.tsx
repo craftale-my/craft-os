@@ -5,7 +5,7 @@ import { fetchBillItems, type BillItemRow, type OpenBillRow } from '../order/pos
 import type { BillTotals } from './bill'
 import { checkoutBill, fetchCheckoutState, fetchPaymentMethods, type CheckoutResult } from './checkoutApi'
 import CheckoutTotals from './CheckoutTotals'
-import { BILL_CHANGED, followBill, type FollowAction } from './follow'
+import { billChangedAtPay, followBill, type FollowAction } from './follow'
 import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
 import { looksOffline } from './rpcResult'
 import {
@@ -53,6 +53,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   const sessionRef = useRef(session)
   const totalsRef = useRef<BillTotals | null>(null)
   const loadFailed = useRef(false)
+  const [methodsKey, setMethodsKey] = useState(0)    // bumped by Retry after the payment methods failed to load
   const readSeq = useRef(0)
   const keySeq = useRef(0)
   // The total the cashier is paying against with Split off: set by the first load, moved only by a
@@ -96,7 +97,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       .then((rows) => { if (live) setMethods(rows.map((m) => ({ id: m.id, name: m.name, kind: m.kind, needsReference: m.needs_reference }))) })
       .catch((e) => { if (live) setMethodsError(msg(e)) })
     return () => { live = false }
-  }, [branchId])
+  }, [branchId, methodsKey])
   useEffect(() => {
     const phase = sessionRef.current.phase
     if (!result && !lockNote && phase !== 'paying' && phase !== 'checking') void follow()
@@ -185,7 +186,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     if (payingForRef.current !== null && payingForRef.current !== total) {
       // the bill changed since the cashier started: show it, and take a second, deliberate Pay
       payingForRef.current = total
-      setError(BILL_CHANGED); setReference(''); setEntry('')
+      setError(billChangedAtPay(method)); setReference(''); setEntry('')
       return
     }
     if (total === 0) { void send([]); return }          // RM 0.00 closes with no payment, as on the Checkout sheet
@@ -298,7 +299,11 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
             </button>
           ))}
           {methods.length === 0 && (methodsError
-            ? <p role="alert" className="col-span-3 rounded bg-red-50 p-2 text-sm text-red-700">{methodsError}</p>
+            ? (
+              <p role="alert" className="col-span-3 rounded bg-red-50 p-2 text-sm text-red-700">
+                {methodsError} <button type="button" className="min-h-11 px-2 underline" onClick={() => setMethodsKey((k) => k + 1)}>Retry</button>
+              </p>
+            )
             : <p className="col-span-3 text-sm text-brown-muted">No payment methods — add them in POS settings.</p>)}
         </div>
         {showPad && (
