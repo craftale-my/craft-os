@@ -14,8 +14,11 @@ const NOTE_MS = 8_000                              // "Shift opened" and the lik
 /** The shift part of the POS top bar: Open shift, or "Shift open · since 09:02" with Pay in / out
  *  and Close shift; Shifts for supervisors. Read again whenever the POS page refreshes
  *  (`refreshKey`: a bill changed here or on another iPad, and every 15 s). The sheets render
- *  into document.body, so they do not take the header's small muted text. */
-export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branchId: string; refreshKey: number; canSupervise: boolean }) {
+ *  into document.body, so they do not take the header's small muted text. `onChanged` runs after a
+ *  shift was opened and whenever a sheet closes, so the POS page re-reads whether a shift is open. */
+export default function ShiftBar({ branchId, refreshKey, canSupervise, onChanged }: {
+  branchId: string; refreshKey: number; canSupervise: boolean; onChanged?: () => void
+}) {
   const [status, setStatus] = useState<ShiftStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sheet, setSheet] = useState<Sheet>(null)
@@ -40,7 +43,7 @@ export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branc
     return () => clearTimeout(t)
   }, [note])
 
-  const closeSheet = () => { setSheet(null); setClosing(null); void load() }
+  const closeSheet = () => { setSheet(null); setClosing(null); void load(); onChanged?.() }
   const btn = 'rounded border border-border px-3 py-1'
   const stale = status ? staleShiftNote(status) : null
   return (
@@ -67,7 +70,7 @@ export default function ShiftBar({ branchId, refreshKey, canSupervise }: { branc
         <>
           {sheet === 'open' && status && (
             <OpenShiftSheet lastFloatSen={status.lastFloatSen} onClose={closeSheet}
-              onOpened={(s) => { seq.current++; setStatus(s); setError(null); setSheet(null); setNote('Shift opened') }} />
+              onOpened={(s) => { seq.current++; setStatus(s); setError(null); setSheet(null); setNote('Shift opened'); onChanged?.() }} />
           )}
           {sheet === 'move' && (
             <CashMoveSheet branchId={branchId} pending={pendingMove} onPending={setPendingMove} onClose={closeSheet}
