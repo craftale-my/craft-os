@@ -11,7 +11,15 @@ const WAIT_MS = 45_000
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-export default function PrintHostPanel({ branchId }: { branchId: string }) {
+/** This iPad's print host: prints the browser-route tickets and lists the problem ones.
+ *  `inline` (the staff panel): the list is laid out in place, full width, instead of a dropdown
+ *  behind the Printers button that the panel would clip. `onProblems` hears the problem count
+ *  whenever it changes (the bottom bar's badge). */
+export default function PrintHostPanel({ branchId, inline = false, onProblems }: {
+  branchId: string
+  inline?: boolean
+  onProblems?: (count: number) => void
+}) {
   const [routes, setRoutes] = useState<PrintRoute[]>([])
   const [problems, setProblems] = useState<PrintProblem[]>([])
   const [missing, setMissing] = useState<string[]>([])
@@ -20,6 +28,10 @@ export default function PrintHostPanel({ branchId }: { branchId: string }) {
   const sweeping = useRef(false)
   const routesRef = useRef<PrintRoute[]>([])
   routesRef.current = routes
+  const onProblemsRef = useRef(onProblems)
+  onProblemsRef.current = onProblems
+  const problemCount = problems.length
+  useEffect(() => { onProblemsRef.current?.(problemCount) }, [problemCount])
 
   useEffect(() => {
     Promise.all([fetchRoutes(branchId), fetchMenuRoutes()]).then(([r, m]) => {
@@ -71,12 +83,16 @@ export default function PrintHostPanel({ branchId }: { branchId: string }) {
 
   return (
     <div className="relative">
-      <button onClick={() => setOpen((v) => !v)}
-        className={`rounded px-3 py-1 text-xs ${problems.length ? 'bg-red-600 text-white' : 'border border-border'}`}>
-        Printers{problems.length ? ` · ${problems.length} problem${problems.length === 1 ? '' : 's'}` : ''}
-      </button>
-      {open && (
-        <div className="absolute right-0 z-30 mt-1 w-96 rounded-xl border border-border bg-card p-3 text-sm shadow-lg">
+      {!inline && (
+        <button onClick={() => setOpen((v) => !v)}
+          className={`rounded px-3 py-1 text-xs ${problems.length ? 'bg-red-600 text-white' : 'border border-border'}`}>
+          Printers{problems.length ? ` · ${problems.length} problem${problems.length === 1 ? '' : 's'}` : ''}
+        </button>
+      )}
+      {(inline || open) && (
+        <div data-testid="print-list"
+          className={inline ? 'w-full rounded-xl border border-border bg-card p-3 text-sm'
+            : 'absolute right-0 z-30 mt-1 w-96 rounded-xl border border-border bg-card p-3 text-sm shadow-lg'}>
           {note && <p className="mb-2 text-xs text-amber-700">{note}</p>}
           <div className="mb-2 flex flex-wrap gap-2">
             {routes.map((r) => (

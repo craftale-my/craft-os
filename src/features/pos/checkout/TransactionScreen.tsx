@@ -158,7 +158,7 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
               )}
             </div>
             <div className="mt-3 flex-1 overflow-y-auto rounded-xl bg-card p-3">
-              {detailError && <p role="alert" className="rounded bg-red-50 p-2 text-red-700">{detailError} <button type="button" className="underline" onClick={() => setDetailKey((k) => k + 1)}>Try again</button></p>}
+              {detailError && <p role="alert" className="rounded bg-red-50 p-2 text-red-700">{detailError} <button type="button" className="min-h-11 px-2 underline" onClick={() => setDetailKey((k) => k + 1)}>Try again</button></p>}
               {!detail && !detailError && <p className="text-brown-muted">Loading…</p>}
               {detail && (
                 <div className="space-y-3">
@@ -217,13 +217,13 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
               {choices && choices.length > 0 && (
                 <>
                   <label className="block">Paid back by
-                    <select className="ml-2 rounded border border-border p-2 disabled:opacity-60" value={methodId}
+                    <select className="ml-2 min-h-11 rounded border border-border p-2 disabled:opacity-60" value={methodId}
                       disabled={refundLocked} onChange={(e) => chooseMethod(e.target.value)}>
                       {choices.map((c) => <option key={c.methodId} value={c.methodId}>{c.label}</option>)}
                     </select>
                   </label>
                   <label className="block">Amount (RM)
-                    <input inputMode="decimal" className="ml-2 w-32 rounded border border-border p-2 disabled:opacity-60" value={amountText}
+                    <input inputMode="decimal" className="ml-2 min-h-11 w-32 rounded border border-border p-2 disabled:opacity-60" value={amountText}
                       disabled={refundLocked} onChange={(e) => setAmountText(e.target.value)} />
                   </label>
                   <p className="text-xs text-brown-muted">Refunds go back the way the bill was paid.</p>

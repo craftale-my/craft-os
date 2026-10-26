@@ -1,7 +1,8 @@
 // src/features/pos/order/posScreen.ts
 /** PosPage's screen decisions, kept pure so they are tested on their own. */
 import type { OrderLine } from './cart'
-import type { OpenBillRow } from './posApi'
+import type { OpenBillRow, TableRow } from './posApi'
+import type { BillSummary } from './billSummaries'
 import { QUEUED_NOT_SENT } from './billView'
 import { targetKey, type OrderTarget } from './orderTarget'
 
@@ -43,3 +44,38 @@ export function payOutcome(billId: string | null, fresh: OpenBillRow[] | null, t
   if (!bill) return { kind: 'home', notice: SENT_BILL_CLOSED }
   return { kind: 'payment', bill, back: target.kind === 'takeaway' ? { kind: 'takeaway', billId } : target }
 }
+
+/** How long Send & pay waits for the order's bill lookup and the reload after it, together. */
+export const SEND_PAY_WAIT_MS = 8_000
+
+const EXPIRED: unique symbol = Symbol('expired')
+
+/** One deadline shared by several awaits: `race` gives the promise's value if it answers before the
+ *  deadline, else `fallback` (the promise keeps running, its late answer is ignored). Send & pay
+ *  races the lookup and the reload against it, so a stalled network ends in the safe "not found"
+ *  path instead of a screen stuck on Sending. `clear` stops the timer. */
+export function deadline(ms: number): { race: <T>(p: Promise<T>, fallback: T) => Promise<T>; clear: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<typeof EXPIRED>((resolve) => { timer = setTimeout(() => resolve(EXPIRED), ms) })
+  return {
+    race: async <T>(p: Promise<T>, fallback: T): Promise<T> => {
+      const r = await Promise.race([p, expired])
+      return r === EXPIRED ? fallback : (r as T)
+    },
+    clear: () => clearTimeout(timer),
+  }
+}
+
+/** PosPage's reload: tables and open bills are needed, the bill summaries are not (a tile without a
+ *  total still renders). A failed summaries read keeps the last ones (`summaries` null); a failed
+ *  tables or bills read is the error shown. */
+export function settleReload(
+  tables: PromiseSettledResult<TableRow[]>,
+  bills: PromiseSettledResult<OpenBillRow[]>,
+  summaries: PromiseSettledResult<Map<string, BillSummary>>,
+): { ok: true; tables: TableRow[]; bills: OpenBillRow[]; summaries: Map<string, BillSummary> | null } | { ok: false; error: string } {
+  if (tables.status === 'rejected') return { ok: false, error: reason(tables.reason) }
+  if (bills.status === 'rejected') return { ok: false, error: reason(bills.reason) }
+  return { ok: true, tables: tables.value, bills: bills.value, summaries: summaries.status === 'fulfilled' ? summaries.value : null }
+}
+const reason = (e: unknown) => (e instanceof Error ? e.message : String(e))

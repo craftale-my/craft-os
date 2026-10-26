@@ -16,7 +16,7 @@ import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
 import { discardQuestion } from './billView'
 import { billTitle, targetBill, targetKey, targetTitle, type OrderTarget } from './orderTarget'
-import { onSession, payOutcome, retarget, type Screen } from './posScreen'
+import { deadline, onSession, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, type Screen } from './posScreen'
 import HomeScreen from './HomeScreen'
 import QueueStrip from './QueueStrip'
 import OrderScreen from './OrderScreen'
@@ -53,6 +53,7 @@ export default function PosPage() {
   const [screen, setScreen] = useState<Screen>({ kind: 'home' })
   const [menuOpen, setMenuOpen] = useState(false)
   const [staffOpen, setStaffOpen] = useState(false)
+  const [printProblems, setPrintProblems] = useState(0)   // the print host's problem count: the bottom bar's badge
   const [pinOpen, setPinOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
   const [paxFor, setPaxFor] = useState<TableRow | null>(null)
@@ -77,18 +78,22 @@ export default function PosPage() {
   // screen without sending keeps it, so nothing the cashier confirmed is ever silently dropped.
   const editingFrom = useRef<string | null>(null)
 
-  /** Tables, open bills and their summaries together; resolves with the bills it read (null on failure). */
+  /** Tables, open bills and their summaries together; resolves with the bills it read (null on failure).
+   *  The summaries are not needed to show the tables (settleReload): a failed read keeps the last ones. */
   const reload = useCallback(async (): Promise<OpenBillRow[] | null> => {
     if (!branchId) return null
     const id = ++reqId.current
-    try {
-      const [t, b, s] = await Promise.all([fetchTables(branchId), fetchOpenBills(branchId), fetchOpenBillSummaries(branchId)])
-      if (id === reqId.current) { setTables(t); setBills(b); setSummaries(s); setError(null) }
-      return b
-    } catch (e) {
-      if (id === reqId.current) setError(msg(e))
+    const [t, b, s] = await Promise.allSettled([fetchTables(branchId), fetchOpenBills(branchId), fetchOpenBillSummaries(branchId)])
+    const r = settleReload(t, b, s)
+    if (!r.ok) {
+      if (id === reqId.current) setError(r.error)
       return null
     }
+    if (id === reqId.current) {
+      setTables(r.tables); setBills(r.bills); setError(null)
+      if (r.summaries) setSummaries(r.summaries)
+    }
+    return r.bills
   }, [branchId])
   useEffect(() => { void reload() }, [reload])
   const bump = useCallback(() => { setRefreshKey((k) => k + 1); void reload() }, [reload])
@@ -141,7 +146,7 @@ export default function PosPage() {
   }
   /** Back or a finished send from the order screen of `sess`: home, unless the cashier already left it. */
   const homeFrom = (sess: number) => { if (onSession(screenRef.current, sess)) goHome() }
-  /** Leave the order screen through the menu: unsent items are asked about first (spec §2). */
+  /** Leave the order screen through the menu or Exit POS: unsent items are asked about first (spec §2). */
   const leave = (go: () => void) => {
     if (screen.kind === 'order' && draftCount.current > 0) {
       setConfirm({ title: discardQuestion(draftCount.current), confirmLabel: 'Discard', danger: true,
@@ -190,17 +195,21 @@ export default function PosPage() {
 
   /** Send & pay: the order reached the server → Payment on the bill it landed on. Still only queued
    *  on this iPad, or the lookup failed (offline) → home with QUEUED_NOT_SENT (payOutcome), so
-   *  Payment never opens without the order and the cashier is never left on an empty cart. */
+   *  Payment never opens without the order and the cashier is never left on an empty cart. The
+   *  lookup and the reload after it share one ~8 s deadline: a stalled network counts as not found. */
   const sendAndPay = async (clientOrderId: string, target: OrderTarget, sess: number) => {
+    const wait = deadline(SEND_PAY_WAIT_MS)
     let billId: string | null = null
-    try { billId = await fetchOrderBillId(clientOrderId) } catch { billId = null }
-    if (!onSession(screenRef.current, sess)) return            // the cashier left meanwhile: no screen jumps
     let fresh: OpenBillRow[] | null = null
-    if (billId) {
-      setRefreshKey((k) => k + 1)
-      fresh = await reload()
-      if (!onSession(screenRef.current, sess)) return
-    }
+    try {
+      billId = await wait.race(fetchOrderBillId(clientOrderId).catch(() => null), null)
+      if (!onSession(screenRef.current, sess)) return            // the cashier left meanwhile: no screen jumps
+      if (billId) {
+        setRefreshKey((k) => k + 1)
+        fresh = await wait.race(reload(), null)
+        if (!onSession(screenRef.current, sess)) return
+      }
+    } finally { wait.clear() }
     const out = payOutcome(billId, fresh, target)
     if (out.kind === 'home') { goHome(); setNotice(out.notice); return }
     loadBilling()
@@ -272,13 +281,14 @@ export default function PosPage() {
           onPaid={() => { checkoutIdsByBill.current.delete(screen.bill.id); goHome(); bump() }} />
       )}
       {screen.kind !== 'payment' && (
-        <BottomBar title={title} staffName={staff.name} onMenu={() => { if (!orderSending.current) setMenuOpen(true) }} onStaff={() => setStaffOpen(true)} />
+        <BottomBar title={title} staffName={staff.name} printProblems={printProblems} onMenu={() => { if (!orderSending.current) setMenuOpen(true) }} onStaff={() => setStaffOpen(true)} />
       )}
       {menuOpen && <GridMenu items={items} current={current} onPick={pickMenu} onClose={() => setMenuOpen(false)} />}
       {/* always mounted, hidden when closed: the one print host and shift bar of this iPad live in it */}
       <StaffPanel open={staffOpen} branchId={branchId} branchName={branchName ?? staff.branch ?? 'Branch'} staffName={staff.name}
         refreshKey={refreshKey} liveStatus={rtStatus} canSupervise={can('pos_supervise')} onShiftChanged={shift.reload}
-        onMyPin={() => setPinOpen(true)} onClose={() => setStaffOpen(false)} />
+        onMyPin={() => setPinOpen(true)} onClose={() => setStaffOpen(false)} onPrintProblems={setPrintProblems}
+        onExit={() => { setStaffOpen(false); leave(() => navigate('/profile')) }} />
       {pinOpen && <MyPinDialog onClose={() => setPinOpen(false)} />}
       {reportOpen && <ShiftsDrawer onClose={() => setReportOpen(false)} />}
       {paxFor && (

@@ -1,14 +1,13 @@
 // src/features/pos/shell/StaffPanel.tsx
-import { Link } from 'react-router-dom'
 import { X } from 'lucide-react'
 import PrintHostPanel from '../order/PrintHostPanel'
 import ShiftBar from '../shift/ShiftBar'
 
 /** The right-side staff panel (spec §1): the shift (Open / Close shift, Pay in / out), printers,
- *  My PIN, the live status and Logout. It stays MOUNTED and is only hidden when closed: the print
+ *  My PIN, the live status and Exit POS. It stays MOUNTED and is only hidden when closed: the print
  *  host inside it prints the browser-route tickets of this iPad, and the shift bar keeps a pay in /
  *  pay out whose reply was lost, so neither may unmount when the cashier closes the panel. */
-export default function StaffPanel({ open, branchId, branchName, staffName, refreshKey, liveStatus, canSupervise, onShiftChanged, onMyPin, onClose }: {
+export default function StaffPanel({ open, branchId, branchName, staffName, refreshKey, liveStatus, canSupervise, onShiftChanged, onMyPin, onClose, onExit, onPrintProblems }: {
   open: boolean
   branchId: string
   branchName: string
@@ -19,6 +18,8 @@ export default function StaffPanel({ open, branchId, branchName, staffName, refr
   onShiftChanged: () => void
   onMyPin: () => void
   onClose: () => void
+  onExit: () => void            // Exit POS: PosPage asks about unsent items first, then leaves for /profile (no sign-out)
+  onPrintProblems: (count: number) => void   // the print host's problem count, for the bottom bar's badge
 }) {
   return (
     <div className={open ? 'fixed inset-0 z-30 bg-black/40' : 'hidden'} onClick={onClose}>
@@ -41,14 +42,14 @@ export default function StaffPanel({ open, branchId, branchName, staffName, refr
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-brown-muted">Printers</h3>
           <div className="text-sm [&_button]:min-h-11">
-            <PrintHostPanel branchId={branchId} />
+            <PrintHostPanel branchId={branchId} inline onProblems={onPrintProblems} />
           </div>
         </section>
         <button type="button" onClick={onMyPin} className="min-h-12 rounded-xl border border-border-mid px-4 text-left text-brown-dark">My PIN</button>
         <div className="text-sm text-brown-muted">Live: {liveStatus}</div>
-        <Link to="/profile" className="mt-auto flex min-h-12 items-center justify-center rounded-xl bg-brown-btn font-medium text-white hover:bg-brown-btn-hover">
-          Logout
-        </Link>
+        <button type="button" onClick={onExit} className="mt-auto flex min-h-12 items-center justify-center rounded-xl bg-brown-btn font-medium text-white hover:bg-brown-btn-hover">
+          Exit POS
+        </button>
       </aside>
     </div>
   )
