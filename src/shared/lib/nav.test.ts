@@ -114,3 +114,34 @@ describe('visibleNav 的扁平化结果', () => {
     expect(new Set(flatTo).size).toBe(flatTo.length)
   })
 })
+
+describe('Procurement group', () => {
+  const childIds = (nav: ReturnType<typeof visibleNav>) => {
+    const group = nav.find(e => e.id === 'procurement')
+    return group && isGroup(group) ? group.children.map(c => c.id) : null
+  }
+
+  it('is hidden from users with neither procurement capability', () => {
+    expect(childIds(visibleNav(canWith('view_team', 'manage_hr')))).toBeNull()
+  })
+
+  it('shows supervisors (use_procurement only) orders, receiving and inventory, not master data', () => {
+    expect(childIds(visibleNav(canWith('use_procurement')))).toEqual([
+      'proc-orders', 'proc-receiving', 'proc-inventory',
+    ])
+  })
+
+  it('shows managers (both capabilities) every procurement page', () => {
+    expect(childIds(visibleNav(canWith('manage_procurement', 'use_procurement')))).toEqual([
+      'proc-suppliers', 'proc-items', 'proc-orders', 'proc-receiving', 'proc-inventory',
+    ])
+  })
+
+  it('detail routes highlight their list page', () => {
+    const full = visibleNav(() => true)
+    expect(activeEntry(full, '/procurement/orders/new')).toEqual({ leafId: 'proc-orders', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/receiving/po-1')).toEqual({ leafId: 'proc-receiving', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/items/item-1')).toEqual({ leafId: 'proc-items', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/inventory/item-1')).toEqual({ leafId: 'proc-inventory', groupId: 'procurement' })
+  })
+})
