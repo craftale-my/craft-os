@@ -1,9 +1,17 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { money, qty, formatPoText, outstandingQty, isReceivable } from '../../shared/lib/procurement'
+import {
+  money, qty, formatPoText, outstandingQty, isReceivable, lineOverReceived, canCloseShort, shortfallLines,
+} from '../../shared/lib/procurement'
+import { useCan } from '../../shared/lib/permissions'
 import { PoStatusBadge } from './PurchaseOrders'
+import { OverDeliveredBadge } from './badges'
 import type { PurchaseOrder, PurchaseOrderItem, Receiving } from '../../shared/types'
+
+const DATE_TIME: Intl.DateTimeFormatOptions = {
+  day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+}
 
 function Card({ title, action, children }: {
   title: string
@@ -47,9 +55,103 @@ function PhotoThumb({ url, label }: { url: string; label: string }) {
   )
 }
 
+/** Confirmation dialog for close_po_short: shows what will never arrive and asks why. */
+function CloseShortDialog({ lines, onCancel, onConfirm }: {
+  lines: PurchaseOrderItem[]
+  onCancel: () => void
+  onConfirm: (reason: string) => Promise<string | null>
+}) {
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const shortfall = shortfallLines(lines)
+
+  async function confirm() {
+    if (!reason.trim()) return
+    setBusy(true)
+    setError('')
+    const err = await onConfirm(reason.trim())
+    setBusy(false)
+    if (err) setError(err)
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+      onKeyDown={e => { if (e.key === 'Escape' && !busy) onCancel() }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="close-short-title"
+        className="w-full max-w-md bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4 shadow-xl"
+      >
+        <div>
+          <h2 id="close-short-title" className="text-base font-bold text-brown-dark">Close PO short</h2>
+          <p className="text-xs text-brown-muted mt-1">
+            The order is ended as it stands. Nothing more can be received on it, and stock is not changed.
+          </p>
+        </div>
+
+        <div>
+          <p className="text-xs font-semibold text-brown-medium mb-1">Will never be delivered</p>
+          <ul className="text-sm divide-y divide-[#F0E8DC] border border-[#EDE5D8] rounded-lg">
+            {shortfall.map(l => (
+              <li key={l.id} className="flex justify-between gap-3 px-3 py-2">
+                <span className="text-brown-dark">{l.item?.name ?? 'Unknown item'}</span>
+                <span className="whitespace-nowrap font-semibold text-[#9E4A30]">
+                  {qty(outstandingQty(l))} {l.item?.purchase_unit}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div>
+          <label htmlFor="close-short-reason" className="block text-xs font-semibold text-brown-medium mb-1">
+            Reason *
+          </label>
+          <textarea
+            id="close-short-reason"
+            rows={3}
+            autoFocus
+            required
+            className="w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark resize-none focus:outline-none focus:ring-2 focus:ring-[#C4813A40]"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="e.g. Supplier discontinued the item"
+          />
+        </div>
+
+        {error && (
+          <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-2 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-semibold hover:bg-[#F5EDE0] transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={confirm}
+            disabled={busy || !reason.trim()}
+            className="px-4 py-2 rounded-xl bg-[#6B5B4B] text-white text-sm font-semibold hover:bg-[#54473A] transition-colors disabled:opacity-50"
+          >
+            {busy ? 'Closing…' : 'Close short'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function PurchaseOrderDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { can } = useCan()
 
   const [po, setPo] = useState<PurchaseOrder | null>(null)
   const [lines, setLines] = useState<PurchaseOrderItem[]>([])
@@ -61,13 +163,14 @@ export default function PurchaseOrderDetailPage() {
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
+  const [closeOpen, setCloseOpen] = useState(false)
 
   async function load() {
     if (!id) return
     const [poRes, lineRes, recRes, settingsRes] = await Promise.all([
       supabase
         .from('purchase_orders')
-        .select('*, supplier:suppliers(*), branch:branches(id,name), creator:staff!purchase_orders_created_by_fkey(id,name)')
+        .select('*, supplier:suppliers(*), branch:branches(id,name), creator:staff!purchase_orders_created_by_fkey(id,name), closer:staff!purchase_orders_closed_by_fkey(id,name)')
         .eq('id', id)
         .maybeSingle(),
       supabase.from('purchase_order_items').select('*, item:items(*)').eq('po_id', id),
@@ -122,6 +225,16 @@ export default function PurchaseOrderDetailPage() {
     navigate('/procurement/orders')
   }
 
+  /** Returns the error message on failure (shown in the dialog), null on success. */
+  async function closeShort(reason: string): Promise<string | null> {
+    if (!po) return null
+    const { error: err } = await supabase.rpc('close_po_short', { p_po_id: po.id, p_reason: reason })
+    if (err) return err.message
+    setCloseOpen(false)
+    load()
+    return null
+  }
+
   async function copyText(text: string) {
     try {
       await navigator.clipboard.writeText(text)
@@ -160,7 +273,10 @@ export default function PurchaseOrderDetailPage() {
   )
 
   const lineById = new Map(lines.map(l => [l.id, l]))
-  const isReceived = po.status === 'received' || po.status === 'partially_received'
+  const isClosedShort = po.status === 'closed_short'
+  const isReceived = po.status === 'received' || po.status === 'partially_received' || isClosedShort
+  // Supervisors (no manage_procurement) never see Close short.
+  const showCloseShort = canCloseShort(po.status, can('manage_procurement'))
 
   return (
     <div className="min-h-screen bg-cream-light">
@@ -212,6 +328,14 @@ export default function PurchaseOrderDetailPage() {
               {po.status === 'partially_received' ? 'Receive remaining' : 'Receive Goods'}
             </Link>
           )}
+          {showCloseShort && (
+            <button
+              onClick={() => setCloseOpen(true)}
+              className="px-4 py-2 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-semibold hover:bg-[#F5EDE0] transition-colors"
+            >
+              Close short
+            </button>
+          )}
           {po.status === 'sent' && (
             <>
               <button
@@ -225,6 +349,18 @@ export default function PurchaseOrderDetailPage() {
           )}
         </div>
 
+        {isClosedShort && (
+          <section className="rounded-xl border border-[#6B5B4B40] bg-[#6B5B4B10] p-5 space-y-1">
+            <h2 className="text-sm font-bold text-[#6B5B4B]">Closed short</h2>
+            {po.close_reason && <p className="text-sm text-brown-dark">{po.close_reason}</p>}
+            <p className="text-xs text-brown-muted">
+              {'Closed by '}
+              <span className="font-medium text-brown-dark">{po.closer?.name ?? '—'}</span>
+              {po.closed_at && ` · ${new Date(po.closed_at).toLocaleString('en-GB', DATE_TIME)}`}
+            </p>
+          </section>
+        )}
+
         <Card title="Order Lines">
           <div className="overflow-x-auto -mx-1">
             <table className="w-full text-sm min-w-[520px]">
@@ -235,7 +371,9 @@ export default function PurchaseOrderDetailPage() {
                   {isReceived && (
                     <>
                       <th className="px-1 py-2 font-semibold text-right">Received so far</th>
-                      <th className="px-1 py-2 font-semibold text-right">Outstanding</th>
+                      <th className="px-1 py-2 font-semibold text-right">
+                        {isClosedShort ? 'Not delivered' : 'Outstanding'}
+                      </th>
                     </>
                   )}
                   <th className="px-1 py-2 font-semibold text-right">Unit Price</th>
@@ -246,6 +384,7 @@ export default function PurchaseOrderDetailPage() {
                 {lines.map(l => {
                   // received_quantity is cumulative across every delivery.
                   const outstanding = outstandingQty(l)
+                  const over = lineOverReceived(l)
                   return (
                     <tr key={l.id}>
                       <td className="px-1 py-2.5">
@@ -261,8 +400,12 @@ export default function PurchaseOrderDetailPage() {
                             {qty(l.received_quantity)} {l.item?.purchase_unit}
                           </td>
                           <td className="px-1 py-2.5 text-right whitespace-nowrap font-semibold">
-                            {outstanding > 0
-                              ? <span className="text-[#9E4A30]">{qty(outstanding)} {l.item?.purchase_unit}</span>
+                            {over > 0
+                              ? <span className="text-[#B46309]">+{qty(over)} over</span>
+                              : outstanding > 0
+                              ? <span className={isClosedShort ? 'text-[#6B5B4B]' : 'text-[#9E4A30]'}>
+                                  {qty(outstanding)} {l.item?.purchase_unit}
+                                </span>
                               : <span className="text-[#3D7A50]">✓ 0</span>}
                           </td>
                         </>
@@ -306,11 +449,10 @@ export default function PurchaseOrderDetailPage() {
                         Shortage
                       </span>
                     )}
+                    {rec.has_over_delivery && <OverDeliveredBadge />}
                   </div>
                   <p className="text-brown-muted">
-                    {new Date(rec.received_at).toLocaleString('en-GB', {
-                      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-                    })}
+                    {new Date(rec.received_at).toLocaleString('en-GB', DATE_TIME)}
                     {' · Received by '}
                     <span className="font-medium text-brown-dark">{rec.receiver?.name ?? '—'}</span>
                   </p>
@@ -341,6 +483,11 @@ export default function PurchaseOrderDetailPage() {
                                   {' · '}{money(ri.unit_price)}
                                 </span>
                               )}
+                              {Number(ri.over_quantity) > 0 && (
+                                <span className="text-[#B46309] font-semibold">
+                                  {' · '}+{qty(Number(ri.over_quantity))} extra
+                                </span>
+                              )}
                             </span>
                           </li>
                         )
@@ -358,7 +505,7 @@ export default function PurchaseOrderDetailPage() {
           </Card>
         )}
 
-        {po.status !== 'received' && (
+        {po.status !== 'received' && !isClosedShort && (
           <Card
             title="Send to Supplier"
             action={
@@ -381,6 +528,14 @@ export default function PurchaseOrderDetailPage() {
           </Card>
         )}
       </div>
+
+      {closeOpen && (
+        <CloseShortDialog
+          lines={lines}
+          onCancel={() => setCloseOpen(false)}
+          onConfirm={closeShort}
+        />
+      )}
     </div>
   )
 }

@@ -2,23 +2,32 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { money, isReceivable } from '../../shared/lib/procurement'
-import type { PurchaseOrder } from '../../shared/types'
+import { PoStatusBadge } from './PurchaseOrders'
+import { OverDeliveredBadge } from './badges'
+import type { PurchaseOrder, Receiving } from '../../shared/types'
+
+type ListedPo = PurchaseOrder & { receivings?: Pick<Receiving, 'has_over_delivery'>[] | null }
+
+function hasOverDelivery(o: ListedPo): boolean {
+  return (o.receivings ?? []).some(r => r.has_over_delivery)
+}
 
 export default function ReceivingListPage() {
-  const [pending, setPending] = useState<PurchaseOrder[]>([])
-  const [recent, setRecent] = useState<PurchaseOrder[]>([])
+  const [pending, setPending] = useState<ListedPo[]>([])
+  const [recent, setRecent] = useState<ListedPo[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       const { data } = await supabase
         .from('purchase_orders')
-        .select('*, supplier:suppliers(id,name), branch:branches(id,name)')
-        .in('status', ['sent', 'received', 'partially_received'])
+        .select('*, supplier:suppliers(id,name), branch:branches(id,name), receivings(has_over_delivery)')
+        .in('status', ['sent', 'received', 'partially_received', 'closed_short'])
         .order('created_at', { ascending: false })
-      const all = (data as PurchaseOrder[]) ?? []
+      const all = (data as ListedPo[]) ?? []
       setPending(all.filter(o => isReceivable(o.status)))
-      setRecent(all.filter(o => o.status === 'received').slice(0, 10))
+      // Finished orders: fully received, or closed short (never receivable again).
+      setRecent(all.filter(o => o.status === 'received' || o.status === 'closed_short').slice(0, 10))
       setLoading(false)
     }
     load()
@@ -61,6 +70,7 @@ export default function ReceivingListPage() {
                                 Partially received
                               </span>
                             )}
+                            {hasOverDelivery(o) && <OverDeliveredBadge />}
                           </p>
                           <p className="text-xs text-brown-faint">
                             {o.supplier?.name ?? '—'} · {o.branch?.name ?? '—'} · {money(o.total_amount)}
@@ -86,22 +96,27 @@ export default function ReceivingListPage() {
 
             {recent.length > 0 && (
               <section>
-                <h2 className="text-sm font-bold text-brown-dark mb-3">Recently Received</h2>
+                <h2 className="text-sm font-bold text-brown-dark mb-3">Recently Completed</h2>
                 <div className="bg-white rounded-xl border border-[#E8DDD0] divide-y divide-[#F0E8DC]">
                   {recent.map(o => (
                     <div key={o.id} className="flex items-center gap-3 px-4 py-3 flex-wrap">
                       <div className="flex-1 min-w-[180px]">
-                        <Link
-                          to={`/procurement/orders/${o.id}`}
-                          className="text-sm font-medium text-brown-dark hover:text-[#C4813A] transition-colors"
-                        >
-                          {o.po_number}
-                        </Link>
+                        <p className="flex items-center gap-2 flex-wrap">
+                          <Link
+                            to={`/procurement/orders/${o.id}`}
+                            className="text-sm font-medium text-brown-dark hover:text-[#C4813A] transition-colors"
+                          >
+                            {o.po_number}
+                          </Link>
+                          {hasOverDelivery(o) && <OverDeliveredBadge />}
+                        </p>
                         <p className="text-xs text-brown-faint">
                           {o.supplier?.name ?? '—'} · {o.branch?.name ?? '—'}
                         </p>
                       </div>
-                      <span className="text-xs font-semibold text-[#3D7A50]">✓ Complete</span>
+                      {o.status === 'closed_short'
+                        ? <PoStatusBadge status={o.status} />
+                        : <span className="text-xs font-semibold text-[#3D7A50]">✓ Complete</span>}
                     </div>
                   ))}
                 </div>

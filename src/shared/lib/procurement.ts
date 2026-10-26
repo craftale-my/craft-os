@@ -53,17 +53,52 @@ export function deriveCumulativePoStatus(
   return lines.every(l => outstandingQty(l) === 0) ? 'received' : 'partially_received'
 }
 
-/** Statuses submit_receiving accepts. */
+/**
+ * How much of a delivery is beyond what was outstanding, in purchase units.
+ * `3 outstanding, 5 arrived` ⇒ overQty(3, 5) = 2. Never negative.
+ */
+export function overQty(outstanding: number, actual: number): number {
+  return Math.max(actual - outstanding, 0)
+}
+
+/** How far a PO line has been received beyond what was ordered. Never negative. */
+export function lineOverReceived(line: CumulativeLine): number {
+  return Math.max(line.received_quantity - line.quantity_ordered, 0)
+}
+
+/**
+ * Whether a delivery needs a note: submit_receiving requires p_notes when any
+ * line brings in more than is outstanding.
+ */
+export function deliveryNeedsNote(lines: { outstanding: number; actual: number }[]): boolean {
+  return lines.some(l => overQty(l.outstanding, l.actual) > 0)
+}
+
+/** Statuses submit_receiving accepts. A closed-short PO can never be received again. */
 export function isReceivable(status: PoStatus): boolean {
   return status === 'sent' || status === 'partially_received'
 }
 
 /**
+ * Whether the viewer may close a PO short: only a partially received PO, and
+ * only for users with manage_procurement (mirrors the close_po_short RPC).
+ */
+export function canCloseShort(status: PoStatus, canManage: boolean): boolean {
+  return status === 'partially_received' && canManage
+}
+
+/** Lines with something still outstanding — on a closed-short PO, what never arrived. */
+export function shortfallLines<T extends CumulativeLine>(lines: T[]): T[] {
+  return lines.filter(l => outstandingQty(l) > 0)
+}
+
+/**
  * Applies one delivery to the PO lines, returning new lines with cumulative
  * `received_quantity`. Mirrors the submit_receiving RPC's checks so the UI can
- * validate before submitting: throws on an unknown or repeated line, a
- * negative quantity, or more than is outstanding. Lines left out of
- * `deliveries` are unchanged.
+ * validate before submitting: throws on an unknown or repeated line or a
+ * negative quantity. Over-delivery is allowed — a line may end up with
+ * `received_quantity` above `quantity_ordered` (see {@link overQty}). Lines
+ * left out of `deliveries` are unchanged.
  */
 export function applyDelivery<T extends CumulativeLine & { id: string }>(
   lines: T[],
@@ -78,12 +113,6 @@ export function applyDelivery<T extends CumulativeLine & { id: string }>(
     if (added.has(d.po_item_id)) throw new Error(`PO line ${d.po_item_id} appears more than once`)
     if (!Number.isFinite(d.actual_quantity) || d.actual_quantity < 0) {
       throw new Error('Received quantity must be zero or more')
-    }
-    const outstanding = outstandingQty(line)
-    if (d.actual_quantity > outstanding) {
-      throw new Error(
-        `Cannot receive ${qty(d.actual_quantity)} on line ${d.po_item_id} — only ${qty(outstanding)} outstanding`,
-      )
     }
     added.set(d.po_item_id, d.actual_quantity)
   }

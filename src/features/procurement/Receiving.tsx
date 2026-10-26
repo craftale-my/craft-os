@@ -4,6 +4,7 @@ import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import {
   money, qty, calcShortage, priceDelta, toBaseUnits, outstandingQty, applyDelivery, isReceivable,
+  overQty, deliveryNeedsNote,
 } from '../../shared/lib/procurement'
 import type { PurchaseOrder, PurchaseOrderItem, ReceivingLineInput } from '../../shared/types'
 
@@ -33,11 +34,18 @@ function priceFor(line: PurchaseOrderItem, s: LineState): number {
 function lineQtyError(line: PurchaseOrderItem, s: LineState): string | null {
   const actual = actualFor(line, s)
   if (!Number.isFinite(actual) || actual < 0) return 'Enter zero or more.'
-  const outstanding = outstandingQty(line)
-  if (actual > outstanding) {
-    return `Only ${qty(outstanding)} ${line.item?.purchase_unit ?? ''} outstanding — you can't receive more than that.`
-  }
   return null
+}
+
+/** Non-blocking notice when a line brings in more than is outstanding, else null. */
+function lineOverWarning(line: PurchaseOrderItem, s: LineState): string | null {
+  const actual = actualFor(line, s)
+  if (!Number.isFinite(actual)) return null
+  const outstanding = outstandingQty(line)
+  const over = overQty(outstanding, actual)
+  if (over <= 0) return null
+  const unit = line.item?.purchase_unit ?? ''
+  return `Over-delivered: ${qty(over)} ${unit} beyond the ${qty(outstanding)} outstanding. The actual quantity will be stocked in.`
 }
 
 function LineRow({ line, state, onChange }: {
@@ -49,6 +57,7 @@ function LineRow({ line, state, onChange }: {
   const outstanding = outstandingQty(line)
   const actual = actualFor(line, state)
   const qtyError = lineQtyError(line, state)
+  const overWarning = qtyError ? null : lineOverWarning(line, state)
   const shortage = qtyError ? 0 : calcShortage(outstanding, actual)
   const price = priceFor(line, state)
   const delta = priceDelta(line.unit_price, price)
@@ -104,8 +113,8 @@ function LineRow({ line, state, onChange }: {
           <label className={labelCls}>Actual received</label>
           <div className="flex items-center gap-2">
             <input
-              type="number" step="any" min="0" max={outstanding}
-              className={`${inputCls} w-32 ${qtyError ? 'border-[#9E4A30]' : ''}`}
+              type="number" step="any" min="0"
+              className={`${inputCls} w-32 ${qtyError ? 'border-[#9E4A30]' : overWarning ? 'border-[#B46309]' : ''}`}
               value={state.actual}
               onChange={e => onChange({ actual: e.target.value })}
               placeholder="0"
@@ -115,6 +124,10 @@ function LineRow({ line, state, onChange }: {
           </div>
           {qtyError ? (
             <p className="text-sm font-semibold text-[#9E4A30] mt-2.5">{qtyError}</p>
+          ) : overWarning ? (
+            <p className="text-sm font-semibold text-[#B46309] bg-[#B4630912] border border-[#B4630940] rounded-lg px-3 py-2 mt-2.5">
+              {overWarning}
+            </p>
           ) : shortage > 0 && (
             <p className="text-sm font-bold text-[#9E4A30] mt-2.5">
               Shortage: {qty(shortage)} {unit} — stays outstanding for a later delivery.
@@ -197,6 +210,8 @@ export default function ReceivingPage() {
         setProblem(
           order.status === 'draft'
             ? 'This order is still a draft — mark it as sent before receiving.'
+            : order.status === 'closed_short'
+            ? 'This order was closed short — nothing more can be received on it.'
             : `This order has already been closed (${order.status.replace('_', ' ')}).`,
         )
         setLoading(false)
@@ -247,6 +262,11 @@ export default function ReceivingPage() {
   try { applyDelivery(lines, payload) } catch { qtyInvalid = true }
   const priceInvalid = payload.some(l => !(l.unit_price >= 0))
   const nothingReceived = !qtyInvalid && !payload.some(l => l.actual_quantity > 0)
+  // submit_receiving requires a note when any line is over-delivered.
+  const needsNote = !qtyInvalid && deliveryNeedsNote(
+    lines.map((l, i) => ({ outstanding: outstandingQty(l), actual: payload[i].actual_quantity })),
+  )
+  const noteMissing = needsNote && notes.trim() === ''
 
   async function submit() {
     if (!po) return
@@ -254,6 +274,7 @@ export default function ReceivingPage() {
     if (qtyInvalid) return setError('Fix the highlighted quantities first.')
     if (priceInvalid) return setError('Unit prices cannot be negative.')
     if (nothingReceived) return setError('Enter a quantity on at least one line.')
+    if (noteMissing) return setError('Add a note explaining the over-delivery.')
 
     setSubmitting(true)
     setError('')
@@ -310,8 +331,9 @@ export default function ReceivingPage() {
     return {
       value: acc.value + actual * priceFor(l, s),
       shortages: acc.shortages + (calcShortage(outstandingQty(l), actual) > 0 ? 1 : 0),
+      overs: acc.overs + (overQty(outstandingQty(l), actual) > 0 ? 1 : 0),
     }
-  }, { value: 0, shortages: 0 })
+  }, { value: 0, shortages: 0, overs: 0 })
 
   return (
     <div className="min-h-screen bg-cream-light">
@@ -371,14 +393,24 @@ export default function ReceivingPage() {
           </div>
 
           <div>
-            <label className={labelCls}>Notes</label>
+            <label htmlFor="receiving-notes" className={labelCls}>Notes{needsNote ? ' *' : ''}</label>
             <textarea
+              id="receiving-notes"
               rows={2}
-              className={`${inputCls} resize-none`}
+              className={`${inputCls} resize-none ${noteMissing ? 'border-[#B46309]' : ''}`}
               value={notes}
               onChange={e => setNotes(e.target.value)}
-              placeholder="e.g. 2 packs damaged, driver noted it"
+              placeholder={needsNote
+                ? 'e.g. Supplier sent 2 extra cartons, kept them at the invoiced price'
+                : 'e.g. 2 packs damaged, driver noted it'}
+              required={needsNote}
+              aria-invalid={noteMissing ? true : undefined}
             />
+            {needsNote && (
+              <p className={`text-xs mt-1 font-semibold ${noteMissing ? 'text-[#B46309]' : 'text-brown-faint'}`}>
+                Note required — explain the over-delivery
+              </p>
+            )}
           </div>
 
           <p className="text-xs text-brown-faint border-t border-[#EDE5D8] pt-3">
@@ -397,6 +429,12 @@ export default function ReceivingPage() {
                   partially received for the rest.
                 </p>
               )}
+              {!qtyInvalid && totals.overs > 0 && (
+                <p className="text-xs text-[#B46309] font-semibold mt-0.5">
+                  {totals.overs} line{totals.overs > 1 ? 's' : ''} over-delivered — the extra is stocked in.
+                  {noteMissing && ' Add a note before submitting.'}
+                </p>
+              )}
               {qtyInvalid && (
                 <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">
                   Fix the highlighted quantities before submitting.
@@ -410,7 +448,7 @@ export default function ReceivingPage() {
             </div>
             <button
               onClick={submit}
-              disabled={submitting || !invoiceFile || qtyInvalid || priceInvalid || nothingReceived}
+              disabled={submitting || !invoiceFile || qtyInvalid || priceInvalid || nothingReceived || noteMissing}
               className="px-5 py-2.5 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors disabled:opacity-50"
             >
               {submitting ? 'Submitting…' : 'Confirm Receipt'}

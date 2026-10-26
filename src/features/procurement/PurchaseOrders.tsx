@@ -14,6 +14,7 @@ const FILTERS: { key: PoStatus | 'all'; label: string }[] = [
   { key: 'sent',               label: 'Sent' },
   { key: 'partially_received', label: 'Partial' },
   { key: 'received',           label: 'Received' },
+  { key: 'closed_short',       label: 'Closed Short' },
   { key: 'cancelled',          label: 'Cancelled' },
 ]
 

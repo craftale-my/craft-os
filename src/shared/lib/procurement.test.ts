@@ -5,8 +5,9 @@ import {
   stockValue, buildStockRows,
   outstandingQty, deriveCumulativePoStatus, applyDelivery, isReceivable,
   unitCostPerBase, ledgerValue, movingAverageCost, formatUnitCost,
+  overQty, lineOverReceived, deliveryNeedsNote, canCloseShort, shortfallLines,
 } from './procurement'
-import type { InventoryBalance, InventoryValuation, Item } from '../types'
+import type { InventoryBalance, InventoryValuation, Item, PoStatus } from '../types'
 
 function makeItem(overrides: Partial<Item> & Pick<Item, 'id' | 'name'>): Item {
   return {
@@ -140,9 +141,25 @@ describe('applyDelivery', () => {
     expect(lines[0].received_quantity).toBe(0)
   })
 
-  it('throws when receiving more than is outstanding', () => {
+  it('accepts more than is outstanding — received can exceed ordered and the PO is received', () => {
     const partly = [{ id: 'a', quantity_ordered: 10, received_quantity: 7 }]
-    expect(() => applyDelivery(partly, [{ po_item_id: 'a', actual_quantity: 4 }])).toThrow(/only 3 outstanding/)
+    const next = applyDelivery(partly, [{ po_item_id: 'a', actual_quantity: 4 }])
+    expect(next[0].received_quantity).toBe(11)
+    expect(outstandingQty(next[0])).toBe(0)
+    expect(lineOverReceived(next[0])).toBe(1)
+    expect(deriveCumulativePoStatus(next)).toBe('received')
+  })
+
+  it('handles a mixed delivery — one line short, one over', () => {
+    const next = applyDelivery(lines, [
+      { po_item_id: 'a', actual_quantity: 8 },
+      { po_item_id: 'b', actual_quantity: 6 },
+    ])
+    expect(next.map(l => l.received_quantity)).toEqual([8, 6])
+    expect(next.map(outstandingQty)).toEqual([2, 0])
+    expect(next.map(lineOverReceived)).toEqual([0, 2])
+    expect(deriveCumulativePoStatus(next)).toBe('partially_received')
+    expect(shortfallLines(next).map(l => l.id)).toEqual(['a'])
   })
 
   it('throws on a negative quantity', () => {
@@ -171,6 +188,88 @@ describe('isReceivable', () => {
     expect(isReceivable('draft')).toBe(false)
     expect(isReceivable('received')).toBe(false)
     expect(isReceivable('cancelled')).toBe(false)
+  })
+
+  it('rejects a closed-short PO', () => {
+    expect(isReceivable('closed_short')).toBe(false)
+  })
+})
+
+describe('overQty', () => {
+  it('is the extra beyond what was outstanding', () => {
+    expect(overQty(3, 5)).toBe(2)
+  })
+
+  it('is 0 on an exact or short delivery', () => {
+    expect(overQty(3, 3)).toBe(0)
+    expect(overQty(3, 1)).toBe(0)
+  })
+
+  it('counts everything as extra when nothing was outstanding', () => {
+    expect(overQty(0, 2)).toBe(2)
+  })
+})
+
+describe('lineOverReceived', () => {
+  it('is received beyond ordered', () => {
+    expect(lineOverReceived({ quantity_ordered: 10, received_quantity: 12 })).toBe(2)
+  })
+
+  it('is 0 when not over-received', () => {
+    expect(lineOverReceived({ quantity_ordered: 10, received_quantity: 10 })).toBe(0)
+    expect(lineOverReceived({ quantity_ordered: 10, received_quantity: 4 })).toBe(0)
+  })
+})
+
+describe('deliveryNeedsNote', () => {
+  it('is true when any line exceeds what is outstanding', () => {
+    expect(deliveryNeedsNote([
+      { outstanding: 5, actual: 5 },
+      { outstanding: 3, actual: 4 },
+    ])).toBe(true)
+  })
+
+  it('is false for exact and short deliveries', () => {
+    expect(deliveryNeedsNote([
+      { outstanding: 5, actual: 5 },
+      { outstanding: 3, actual: 1 },
+    ])).toBe(false)
+  })
+
+  it('is false for an empty delivery', () => {
+    expect(deliveryNeedsNote([])).toBe(false)
+  })
+})
+
+describe('canCloseShort', () => {
+  const statuses: PoStatus[] = ['draft', 'sent', 'partially_received', 'received', 'cancelled', 'closed_short']
+
+  it('allows only a partially received PO, and only for managers', () => {
+    for (const s of statuses) {
+      expect(canCloseShort(s, true)).toBe(s === 'partially_received')
+    }
+  })
+
+  it('never allows users without manage_procurement (e.g. supervisors)', () => {
+    for (const s of statuses) {
+      expect(canCloseShort(s, false)).toBe(false)
+    }
+  })
+})
+
+describe('shortfallLines', () => {
+  it('keeps only lines with something still outstanding', () => {
+    const lines = [
+      { id: 'a', quantity_ordered: 10, received_quantity: 6 },
+      { id: 'b', quantity_ordered: 4, received_quantity: 4 },
+      { id: 'c', quantity_ordered: 2, received_quantity: 3 },
+      { id: 'd', quantity_ordered: 5, received_quantity: 0 },
+    ]
+    expect(shortfallLines(lines).map(l => l.id)).toEqual(['a', 'd'])
+  })
+
+  it('is empty when everything arrived', () => {
+    expect(shortfallLines([{ quantity_ordered: 1, received_quantity: 1 }])).toEqual([])
   })
 })
 

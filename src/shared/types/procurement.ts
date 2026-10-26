@@ -83,7 +83,8 @@ export interface ItemPriceHistory {
 
 // ─── Purchase orders ──────────────────────────────────────────────────────────
 
-export type PoStatus = 'draft' | 'sent' | 'partially_received' | 'received' | 'cancelled'
+/** `closed_short`: a partially received PO ended early via close_po_short. */
+export type PoStatus = 'draft' | 'sent' | 'partially_received' | 'received' | 'cancelled' | 'closed_short'
 
 export const PO_STATUS_LABELS: Record<PoStatus, string> = {
   draft:              'Draft',
@@ -91,6 +92,7 @@ export const PO_STATUS_LABELS: Record<PoStatus, string> = {
   partially_received: 'Partially Received',
   received:           'Received',
   cancelled:          'Cancelled',
+  closed_short:       'Closed Short',
 }
 
 export const PO_STATUS_COLORS: Record<PoStatus, string> = {
@@ -99,6 +101,7 @@ export const PO_STATUS_COLORS: Record<PoStatus, string> = {
   partially_received: '#C4813A',
   received:           '#3D7A50',
   cancelled:          '#9E4A30',
+  closed_short:       '#6B5B4B',
 }
 
 export interface PurchaseOrder {
@@ -112,9 +115,14 @@ export interface PurchaseOrder {
   notes: string | null
   created_at: string
   sent_at: string | null
+  /** Set by close_po_short: who ended the PO short, when, and why. */
+  closed_by: string | null
+  closed_at: string | null
+  close_reason: string | null
   supplier?: Supplier | null
   branch?: { id: string; name: string } | null
   creator?: { id: string; name: string } | null
+  closer?: { id: string; name: string } | null
   items?: PurchaseOrderItem[]
 }
 
@@ -143,7 +151,10 @@ export interface Receiving {
   invoice_photo_url: string
   goods_photo_url: string | null
   notes: string | null
+  /** Something is still short after this delivery. */
   has_discrepancy: boolean
+  /** At least one line brought in more than was outstanding. */
+  has_over_delivery: boolean
   receiver?: { id: string; name: string } | null
   items?: ReceivingItem[]
 }
@@ -159,6 +170,8 @@ export interface ReceivingItem {
   unit_price: number
   /** Pack size the delivery was converted with (the PO line's stamped rate). */
   conversion_rate_used: number | null
+  /** Purchase units beyond what was outstanding when this delivery arrived (>= 0). */
+  over_quantity: number
 }
 
 /** One line of the submit_receiving RPC payload. */
