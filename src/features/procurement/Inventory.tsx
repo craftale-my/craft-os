@@ -10,6 +10,7 @@ import { ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS } from '../../shared/types'
 
 const inputCls =
   'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+const selectCls = inputCls.replace('w-full ', 'w-auto ')
 
 function pillCls(active: boolean) {
   return `px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap border transition-colors ${
@@ -91,7 +92,7 @@ export default function InventoryPage() {
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             <select
-              className={`${inputCls} w-auto`}
+              className={selectCls}
               value={branchId}
               onChange={e => setBranchFilter(e.target.value)}
               disabled={!allBranches}

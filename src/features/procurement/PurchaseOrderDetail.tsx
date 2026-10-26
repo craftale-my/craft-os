@@ -358,26 +358,28 @@ export default function PurchaseOrderDetailPage() {
           </Card>
         )}
 
-        <Card
-          title="Send to Supplier"
-          action={
-            <button
-              onClick={() => copyText(poText)}
-              className="px-3 py-1.5 text-xs rounded-lg bg-[#25D366] text-white font-semibold hover:bg-[#1FAE53] transition-colors"
-            >
-              {copied ? '✓ Copied' : 'Copy for WhatsApp'}
-            </button>
-          }
-        >
-          <pre className="text-xs text-brown-dark bg-[#FBF6EE] border border-[#EDE5D8] rounded-lg p-4 whitespace-pre-wrap font-body overflow-x-auto">
-            {poText}
-          </pre>
-          {po.supplier?.whatsapp && (
-            <p className="text-xs text-brown-faint mt-2">
-              Supplier WhatsApp: <span className="font-medium text-brown-muted">{po.supplier.whatsapp}</span>
-            </p>
-          )}
-        </Card>
+        {po.status !== 'received' && (
+          <Card
+            title="Send to Supplier"
+            action={
+              <button
+                onClick={() => copyText(poText)}
+                className="px-3 py-1.5 text-xs rounded-lg bg-[#25D366] text-white font-semibold hover:bg-[#1FAE53] transition-colors"
+              >
+                {copied ? '✓ Copied' : 'Copy for WhatsApp'}
+              </button>
+            }
+          >
+            <pre className="text-xs text-brown-dark bg-[#FBF6EE] border border-[#EDE5D8] rounded-lg p-4 whitespace-pre-wrap font-body overflow-x-auto">
+              {poText}
+            </pre>
+            {po.supplier?.whatsapp && (
+              <p className="text-xs text-brown-faint mt-2">
+                Supplier WhatsApp: <span className="font-medium text-brown-muted">{po.supplier.whatsapp}</span>
+              </p>
+            )}
+          </Card>
+        )}
       </div>
     </div>
   )

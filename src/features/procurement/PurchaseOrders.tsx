@@ -64,7 +64,7 @@ export default function PurchaseOrdersPage() {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold text-brown-dark">Purchase Orders</h1>
-            <p className="text-sm text-brown-faint mt-0.5">采购单 · Orders raised with suppliers.</p>
+            <p className="text-sm text-brown-faint mt-0.5">Orders raised with suppliers.</p>
           </div>
           <Link
             to="/procurement/orders/new"
