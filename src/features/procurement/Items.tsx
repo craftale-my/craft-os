@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useCan } from '../../shared/lib/permissions'
 import { money, qty, isBelowAlert } from '../../shared/lib/procurement'
-import type { Item, Supplier, ItemCategory, InventoryBalance } from '../../shared/types'
+import type { Item, Supplier, ItemCategory, ItemDepartment, InventoryBalance } from '../../shared/types'
 import {
-  ITEM_CATEGORIES, ITEM_CATEGORY_LABELS,
+  ITEM_CATEGORIES, ITEM_CATEGORY_LABELS, ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS,
   PURCHASE_UNIT_SUGGESTIONS, BASE_UNIT_SUGGESTIONS,
 } from '../../shared/types'
 
@@ -44,6 +44,7 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
     name: item?.name ?? '',
     name_zh: item?.name_zh ?? '',
     category: (item?.category ?? 'raw') as ItemCategory,
+    department: (item?.department ?? '') as ItemDepartment | '',
     supplier_id: item?.supplier_id ?? '',
     purchase_unit: item?.purchase_unit ?? '',
     base_unit: item?.base_unit ?? '',
@@ -58,12 +59,12 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
     setForm(f => ({ ...f, [k]: e.target.value }))
 
   const rate = Number(form.conversion_rate)
-  const pu = form.purchase_unit.trim() || '采购单位'
-  const bu = form.base_unit.trim() || '基础单位'
+  const pu = form.purchase_unit.trim() || 'purchase unit'
+  const bu = form.base_unit.trim() || 'base unit'
 
   async function handleSave() {
     if (!form.name.trim()) return setError('Item name is required.')
-    if (!form.purchase_unit.trim()) return setError('Purchase unit is required (e.g. 包).')
+    if (!form.purchase_unit.trim()) return setError('Purchase unit is required (e.g. bag).')
     if (!form.base_unit.trim()) return setError('Base unit is required (e.g. g).')
     if (!form.conversion_rate || !(rate > 0)) return setError('Conversion rate must be greater than 0.')
 
@@ -73,6 +74,7 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
       name: form.name.trim(),
       name_zh: form.name_zh.trim() || null,
       category: form.category,
+      department: form.department || null,
       supplier_id: form.supplier_id || null,
       purchase_unit: form.purchase_unit.trim(),
       base_unit: form.base_unit.trim(),
@@ -105,8 +107,8 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
               <input className={inputCls} value={form.name} onChange={set('name')} placeholder="Coffee Beans" />
             </div>
             <div>
-              <label className={labelCls}>中文名</label>
-              <input className={inputCls} value={form.name_zh} onChange={set('name_zh')} placeholder="咖啡豆" />
+              <label className={labelCls}>Chinese Name</label>
+              <input className={inputCls} value={form.name_zh} onChange={set('name_zh')} />
             </div>
           </div>
 
@@ -128,11 +130,21 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
             </div>
           </div>
 
+          <div>
+            <label className={labelCls}>Department</label>
+            <select className={inputCls} value={form.department} onChange={set('department')}>
+              <option value="">Unassigned</option>
+              {ITEM_DEPARTMENTS.map(d => (
+                <option key={d} value={d}>{ITEM_DEPARTMENT_LABELS[d]}</option>
+              ))}
+            </select>
+          </div>
+
           {/* Unit conversion — the heart of the form. */}
           <div className="rounded-xl border border-[#D4C5B0] bg-[#FBF6EE] p-4">
             <label className={labelCls}>Unit Conversion *</label>
             <p className="text-xs text-brown-faint mb-3">
-              采购按「{pu}」下单,库存按「{bu}」记账。
+              Ordered in {pu}, stock tracked in {bu}.
             </p>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-semibold text-brown-dark">1</span>
@@ -141,7 +153,7 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
                 list="purchase-units"
                 value={form.purchase_unit}
                 onChange={set('purchase_unit')}
-                placeholder="包"
+                placeholder="bag"
               />
               <datalist id="purchase-units">
                 {PURCHASE_UNIT_SUGGESTIONS.map(u => <option key={u} value={u} />)}
@@ -172,7 +184,7 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
             {rate > 0 && form.purchase_unit && form.base_unit && (
               <p className="text-xs text-[#3D7A50] mt-2.5 font-medium">
                 ✓ 1 {form.purchase_unit} = {qty(rate)} {form.base_unit}
-                {' · '}下单 10 {form.purchase_unit} 会入库 {qty(rate * 10)} {form.base_unit}
+                {' · '}ordering 10 {form.purchase_unit} adds {qty(rate * 10)} {form.base_unit} to stock
               </p>
             )}
           </div>
@@ -187,7 +199,7 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
                 onChange={set('latest_price')}
                 placeholder="45.00"
               />
-              <p className="text-xs text-brown-faint mt-1">收货时会按 invoice 自动更新。</p>
+              <p className="text-xs text-brown-faint mt-1">Updated automatically from the invoice when receiving.</p>
             </div>
             <div>
               <label className={labelCls}>Low Stock Alert ({bu})</label>
@@ -198,7 +210,7 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
                 onChange={set('min_stock_alert')}
                 placeholder="1000"
               />
-              <p className="text-xs text-brown-faint mt-1">0 = 不提醒。</p>
+              <p className="text-xs text-brown-faint mt-1">0 = no alert.</p>
             </div>
           </div>
 
@@ -277,7 +289,7 @@ export default function ItemsPage() {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold text-brown-dark">Items</h1>
-            <p className="text-sm text-brown-faint mt-0.5">物料管理 · What you buy and stock.</p>
+            <p className="text-sm text-brown-faint mt-0.5">What you buy and stock.</p>
           </div>
           {can('manage_procurement') && (
             <button
@@ -328,11 +340,12 @@ export default function ItemsPage() {
           </div>
         ) : (
           <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-x-auto">
-            <table className="w-full text-sm min-w-[760px]">
+            <table className="w-full text-sm min-w-[860px]">
               <thead>
                 <tr className="text-left text-xs text-brown-faint border-b border-[#EDE5D8]">
                   <th className="px-4 py-3 font-semibold">Item</th>
                   <th className="px-4 py-3 font-semibold">Category</th>
+                  <th className="px-4 py-3 font-semibold">Department</th>
                   <th className="px-4 py-3 font-semibold">Supplier</th>
                   <th className="px-4 py-3 font-semibold">Conversion</th>
                   <th className="px-4 py-3 font-semibold text-right">Latest Price</th>
@@ -353,6 +366,9 @@ export default function ItemsPage() {
                         {i.name_zh && <p className="text-xs text-brown-faint">{i.name_zh}</p>}
                       </td>
                       <td className="px-4 py-3 text-xs text-brown-muted">{ITEM_CATEGORY_LABELS[i.category]}</td>
+                      <td className="px-4 py-3 text-xs text-brown-muted">
+                        {i.department ? ITEM_DEPARTMENT_LABELS[i.department] : '—'}
+                      </td>
                       <td className="px-4 py-3 text-xs text-brown-muted">{i.supplier?.name ?? '—'}</td>
                       <td className="px-4 py-3 text-xs text-brown-muted whitespace-nowrap">
                         1 {i.purchase_unit} = {qty(i.conversion_rate)} {i.base_unit}

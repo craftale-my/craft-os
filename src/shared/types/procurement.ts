@@ -26,15 +26,26 @@ export interface Supplier {
 export type ItemCategory = 'raw' | 'packaging' | 'other'
 
 export const ITEM_CATEGORY_LABELS: Record<ItemCategory, string> = {
-  raw:       '原料 Raw',
-  packaging: '包装 Packaging',
-  other:     '其他 Other',
+  raw:       'Raw',
+  packaging: 'Packaging',
+  other:     'Other',
 }
 
 export const ITEM_CATEGORIES: ItemCategory[] = ['raw', 'packaging', 'other']
 
+/** Which part of the operation uses the item. Null = not assigned yet. */
+export type ItemDepartment = 'cafe_bar' | 'bakery' | 'kitchen'
+
+export const ITEM_DEPARTMENTS: ItemDepartment[] = ['cafe_bar', 'bakery', 'kitchen']
+
+export const ITEM_DEPARTMENT_LABELS: Record<ItemDepartment, string> = {
+  cafe_bar: 'Cafe & Bar',
+  bakery:   'Bakery',
+  kitchen:  'Kitchen',
+}
+
 /** Suggested units — free text is still allowed, these just prefill the picker. */
-export const PURCHASE_UNIT_SUGGESTIONS = ['包', '箱', '桶', '瓶', '罐', '条', 'pack', 'carton']
+export const PURCHASE_UNIT_SUGGESTIONS = ['bag', 'box', 'tub', 'bottle', 'can', 'bar', 'pack', 'carton']
 export const BASE_UNIT_SUGGESTIONS = ['g', 'kg', 'ml', 'L', 'pcs']
 
 export interface Item {
@@ -42,12 +53,13 @@ export interface Item {
   name: string
   name_zh: string | null
   category: ItemCategory
+  department: ItemDepartment | null
   supplier_id: string | null
-  /** Unit the item is bought in — 包 / 箱 / 桶. */
+  /** Unit the item is bought in — bag / box / tub. */
   purchase_unit: string
   /** Unit stock is tracked in — g / kg / ml / L / pcs. */
   base_unit: string
-  /** 1 purchase_unit = conversion_rate base_units (e.g. 1 包 = 2000 g). */
+  /** 1 purchase_unit = conversion_rate base_units (e.g. 1 bag = 2000 g). */
   conversion_rate: number
   /** Most recent price paid, per purchase_unit. */
   latest_price: number | null
