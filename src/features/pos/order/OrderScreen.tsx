@@ -224,7 +224,7 @@ export default function OrderScreen({
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
-  useEffect(() => { setDialog(null) }, [bill?.id])
+  useEffect(() => { setDialog(null); setConfirm(null) }, [bill?.id])
   const run = async (fn: () => Promise<void>, then?: () => void) => {
     if (busyRef.current) return
     busyRef.current = true; setBusy(true)
@@ -264,7 +264,8 @@ export default function OrderScreen({
       const pax = target.kind === 'table' && !bill?.pax ? target.pax : null
       const res = await submit(newQueuedOrder(orderType, target.kind === 'table' ? target.tableId : null, pax, lines,
         Date.now(), crypto.randomUUID(), catalogId))
-      if (res.rejectedReason) { setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); await load(); return null }
+      // the menu is read again first: a successful load clears the error, the rejection must stay
+      if (res.rejectedReason) { await load(); setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); return null }
       setLines([]); setError(null)
       return res.clientOrderId
     } catch (e) {
@@ -378,7 +379,7 @@ export default function OrderScreen({
               {catalogs === null && catalogsError && (
                 <p className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">
                   Could not load the menu catalogs: {catalogsError}{' '}
-                  <button type="button" className="underline" onClick={() => setCatalogsTry((n) => n + 1)}>Retry</button>
+                  <button type="button" className="min-h-11 px-3 underline" onClick={() => setCatalogsTry((n) => n + 1)}>Retry</button>
                 </p>
               )}
               {noCatalog && (
@@ -402,7 +403,7 @@ export default function OrderScreen({
         onPax={target.kind === 'table' ? () => setDialog({ kind: 'pax', purpose: 'set' }) : null}
         catalogName={current?.name ?? null}
         catalogIsExtra={!!current && !current.isDefault}
-        onCatalog={catalogs && catalogs.length > 1 && !sending && takesNewItems(target) ? () => setDialog({ kind: 'catalog' }) : null}
+        onCatalog={catalogs && (catalogs.length > 1 || (catalogId === null && catalogs.length > 0)) && !sending && takesNewItems(target) ? () => setDialog({ kind: 'catalog' }) : null}
         view={view}
         loading={!!bill && items === null && !itemsError}
         loadError={itemsError}

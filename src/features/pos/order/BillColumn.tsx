@@ -53,6 +53,10 @@ export default function BillColumn(p: {
               {p.catalogName}
             </button>
           ) : <span className={p.catalogIsExtra ? 'text-amber-700' : ''}>{p.catalogName}</span>)}
+          {!p.catalogName && p.onCatalog && (
+            <button type="button" onClick={p.onCatalog}
+              className="min-h-11 rounded-lg border border-amber-500 bg-amber-50 px-3 text-sm text-amber-800">Choose catalog</button>
+          )}
         </div>
       </header>
       {p.notice && <p role="status" className="mx-3 mt-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{p.notice}</p>}
