@@ -2,7 +2,7 @@
 // approvals, voids, move/merge, refunds and the checkout sections of /pos/settings.
 import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
-import type { BillOrderType, CashRounding, ServiceChargeRuleInput } from './bill'
+import type { BillOrderType, BillTotals, CashRounding, ServiceChargeRuleInput } from './bill'
 import type { PaymentKind } from './tender'
 import type { ReasonAction, ReasonTemplate } from './reasons'
 import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
@@ -276,6 +276,44 @@ export async function fetchClosedBillsSince(branchId: string, sinceIso: string):
     .order('closed_at', { ascending: false })
   if (error) fail(error)
   return (data ?? []) as unknown as ClosedBillRow[]
+}
+
+/** One payment of a closed bill, as the receipt lists it. */
+export interface PaymentRow {
+  id: string
+  method_name: string
+  kind: PaymentKind
+  amount_sen: number
+  tendered_sen: number | null
+  change_sen: number
+  reference: string | null
+  line_no: number
+  taken_at: string
+}
+export interface RefundRow { id: string; method_name: string; amount_sen: number; reason: string | null; created_at: string }
+/** What the Transaction screen shows of a closed bill besides its items: the totals stored at
+ *  checkout (bills.totals, null on a voided or merged bill), the bill it was merged into, its
+ *  payments and its refunds. */
+export interface ClosedBillDetail { totals: BillTotals | null; mergedIntoBillNo: string | null; payments: PaymentRow[]; refunds: RefundRow[] }
+
+export async function fetchClosedBillDetail(billId: string): Promise<ClosedBillDetail> {
+  const [b, p, r] = await Promise.all([
+    supabase.from('bills').select('totals, merged_into').eq('id', billId).maybeSingle(),
+    supabase.from('payments').select('id, method_name, kind, amount_sen, tendered_sen, change_sen, reference, line_no, taken_at')
+      .eq('bill_id', billId).order('taken_at').order('line_no'),
+    supabase.from('refunds').select('id, method_name, amount_sen, reason, created_at').eq('bill_id', billId).order('created_at'),
+  ])
+  if (b.error) fail(b.error)
+  if (p.error) fail(p.error)
+  if (r.error) fail(r.error)
+  const row = b.data as { totals: BillTotals | null; merged_into: string | null } | null
+  let mergedIntoBillNo: string | null = null
+  if (row?.merged_into) {
+    const m = await supabase.from('bills').select('bill_no').eq('id', row.merged_into).maybeSingle()
+    if (m.error) fail(m.error)
+    mergedIntoBillNo = (m.data as { bill_no: string } | null)?.bill_no ?? null
+  }
+  return { totals: row?.totals ?? null, mergedIntoBillNo, payments: (p.data ?? []) as PaymentRow[], refunds: (r.data ?? []) as RefundRow[] }
 }
 
 // ── /pos/settings ───────────────────────────────────────────────────────────
