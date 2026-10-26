@@ -85,6 +85,20 @@ describe('PaymentScreen', () => {
     expect(api.checkoutBill.mock.calls[1][2]).toBe(api.checkoutBill.mock.calls[0][2])
   })
 
+  it('a bill of RM 0.00 closes with no payment, even with no payment methods at the branch', async () => {
+    const zero = { ...totals, subtotalSen: 0, sstSen: 0, beforeRoundingSen: 0, totalSen: 0 }
+    api.fetchCheckoutState.mockResolvedValue({ status: 'open', billNo: bill.bill_no, mergedIntoBillNo: null, totals: zero, result: null })
+    api.fetchPaymentMethods.mockResolvedValue([])
+    api.checkoutBill.mockResolvedValue({ billId: 'b1', billNo: bill.bill_no, totalSen: 0, changeSen: 0, receiptQueued: true })
+    renderScreen()
+    await flush()
+    press('Pay RM 0.00')
+    await flush()
+    expect(screen.queryByText('Choose how the bill is paid')).toBeNull()
+    expect(api.checkoutBill).toHaveBeenCalledTimes(1)
+    expect(api.checkoutBill.mock.calls[0][1]).toEqual([])
+  })
+
   it('split payment: Pay waits until the payments add up to the total', async () => {
     api.checkoutBill.mockResolvedValue({ billId: 'b1', billNo: bill.bill_no, totalSen: 10670, changeSen: 0, receiptQueued: true })
     renderScreen()

@@ -163,6 +163,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   }
   const pay = () => {
     if (session.phase === 'unsure' || split) { void send(lines); return }
+    if (total === 0) { void send([]); return }          // RM 0.00 closes with no payment, as on the Checkout sheet
     if (!method) { setError('Choose how the bill is paid'); return }
     const r = singleLines(method, total, entry, reference)
     if ('problem' in r) { setError(r.problem); return }
