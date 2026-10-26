@@ -16,7 +16,7 @@ import BillColumn from './BillColumn'
 import BillActionsOverlay from './BillActionsOverlay'
 import MoveToGrid from './MoveToGrid'
 import { billActions, type BillAction } from './billActions'
-import { billView, discardQuestion, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
+import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
 import { moveTargets, type MoveTarget } from './moveTargets'
 import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
 import { withPhotos, type PadProductInfo } from './padInfo'
@@ -324,15 +324,24 @@ export default function OrderScreen({
   }
   const pickMove = (m: MoveTarget) => {
     if (!bill || busyRef.current || m.kind === 'refused') return
+    // the screen starts again on the bill moved or merged to, so unsent drafts are asked about first
+    const drafts = view.draftCount
     if (m.kind === 'move') {
       const to = m.tableId
-      void run(() => moveBill(bill.id, to), () => onTarget({ kind: 'table', tableId: to, pax: null }))
+      const go = () => void run(() => moveBill(bill.id, to), () => onTarget({ kind: 'table', tableId: to, pax: null }))
+      if (drafts > 0) {
+        setConfirm({ title: discardQuestion(drafts), message: `Then bill ${bill.bill_no} moves to ${m.label}.`, confirmLabel: 'Discard & move', danger: true,
+          onConfirm: go })
+        return
+      }
+      go()
       return
     }
     // the bill merged into is the target, never the table: a takeaway merge target has no table
     const into = m.tableId !== null ? { kind: 'table' as const, tableId: m.tableId, pax: null } : { kind: 'takeaway' as const, billId: m.intoBillId }
-    setConfirm({ title: `Merge into ${m.label}?`, message: `Every item of bill ${bill.bill_no} moves onto bill ${m.intoBillNo}, and this bill closes.`,
-      confirmLabel: 'Merge', onConfirm: () => void run(() => mergeBills(bill.id, m.intoBillId), () => onTarget(into)) })
+    setConfirm({ title: `Merge into ${m.label}?`,
+      message: `Every item of bill ${bill.bill_no} moves onto bill ${m.intoBillNo}, and this bill closes.${drafts > 0 ? ` ${draftsDiscarded(drafts)}` : ''}`,
+      confirmLabel: 'Merge', danger: drafts > 0, onConfirm: () => void run(() => mergeBills(bill.id, m.intoBillId), () => onTarget(into)) })
   }
   const tapDraft = (d: DraftRow) => {
     const p = menu ? findProduct(menu, d.line.productId) : undefined

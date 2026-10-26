@@ -277,7 +277,7 @@ export default function PosPage() {
       {menuOpen && <GridMenu items={items} current={current} onPick={pickMenu} onClose={() => setMenuOpen(false)} />}
       {/* always mounted, hidden when closed: the one print host and shift bar of this iPad live in it */}
       <StaffPanel open={staffOpen} branchId={branchId} branchName={branchName ?? staff.branch ?? 'Branch'} staffName={staff.name}
-        refreshKey={refreshKey} liveStatus={rtStatus} onShiftChanged={shift.reload}
+        refreshKey={refreshKey} liveStatus={rtStatus} canSupervise={can('pos_supervise')} onShiftChanged={shift.reload}
         onMyPin={() => setPinOpen(true)} onClose={() => setStaffOpen(false)} />
       {pinOpen && <MyPinDialog onClose={() => setPinOpen(false)} />}
       {reportOpen && <ShiftsDrawer onClose={() => setReportOpen(false)} />}

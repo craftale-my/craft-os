@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { billView, discardQuestion, itemsWord, payGate, sendFirstQuestion } from './billView'
+import { billView, discardQuestion, draftsDiscarded, itemsWord, payGate, sendFirstQuestion } from './billView'
 import type { BillingConfig } from '../checkout/checkoutApi'
 import { DEFAULT_POS_SETTINGS } from '../checkout/checkoutApi'
 import type { PosMenu } from './cart'
@@ -81,5 +81,7 @@ describe('words', () => {
     expect(sendFirstQuestion(1)).toBe('Send 1 new item first?')
     expect(sendFirstQuestion(4)).toBe('Send 4 new items first?')
     expect(discardQuestion(2)).toBe('Discard 2 unsent items?')
+    expect(draftsDiscarded(1)).toBe('1 unsent item will be discarded.')
+    expect(draftsDiscarded(2)).toBe('2 unsent items will be discarded.')
   })
 })

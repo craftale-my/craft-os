@@ -8,13 +8,14 @@ import ShiftBar from '../shift/ShiftBar'
  *  My PIN, the live status and Logout. It stays MOUNTED and is only hidden when closed: the print
  *  host inside it prints the browser-route tickets of this iPad, and the shift bar keeps a pay in /
  *  pay out whose reply was lost, so neither may unmount when the cashier closes the panel. */
-export default function StaffPanel({ open, branchId, branchName, staffName, refreshKey, liveStatus, onShiftChanged, onMyPin, onClose }: {
+export default function StaffPanel({ open, branchId, branchName, staffName, refreshKey, liveStatus, canSupervise, onShiftChanged, onMyPin, onClose }: {
   open: boolean
   branchId: string
   branchName: string
   staffName: string
   refreshKey: number
   liveStatus: string            // usePosRealtime's status
+  canSupervise: boolean         // pos_supervise: the shift bar's Shifts button
   onShiftChanged: () => void
   onMyPin: () => void
   onClose: () => void
@@ -34,7 +35,7 @@ export default function StaffPanel({ open, branchId, branchName, staffName, refr
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-brown-muted">Shift</h3>
           <div className="flex flex-wrap items-center gap-2 text-sm [&_button]:min-h-11">
-            <ShiftBar branchId={branchId} refreshKey={refreshKey} canSupervise={false} onChanged={onShiftChanged} />
+            <ShiftBar branchId={branchId} refreshKey={refreshKey} canSupervise={canSupervise} onChanged={onShiftChanged} />
           </div>
         </section>
         <section>

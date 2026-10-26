@@ -88,5 +88,7 @@ export const NO_SHIFT_PAY = 'Open a shift to take payment'
 export const itemsWord = (n: number): string => `${n} item${n === 1 ? '' : 's'}`
 export const sendFirstQuestion = (n: number): string => `Send ${n} new item${n === 1 ? '' : 's'} first?`
 export const discardQuestion = (n: number): string => `Discard ${n} unsent item${n === 1 ? '' : 's'}?`
+/** Said in a merge's confirm when the order screen has drafts: the merged-away screen loses them. */
+export const draftsDiscarded = (n: number): string => `${n} unsent item${n === 1 ? '' : 's'} will be discarded.`
 /** Send & pay found the order still in this iPad's queue (offline): no bill to pay yet. */
 export const QUEUED_NOT_SENT = 'The order is saved on this iPad and will send when the network is back. Take payment once it has arrived.'

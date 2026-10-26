@@ -47,7 +47,7 @@ export default function ShiftsDrawer({ onClose }: { onClose: () => void }) {
 
   const back = () => { reportSeq.current++; setOpen(null); setReport(null); setReportError(null); setNote(null) }
   return (
-    <div className="fixed inset-0 z-30 flex justify-end bg-black/30" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/30" onClick={onClose}>
       <div className="flex h-full w-full max-w-xl flex-col bg-card" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-border p-4">
           <h2 className="text-lg font-semibold">{open ? `Shift closed ${formatMyt(open.closedAt)}` : 'Shifts'}</h2>
