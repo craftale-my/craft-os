@@ -74,8 +74,8 @@ function SupplierModal({ supplier, onClose, onSaved }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0] sticky top-0 bg-cream-light">
+      <div className="bg-cream rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0] sticky top-0 bg-cream">
           <h2 className="font-bold text-brown-dark text-lg">
             {supplier?.id ? 'Edit Supplier' : 'Add Supplier'}
           </h2>

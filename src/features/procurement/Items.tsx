@@ -91,8 +91,8 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0] sticky top-0 bg-cream-light z-10">
+      <div className="bg-cream rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0] sticky top-0 bg-cream z-10">
           <h2 className="font-bold text-brown-dark text-lg">{item?.id ? 'Edit Item' : 'Add Item'}</h2>
           <button onClick={onClose} className="text-brown-faint hover:text-brown-dark text-xl leading-none">✕</button>
         </div>
