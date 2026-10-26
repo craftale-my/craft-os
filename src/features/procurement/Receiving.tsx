@@ -2,18 +2,42 @@ import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
-import { money, qty, calcShortage, priceDelta, toBaseUnits } from '../../shared/lib/procurement'
+import {
+  money, qty, calcShortage, priceDelta, toBaseUnits, outstandingQty, applyDelivery, isReceivable,
+} from '../../shared/lib/procurement'
 import type { PurchaseOrder, PurchaseOrderItem, ReceivingLineInput } from '../../shared/types'
 
 const inputCls =
   'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
 const labelCls = 'block text-xs font-semibold text-brown-medium mb-1'
 
-/** Per-line receiving state. `matched` means "arrived exactly as ordered". */
+/** Per-line receiving state. `matched` means "everything outstanding arrived". */
 interface LineState {
   matched: boolean
   actual: string
   price: string
+}
+
+const DEFAULT_STATE: LineState = { matched: true, actual: '', price: '' }
+
+/** Quantity this delivery brings in on a line, in purchase units. */
+function actualFor(line: PurchaseOrderItem, s: LineState): number {
+  return s.matched ? outstandingQty(line) : Number(s.actual === '' ? 0 : s.actual)
+}
+
+function priceFor(line: PurchaseOrderItem, s: LineState): number {
+  return s.price === '' ? line.unit_price : Number(s.price)
+}
+
+/** Inline problem with a line's quantity, or null if it can be submitted. */
+function lineQtyError(line: PurchaseOrderItem, s: LineState): string | null {
+  const actual = actualFor(line, s)
+  if (!Number.isFinite(actual) || actual < 0) return 'Enter zero or more.'
+  const outstanding = outstandingQty(line)
+  if (actual > outstanding) {
+    return `Only ${qty(outstanding)} ${line.item?.purchase_unit ?? ''} outstanding — you can't receive more than that.`
+  }
+  return null
 }
 
 function LineRow({ line, state, onChange }: {
@@ -22,9 +46,11 @@ function LineRow({ line, state, onChange }: {
   onChange: (patch: Partial<LineState>) => void
 }) {
   const unit = line.item?.purchase_unit ?? ''
-  const actual = state.matched ? line.quantity_ordered : Number(state.actual === '' ? 0 : state.actual)
-  const shortage = calcShortage(line.quantity_ordered, actual)
-  const price = state.price === '' ? line.unit_price : Number(state.price)
+  const outstanding = outstandingQty(line)
+  const actual = actualFor(line, state)
+  const qtyError = lineQtyError(line, state)
+  const shortage = qtyError ? 0 : calcShortage(outstanding, actual)
+  const price = priceFor(line, state)
   const delta = priceDelta(line.unit_price, price)
   const conv = line.item?.conversion_rate ?? 0
 
@@ -35,11 +61,18 @@ function LineRow({ line, state, onChange }: {
         {line.item?.name_zh && <p className="text-xs text-brown-faint">{line.item.name_zh}</p>}
       </div>
 
-      {/* The ordered quantity is the benchmark everything else is judged against. */}
-      <div className="flex items-baseline gap-2">
-        <span className="text-xs text-brown-faint">应到 Expected</span>
-        <span className="text-3xl font-bold text-brown-dark">{qty(line.quantity_ordered)}</span>
-        <span className="text-sm text-brown-muted">{unit}</span>
+      {/* What is still outstanding is the benchmark this delivery is judged against. */}
+      <div>
+        <div className="flex items-baseline gap-2">
+          <span className="text-xs text-brown-faint">Expected</span>
+          <span className="text-3xl font-bold text-brown-dark">{qty(outstanding)}</span>
+          <span className="text-sm text-brown-muted">{unit}</span>
+        </div>
+        {line.received_quantity > 0 && (
+          <p className="text-xs text-brown-faint mt-0.5">
+            Ordered {qty(line.quantity_ordered)} · Received so far {qty(line.received_quantity)}
+          </p>
+        )}
       </div>
 
       <div className="flex gap-2">
@@ -51,48 +84,46 @@ function LineRow({ line, state, onChange }: {
               : 'border border-[#D4C5B0] text-brown-medium hover:bg-[#F5EDE0]'
           }`}
         >
-          ✓ 数量一致
+          ✓ Matches
         </button>
         <button
-          onClick={() => onChange({ matched: false, actual: state.actual || String(line.quantity_ordered) })}
+          onClick={() => onChange({ matched: false, actual: state.actual || String(outstanding) })}
           className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
             !state.matched
               ? 'bg-[#C4813A] text-white'
               : 'border border-[#D4C5B0] text-brown-medium hover:bg-[#F5EDE0]'
           }`}
         >
-          数量不符
+          Doesn't match
         </button>
       </div>
 
       {!state.matched && (
         <div className="rounded-xl border border-[#D4C5B0] bg-[#FBF6EE] p-4">
-          <label className={labelCls}>实收数量 Actual received</label>
+          <label className={labelCls}>Actual received</label>
           <div className="flex items-center gap-2">
             <input
-              type="number" step="any" min="0"
-              className={`${inputCls} w-32`}
+              type="number" step="any" min="0" max={outstanding}
+              className={`${inputCls} w-32 ${qtyError ? 'border-[#9E4A30]' : ''}`}
               value={state.actual}
               onChange={e => onChange({ actual: e.target.value })}
               placeholder="0"
+              aria-invalid={qtyError ? true : undefined}
             />
             <span className="text-sm text-brown-muted">{unit}</span>
           </div>
-          {shortage > 0 && (
+          {qtyError ? (
+            <p className="text-sm font-semibold text-[#9E4A30] mt-2.5">{qtyError}</p>
+          ) : shortage > 0 && (
             <p className="text-sm font-bold text-[#9E4A30] mt-2.5">
-              Shortage: {qty(shortage)} {unit}
-            </p>
-          )}
-          {actual > line.quantity_ordered && (
-            <p className="text-sm font-semibold text-[#2E6E9E] mt-2.5">
-              多到 {qty(actual - line.quantity_ordered)} {unit} — 会按实收数量入库。
+              Shortage: {qty(shortage)} {unit} — stays outstanding for a later delivery.
             </p>
           )}
         </div>
       )}
 
       <div>
-        <label className={labelCls}>本次单价 Invoice price (RM / {unit})</label>
+        <label className={labelCls}>Invoice price (RM / {unit})</label>
         <div className="flex items-center gap-3 flex-wrap">
           <input
             type="number" step="0.01" min="0"
@@ -101,7 +132,7 @@ function LineRow({ line, state, onChange }: {
             onChange={e => onChange({ price: e.target.value })}
             placeholder={line.unit_price.toFixed(2)}
           />
-          <span className="text-xs text-brown-faint">下单价 {money(line.unit_price)}</span>
+          <span className="text-xs text-brown-faint">Ordered at {money(line.unit_price)}</span>
           {delta.direction !== 'same' && (
             <span
               className="text-xs font-bold px-2 py-0.5 rounded-full"
@@ -117,9 +148,9 @@ function LineRow({ line, state, onChange }: {
         </div>
       </div>
 
-      {actual > 0 && conv > 0 && (
+      {!qtyError && actual > 0 && conv > 0 && (
         <p className="text-xs text-brown-faint border-t border-[#EDE5D8] pt-3">
-          入库 {qty(toBaseUnits(actual, conv))} {line.item?.base_unit} · 本行 {money(actual * price)}
+          Stock in {qty(toBaseUnits(actual, conv))} {line.item?.base_unit} · Line total {money(actual * price)}
         </p>
       )}
     </div>
@@ -132,6 +163,7 @@ export default function ReceivingPage() {
   const { staff } = useAuth()
 
   const [po, setPo] = useState<PurchaseOrder | null>(null)
+  // Only lines with something still outstanding.
   const [lines, setLines] = useState<PurchaseOrderItem[]>([])
   const [states, setStates] = useState<Record<string, LineState>>({})
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null)
@@ -159,24 +191,26 @@ export default function ReceivingPage() {
 
       const order = poRes.data as PurchaseOrder | null
       if (!order) { setProblem('Purchase order not found.'); setLoading(false); return }
-      if (order.status !== 'sent') {
+      setPo(order)
+      if (!isReceivable(order.status)) {
         setProblem(
           order.status === 'draft'
             ? 'This order is still a draft — mark it as sent before receiving.'
             : `This order has already been closed (${order.status.replace('_', ' ')}).`,
         )
-        setPo(order)
         setLoading(false)
         return
       }
 
-      const poLines = (lineRes.data as PurchaseOrderItem[]) ?? []
-      setPo(order)
-      setLines(poLines)
-      // Default every line to "arrived as ordered" — the common case.
-      setStates(Object.fromEntries(
-        poLines.map(l => [l.id, { matched: true, actual: '', price: '' } as LineState]),
-      ))
+      const openLines = ((lineRes.data as PurchaseOrderItem[]) ?? []).filter(l => outstandingQty(l) > 0)
+      if (openLines.length === 0) {
+        setProblem('Nothing is outstanding on this order.')
+        setLoading(false)
+        return
+      }
+      setLines(openLines)
+      // Default every line to "everything outstanding arrived" — the common case.
+      setStates(Object.fromEntries(openLines.map(l => [l.id, DEFAULT_STATE])))
       setLoading(false)
     }
 
@@ -186,7 +220,7 @@ export default function ReceivingPage() {
 
   function setLineState(lineId: string, patch: Partial<LineState>) {
     setStates(prev => {
-      const current = prev[lineId] ?? { matched: true, actual: '', price: '' }
+      const current = prev[lineId] ?? DEFAULT_STATE
       return { ...prev, [lineId]: { ...current, ...patch } }
     })
   }
@@ -201,25 +235,24 @@ export default function ReceivingPage() {
     return supabase.storage.from('receiving-photos').getPublicUrl(path).data.publicUrl
   }
 
+  // Every visible line is sent, including zeros (= nothing arrived this time).
+  const payload: ReceivingLineInput[] = lines.map(l => {
+    const s = states[l.id] ?? DEFAULT_STATE
+    return { po_item_id: l.id, actual_quantity: actualFor(l, s), unit_price: priceFor(l, s) }
+  })
+
+  // Same checks as the RPC, so the button only enables for a submittable delivery.
+  let qtyInvalid = false
+  try { applyDelivery(lines, payload) } catch { qtyInvalid = true }
+  const priceInvalid = payload.some(l => !(l.unit_price >= 0))
+  const nothingReceived = !qtyInvalid && !payload.some(l => l.actual_quantity > 0)
+
   async function submit() {
     if (!po) return
     if (!invoiceFile) return setError('Invoice / DO photo is required.')
-
-    const payload: ReceivingLineInput[] = lines.map(l => {
-      const s = states[l.id] ?? { matched: true, actual: '', price: '' }
-      return {
-        po_item_id: l.id,
-        actual_quantity: s.matched ? l.quantity_ordered : Number(s.actual === '' ? 0 : s.actual),
-        unit_price: s.price === '' ? l.unit_price : Number(s.price),
-      }
-    })
-
-    if (payload.some(l => !(l.actual_quantity >= 0))) {
-      return setError('Every line needs a received quantity of zero or more.')
-    }
-    if (payload.some(l => !(l.unit_price >= 0))) {
-      return setError('Unit prices cannot be negative.')
-    }
+    if (qtyInvalid) return setError('Fix the highlighted quantities first.')
+    if (priceInvalid) return setError('Unit prices cannot be negative.')
+    if (nothingReceived) return setError('Enter a quantity on at least one line.')
 
     setSubmitting(true)
     setError('')
@@ -271,12 +304,11 @@ export default function ReceivingPage() {
   if (!po) return null
 
   const totals = lines.reduce((acc, l) => {
-    const s = states[l.id] ?? { matched: true, actual: '', price: '' }
-    const actual = s.matched ? l.quantity_ordered : Number(s.actual === '' ? 0 : s.actual)
-    const price = s.price === '' ? l.unit_price : Number(s.price)
+    const s = states[l.id] ?? DEFAULT_STATE
+    const actual = actualFor(l, s)
     return {
-      value: acc.value + actual * price,
-      shortages: acc.shortages + (calcShortage(l.quantity_ordered, actual) > 0 ? 1 : 0),
+      value: acc.value + actual * priceFor(l, s),
+      shortages: acc.shortages + (calcShortage(outstandingQty(l), actual) > 0 ? 1 : 0),
     }
   }, { value: 0, shortages: 0 })
 
@@ -287,7 +319,9 @@ export default function ReceivingPage() {
           <Link to="/procurement/receiving" className="text-xs text-brown-faint hover:text-[#C4813A] transition-colors">
             ← Receiving
           </Link>
-          <h1 className="text-2xl font-bold text-brown-dark mt-1">Receive {po.po_number}</h1>
+          <h1 className="text-2xl font-bold text-brown-dark mt-1">
+            {po.status === 'partially_received' ? 'Receive remaining' : 'Receive'} {po.po_number}
+          </h1>
           <p className="text-sm text-brown-muted">
             {po.supplier?.name ?? '—'} · {po.branch?.name ?? '—'}
           </p>
@@ -302,7 +336,7 @@ export default function ReceivingPage() {
             <LineRow
               key={l.id}
               line={l}
-              state={states[l.id] ?? { matched: true, actual: '', price: '' }}
+              state={states[l.id] ?? DEFAULT_STATE}
               onChange={patch => setLineState(l.id, patch)}
             />
           ))}
@@ -321,7 +355,7 @@ export default function ReceivingPage() {
             />
             {invoiceFile
               ? <p className="text-xs text-[#3D7A50] mt-1">✓ {invoiceFile.name}</p>
-              : <p className="text-xs text-brown-faint mt-1">必填 — 没有单据照片不能提交收货。</p>}
+              : <p className="text-xs text-brown-faint mt-1">Required — a receipt can't be submitted without an invoice photo.</p>}
           </div>
 
           <div>
@@ -347,7 +381,7 @@ export default function ReceivingPage() {
           </div>
 
           <p className="text-xs text-brown-faint border-t border-[#EDE5D8] pt-3">
-            签收人 Signed off by <span className="font-semibold text-brown-muted">{staff?.name ?? '—'}</span>
+            Signed off by <span className="font-semibold text-brown-muted">{staff?.name ?? '—'}</span>
           </p>
         </section>
 
@@ -356,23 +390,34 @@ export default function ReceivingPage() {
             <div>
               <p className="text-xs text-brown-faint">Received value</p>
               <p className="text-xl font-bold text-brown-dark">{money(totals.value)}</p>
-              {totals.shortages > 0 && (
+              {!qtyInvalid && totals.shortages > 0 && (
                 <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">
-                  {totals.shortages} line{totals.shortages > 1 ? 's' : ''} short — the order will close as
-                  partially received.
+                  {totals.shortages} line{totals.shortages > 1 ? 's' : ''} short — the order stays open as
+                  partially received for the rest.
+                </p>
+              )}
+              {qtyInvalid && (
+                <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">
+                  Fix the highlighted quantities before submitting.
+                </p>
+              )}
+              {nothingReceived && (
+                <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">
+                  Enter a quantity on at least one line — a delivery has to bring something in.
                 </p>
               )}
             </div>
             <button
               onClick={submit}
-              disabled={submitting || !invoiceFile}
+              disabled={submitting || !invoiceFile || qtyInvalid || priceInvalid || nothingReceived}
               className="px-5 py-2.5 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors disabled:opacity-50"
             >
               {submitting ? 'Submitting…' : 'Confirm Receipt'}
             </button>
           </div>
           <p className="text-xs text-brown-faint mt-3">
-            提交后会入库、记录价格、并关闭这张采购单。Phase 1 每张单只能收一次。
+            Submitting adds the stock, records the invoice prices and updates the order. Anything still short
+            stays open for a later delivery.
           </p>
         </section>
       </div>

@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
-import { money, qty, formatPoText, calcShortage } from '../../shared/lib/procurement'
+import { money, qty, formatPoText, outstandingQty, isReceivable } from '../../shared/lib/procurement'
 import { PoStatusBadge } from './PurchaseOrders'
-import type { PurchaseOrder, PurchaseOrderItem, Receiving, ReceivingItem } from '../../shared/types'
+import type { PurchaseOrder, PurchaseOrderItem, Receiving } from '../../shared/types'
 
 function Card({ title, action, children }: {
   title: string
@@ -21,14 +21,40 @@ function Card({ title, action, children }: {
   )
 }
 
+/** Receiving photo thumbnail. A broken URL degrades to a same-size placeholder. */
+function PhotoThumb({ url, label }: { url: string; label: string }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return (
+      <div>
+        <div className="w-20 h-20 rounded-lg border border-dashed border-[#D4C5B0] bg-[#FBF6EE] flex items-center justify-center text-center px-1">
+          <span className="text-[10px] text-brown-faint">Photo unavailable</span>
+        </div>
+        <p className="text-[10px] text-brown-faint text-center mt-1">{label}</p>
+      </div>
+    )
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer">
+      <img
+        src={url}
+        alt={label.toLowerCase()}
+        onError={() => setFailed(true)}
+        className="w-20 h-20 rounded-lg object-cover border border-[#E8DDD0]"
+      />
+      <p className="text-[10px] text-brown-faint text-center mt-1">{label}</p>
+    </a>
+  )
+}
+
 export default function PurchaseOrderDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
 
   const [po, setPo] = useState<PurchaseOrder | null>(null)
   const [lines, setLines] = useState<PurchaseOrderItem[]>([])
-  const [receiving, setReceiving] = useState<Receiving | null>(null)
-  const [receivingLines, setReceivingLines] = useState<ReceivingItem[]>([])
+  // Every delivery against this PO, oldest first.
+  const [receivings, setReceivings] = useState<Receiving[]>([])
   const [cafeName, setCafeName] = useState('Craft Cafe')
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
@@ -45,7 +71,11 @@ export default function PurchaseOrderDetailPage() {
         .eq('id', id)
         .maybeSingle(),
       supabase.from('purchase_order_items').select('*, item:items(*)').eq('po_id', id),
-      supabase.from('receivings').select('*, receiver:staff!receivings_received_by_fkey(id,name)').eq('po_id', id).maybeSingle(),
+      supabase
+        .from('receivings')
+        .select('*, receiver:staff!receivings_received_by_fkey(id,name), items:receiving_items(*)')
+        .eq('po_id', id)
+        .order('received_at', { ascending: true }),
       supabase.from('company_settings').select('cafe_name').maybeSingle(),
     ])
 
@@ -53,13 +83,7 @@ export default function PurchaseOrderDetailPage() {
     setPo(poRes.data as PurchaseOrder)
     setLines((lineRes.data as PurchaseOrderItem[]) ?? [])
     setCafeName((settingsRes.data?.cafe_name as string) || 'Craft Cafe')
-
-    const rec = recRes.data as Receiving | null
-    setReceiving(rec)
-    if (rec) {
-      const { data: recLines } = await supabase.from('receiving_items').select('*').eq('receiving_id', rec.id)
-      setReceivingLines((recLines as ReceivingItem[]) ?? [])
-    }
+    setReceivings((recRes.data as Receiving[]) ?? [])
     setLoading(false)
   }
 
@@ -135,7 +159,7 @@ export default function PurchaseOrderDetailPage() {
       .map(l => ({ item: l.item!, quantity_ordered: l.quantity_ordered, unit_price: l.unit_price })),
   )
 
-  const receivedById = new Map(receivingLines.map(r => [r.po_item_id, r]))
+  const lineById = new Map(lines.map(l => [l.id, l]))
   const isReceived = po.status === 'received' || po.status === 'partially_received'
 
   return (
@@ -180,14 +204,16 @@ export default function PurchaseOrderDetailPage() {
               </button>
             </>
           )}
+          {isReceivable(po.status) && (
+            <Link
+              to={`/procurement/receiving/${po.id}`}
+              className="px-4 py-2 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors"
+            >
+              {po.status === 'partially_received' ? 'Receive remaining' : 'Receive Goods'}
+            </Link>
+          )}
           {po.status === 'sent' && (
             <>
-              <Link
-                to={`/procurement/receiving/${po.id}`}
-                className="px-4 py-2 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors"
-              >
-                Receive Goods
-              </Link>
               <button
                 onClick={cancelOrder}
                 disabled={busy}
@@ -206,15 +232,20 @@ export default function PurchaseOrderDetailPage() {
                 <tr className="text-left text-xs text-brown-faint border-b border-[#EDE5D8]">
                   <th className="px-1 py-2 font-semibold">Item</th>
                   <th className="px-1 py-2 font-semibold text-right">Ordered</th>
-                  {isReceived && <th className="px-1 py-2 font-semibold text-right">Received</th>}
+                  {isReceived && (
+                    <>
+                      <th className="px-1 py-2 font-semibold text-right">Received so far</th>
+                      <th className="px-1 py-2 font-semibold text-right">Outstanding</th>
+                    </>
+                  )}
                   <th className="px-1 py-2 font-semibold text-right">Unit Price</th>
                   <th className="px-1 py-2 font-semibold text-right">Total</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#F0E8DC]">
                 {lines.map(l => {
-                  const rec = receivedById.get(l.id)
-                  const shortage = rec ? calcShortage(l.quantity_ordered, rec.actual_quantity) : 0
+                  // received_quantity is cumulative across every delivery.
+                  const outstanding = outstandingQty(l)
                   return (
                     <tr key={l.id}>
                       <td className="px-1 py-2.5">
@@ -225,26 +256,19 @@ export default function PurchaseOrderDetailPage() {
                         {qty(l.quantity_ordered)} {l.item?.purchase_unit}
                       </td>
                       {isReceived && (
-                        <td className="px-1 py-2.5 text-right whitespace-nowrap">
-                          {rec ? (
-                            <>
-                              <span className={shortage > 0 ? 'text-[#9E4A30] font-semibold' : 'text-[#3D7A50] font-semibold'}>
-                                {qty(rec.actual_quantity)} {l.item?.purchase_unit}
-                              </span>
-                              {shortage > 0 && (
-                                <p className="text-[10px] text-[#9E4A30]">short {qty(shortage)}</p>
-                              )}
-                            </>
-                          ) : <span className="text-xs text-brown-faint">—</span>}
-                        </td>
+                        <>
+                          <td className="px-1 py-2.5 text-right whitespace-nowrap text-brown-dark">
+                            {qty(l.received_quantity)} {l.item?.purchase_unit}
+                          </td>
+                          <td className="px-1 py-2.5 text-right whitespace-nowrap font-semibold">
+                            {outstanding > 0
+                              ? <span className="text-[#9E4A30]">{qty(outstanding)} {l.item?.purchase_unit}</span>
+                              : <span className="text-[#3D7A50]">✓ 0</span>}
+                          </td>
+                        </>
                       )}
                       <td className="px-1 py-2.5 text-right whitespace-nowrap text-brown-muted">
                         {money(l.unit_price)}
-                        {rec && rec.unit_price !== l.unit_price && (
-                          <p className={`text-[10px] ${rec.unit_price > l.unit_price ? 'text-[#9E4A30]' : 'text-[#3D7A50]'}`}>
-                            invoice {money(rec.unit_price)}
-                          </p>
-                        )}
                       </td>
                       <td className="px-1 py-2.5 text-right whitespace-nowrap font-semibold text-brown-dark">
                         {money(l.quantity_ordered * l.unit_price)}
@@ -255,7 +279,7 @@ export default function PurchaseOrderDetailPage() {
               </tbody>
               <tfoot>
                 <tr className="border-t border-[#EDE5D8]">
-                  <td className="px-1 py-3 text-xs font-semibold text-brown-muted" colSpan={isReceived ? 4 : 3}>
+                  <td className="px-1 py-3 text-xs font-semibold text-brown-muted" colSpan={isReceived ? 5 : 3}>
                     Order total
                   </td>
                   <td className="px-1 py-3 text-right font-bold text-brown-dark">{money(po.total_amount)}</td>
@@ -270,41 +294,67 @@ export default function PurchaseOrderDetailPage() {
           )}
         </Card>
 
-        {receiving && (
-          <Card title="Receiving Record">
-            <div className="space-y-2 text-sm">
-              <p className="text-brown-muted">
-                Received by <span className="font-medium text-brown-dark">{receiving.receiver?.name ?? '—'}</span>
-                {' on '}
-                {new Date(receiving.received_at).toLocaleString('en-GB', {
-                  day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-                })}
-              </p>
-              {receiving.has_discrepancy && (
-                <p className="text-xs text-[#9E4A30] font-semibold">⚠ This delivery had shortages.</p>
-              )}
-              {receiving.notes && <p className="text-xs text-brown-muted">{receiving.notes}</p>}
-              <div className="flex gap-3 pt-2">
-                <a href={receiving.invoice_photo_url} target="_blank" rel="noreferrer">
-                  <img
-                    src={receiving.invoice_photo_url}
-                    alt="invoice"
-                    className="w-20 h-20 rounded-lg object-cover border border-[#E8DDD0]"
-                  />
-                  <p className="text-[10px] text-brown-faint text-center mt-1">Invoice</p>
-                </a>
-                {receiving.goods_photo_url && (
-                  <a href={receiving.goods_photo_url} target="_blank" rel="noreferrer">
-                    <img
-                      src={receiving.goods_photo_url}
-                      alt="goods"
-                      className="w-20 h-20 rounded-lg object-cover border border-[#E8DDD0]"
-                    />
-                    <p className="text-[10px] text-brown-faint text-center mt-1">Goods</p>
-                  </a>
-                )}
-              </div>
-            </div>
+        {receivings.length > 0 && (
+          <Card title="Receiving History">
+            <ol className="divide-y divide-[#F0E8DC]">
+              {receivings.map((rec, i) => (
+                <li key={rec.id} className="py-4 first:pt-0 last:pb-0 space-y-2 text-sm">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-semibold text-brown-dark">Delivery {i + 1}</h3>
+                    {rec.has_discrepancy && (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#9E4A3020] text-[#9E4A30]">
+                        Shortage
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-brown-muted">
+                    {new Date(rec.received_at).toLocaleString('en-GB', {
+                      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+                    })}
+                    {' · Received by '}
+                    <span className="font-medium text-brown-dark">{rec.receiver?.name ?? '—'}</span>
+                  </p>
+                  {rec.notes && <p className="text-xs text-brown-muted">{rec.notes}</p>}
+
+                  {rec.items && rec.items.length > 0 && (
+                    <ul className="text-xs space-y-1">
+                      {rec.items.map(ri => {
+                        const line = lineById.get(ri.po_item_id)
+                        const none = ri.actual_quantity === 0
+                        return (
+                          <li
+                            key={ri.id}
+                            className={`flex justify-between gap-3 ${none ? 'text-brown-faint' : 'text-brown-dark'}`}
+                          >
+                            <span>{line?.item?.name ?? 'Unknown item'}</span>
+                            <span className="whitespace-nowrap">
+                              {qty(ri.actual_quantity)} {line?.item?.purchase_unit}
+                              {!none && (
+                                <span
+                                  className={
+                                    line && ri.unit_price !== line.unit_price
+                                      ? ri.unit_price > line.unit_price ? 'text-[#9E4A30] font-semibold' : 'text-[#3D7A50] font-semibold'
+                                      : 'text-brown-muted'
+                                  }
+                                  title={line && ri.unit_price !== line.unit_price ? `Ordered at ${money(line.unit_price)}` : undefined}
+                                >
+                                  {' · '}{money(ri.unit_price)}
+                                </span>
+                              )}
+                            </span>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+
+                  <div className="flex gap-3 pt-1">
+                    <PhotoThumb url={rec.invoice_photo_url} label="Invoice" />
+                    {rec.goods_photo_url && <PhotoThumb url={rec.goods_photo_url} label="Goods" />}
+                  </div>
+                </li>
+              ))}
+            </ol>
           </Card>
         )}
 

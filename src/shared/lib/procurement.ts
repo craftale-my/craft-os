@@ -19,15 +19,79 @@ export function calcShortage(ordered: number, actual: number): number {
 }
 
 /**
- * PO status after receiving. Phase 1 receives a PO exactly once, so any
- * shortfall closes the order as `partially_received` — it does not stay open
- * for a second delivery.
+ * PO status judged from a single delivery against the full ordered quantity.
+ *
+ * @deprecated A PO can now be received across several deliveries — use
+ * {@link deriveCumulativePoStatus} on the cumulative `received_quantity`.
  */
 export function derivePoStatus(
   lines: { quantity_ordered: number; actual_quantity: number }[],
 ): Extract<PoStatus, 'received' | 'partially_received'> {
   const short = lines.some(l => calcShortage(l.quantity_ordered, l.actual_quantity) > 0)
   return short ? 'partially_received' : 'received'
+}
+
+interface CumulativeLine {
+  quantity_ordered: number
+  /** Cumulative across every delivery so far. */
+  received_quantity: number
+}
+
+/** What is still to come on a PO line. Never negative. */
+export function outstandingQty(line: CumulativeLine): number {
+  return Math.max(line.quantity_ordered - line.received_quantity, 0)
+}
+
+/**
+ * PO status from cumulative received quantities: `received` once every line
+ * is fully in. An empty PO has nothing received, so it is not `received`.
+ */
+export function deriveCumulativePoStatus(
+  lines: CumulativeLine[],
+): Extract<PoStatus, 'received' | 'partially_received'> {
+  if (lines.length === 0) return 'partially_received'
+  return lines.every(l => outstandingQty(l) === 0) ? 'received' : 'partially_received'
+}
+
+/** Statuses submit_receiving accepts. */
+export function isReceivable(status: PoStatus): boolean {
+  return status === 'sent' || status === 'partially_received'
+}
+
+/**
+ * Applies one delivery to the PO lines, returning new lines with cumulative
+ * `received_quantity`. Mirrors the submit_receiving RPC's checks so the UI can
+ * validate before submitting: throws on an unknown or repeated line, a
+ * negative quantity, or more than is outstanding. Lines left out of
+ * `deliveries` are unchanged.
+ */
+export function applyDelivery<T extends CumulativeLine & { id: string }>(
+  lines: T[],
+  deliveries: { po_item_id: string; actual_quantity: number }[],
+): T[] {
+  const byId = new Map(lines.map(l => [l.id, l]))
+  const added = new Map<string, number>()
+
+  for (const d of deliveries) {
+    const line = byId.get(d.po_item_id)
+    if (!line) throw new Error(`PO line ${d.po_item_id} does not belong to this purchase order`)
+    if (added.has(d.po_item_id)) throw new Error(`PO line ${d.po_item_id} appears more than once`)
+    if (!Number.isFinite(d.actual_quantity) || d.actual_quantity < 0) {
+      throw new Error('Received quantity must be zero or more')
+    }
+    const outstanding = outstandingQty(line)
+    if (d.actual_quantity > outstanding) {
+      throw new Error(
+        `Cannot receive ${qty(d.actual_quantity)} on line ${d.po_item_id} — only ${qty(outstanding)} outstanding`,
+      )
+    }
+    added.set(d.po_item_id, d.actual_quantity)
+  }
+
+  return lines.map(l => {
+    const extra = added.get(l.id)
+    return extra ? { ...l, received_quantity: l.received_quantity + extra } : l
+  })
 }
 
 export interface PriceDelta {
