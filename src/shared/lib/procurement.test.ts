@@ -3,6 +3,7 @@ import {
   toBaseUnits, toPurchaseUnits, calcShortage, derivePoStatus,
   priceDelta, isBelowAlert, poTotal, formatPoText, qty,
   stockValue, buildStockRows,
+  outstandingQty, deriveCumulativePoStatus, applyDelivery, isReceivable,
 } from './procurement'
 import type { InventoryBalance, Item } from '../types'
 
@@ -69,6 +70,106 @@ describe('derivePoStatus', () => {
 
   it('treats over-delivery as fully received', () => {
     expect(derivePoStatus([{ quantity_ordered: 5, actual_quantity: 6 }])).toBe('received')
+  })
+})
+
+describe('outstandingQty', () => {
+  it('is ordered minus received so far', () => {
+    expect(outstandingQty({ quantity_ordered: 12, received_quantity: 5 })).toBe(7)
+  })
+
+  it('is 0 when fully received', () => {
+    expect(outstandingQty({ quantity_ordered: 12, received_quantity: 12 })).toBe(0)
+  })
+
+  it('never goes negative when over-received', () => {
+    expect(outstandingQty({ quantity_ordered: 12, received_quantity: 15 })).toBe(0)
+  })
+})
+
+describe('deriveCumulativePoStatus', () => {
+  it('is received when every line is fully in', () => {
+    expect(deriveCumulativePoStatus([
+      { quantity_ordered: 12, received_quantity: 12 },
+      { quantity_ordered: 5, received_quantity: 5 },
+    ])).toBe('received')
+  })
+
+  it('is partially_received when any line is still short', () => {
+    expect(deriveCumulativePoStatus([
+      { quantity_ordered: 12, received_quantity: 12 },
+      { quantity_ordered: 5, received_quantity: 3 },
+    ])).toBe('partially_received')
+  })
+
+  it('counts an over-received line as full', () => {
+    expect(deriveCumulativePoStatus([{ quantity_ordered: 5, received_quantity: 6 }])).toBe('received')
+  })
+
+  it('treats an empty PO as partially_received', () => {
+    expect(deriveCumulativePoStatus([])).toBe('partially_received')
+  })
+})
+
+describe('applyDelivery', () => {
+  const lines = [
+    { id: 'a', quantity_ordered: 10, received_quantity: 0 },
+    { id: 'b', quantity_ordered: 4, received_quantity: 0 },
+  ]
+
+  it('accumulates across two deliveries until the PO is received', () => {
+    const first = applyDelivery(lines, [
+      { po_item_id: 'a', actual_quantity: 6 },
+      { po_item_id: 'b', actual_quantity: 0 },
+    ])
+    expect(first.map(l => l.received_quantity)).toEqual([6, 0])
+    expect(deriveCumulativePoStatus(first)).toBe('partially_received')
+
+    const second = applyDelivery(first, [
+      { po_item_id: 'a', actual_quantity: 4 },
+      { po_item_id: 'b', actual_quantity: 4 },
+    ])
+    expect(second.map(l => l.received_quantity)).toEqual([10, 4])
+    expect(deriveCumulativePoStatus(second)).toBe('received')
+  })
+
+  it('leaves lines missing from the delivery unchanged and does not mutate input', () => {
+    const next = applyDelivery(lines, [{ po_item_id: 'a', actual_quantity: 3 }])
+    expect(next[1]).toBe(lines[1])
+    expect(lines[0].received_quantity).toBe(0)
+  })
+
+  it('throws when receiving more than is outstanding', () => {
+    const partly = [{ id: 'a', quantity_ordered: 10, received_quantity: 7 }]
+    expect(() => applyDelivery(partly, [{ po_item_id: 'a', actual_quantity: 4 }])).toThrow(/only 3 outstanding/)
+  })
+
+  it('throws on a negative quantity', () => {
+    expect(() => applyDelivery(lines, [{ po_item_id: 'a', actual_quantity: -1 }])).toThrow(/zero or more/)
+  })
+
+  it('throws on an unknown po_item_id', () => {
+    expect(() => applyDelivery(lines, [{ po_item_id: 'zzz', actual_quantity: 1 }])).toThrow(/does not belong/)
+  })
+
+  it('throws when a line appears twice', () => {
+    expect(() => applyDelivery(lines, [
+      { po_item_id: 'a', actual_quantity: 1 },
+      { po_item_id: 'a', actual_quantity: 1 },
+    ])).toThrow(/more than once/)
+  })
+})
+
+describe('isReceivable', () => {
+  it('accepts sent and partially_received', () => {
+    expect(isReceivable('sent')).toBe(true)
+    expect(isReceivable('partially_received')).toBe(true)
+  })
+
+  it('rejects every other status', () => {
+    expect(isReceivable('draft')).toBe(false)
+    expect(isReceivable('received')).toBe(false)
+    expect(isReceivable('cancelled')).toBe(false)
   })
 })
 
