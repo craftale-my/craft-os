@@ -4671,7 +4671,7 @@ Expected: none of the listed commits is from this plan (all are older than `docs
 The controller (after applying the migration on craft-os-dev, Task 1 Step 15) runs `/pos` on dev at 1180 × 820 with the dev launch entry and a `[TEST]` seed, and ticks:
 
 1. Bottom bar on Home, Order and Transaction (not on Payment): grid button opens Order / Menu / Transaction / Report / Setting by role; the right side shows the staff name and the Malaysia time and opens the staff panel.
-2. Staff panel: Open shift → banner "No shift open" disappears; Pay in / out; Close shift; My PIN; Printers (Test print); Live status; Logout → `/profile`. Close the panel and confirm a browser-route test ticket still prints (the print host stays mounted).
+2. Staff panel: Open shift → banner "No shift open" disappears; Pay in / out; Close shift; My PIN; Printers (Test print); Live status; Exit POS → `/profile` (asks about unsent items first). Close the panel and confirm a browser-route test ticket still prints (the print host stays mounted).
 3. Home: area tabs `All (n)` then areas in table order with open counts; Search finds a table from any tab; tiles 5 a row; an open table shows `RM x.xx · 12m`; a QR order on a table not open on screen gets the green ring.
 4. Empty table → Select pax 1–20 → order screen with "No bill yet" and the pax; leaving with no drafts leaves no bill.
 5. Order: categories, Search menu, Sold out mode (tap marks / unmarks), out-of-slot greyed; product with modifiers → sheet with red `SELECT n`, Confirm; draft appears under `Not sent · n items`, tap → edit / Remove; catalog chip switches (asks first with a cart).

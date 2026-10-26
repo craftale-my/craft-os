@@ -288,7 +288,7 @@ export default function PosPage() {
       <StaffPanel open={staffOpen} branchId={branchId} branchName={branchName ?? staff.branch ?? 'Branch'} staffName={staff.name}
         refreshKey={refreshKey} liveStatus={rtStatus} canSupervise={can('pos_supervise')} onShiftChanged={shift.reload}
         onMyPin={() => setPinOpen(true)} onClose={() => setStaffOpen(false)} onPrintProblems={setPrintProblems}
-        onExit={() => { setStaffOpen(false); leave(() => navigate('/profile')) }} />
+        onExit={() => { if (orderSending.current) return; setStaffOpen(false); leave(() => navigate('/profile')) }} />
       {pinOpen && <MyPinDialog onClose={() => setPinOpen(false)} />}
       {reportOpen && <ShiftsDrawer onClose={() => setReportOpen(false)} />}
       {paxFor && (
