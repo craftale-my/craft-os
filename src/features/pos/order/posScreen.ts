@@ -28,7 +28,7 @@ export function retarget(s: Screen, session: number, t: OrderTarget): { screen: 
   return { screen: { kind: 'order', session, target: t }, restarted: true }
 }
 
-export const SENT_BILL_NOT_LOADED = 'The order reached the kitchen, but its bill could not be loaded — take payment from the home screen.'
+export const SENT_BILL_NOT_LOADED = 'The order was sent, but its bill could not be loaded — open the table from the home screen to take payment.'
 export const SENT_BILL_CLOSED = 'This bill is no longer open — check it on the home screen.'
 
 /** What Send & pay does once the order's bill was looked up: `billId` null when the order is still
