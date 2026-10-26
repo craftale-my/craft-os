@@ -7,6 +7,7 @@ import { qty, money, buildStockRows, formatUnitCost, sumWastage, weekStartMYT } 
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog } from '../../shared/types'
 import { ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS } from '../../shared/types'
+import { SemiFinishedBadge } from './badges'
 
 const inputCls =
   'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
@@ -199,6 +200,7 @@ export default function InventoryPage() {
                         >
                           {item.name}
                         </Link>
+                        {item.category === 'semi_finished' && <span className="ml-2"><SemiFinishedBadge /></span>}
                       </td>
                       <td className="px-4 py-3 text-xs text-brown-muted whitespace-nowrap">
                         {item.department ? ITEM_DEPARTMENT_LABELS[item.department] : '—'}

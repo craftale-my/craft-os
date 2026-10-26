@@ -10,6 +10,7 @@ import {
   isInternalSupplier, canAccessBranch, inTransitQty, toShipQty, transferValue, inTransitValue, transitLossValue,
   shippedUnitCost, transitShortQty, validateShipLines, validateInternalReceipt, transferStatus, transferStatusLabel,
   parseTransferNote, roundQty,
+  businessDateMYT, currentRecipe, recipeVersionStatus, recipeCost, estimatedUnitCost, validateRecipeDraft,
 } from './procurement'
 import type { InventoryBalance, InventoryValuation, Item, PoStatus } from '../types'
 
@@ -1057,5 +1058,124 @@ describe('supplier-PO helpers are unchanged by internal transfers', () => {
 
   it('a supplier is never internal unless internal_branch_id is set', () => {
     expect(isInternalSupplier({ internal_branch_id: null })).toBe(false)
+  })
+})
+
+describe('prep-batch recipes', () => {
+  // MYT is UTC+8: 2026-10-26 04:59 MYT = 2026-10-25 20:59 UTC.
+  it('businessDateMYT rolls over at 05:00 MYT', () => {
+    expect(businessDateMYT(new Date('2026-10-25T20:59:00Z'))).toBe('2026-10-25')
+    expect(businessDateMYT(new Date('2026-10-25T21:00:00Z'))).toBe('2026-10-26')
+    expect(businessDateMYT(new Date('2026-10-26T15:59:00Z'))).toBe('2026-10-26') // 23:59 MYT
+    expect(businessDateMYT(new Date('2026-10-26T16:30:00Z'))).toBe('2026-10-26') // 00:30 MYT next day
+  })
+
+  function v(id: string, version: number, effective_from: string, extra: {
+    status?: 'active' | 'archived'; verified_at?: string | null
+  } = {}) {
+    return { id, version, effective_from, status: 'active' as const, verified_at: '2026-10-01T00:00:00Z', ...extra }
+  }
+
+  it('a single verified version in effect is current', () => {
+    const map = recipeVersionStatus([v('a', 1, '2026-10-01')], '2026-10-26')
+    expect(map.get('a')).toBe('current')
+  })
+
+  it('a newer version in effect supersedes the older one', () => {
+    const map = recipeVersionStatus([v('a', 1, '2026-10-01'), v('b', 2, '2026-10-20')], '2026-10-26')
+    expect(map.get('a')).toBe('superseded')
+    expect(map.get('b')).toBe('current')
+  })
+
+  it('a future-dated version is scheduled and the old one stays current', () => {
+    const rows = [v('a', 1, '2026-10-01'), v('b', 2, '2026-10-27')]
+    const today = recipeVersionStatus(rows, '2026-10-26')
+    expect(today.get('a')).toBe('current')
+    expect(today.get('b')).toBe('scheduled')
+    // On its start date it takes over.
+    const next = recipeVersionStatus(rows, '2026-10-27')
+    expect(next.get('a')).toBe('superseded')
+    expect(next.get('b')).toBe('current')
+  })
+
+  it('on an effective_from tie the higher version wins', () => {
+    const rows = [v('a', 1, '2026-10-01'), v('b', 3, '2026-10-01'), v('c', 2, '2026-10-01')]
+    expect(currentRecipe(rows, '2026-10-26')?.id).toBe('b')
+    const map = recipeVersionStatus(rows, '2026-10-26')
+    expect(map.get('b')).toBe('current')
+    expect(map.get('a')).toBe('superseded')
+    expect(map.get('c')).toBe('superseded')
+  })
+
+  it('archived and unverified versions are never current', () => {
+    const rows = [
+      v('a', 1, '2026-10-01'),
+      v('b', 2, '2026-10-10', { status: 'archived' }),
+      v('c', 3, '2026-10-20', { verified_at: null }),
+    ]
+    const map = recipeVersionStatus(rows, '2026-10-26')
+    expect(map.get('a')).toBe('current')
+    expect(map.get('b')).toBe('archived')
+    expect(map.get('c')).toBe('unverified')
+  })
+
+  it('no version is current when all start in the future', () => {
+    expect(currentRecipe([v('a', 1, '2026-11-01')], '2026-10-26')).toBeNull()
+    expect(recipeVersionStatus([v('a', 1, '2026-11-01')], '2026-10-26').get('a')).toBe('scheduled')
+  })
+
+  it('recipeCost rolls lines up to a batch and a unit cost', () => {
+    const lines = [
+      { qty_base: 500, unit_cost: 0.01 },  // RM 5
+      { qty_base: 4, unit_cost: 0.5 },     // RM 2
+    ]
+    const one = recipeCost(lines, 1000)
+    expect(one.total).toBeCloseTo(7)
+    expect(one.unitCost).toBeCloseTo(0.007)
+    expect(one.missingCost).toBe(false)
+
+    const more = recipeCost(lines, 1000, 2.5)
+    expect(more.total).toBeCloseTo(17.5)
+    expect(more.unitCost).toBeCloseTo(0.007)
+  })
+
+  it('recipeCost flags uncosted lines and guards a zero yield', () => {
+    const r = recipeCost([{ qty_base: 100, unit_cost: 0.02 }, { qty_base: 3, unit_cost: null }], 50)
+    expect(r.total).toBeCloseTo(2)
+    expect(r.unitCost).toBeCloseTo(0.04)
+    expect(r.missingCost).toBe(true)
+    expect(recipeCost([{ qty_base: 1, unit_cost: 1 }], 0).unitCost).toBeNull()
+    expect(recipeCost([], 10)).toEqual({ total: 0, unitCost: 0, missingCost: false })
+  })
+
+  it('estimatedUnitCost prefers the branch average, then the catalogue price', () => {
+    expect(estimatedUnitCost(0.02, 42, 250)).toBe(0.02)
+    expect(estimatedUnitCost(null, 42, 250)).toBeCloseTo(0.168)
+    expect(estimatedUnitCost(null, null, 250)).toBeNull()
+    expect(estimatedUnitCost(undefined, 10, 0)).toBeNull()
+  })
+
+  it('validateRecipeDraft mirrors save_recipe_version', () => {
+    const ok = {
+      yieldQty: 1000,
+      effectiveFrom: '2026-10-26',
+      outputItemId: 'out',
+      lines: [{ item_id: 'flour', qty_base: 500, name: 'Flour' }, { item_id: 'eggs', qty_base: 6, name: 'Eggs' }],
+    }
+    expect(validateRecipeDraft(ok)).toBeNull()
+    expect(validateRecipeDraft({ ...ok, outputItemId: null })).toBe('Pick the item this recipe makes')
+    expect(validateRecipeDraft({ ...ok, yieldQty: 0 })).toBe('Yield must be greater than zero')
+    expect(validateRecipeDraft({ ...ok, yieldQty: NaN })).toBe('Yield must be greater than zero')
+    expect(validateRecipeDraft({ ...ok, effectiveFrom: '' })).toBe('Effective-from date is required')
+    expect(validateRecipeDraft({ ...ok, lines: [] })).toBe('A recipe needs at least one ingredient')
+    expect(validateRecipeDraft({ ...ok, lines: [{ item_id: null, qty_base: 1 }] })).toBe('Line 1: pick an ingredient')
+    expect(validateRecipeDraft({ ...ok, lines: [{ item_id: 'flour', qty_base: 0, name: 'Flour' }] }))
+      .toBe('Flour: quantity must be greater than zero')
+    expect(validateRecipeDraft({ ...ok, lines: [{ item_id: 'flour', qty_base: NaN, name: 'Flour' }] }))
+      .toBe('Flour: quantity must be greater than zero')
+    expect(validateRecipeDraft({ ...ok, lines: [...ok.lines, { item_id: 'flour', qty_base: 1, name: 'Flour' }] }))
+      .toBe('Flour is listed twice')
+    expect(validateRecipeDraft({ ...ok, lines: [{ item_id: 'out', qty_base: 1 }] }))
+      .toBe('A recipe cannot use its own output as an ingredient')
   })
 })

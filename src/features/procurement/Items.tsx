@@ -108,8 +108,9 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
             <div>
               <label className={labelCls}>Category</label>
               <select className={inputCls} value={form.category} onChange={set('category')}>
-                {ITEM_CATEGORIES.map(c => (
-                  <option key={c} value={c}>{ITEM_CATEGORY_LABELS[c]}</option>
+                {/* Keep a category that is no longer offered (e.g. 'finished') selectable for its item. */}
+                {(ITEM_CATEGORIES.includes(form.category) ? ITEM_CATEGORIES : [...ITEM_CATEGORIES, form.category]).map(c => (
+                  <option key={c} value={c}>{ITEM_CATEGORY_LABELS[c] ?? c}</option>
                 ))}
               </select>
             </div>

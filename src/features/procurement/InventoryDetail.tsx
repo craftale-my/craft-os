@@ -32,6 +32,29 @@ function transferCounterpart(t: InventoryTransaction, sources: TransferSource): 
   return null
 }
 
+/** "Production batch" label on a production row, linking to the recipe of the item made. */
+function ProductionRef({ t, itemId, batchOutputs }: {
+  t: InventoryTransaction
+  itemId: string
+  batchOutputs: Map<string, { itemId: string; name: string }>
+}) {
+  // A production_in row is the batch itself; a production_out row is an ingredient of it.
+  const output = t.transaction_type === 'production_in'
+    ? { itemId, name: null }
+    : t.reference_id ? batchOutputs.get(t.reference_id) ?? null : null
+  if (!output) {
+    return <span className="text-xs text-brown-faint font-normal ml-2">Production batch</span>
+  }
+  return (
+    <Link
+      to={`/procurement/recipes/${output.itemId}`}
+      className="text-xs text-[#2E6E9E] font-normal ml-2 hover:underline"
+    >
+      Production batch{output.name ? ` · ${output.name}` : ''}
+    </Link>
+  )
+}
+
 export default function InventoryDetailPage() {
   const { itemId } = useParams<{ itemId: string }>()
   const [params] = useSearchParams()
@@ -42,6 +65,8 @@ export default function InventoryDetailPage() {
   const [balances, setBalances] = useState<InventoryValuation[]>([])
   const [txns, setTxns] = useState<InventoryTransaction[]>([])
   const [transferSources, setTransferSources] = useState<TransferSource>(new Map())
+  // production_batches id → the item that batch made (for production_out rows).
+  const [batchOutputs, setBatchOutputs] = useState<Map<string, { itemId: string; name: string }>>(new Map())
   const [branchFilter, setBranchFilter] = useState<string>(branchParam ?? 'all')
   const [loading, setLoading] = useState(true)
 
@@ -82,6 +107,21 @@ export default function InventoryDetailPage() {
         setTransferSources(new Map(((data as unknown as Row[]) ?? [])
           .filter(r => r.po)
           .map(r => [r.id, { poId: r.po!.id, poNumber: r.po!.po_number, from: r.po!.supplier?.name ?? 'HQ' }])))
+      }
+
+      // production_out rows point at a batch; look up what it made for the link.
+      const batchIds = [...new Set(rows
+        .filter(t => t.transaction_type === 'production_out' && t.reference_id)
+        .map(t => t.reference_id as string))]
+      if (batchIds.length > 0) {
+        const { data } = await supabase
+          .from('production_batches')
+          .select('id, item_id, item:items(name)')
+          .in('id', batchIds)
+        if (cancelled) return
+        type Row = { id: string; item_id: string; item: { name: string } | null }
+        setBatchOutputs(new Map(((data as unknown as Row[]) ?? [])
+          .map(r => [r.id, { itemId: r.item_id, name: r.item?.name ?? 'batch' }])))
       }
       setLoading(false)
     }
@@ -186,6 +226,8 @@ export default function InventoryDetailPage() {
                             {transferCounterpart(t, transferSources)}
                           </span>
                         )
+                      ) : t.reference_type === 'production' ? (
+                        <ProductionRef t={t} itemId={item.id} batchOutputs={batchOutputs} />
                       ) : t.reference_type && t.reference_type !== t.transaction_type && (
                         <span className="text-xs text-brown-faint font-normal ml-2">
                           from {t.reference_type}

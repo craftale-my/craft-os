@@ -1,6 +1,6 @@
 import type {
-  InventoryBalance, InventoryValuation, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Staff,
-  Supplier, WastageLog,
+  InventoryBalance, InventoryValuation, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Recipe,
+  Staff, Supplier, WastageLog,
 } from '../types'
 import { WASTAGE_REASONS } from '../types'
 
@@ -572,6 +572,137 @@ export function formatDateTimeMYT(iso: string): string {
     timeZone: 'Asia/Kuala_Lumpur',
     day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
   })
+}
+
+// ─── Prep-batch recipes & production ──────────────────────────────────────────
+// Mirrors migration-2026-10-27-prep-recipes.sql; the RPCs stay authoritative.
+
+/** Business day starts at 05:00 MYT (SQL business_date_of). */
+const BUSINESS_DAY_START_MS = 5 * 60 * 60 * 1000
+
+/**
+ * Business date of `now` as yyyy-mm-dd: the MYT date of (now − 5 h), so
+ * 04:59 MYT still belongs to the previous day. Mirrors SQL business_date_of.
+ */
+export function businessDateMYT(now: Date): string {
+  return new Date(now.getTime() + MYT_OFFSET_MS - BUSINESS_DAY_START_MS).toISOString().slice(0, 10)
+}
+
+export type RecipeVersionStatus = 'current' | 'scheduled' | 'superseded' | 'archived' | 'unverified'
+
+export const RECIPE_VERSION_STATUS_LABELS: Record<RecipeVersionStatus, string> = {
+  current:    'Current',
+  scheduled:  'Scheduled',
+  superseded: 'Superseded',
+  archived:   'Archived',
+  unverified: 'Unverified',
+}
+
+type RecipeVersionRow = Pick<Recipe, 'id' | 'version' | 'effective_from' | 'status' | 'verified_at'>
+
+/**
+ * The version a run on `businessDate` uses: the active, verified version with
+ * the latest effective_from <= that date; on a tie the higher version wins.
+ * Null when none applies. Mirrors SQL recipe_for_date. Pass one item's versions.
+ */
+export function currentRecipe<T extends RecipeVersionRow>(recipes: T[], businessDate: string): T | null {
+  let best: T | null = null
+  for (const r of recipes) {
+    if (r.status !== 'active' || !r.verified_at || r.effective_from > businessDate) continue
+    if (!best
+      || r.effective_from > best.effective_from
+      || (r.effective_from === best.effective_from && r.version > best.version)) best = r
+  }
+  return best
+}
+
+/**
+ * Status of every version of one item's recipe on `businessDate`: the one in
+ * use is 'current', active verified versions starting later are 'scheduled',
+ * the rest of the active verified ones 'superseded'.
+ */
+export function recipeVersionStatus(
+  recipes: RecipeVersionRow[],
+  businessDate: string,
+): Map<string, RecipeVersionStatus> {
+  const current = currentRecipe(recipes, businessDate)
+  const out = new Map<string, RecipeVersionStatus>()
+  for (const r of recipes) {
+    if (r.status === 'archived') out.set(r.id, 'archived')
+    else if (!r.verified_at) out.set(r.id, 'unverified')
+    else if (r.id === current?.id) out.set(r.id, 'current')
+    else if (r.effective_from > businessDate) out.set(r.id, 'scheduled')
+    else out.set(r.id, 'superseded')
+  }
+  return out
+}
+
+/**
+ * Estimated cost per base unit of an ingredient at a branch, as the
+ * recipe_cost_estimate view does: the branch's moving-average cost, else the
+ * catalogue price per base unit. Null when neither is known.
+ */
+export function estimatedUnitCost(
+  avgUnitCost: number | null | undefined,
+  latestPrice: number | null | undefined,
+  conversionRate: number | null | undefined,
+): number | null {
+  if (avgUnitCost != null && Number.isFinite(Number(avgUnitCost))) return Number(avgUnitCost)
+  return unitCostPerBase(latestPrice ?? null, conversionRate ?? null)
+}
+
+export interface RecipeCost {
+  /** RM for `batches` batches. Uncosted lines contribute 0. */
+  total: number
+  /** RM per base unit of the output. Null when the output quantity is not positive. */
+  unitCost: number | null
+  /** Some line has no unit cost, so `total` is understated. */
+  missingCost: boolean
+}
+
+/** Rolled-up cost of a recipe: lines are per batch, in ingredient base units. */
+export function recipeCost(
+  lines: { qty_base: number; unit_cost: number | null }[],
+  yieldQty: number,
+  batches = 1,
+): RecipeCost {
+  let total = 0
+  let missingCost = false
+  for (const l of lines) {
+    if (l.unit_cost == null || !Number.isFinite(Number(l.unit_cost))) { missingCost = true; continue }
+    total += n(l.qty_base) * batches * Number(l.unit_cost)
+  }
+  const output = n(yieldQty) * batches
+  return { total, unitCost: output > 0 ? total / output : null, missingCost }
+}
+
+/**
+ * Problem with a recipe draft, or null if it can be saved. Mirrors
+ * save_recipe_version's checks so the form can say so before submitting.
+ * Quantities NaN = empty or not a number.
+ */
+export function validateRecipeDraft({ yieldQty, effectiveFrom, lines, outputItemId }: {
+  /** Output base units per batch. */
+  yieldQty: number
+  /** yyyy-mm-dd. */
+  effectiveFrom: string | null
+  lines: { item_id: string | null; qty_base: number; name?: string }[]
+  outputItemId: string | null
+}): string | null {
+  if (!outputItemId) return 'Pick the item this recipe makes'
+  if (!Number.isFinite(yieldQty) || yieldQty <= 0) return 'Yield must be greater than zero'
+  if (!effectiveFrom || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) return 'Effective-from date is required'
+  if (lines.length === 0) return 'A recipe needs at least one ingredient'
+  const seen = new Set<string>()
+  for (const [i, l] of lines.entries()) {
+    const label = l.name ?? `Line ${i + 1}`
+    if (!l.item_id) return `Line ${i + 1}: pick an ingredient`
+    if (l.item_id === outputItemId) return 'A recipe cannot use its own output as an ingredient'
+    if (!Number.isFinite(l.qty_base) || l.qty_base <= 0) return `${label}: quantity must be greater than zero`
+    if (seen.has(l.item_id)) return `${label} is listed twice`
+    seen.add(l.item_id)
+  }
+  return null
 }
 
 /** Ordered value of a PO line. */

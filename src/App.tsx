@@ -37,6 +37,10 @@ import ReceivingPage from './features/procurement/Receiving'
 import TransfersPage from './features/procurement/Transfers'
 import TransferShipPage from './features/procurement/TransferShip'
 import WastagePage from './features/procurement/Wastage'
+import RecipesPage from './features/procurement/Recipes'
+import RecipeNewPage from './features/procurement/RecipeNew'
+import RecipeDetailPage from './features/procurement/RecipeDetail'
+import ProducePage from './features/procurement/Produce'
 import InventoryPage from './features/procurement/Inventory'
 import InventoryDetailPage from './features/procurement/InventoryDetail'
 
@@ -368,6 +372,43 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><WastagePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/recipes"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><RecipesPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Managers only — the page itself explains that to everyone else. */}
+      <Route
+        path="/procurement/recipes/new"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><RecipeNewPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/recipes/:itemId"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><RecipeDetailPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/recipes/:itemId/produce"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><ProducePage /></AppLayout>
           </ProtectedRoute>
         }
       />

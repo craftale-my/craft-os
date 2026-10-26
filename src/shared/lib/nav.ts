@@ -64,6 +64,7 @@ export const NAV: NavEntry[] = [
       { id: 'proc-receiving', label: 'Receiving', to: '/procurement/receiving', cap: 'use_procurement' },
       { id: 'proc-transfers', label: 'Transfers', to: '/procurement/transfers', cap: 'use_procurement' },
       { id: 'proc-wastage',   label: 'Wastage',   to: '/procurement/wastage',   cap: 'use_procurement' },
+      { id: 'proc-recipes',   label: 'Recipes',   to: '/procurement/recipes',   cap: 'use_procurement' },
       { id: 'proc-inventory', label: 'Stock on Hand', to: '/procurement/inventory', cap: 'use_procurement' },
     ],
   },

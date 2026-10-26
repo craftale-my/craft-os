@@ -125,16 +125,16 @@ describe('Procurement group', () => {
     expect(childIds(visibleNav(canWith('view_team', 'manage_hr')))).toBeNull()
   })
 
-  it('shows supervisors (use_procurement only) orders, receiving, transfers, wastage and inventory, not master data', () => {
+  it('shows supervisors (use_procurement only) orders, receiving, transfers, wastage, recipes and inventory, not master data', () => {
     expect(childIds(visibleNav(canWith('use_procurement')))).toEqual([
-      'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-inventory',
+      'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-recipes', 'proc-inventory',
     ])
   })
 
   it('shows managers (both capabilities) every procurement page', () => {
     expect(childIds(visibleNav(canWith('manage_procurement', 'use_procurement')))).toEqual([
       'proc-suppliers', 'proc-items', 'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage',
-      'proc-inventory',
+      'proc-recipes', 'proc-inventory',
     ])
   })
 
@@ -146,5 +146,6 @@ describe('Procurement group', () => {
     expect(activeEntry(full, '/procurement/inventory/item-1')).toEqual({ leafId: 'proc-inventory', groupId: 'procurement' })
     expect(activeEntry(full, '/procurement/wastage')).toEqual({ leafId: 'proc-wastage', groupId: 'procurement' })
     expect(activeEntry(full, '/procurement/transfers/po-1/ship')).toEqual({ leafId: 'proc-transfers', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/recipes/item-1/produce')).toEqual({ leafId: 'proc-recipes', groupId: 'procurement' })
   })
 })

@@ -27,16 +27,22 @@ export interface Supplier {
 
 // ─── Items ────────────────────────────────────────────────────────────────────
 
-/** Phase 2 will add finished / semi_finished. */
-export type ItemCategory = 'raw' | 'packaging' | 'other'
+/**
+ * `semi_finished` is a prep batch made in-house from a recipe (frosting,
+ * sponge base). `finished` is allowed by the DB but not used yet.
+ */
+export type ItemCategory = 'raw' | 'packaging' | 'other' | 'semi_finished' | 'finished'
 
 export const ITEM_CATEGORY_LABELS: Record<ItemCategory, string> = {
-  raw:       'Raw',
-  packaging: 'Packaging',
-  other:     'Other',
+  raw:           'Raw',
+  packaging:     'Packaging',
+  other:         'Other',
+  semi_finished: 'Semi-finished',
+  finished:      'Finished',
 }
 
-export const ITEM_CATEGORIES: ItemCategory[] = ['raw', 'packaging', 'other']
+/** Categories offered in pickers. 'finished' is left out until it is used. */
+export const ITEM_CATEGORIES: ItemCategory[] = ['raw', 'packaging', 'other', 'semi_finished']
 
 /** Which part of the operation uses the item. Null = not assigned yet. */
 export type ItemDepartment = 'cafe_bar' | 'bakery' | 'kitchen'
@@ -262,15 +268,19 @@ export interface ShipLineInput {
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 
-/** Phase 2 will add production / sales / stocktake. */
-export type InventoryTransactionType = 'stock_in' | 'adjustment' | 'wastage' | 'transfer_out' | 'transfer_in'
+/** Phase 2 will add sales / stocktake. */
+export type InventoryTransactionType =
+  | 'stock_in' | 'adjustment' | 'wastage' | 'transfer_out' | 'transfer_in'
+  | 'production_out' | 'production_in'
 
 export const TRANSACTION_TYPE_LABELS: Record<InventoryTransactionType, string> = {
-  stock_in:     'Stock In',
-  adjustment:   'Adjustment',
-  wastage:      'Wastage',
-  transfer_out: 'Transfer out',
-  transfer_in:  'Transfer in',
+  stock_in:       'Stock In',
+  adjustment:     'Adjustment',
+  wastage:        'Wastage',
+  transfer_out:   'Transfer out',
+  transfer_in:    'Transfer in',
+  production_out: 'Used in production',
+  production_in:  'Produced',
 }
 
 export interface InventoryTransaction {
@@ -354,4 +364,131 @@ export interface WastageLog {
   created_at: string
   item?: Pick<Item, 'id' | 'name' | 'base_unit' | 'department'> | null
   creator?: { id: string; name: string } | null
+}
+
+// ─── Prep-batch recipes & production ──────────────────────────────────────────
+
+export type RecipeStatus = 'active' | 'archived'
+
+/**
+ * One version of a prep-batch recipe for a semi-finished item. Written only
+ * through the save_recipe_version RPC. A production run uses the active,
+ * verified version with the latest effective_from <= the business date.
+ */
+export interface Recipe {
+  id: string
+  /** The semi-finished output item. */
+  item_id: string
+  version: number
+  /** Base units of the output made by one batch. */
+  yield_qty: number
+  /** Business date (yyyy-mm-dd) the version takes effect. */
+  effective_from: string
+  status: RecipeStatus
+  verified_at: string | null
+  verified_by: string | null
+  notes: string | null
+  created_by: string | null
+  created_at: string
+  verifier?: { id: string; name: string } | null
+  creator?: { id: string; name: string } | null
+  lines?: RecipeLine[]
+}
+
+export interface RecipeLine {
+  id: string
+  recipe_id: string
+  /** The ingredient. */
+  item_id: string
+  /** Ingredient base units per batch. */
+  qty_base: number
+  sort_order: number
+  item?: Pick<Item, 'id' | 'name' | 'base_unit' | 'latest_price' | 'conversion_rate'> | null
+}
+
+/** One line of the save_recipe_version RPC payload. */
+export interface RecipeLineInput {
+  item_id: string
+  qty_base: number
+}
+
+/** One produce_batch call. Select-only for clients. */
+export interface ProductionBatch {
+  id: string
+  recipe_id: string
+  item_id: string
+  branch_id: string
+  batches: number
+  /** Base units of the output made. */
+  output_qty: number
+  /** RM. */
+  total_cost: number
+  /** RM per base unit of the output. */
+  unit_cost: number
+  business_date: string
+  note: string | null
+  /** The production_in row in inventory_transactions. */
+  transaction_id: string | null
+  created_by: string | null
+  created_at: string
+  creator?: { id: string; name: string } | null
+  recipe?: Pick<Recipe, 'id' | 'version'> | null
+  lines?: ProductionBatchLine[]
+}
+
+export interface ProductionBatchLine {
+  id: string
+  batch_id: string
+  item_id: string
+  /** Ingredient base units used. */
+  qty_base: number
+  /** RM per base unit: the branch's moving-average cost at the time. */
+  unit_cost: number
+  line_cost: number
+  /** The production_out row in inventory_transactions. */
+  transaction_id: string | null
+  item?: Pick<Item, 'id' | 'name' | 'base_unit'> | null
+}
+
+/** Row of the recipe_cost_estimate view: one per recipe version × active branch. */
+export interface RecipeCostEstimate {
+  recipe_id: string
+  item_id: string
+  version: number
+  branch_id: string
+  yield_qty: number
+  /** RM. Uncosted ingredients contribute nothing. */
+  batch_cost: number | null
+  /** RM per base unit of the output. */
+  unit_cost: number | null
+  /** Some ingredient has neither an average cost at the branch nor a price. */
+  missing_cost: boolean
+}
+
+export interface ProductionPreviewLine {
+  item_id: string
+  name: string
+  base_unit: string
+  need: number
+  on_hand: number
+  /** RM per base unit. Null when the branch has no cost for it. */
+  unit_cost: number | null
+  line_cost: number
+  short: boolean
+  sort_order: number
+}
+
+/** What the preview_production RPC returns. */
+export interface ProductionPreview {
+  recipe_id: string
+  version: number
+  effective_from: string
+  business_date: string
+  yield_qty: number
+  batches: number
+  output_qty: number
+  lines: ProductionPreviewLine[]
+  total_cost: number
+  unit_cost: number
+  can_produce: boolean
 }
