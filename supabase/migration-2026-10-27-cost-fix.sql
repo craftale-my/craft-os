@@ -28,8 +28,17 @@
 -- Prerequisites: migration-2026-07-29-procurement.sql,
 --   migration-2026-07-30-procurement-grants-fix.sql,
 --   migration-2026-10-27-po-multi-receiving.sql (run before this file).
--- Idempotent: safe to run more than once.
+-- Re-runnable until migration-2026-10-27-overdelivery-close-short.sql has run; after that it STOPS (re-running
+-- it would put back older function versions — re-run the later file instead).
 -- ============================================================================
+
+-- Stop if a later file already replaced what this one defines.
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'receiving_items' and column_name = 'over_quantity') then
+    raise exception 'STOP: migration-2026-10-27-cost-fix.sql is superseded by migration-2026-10-27-overdelivery-close-short.sql. Re-running it would restore older function versions; re-run migration-2026-10-27-overdelivery-close-short.sql instead.';
+  end if;
+end $$;
 
 -- 1. Columns -----------------------------------------------------------------
 alter table purchase_order_items  add column if not exists conversion_rate_used numeric;

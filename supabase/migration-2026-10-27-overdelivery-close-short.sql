@@ -30,8 +30,17 @@
 --   migration-2026-07-30-procurement-grants-fix.sql,
 --   migration-2026-10-27-po-multi-receiving.sql,
 --   migration-2026-10-27-cost-fix.sql, then this file.
--- Idempotent: safe to run more than once.
+-- Re-runnable until migration-2026-10-27-internal-transfers.sql has run; after that it STOPS (re-running
+-- it would put back older function versions — re-run the later file instead).
 -- ============================================================================
+
+-- Stop if a later file already replaced what this one defines.
+do $$
+begin
+  if to_regclass('public.po_shipments') is not null then
+    raise exception 'STOP: migration-2026-10-27-overdelivery-close-short.sql is superseded by migration-2026-10-27-internal-transfers.sql. Re-running it would restore older function versions; re-run migration-2026-10-27-internal-transfers.sql instead.';
+  end if;
+end $$;
 
 -- 1. Columns --------------------------------------------------------------------
 alter table receiving_items add column if not exists over_quantity numeric not null default 0;

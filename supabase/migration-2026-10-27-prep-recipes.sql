@@ -44,8 +44,17 @@
 -- Prerequisites: migration-2026-10-27-wastage.sql,
 --   migration-2026-10-27-internal-transfers.sql (ledger check below includes
 --   the transfer types), migration-2026-10-27-procurement-function-grants.sql.
--- Run once, in order. Re-running is safe (idempotent).
+-- Re-runnable until migration-2026-10-28-inventory-review-fixes.sql has run; after that it STOPS (re-running
+-- it would put back older function versions — re-run the later file instead).
 -- ============================================================================
+
+-- Stop if a later file already replaced what this one defines.
+do $$
+begin
+  if to_regprocedure('public.guard_po_status_client()') is not null then
+    raise exception 'STOP: migration-2026-10-27-prep-recipes.sql is superseded by migration-2026-10-28-inventory-review-fixes.sql. Re-running it would restore older function versions; re-run migration-2026-10-28-inventory-review-fixes.sql instead.';
+  end if;
+end $$;
 
 -- 1. Wider checks ------------------------------------------------------------
 alter table items drop constraint if exists items_category_check;

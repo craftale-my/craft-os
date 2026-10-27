@@ -29,8 +29,17 @@
 --
 -- Prerequisites: migration-2026-10-27-internal-transfers.sql,
 --   migration-2026-10-27-wastage.sql, migration-2026-10-27-procurement-function-grants.sql.
--- Idempotent.
+-- Re-runnable until migration-2026-10-28-inventory-review-fixes.sql has run; after that it STOPS (re-running
+-- it would put back older function versions — re-run the later file instead).
 -- ============================================================================
+
+-- Stop if a later file already replaced what this one defines.
+do $$
+begin
+  if to_regprocedure('public.guard_po_status_client()') is not null then
+    raise exception 'STOP: migration-2026-10-27-private-receiving-photos.sql is superseded by migration-2026-10-28-inventory-review-fixes.sql. Re-running it would restore older function versions; re-run migration-2026-10-28-inventory-review-fixes.sql instead.';
+  end if;
+end $$;
 
 -- 1. URL -> path (internal helper) -------------------------------------------
 create or replace function receiving_photo_path(p_value text)

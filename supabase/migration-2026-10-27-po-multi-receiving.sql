@@ -22,8 +22,17 @@
 -- same order as before). Signature unchanged, so existing grants and the
 -- frontend call stay valid; grants are restated anyway.
 --
--- Idempotent: safe to run more than once.
+-- Re-runnable until migration-2026-10-27-cost-fix.sql has run; after that it STOPS (re-running
+-- it would put back older function versions — re-run the later file instead).
 -- ============================================================================
+
+-- Stop if a later file already replaced what this one defines.
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'receiving_items' and column_name = 'conversion_rate_used') then
+    raise exception 'STOP: migration-2026-10-27-po-multi-receiving.sql is superseded by migration-2026-10-27-cost-fix.sql. Re-running it would restore older function versions; re-run migration-2026-10-27-cost-fix.sql instead.';
+  end if;
+end $$;
 
 -- 1. Drop the one-receiving-per-PO rule; keep a plain lookup index instead.
 drop index if exists receivings_one_per_po;

@@ -44,8 +44,17 @@
 --
 -- Prerequisites: migration-2026-10-27-overdelivery-close-short.sql,
 --   migration-2026-10-27-security-hardening.sql, migration-2026-10-27-wastage.sql.
--- Idempotent: safe to run more than once.
+-- Re-runnable until migration-2026-10-28-inventory-review-fixes.sql has run; after that it STOPS (re-running
+-- it would put back older function versions — re-run the later file instead).
 -- ============================================================================
+
+-- Stop if a later file already replaced what this one defines.
+do $$
+begin
+  if to_regprocedure('public.guard_po_status_client()') is not null then
+    raise exception 'STOP: migration-2026-10-27-internal-transfers.sql is superseded by migration-2026-10-28-inventory-review-fixes.sql. Re-running it would restore older function versions; re-run migration-2026-10-28-inventory-review-fixes.sql instead.';
+  end if;
+end $$;
 
 -- 1. Schema ---------------------------------------------------------------------
 alter table suppliers
