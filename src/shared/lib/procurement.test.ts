@@ -6,7 +6,7 @@ import {
   outstandingQty, deriveCumulativePoStatus, applyDelivery, isReceivable,
   unitCostPerBase, ledgerValue, movingAverageCost, formatUnitCost,
   overQty, lineOverReceived, deliveryNeedsNote, canCloseShort, shortfallLines,
-  weekStartMYT, validateWastage, sumWastage,
+  weekStartBusinessDate, validateWastage, sumWastage,
   isInternalSupplier, canAccessBranch, inTransitQty, toShipQty, transferValue, inTransitValue, transitLossValue,
   shippedUnitCost, transitShortQty, validateShipLines, validateInternalReceipt, transferStatus, transferStatusLabel,
   parseTransferNote, roundQty,
@@ -652,26 +652,27 @@ describe('formatPoText', () => {
   })
 })
 
-describe('weekStartMYT', () => {
+describe('weekStartBusinessDate', () => {
   it('puts Sunday 23:30 MYT in the week that started the previous Monday', () => {
     // Sun 1 Nov 2026 23:30 MYT = 15:30 UTC
-    expect(weekStartMYT(new Date('2026-11-01T15:30:00Z')).toISOString()).toBe('2026-10-25T16:00:00.000Z')
+    expect(weekStartBusinessDate(new Date('2026-11-01T15:30:00Z'))).toBe('2026-10-26')
   })
 
-  it('starts a new week at Monday 00:00 MYT exactly', () => {
-    // Mon 2 Nov 2026 00:00 MYT = Sun 1 Nov 16:00 UTC
-    const monday = new Date('2026-11-01T16:00:00Z')
-    expect(weekStartMYT(monday).toISOString()).toBe('2026-11-01T16:00:00.000Z')
-    expect(weekStartMYT(new Date(monday.getTime() - 1)).toISOString()).toBe('2026-10-25T16:00:00.000Z')
+  it('keeps Monday 02:00 MYT in the week before (business day starts 05:00)', () => {
+    // Mon 2 Nov 2026 02:00 MYT = Sun 1 Nov 18:00 UTC, business date Sun 1 Nov
+    expect(weekStartBusinessDate(new Date('2026-11-01T18:00:00Z'))).toBe('2026-10-26')
   })
 
-  it('treats Sunday 16:30 UTC as Monday 00:30 MYT', () => {
-    expect(weekStartMYT(new Date('2026-11-01T16:30:00Z')).toISOString()).toBe('2026-11-01T16:00:00.000Z')
+  it('starts a new week at Monday 05:00 MYT exactly', () => {
+    // Mon 2 Nov 2026 05:00 MYT = Sun 1 Nov 21:00 UTC
+    const start = new Date('2026-11-01T21:00:00Z')
+    expect(weekStartBusinessDate(start)).toBe('2026-11-02')
+    expect(weekStartBusinessDate(new Date(start.getTime() - 1))).toBe('2026-10-26')
   })
 
   it('handles mid-week times', () => {
     // Wed 28 Oct 2026 10:00 MYT
-    expect(weekStartMYT(new Date('2026-10-28T02:00:00Z')).toISOString()).toBe('2026-10-25T16:00:00.000Z')
+    expect(weekStartBusinessDate(new Date('2026-10-28T02:00:00Z'))).toBe('2026-10-26')
   })
 })
 

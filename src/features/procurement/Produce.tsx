@@ -237,16 +237,22 @@ export default function ProducePage() {
                   Unit cost {money(Number(preview.total_cost))} / {qty(Number(preview.output_qty))} {unit}
                   {' = '}RM {Number(preview.unit_cost).toFixed(4)} per {unit}
                 </p>
-                {preview.lines.some(l => l.unit_cost == null) && (
-                  <p className="text-xs text-[#B46309]">Some ingredients have no cost at this branch and count as RM 0.</p>
+                {preview.missing_cost && (
+                  <p className="text-xs text-[#B46309]">
+                    No cost at this branch for {preview.lines.filter(l => l.unit_cost == null).map(l => l.name).join(', ')}.
+                    {' '}Set a price on the item before producing.
+                  </p>
                 )}
               </div>
             </>
           )}
 
           <div className="border-t border-[#EDE5D8] pt-4 space-y-3">
-            {preview && !preview.can_produce && (
+            {preview && preview.lines.some(l => l.short) && (
               <p className="text-sm font-semibold text-[#9E4A30]">Not enough stock for this many batches.</p>
+            )}
+            {preview && preview.missing_cost && (
+              <p className="text-sm font-semibold text-[#9E4A30]">Some ingredients have no cost yet, so this batch cannot be costed.</p>
             )}
             {error && (
               <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">{error}</p>

@@ -290,16 +290,14 @@ const MYT_OFFSET_MS = 8 * 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
- * Monday 00:00 Asia/Kuala_Lumpur of the week containing `now`, as a UTC
- * instant. `Sun 23:30 MYT` belongs to the Monday six days earlier; `Mon 00:00
- * MYT` starts a new week.
+ * Monday (yyyy-mm-dd) of the business week containing `now`, for filtering
+ * wastage_logs.business_date. The week follows the 05:00 MYT business day
+ * (SQL business_date_of): `Mon 02:00 MYT` still belongs to the week before.
  */
-export function weekStartMYT(now: Date): Date {
-  // Shift into MYT wall-clock time, then read it with the UTC getters.
-  const local = new Date(now.getTime() + MYT_OFFSET_MS)
-  const sinceMonday = (local.getUTCDay() + 6) % 7
-  const localMidnight = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate())
-  return new Date(localMidnight - sinceMonday * DAY_MS - MYT_OFFSET_MS)
+export function weekStartBusinessDate(now: Date): string {
+  const day = new Date(`${businessDateMYT(now)}T00:00:00Z`)
+  const sinceMonday = (day.getUTCDay() + 6) % 7
+  return new Date(day.getTime() - sinceMonday * DAY_MS).toISOString().slice(0, 10)
 }
 
 /**

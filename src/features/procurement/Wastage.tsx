@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
 import { RECEIVING_PHOTOS_BUCKET } from '../../shared/lib/photos'
 import { useSignedPhotoUrls } from '../../shared/lib/useSignedPhotoUrls'
-import { money, qty, validateWastage, weekStartMYT } from '../../shared/lib/procurement'
+import { money, qty, validateWastage, weekStartBusinessDate } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog, WastageReason } from '../../shared/types'
 import {
@@ -131,7 +131,7 @@ export default function WastagePage() {
           .from('wastage_logs')
           .select('*, item:items(id,name,base_unit,department), creator:staff!wastage_logs_created_by_fkey(id,name)')
           .eq('branch_id', branchId)
-          .gte('created_at', weekStartMYT(new Date()).toISOString())
+          .gte('business_date', weekStartBusinessDate(new Date()))
           .order('created_at', { ascending: false }),
       ])
       if (cancelled) return

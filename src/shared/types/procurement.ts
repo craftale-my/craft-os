@@ -492,5 +492,7 @@ export interface ProductionPreview {
   lines: ProductionPreviewLine[]
   total_cost: number
   unit_cost: number
+  /** An ingredient has no cost at the branch; produce_batch refuses it. */
+  missing_cost: boolean
   can_produce: boolean
 }

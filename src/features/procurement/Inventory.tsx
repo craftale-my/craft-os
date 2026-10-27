@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import { qty, money, buildStockRows, formatUnitCost, sumWastage, weekStartMYT } from '../../shared/lib/procurement'
+import { qty, money, buildStockRows, formatUnitCost, sumWastage, weekStartBusinessDate } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog } from '../../shared/types'
 import { ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS } from '../../shared/types'
@@ -49,7 +49,7 @@ export default function InventoryPage() {
         supabase
           .from('wastage_logs')
           .select('item_id, branch_id, value')
-          .gte('created_at', weekStartMYT(new Date()).toISOString()),
+          .gte('business_date', weekStartBusinessDate(new Date())),
       ])
       const err = itemRes.error ?? branchRes.error ?? balRes.error ?? wasteRes.error
       if (err) setError(err.message)
