@@ -58,13 +58,71 @@ token can be obtained.
 
 ## Not built yet (next steps, in order)
 
-1. Run the first sandbox submission once credentials exist; adjust the builder to
-   whatever LHDN's validator reports.
-2. Credit notes: single (refund of an individually invoiced bill, references the
-   original UUID) and consolidated (month's refunds of consolidated bills).
-3. Receipt QR → public request page (customer enters TIN/ID, gets their own e-invoice);
-   needs a per-bill token on the receipt.
-4. Monthly cron (pg_cron → function) for consolidation in the first days of a month.
-5. v1.1 signing with a purchased certificate, then production.
-6. Owner screen in Craft OS: settings form, document list, Retry.
-7. Cutover from Feedme per branch so the same sale is never reported twice.
+Superseded by the build order in "Lowest-admin route" below.
+
+## Lowest-admin route (2026-10-29)
+
+The owner confirmed combined turnover is over RM3M, so e-invoicing is mandatory
+(General Guideline v4.8 exemption is below RM3M; third-party summaries, primary PDF
+not yet read). Goal: **no recurring work for the owner or counter staff.** Every
+ongoing task is automatic; people act only when something fails.
+
+### Who does what
+
+| Who | Task | How often |
+|---|---|---|
+| Owner | Register ERP in the **preprod** portal, set `MYINVOIS_CLIENT_ID` / `MYINVOIS_CLIENT_SECRET` on craft-os-dev | once (~10 min) |
+| Owner | Fill company identity on the E-invoice settings screen | once |
+| Owner | Register ERP in the **production** portal, set the same two secrets on Craft-Os-Prod | once, at go-live |
+| System | Monthly consolidated e-invoice for every paid bill not individually invoiced | auto, 1st of each month |
+| System | Consolidated credit note for the month's refunds of consolidated bills | auto, same run |
+| System | Individual e-invoice when a customer requests one from the receipt QR | auto, on request |
+| System | Single credit note when an individually invoiced bill is refunded | auto, on refund |
+| Owner | Open the E-invoice screen and press Retry | **only** when the system flags a rejection |
+| Counter staff | Nothing — no e-invoice button at the counter; customers self-serve | never |
+
+### Decisions that remove work
+
+- **No digital certificate at launch.** The SDK FAQ says taxpayers may keep
+  submitting unsigned v1.0 until LHDN issues a retirement notice. Go live on v1.0;
+  buy the certificate (about RM1,500 a year, per a forum post) and build v1.1 signing
+  only when that notice appears. The same FAQ also says API submission needs an
+  organisation certificate, so confirm in the production portal before go-live — if
+  production rejects v1.0, signing moves up to step 6.
+- **Customers request their own e-invoice.** Every receipt prints a QR to a public
+  page. The customer enters name, TIN (or IC), email; the system issues the individual
+  e-invoice and shows its validation link. Requests close when that month's
+  consolidation runs; after that the page says the sale is already reported.
+- **Run consolidation on the 1st**, leaving six of LHDN's seven days to retry
+  automatically (3 attempts) before the owner is alerted.
+- **Alert only on failure.** A rejected or still-invalid document shows a banner on
+  the Craft OS dashboard for `access_settings` users. No monthly report to read.
+- **Bills over RM10,000** are rare here (catering) but cannot be consolidated once the
+  relaxation period ends. They are kept out of consolidation and raise the same
+  failure banner so the owner can collect buyer details. During relaxation (RM3M–5M:
+  to 31 Dec 2027) sources disagree on whether this applies — keep the guard anyway.
+
+### Build order
+
+1. Owner screen in Craft OS: settings form (company identity), document list,
+   Retry, failure banner. Unblocks the owner's one-time step 2.
+2. First sandbox submission once credentials exist; fix the builder against
+   LHDN's validator (tax type `02`, classification `022`/`004`, buyer `NA`).
+3. Monthly pg_cron job → `consolidate` on the 1st, with automatic retries.
+4. Credit notes: consolidated (month's refunds) and single (references the
+   original UUID).
+5. Receipt QR + public request page; per-bill token printed on the receipt.
+6. Production switch for v1.0 (lift the current refusal for unsigned production).
+7. Cutover per branch: from the go-live date, that branch's sales exist only in our
+   POS, so Feedme and we never report the same bill. Two consolidated e-invoices
+   for the same month under one TIN (Feedme's and ours) are fine.
+8. Deferred until LHDN's v1.0 retirement notice: v1.1 signing + certificate.
+
+### Open questions
+
+- **Grab orders** reach Feedme automatically today. If a cut-over branch still takes
+  Grab on Feedme, Feedme keeps reporting those; if Grab moves to our POS, they join
+  our consolidation. Decide per branch at cutover.
+- ~~Over or under RM5M?~~ **Settled 2026-10-29: between RM3M and RM5M**, so the
+  relaxation period runs to 31 Dec 2027. Step 5 (QR request page) may follow the
+  first branch cutover instead of blocking it.
