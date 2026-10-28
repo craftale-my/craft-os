@@ -8,11 +8,12 @@ import {
   overQty, deliveryNeedsNote, isInternalSupplier,
 } from '../../shared/lib/procurement'
 import InternalReceiving from './InternalReceiving'
+import Stepper from './Stepper'
 import type { PurchaseOrder, PurchaseOrderItem, ReceivingLineInput } from '../../shared/types'
 
 const inputCls =
-  'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
-const labelCls = 'block text-xs font-semibold text-brown-medium mb-1'
+  'w-full px-3 py-2.5 rounded-xl border border-[#D4C5B0] bg-white text-base text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+const labelCls = 'block text-[11px] font-bold uppercase tracking-wide text-brown-faint mb-1'
 
 /** Per-line receiving state. `matched` means "everything outstanding arrived". */
 interface LineState {
@@ -32,143 +33,164 @@ function priceFor(line: PurchaseOrderItem, s: LineState): number {
   return s.price === '' ? line.unit_price : Number(s.price)
 }
 
-/** Inline problem with a line's quantity, or null if it can be submitted. */
-function lineQtyError(line: PurchaseOrderItem, s: LineState): string | null {
-  const actual = actualFor(line, s)
-  if (!Number.isFinite(actual) || actual < 0) return 'Enter zero or more.'
-  return null
+/** The line differs from "all arrived at the ordered price". */
+function lineDiffers(line: PurchaseOrderItem, s: LineState): boolean {
+  return actualFor(line, s) !== outstandingQty(line) || priceFor(line, s) !== line.unit_price
 }
 
-/** Non-blocking notice when a line brings in more than is outstanding, else null. */
-function lineOverWarning(line: PurchaseOrderItem, s: LineState): string | null {
-  const actual = actualFor(line, s)
-  if (!Number.isFinite(actual)) return null
-  const outstanding = outstandingQty(line)
-  const over = overQty(outstanding, actual)
-  if (over <= 0) return null
-  const unit = line.item?.purchase_unit ?? ''
-  return `Over-delivered: ${qty(over)} ${unit} beyond the ${qty(outstanding)} outstanding. The actual quantity will be stocked in.`
-}
-
-function LineRow({ line, state, onChange }: {
+function LineRow({ line, state, open, onToggle, onChange }: {
   line: PurchaseOrderItem
   state: LineState
+  open: boolean
+  onToggle: () => void
   onChange: (patch: Partial<LineState>) => void
 }) {
   const unit = line.item?.purchase_unit ?? ''
   const outstanding = outstandingQty(line)
   const actual = actualFor(line, state)
-  const qtyError = lineQtyError(line, state)
-  const overWarning = qtyError ? null : lineOverWarning(line, state)
-  const shortage = qtyError ? 0 : calcShortage(outstanding, actual)
+  const qtyInvalid = !Number.isFinite(actual) || actual < 0
+  const shortage = qtyInvalid ? 0 : calcShortage(outstanding, actual)
+  const over = qtyInvalid ? 0 : overQty(outstanding, actual)
   const price = priceFor(line, state)
   const delta = priceDelta(line.unit_price, price)
+  const differs = lineDiffers(line, state)
   // The PO line's stamped pack size is what submit_receiving converts with.
   const conv = Number(line.conversion_rate_used ?? line.item?.conversion_rate ?? 0)
 
   return (
-    <div className="bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4">
-      <div>
-        <p className="text-base font-semibold text-brown-dark">{line.item?.name ?? 'Unknown item'}</p>
-      </div>
-
-      {/* What is still outstanding is the benchmark this delivery is judged against. */}
-      <div>
-        <div className="flex items-baseline gap-2">
-          <span className="text-xs text-brown-faint">Expected</span>
-          <span className="text-3xl font-bold text-brown-dark">{qty(outstanding)}</span>
-          <span className="text-sm text-brown-muted">{unit}</span>
-        </div>
-        {line.received_quantity > 0 && (
-          <p className="text-xs text-brown-faint mt-0.5">
-            Ordered {qty(line.quantity_ordered)} · Received so far {qty(line.received_quantity)}
+    <div
+      className={`bg-white rounded-2xl border p-3.5 ${
+        differs ? 'border-[#E9B9A8] shadow-[inset_4px_0_0_#9E4A30]' : 'border-[#EDE5D8]'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-bold text-[15px] text-brown-dark leading-snug">{line.item?.name ?? 'Unknown item'}</p>
+          <p className="text-xs text-brown-faint">
+            {qty(outstanding)} {unit} {line.received_quantity > 0 ? 'still to come' : 'ordered'}
+            {line.received_quantity > 0 && ` · ${qty(line.received_quantity)} received earlier`}
           </p>
-        )}
-      </div>
-
-      <div className="flex gap-2">
-        <button
-          onClick={() => onChange({ matched: true, actual: '' })}
-          className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
-            state.matched
-              ? 'bg-[#3D7A50] text-white'
-              : 'border border-[#D4C5B0] text-brown-medium hover:bg-[#F5EDE0]'
-          }`}
-        >
-          ✓ Matches
-        </button>
-        <button
-          onClick={() => onChange({ matched: false, actual: state.actual || String(outstanding) })}
-          className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
-            !state.matched
-              ? 'bg-[#C4813A] text-white'
-              : 'border border-[#D4C5B0] text-brown-medium hover:bg-[#F5EDE0]'
-          }`}
-        >
-          Doesn't match
-        </button>
-      </div>
-
-      {!state.matched && (
-        <div className="rounded-xl border border-[#D4C5B0] bg-[#FBF6EE] p-4">
-          <label className={labelCls}>Actual received</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="number" step="any" min="0"
-              className={`${inputCls} w-32 ${qtyError ? 'border-[#9E4A30]' : overWarning ? 'border-[#B46309]' : ''}`}
-              value={state.actual}
-              onChange={e => onChange({ actual: e.target.value })}
-              placeholder="0"
-              aria-invalid={qtyError ? true : undefined}
-            />
-            <span className="text-sm text-brown-muted">{unit}</span>
-          </div>
-          {qtyError ? (
-            <p className="text-sm font-semibold text-[#9E4A30] mt-2.5">{qtyError}</p>
-          ) : overWarning ? (
-            <p className="text-sm font-semibold text-[#B46309] bg-[#B4630912] border border-[#B4630940] rounded-lg px-3 py-2 mt-2.5">
-              {overWarning}
-            </p>
-          ) : shortage > 0 && (
-            <p className="text-sm font-bold text-[#9E4A30] mt-2.5">
-              Shortage: {qty(shortage)} {unit} — stays outstanding for a later delivery.
+          {differs && !open && (
+            <p className="text-xs font-semibold text-[#9E4A30] mt-0.5">
+              {shortage > 0 && `Arrived ${qty(actual)} · ${qty(shortage)} short`}
+              {over > 0 && `Arrived ${qty(actual)} · ${qty(over)} extra`}
+              {shortage === 0 && over === 0 && `Price ${money(price)} (ordered ${money(line.unit_price)})`}
             </p>
           )}
         </div>
-      )}
+        <div className="flex items-center gap-3 shrink-0">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="h-11 px-2 text-sm font-bold text-brown-btn"
+            aria-expanded={open}
+          >
+            {open ? 'Done' : 'Edit'}
+          </button>
+          <span
+            aria-hidden
+            className={`w-8 h-8 rounded-full grid place-items-center font-extrabold ${
+              differs ? 'bg-[#FCF0EC] text-[#9E4A30]' : 'bg-[#EBF5EE] text-[#3D7A50]'
+            }`}
+          >
+            {differs ? '!' : '✓'}
+          </span>
+        </div>
+      </div>
 
-      <div>
-        <label className={labelCls}>Invoice price (RM / {unit})</label>
-        <div className="flex items-center gap-3 flex-wrap">
-          <input
-            type="number" step="0.01" min="0"
-            className={`${inputCls} w-32`}
-            value={state.price}
-            onChange={e => onChange({ price: e.target.value })}
-            placeholder={line.unit_price.toFixed(2)}
-          />
-          <span className="text-xs text-brown-faint">Ordered at {money(line.unit_price)}</span>
-          {delta.direction !== 'same' && (
-            <span
-              className="text-xs font-bold px-2 py-0.5 rounded-full"
-              style={{
-                background: delta.direction === 'up' ? '#9E4A3020' : '#3D7A5020',
-                color: delta.direction === 'up' ? '#9E4A30' : '#3D7A50',
-              }}
-            >
-              {delta.direction === 'up' ? '↑' : '↓'} {money(delta.amount)}
-              {delta.percent !== 0 && ` (${delta.percent > 0 ? '+' : ''}${delta.percent.toFixed(1)}%)`}
+      {open && (
+        <div className="mt-3 pt-3 border-t border-[#E8DDD0] space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm font-semibold text-brown-muted">
+              Arrived
+              <span className="block text-xs font-normal text-brown-faint">{unit}</span>
             </span>
+            <Stepper
+              value={Number.isFinite(actual) ? actual : 0}
+              onChange={n => onChange({ matched: false, actual: String(n) })}
+              label={`${line.item?.name ?? 'Item'} arrived`}
+              tone={differs ? 'warn' : 'normal'}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor={`price-${line.id}`} className="text-sm font-semibold text-brown-muted">
+              Invoice price / {unit}
+            </label>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm text-brown-faint">RM</span>
+              <input
+                id={`price-${line.id}`}
+                type="number" inputMode="decimal" step="0.01" min="0"
+                className="w-24 px-2.5 py-2 rounded-lg border border-[#D4C5B0] bg-white text-base text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]"
+                value={state.price}
+                onChange={e => onChange({ price: e.target.value })}
+                placeholder={line.unit_price.toFixed(2)}
+              />
+            </div>
+          </div>
+          {delta.direction !== 'same' && (
+            <p className={`text-xs font-bold ${delta.direction === 'up' ? 'text-[#9E4A30]' : 'text-[#3D7A50]'}`}>
+              {delta.direction === 'up' ? '↑' : '↓'} {money(delta.amount)} vs ordered {money(line.unit_price)}
+              {delta.percent !== 0 && ` (${delta.percent > 0 ? '+' : ''}${delta.percent.toFixed(1)}%)`}
+            </p>
+          )}
+          {shortage > 0 && (
+            <p className="text-[13px] font-semibold text-[#9E4A30] bg-[#FCF0EC] rounded-lg px-3 py-2">
+              {qty(shortage)} {unit} short. The order stays open for the rest.
+            </p>
+          )}
+          {over > 0 && (
+            <p className="text-[13px] font-semibold text-[#B46309] bg-[#B4630912] rounded-lg px-3 py-2">
+              {qty(over)} {unit} more than expected. The extra is stocked in.
+            </p>
+          )}
+          {!qtyInvalid && actual > 0 && conv > 0 && (
+            <p className="text-xs text-brown-faint">
+              Stock in {qty(toBaseUnits(actual, conv))} {line.item?.base_unit} · Line total {money(actual * price)}
+            </p>
           )}
         </div>
-      </div>
-
-      {!qtyError && actual > 0 && conv > 0 && (
-        <p className="text-xs text-brown-faint border-t border-[#EDE5D8] pt-3">
-          Stock in {qty(toBaseUnits(actual, conv))} {line.item?.base_unit} · Line total {money(actual * price)}
-        </p>
       )}
     </div>
+  )
+}
+
+/** Big tap target that opens the camera (falls back to the file picker). */
+function PhotoButton({ file, onFile, title, hint, required }: {
+  file: File | null
+  onFile: (f: File | null) => void
+  title: string
+  hint: string
+  required?: boolean
+}) {
+  return (
+    <label
+      className={`flex items-center gap-3 rounded-2xl p-3.5 cursor-pointer border ${
+        file ? 'border-[#B9D6C2] bg-[#EBF5EE]'
+          : required ? 'border-dashed border-[#CDB89C] bg-white border-[1.5px]' : 'border-[#EDE5D8] bg-white'
+      }`}
+    >
+      <span className={`w-12 h-12 rounded-xl grid place-items-center shrink-0 ${file ? 'bg-white' : 'bg-[#F5EDE0]'}`}>
+        {file ? (
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3D7A50" strokeWidth="2.4" aria-hidden><path d="M5 12l5 5 9-10" /></svg>
+        ) : (
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#6B4C35" strokeWidth="2" aria-hidden>
+            <path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" />
+          </svg>
+        )}
+      </span>
+      <span className="min-w-0">
+        <span className="block font-bold text-[15px] text-brown-dark">{file ? `${title} added` : title}</span>
+        <span className="block text-xs text-brown-muted truncate">{file ? 'Tap to retake' : hint}</span>
+      </span>
+      <input
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="sr-only"
+        onChange={e => onFile(e.target.files?.[0] ?? null)}
+      />
+    </label>
   )
 }
 
@@ -190,6 +212,8 @@ export default function ReceivingPage() {
   const [error, setError] = useState('')
   // Internal PO (transfer from HQ): received by InternalReceiving instead.
   const [internal, setInternal] = useState(false)
+  // Line opened with Edit (one at a time keeps the screen short).
+  const [openId, setOpenId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!poId) return
@@ -272,10 +296,11 @@ export default function ReceivingPage() {
   try { applyDelivery(lines, payload) } catch { qtyInvalid = true }
   const priceInvalid = payload.some(l => !(l.unit_price >= 0))
   const nothingReceived = !qtyInvalid && !payload.some(l => l.actual_quantity > 0)
-  // submit_receiving requires a note when any line is over-delivered.
-  const needsNote = !qtyInvalid && deliveryNeedsNote(
-    lines.map((l, i) => ({ outstanding: outstandingQty(l), actual: payload[i].actual_quantity })),
-  )
+  // submit_receiving requires a note when any line is over-delivered; the
+  // screen also asks for one when something is short, so the gap is explained.
+  const deliveryLines = lines.map((l, i) => ({ outstanding: outstandingQty(l), actual: payload[i].actual_quantity }))
+  const anyShort = !qtyInvalid && deliveryLines.some(l => calcShortage(l.outstanding, l.actual) > 0)
+  const needsNote = !qtyInvalid && (deliveryNeedsNote(deliveryLines) || anyShort)
   const noteMissing = needsNote && notes.trim() === ''
 
   async function submit() {
@@ -284,7 +309,7 @@ export default function ReceivingPage() {
     if (qtyInvalid) return setError('Fix the highlighted quantities first.')
     if (priceInvalid) return setError('Unit prices cannot be negative.')
     if (nothingReceived) return setError('Enter a quantity on at least one line.')
-    if (noteMissing) return setError('Add a note explaining the over-delivery.')
+    if (noteMissing) return setError('Add a note saying what was short or extra.')
 
     setSubmitting(true)
     setError('')
@@ -346,16 +371,40 @@ export default function ReceivingPage() {
       overs: acc.overs + (overQty(outstandingQty(l), actual) > 0 ? 1 : 0),
     }
   }, { value: 0, shortages: 0, overs: 0 })
+  const allAsOrdered = lines.every(l => !lineDiffers(l, states[l.id] ?? DEFAULT_STATE))
+
+  function toggle(line: PurchaseOrderItem) {
+    if (openId === line.id) {
+      // Closing a line that ended up exactly as ordered puts it back to "arrived".
+      const s = states[line.id] ?? DEFAULT_STATE
+      if (!lineDiffers(line, s)) setLineState(line.id, DEFAULT_STATE)
+      setOpenId(null)
+    } else {
+      setOpenId(line.id)
+    }
+  }
+
+  const summary = [
+    totals.shortages > 0 && `${totals.shortages} short`,
+    totals.overs > 0 && `${totals.overs} extra`,
+  ].filter(Boolean).join(' · ')
+
+  const blocker = !invoiceFile ? 'Take the invoice photo first.'
+    : qtyInvalid ? 'Fix the highlighted quantities.'
+    : nothingReceived ? 'At least one line must have arrived.'
+    : noteMissing ? 'Add a note saying what was short or extra.'
+    : priceInvalid ? 'Unit prices cannot be negative.'
+    : ''
 
   return (
     <div className="min-h-screen bg-cream-light">
-      <div className="max-w-2xl mx-auto px-4 py-8 lg:px-8 space-y-5">
+      <div className="max-w-xl mx-auto px-3 pt-5 pb-4 sm:px-4 space-y-3">
         <div>
-          <Link to="/procurement/receiving" className="text-xs text-brown-faint hover:text-[#C4813A] transition-colors">
+          <Link to="/procurement/receiving" className="text-sm text-brown-faint hover:text-[#C4813A]">
             ← Receiving
           </Link>
-          <h1 className="text-2xl font-bold text-brown-dark mt-1">
-            {po.status === 'partially_received' ? 'Receive remaining' : 'Receive'} {po.po_number}
+          <h1 className="text-xl font-bold text-brown-dark mt-1">
+            {po.status === 'partially_received' ? 'Receive the rest of' : 'Receive'} {po.po_number}
           </h1>
           <p className="text-sm text-brown-muted">
             {po.supplier?.name ?? '—'} · {po.branch?.name ?? '—'}
@@ -363,114 +412,87 @@ export default function ReceivingPage() {
         </div>
 
         {error && (
-          <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">{error}</p>
+          <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5">{error}</p>
         )}
 
-        <div className="space-y-3">
+        <PhotoButton
+          file={invoiceFile}
+          onFile={setInvoiceFile}
+          title="Photo of invoice"
+          hint="Required · opens the camera"
+          required
+        />
+
+        <p className="text-xs font-bold uppercase tracking-wide text-brown-muted px-1 pt-1">
+          {lines.length} item{lines.length > 1 ? 's' : ''}
+        </p>
+        <div className="space-y-2">
           {lines.map(l => (
             <LineRow
               key={l.id}
               line={l}
               state={states[l.id] ?? DEFAULT_STATE}
+              open={openId === l.id}
+              onToggle={() => toggle(l)}
               onChange={patch => setLineState(l.id, patch)}
             />
           ))}
         </div>
-
-        <section className="bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4">
-          <h2 className="text-sm font-bold text-brown-dark">Proof of Delivery</h2>
-
-          <div>
-            <label className={labelCls}>Invoice / DO photo *</label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={e => setInvoiceFile(e.target.files?.[0] ?? null)}
-              className="text-xs"
-            />
-            {invoiceFile
-              ? <p className="text-xs text-[#3D7A50] mt-1">✓ {invoiceFile.name}</p>
-              : <p className="text-xs text-brown-faint mt-1">Required — a receipt can't be submitted without an invoice photo.</p>}
-          </div>
-
-          <div>
-            <label className={labelCls}>Goods photo (optional)</label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={e => setGoodsFile(e.target.files?.[0] ?? null)}
-              className="text-xs"
-            />
-            {goodsFile && <p className="text-xs text-[#3D7A50] mt-1">✓ {goodsFile.name}</p>}
-          </div>
-
-          <div>
-            <label htmlFor="receiving-notes" className={labelCls}>Notes{needsNote ? ' *' : ''}</label>
-            <textarea
-              id="receiving-notes"
-              rows={2}
-              className={`${inputCls} resize-none ${noteMissing ? 'border-[#B46309]' : ''}`}
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              placeholder={needsNote
-                ? 'e.g. Supplier sent 2 extra cartons, kept them at the invoiced price'
-                : 'e.g. 2 packs damaged, driver noted it'}
-              required={needsNote}
-              aria-invalid={noteMissing ? true : undefined}
-            />
-            {needsNote && (
-              <p className={`text-xs mt-1 font-semibold ${noteMissing ? 'text-[#B46309]' : 'text-brown-faint'}`}>
-                Note required — explain the over-delivery
-              </p>
-            )}
-          </div>
-
-          <p className="text-xs text-brown-faint border-t border-[#EDE5D8] pt-3">
-            Signed off by <span className="font-semibold text-brown-muted">{staff?.name ?? '—'}</span>
+        {allAsOrdered && (
+          <p className="text-[13px] text-brown-muted px-1">
+            Something missing, extra or a different price? Tap <span className="font-bold">Edit</span> on that line only.
           </p>
-        </section>
+        )}
 
-        <section className="bg-white rounded-xl border border-[#E8DDD0] p-5">
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div>
-              <p className="text-xs text-brown-faint">Received value</p>
-              <p className="text-xl font-bold text-brown-dark">{money(totals.value)}</p>
-              {!qtyInvalid && totals.shortages > 0 && (
-                <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">
-                  {totals.shortages} line{totals.shortages > 1 ? 's' : ''} short — the order stays open as
-                  partially received for the rest.
-                </p>
-              )}
-              {!qtyInvalid && totals.overs > 0 && (
-                <p className="text-xs text-[#B46309] font-semibold mt-0.5">
-                  {totals.overs} line{totals.overs > 1 ? 's' : ''} over-delivered — the extra is stocked in.
-                  {noteMissing && ' Add a note before submitting.'}
-                </p>
-              )}
-              {qtyInvalid && (
-                <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">
-                  Fix the highlighted quantities before submitting.
-                </p>
-              )}
-              {nothingReceived && (
-                <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">
-                  Enter a quantity on at least one line — a delivery has to bring something in.
-                </p>
-              )}
-            </div>
-            <button
-              onClick={submit}
-              disabled={submitting || !invoiceFile || qtyInvalid || priceInvalid || nothingReceived || noteMissing}
-              className="px-5 py-2.5 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors disabled:opacity-50"
-            >
-              {submitting ? 'Submitting…' : 'Confirm Receipt'}
-            </button>
+        <div>
+          <label htmlFor="receiving-notes" className={`${labelCls} px-1`}>
+            {needsNote ? 'Note (needed: something is short or extra)' : 'Note (optional)'}
+          </label>
+          <textarea
+            id="receiving-notes"
+            rows={2}
+            className={`${inputCls} resize-none ${noteMissing ? 'border-[#B46309]' : ''}`}
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder={needsNote
+              ? 'e.g. Supplier will send the other carton tomorrow'
+              : 'e.g. 2 packs damaged, driver noted it'}
+            required={needsNote}
+            aria-invalid={noteMissing ? true : undefined}
+          />
+        </div>
+
+        <PhotoButton
+          file={goodsFile}
+          onFile={setGoodsFile}
+          title="Goods photo"
+          hint="Optional"
+        />
+
+        <p className="text-xs text-brown-faint px-1">
+          Signed off by <span className="font-semibold text-brown-muted">{staff?.name ?? '—'}</span>.
+          Confirming adds the stock and records the invoice prices.
+        </p>
+      </div>
+
+      <div className="sticky bottom-0 bg-white border-t border-[#EDE5D8] px-3.5 pt-3 pb-4">
+        <div className="max-w-xl mx-auto">
+          <div className="flex justify-between text-[13px] text-brown-muted mb-2.5">
+            <span>Invoice total{summary ? ` · ${summary}` : ''}</span>
+            <span className="text-base font-bold text-brown-dark">{money(totals.value)}</span>
           </div>
-          <p className="text-xs text-brown-faint mt-3">
-            Submitting adds the stock, records the invoice prices and updates the order. Anything still short
-            stays open for a later delivery.
-          </p>
-        </section>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting || !!blocker}
+            className="w-full h-[52px] rounded-2xl bg-[#3D7A50] text-white text-base font-bold active:bg-[#2E6040] disabled:opacity-45"
+          >
+            {submitting ? 'Submitting…' : allAsOrdered ? 'All arrived — confirm' : 'Confirm delivery'}
+          </button>
+          {blocker && !submitting && (
+            <p className="text-xs text-center text-brown-muted mt-2">{blocker}</p>
+          )}
+        </div>
       </div>
     </div>
   )
