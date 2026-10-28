@@ -11,6 +11,7 @@ import {
   shippedUnitCost, transitShortQty, validateShipLines, validateInternalReceipt, transferStatus, transferStatusLabel,
   parseTransferNote, roundQty,
   businessDateMYT, currentRecipe, recipeVersionStatus, recipeCost, estimatedUnitCost, validateRecipeDraft,
+  suggestedOrderPacks, packs,
 } from './procurement'
 import type { InventoryBalance, InventoryValuation, Item, PoStatus } from '../types'
 
@@ -301,6 +302,39 @@ describe('priceDelta', () => {
     const d = priceDelta(0, 45)
     expect(d.direction).toBe('up')
     expect(d.percent).toBe(0)
+  })
+})
+
+describe('suggestedOrderPacks', () => {
+  const eggs = { minStockAlert: 90, conversionRate: 30 }
+
+  it('brings low stock back up to 2x the alert, in whole packs', () => {
+    // 180 - 68 = 112 pcs = 3.73 trays -> 4
+    expect(suggestedOrderPacks({ ...eggs, onHand: 68, onOrder: 0 })).toBe(4)
+  })
+
+  it('counts what is already on order', () => {
+    expect(suggestedOrderPacks({ ...eggs, onHand: 68, onOrder: 60 })).toBe(2)
+    expect(suggestedOrderPacks({ ...eggs, onHand: 68, onOrder: 120 })).toBe(0)
+  })
+
+  it('suggests nothing above the alert, or without an alert or pack size', () => {
+    expect(suggestedOrderPacks({ ...eggs, onHand: 91, onOrder: 0 })).toBe(0)
+    expect(suggestedOrderPacks({ onHand: 0, onOrder: 0, minStockAlert: 0, conversionRate: 30 })).toBe(0)
+    expect(suggestedOrderPacks({ onHand: 0, onOrder: 0, minStockAlert: 90, conversionRate: 0 })).toBe(0)
+  })
+
+  it('treats exactly at the alert as low', () => {
+    expect(suggestedOrderPacks({ ...eggs, onHand: 90, onOrder: 0 })).toBe(3)
+  })
+})
+
+describe('packs', () => {
+  it('shows base units as packs to one decimal', () => {
+    expect(packs(68, 30)).toBe('2.3')
+    expect(packs(45700, 12000)).toBe('3.8')
+    expect(packs(2000, 1000)).toBe('2')
+    expect(packs(5, 0)).toBe('0')
   })
 })
 

@@ -147,6 +147,29 @@ export function isBelowAlert(balance: number, minStockAlert: number): boolean {
 }
 
 /**
+ * Pack quantity to suggest on a new PO, in purchase units (whole packs).
+ * Only for stock at or below the alert: enough to bring on hand + already on
+ * order back up to 2× the alert, rounded up. 0 when not low, when what is on
+ * order already covers it, or when there is no alert / usable pack size.
+ * All stock arguments are base units.
+ */
+export function suggestedOrderPacks({ onHand, onOrder, minStockAlert, conversionRate }: {
+  onHand: number
+  onOrder: number
+  minStockAlert: number
+  conversionRate: number
+}): number {
+  if (!(conversionRate > 0) || !isBelowAlert(onHand, minStockAlert)) return 0
+  const gap = 2 * minStockAlert - onHand - onOrder
+  return gap > 0 ? Math.ceil(gap / conversionRate) : 0
+}
+
+/** Base units shown as packs, one decimal: 68 pcs at 30/tray ⇒ "2.3". */
+export function packs(baseQuantity: number, conversionRate: number): string {
+  return qty(Math.round(toPurchaseUnits(baseQuantity, conversionRate) * 10) / 10)
+}
+
+/**
  * Value of stock held, using the latest price. `latestPrice` is per purchase
  * unit and `balance` is in base units, so the price is scaled down first.
  * Null when there is no price or the conversion rate is unusable.
