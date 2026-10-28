@@ -60,6 +60,7 @@ export const NAV: NavEntry[] = [
       { id: 'pos-register', label: 'Register',          to: '/pos', activePaths: ['/pos'] },
       { id: 'menu',         label: 'Menu',              to: '/menu', activePaths: ['/menu'], cap: 'manage_menu' },
       { id: 'pos-settings', label: 'POS Settings',      to: '/pos/settings', cap: 'access_settings' },
+      { id: 'pos-einvoice', label: 'E-invoice',         to: '/pos/einvoice', cap: 'access_settings' },
     ],
   },
   { id: 'settings', label: 'Settings', to: '/settings', cap: 'access_settings' },
