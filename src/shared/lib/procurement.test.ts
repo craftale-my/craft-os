@@ -20,6 +20,7 @@ function makeItem(overrides: Partial<Item> & Pick<Item, 'id' | 'name'>): Item {
     name_zh: null,
     category: 'raw',
     department: null,
+    departments: [],
     supplier_id: null,
     purchase_unit: 'bag',
     base_unit: 'g',
@@ -374,9 +375,9 @@ describe('stockValue', () => {
 })
 
 describe('buildStockRows', () => {
-  const beans = makeItem({ id: 'beans', name: 'Coffee Beans', department: 'cafe_bar', latest_price: 85, min_stock_alert: 1000 })
-  const flour = makeItem({ id: 'flour', name: 'Flour', department: 'bakery', min_stock_alert: 500 })
-  const cups = makeItem({ id: 'cups', name: 'Paper Cups', department: null, base_unit: 'pcs' })
+  const beans = makeItem({ id: 'beans', name: 'Coffee Beans', departments: ['cafe_bar'], latest_price: 85, min_stock_alert: 1000 })
+  const flour = makeItem({ id: 'flour', name: 'Flour', departments: ['bakery'], min_stock_alert: 500 })
+  const cups = makeItem({ id: 'cups', name: 'Paper Cups', departments: [], base_unit: 'pcs' })
   const items = [cups, flour, beans]
   const balances: InventoryBalance[] = [
     { item_id: 'beans', branch_id: 'b1', balance: 800 },
@@ -402,6 +403,15 @@ describe('buildStockRows', () => {
   it('treats items without a balance row as zero', () => {
     const rows = buildStockRows({ ...base, balances: [] })
     expect(rows.every(r => r.balance === 0)).toBe(true)
+  })
+
+  it('lists an item under every department it belongs to', () => {
+    const milk = makeItem({ id: 'milk', name: 'Milk', departments: ['cafe_bar', 'bakery'] })
+    const rows = (department: 'cafe_bar' | 'bakery' | 'kitchen') =>
+      buildStockRows({ ...base, items: [...items, milk], department }).map(r => r.item.id)
+    expect(rows('cafe_bar')).toContain('milk')
+    expect(rows('bakery')).toContain('milk')
+    expect(rows('kitchen')).not.toContain('milk')
   })
 
   it('filters by department', () => {
@@ -752,9 +762,9 @@ describe('validateWastage', () => {
 
 describe('sumWastage', () => {
   const items = [
-    makeItem({ id: 'beans', name: 'Beans', department: 'cafe_bar' }),
-    makeItem({ id: 'flour', name: 'Flour', department: 'bakery' }),
-    makeItem({ id: 'misc', name: 'Misc', department: null }),
+    makeItem({ id: 'beans', name: 'Beans', departments: ['cafe_bar'] }),
+    makeItem({ id: 'flour', name: 'Flour', departments: ['bakery'] }),
+    makeItem({ id: 'misc', name: 'Misc', departments: [] }),
   ]
   const logs = [
     { item_id: 'beans', branch_id: 'b1', value: 10 },

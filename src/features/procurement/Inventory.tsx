@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import { qty, money, buildStockRows, formatUnitCost, sumWastage, weekStartBusinessDate } from '../../shared/lib/procurement'
+import {
+  qty, money, buildStockRows, formatUnitCost, sumWastage, weekStartBusinessDate, departmentLabels,
+} from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog } from '../../shared/types'
 import { ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS } from '../../shared/types'
@@ -66,7 +68,7 @@ export default function InventoryPage() {
   const branchId = allBranches ? branchFilter : (staff?.branch_id ?? 'all')
   const branchOptions = allBranches ? branches : branches.filter(b => b.id === staff?.branch_id)
 
-  const hasUnassigned = items.some(i => i.department == null)
+  const hasUnassigned = items.some(i => i.departments.length === 0)
   const departmentOptions: { value: StockDepartmentFilter; label: string }[] = [
     { value: 'all', label: 'All' },
     ...ITEM_DEPARTMENTS.map(d => ({ value: d, label: ITEM_DEPARTMENT_LABELS[d] })),
@@ -203,7 +205,7 @@ export default function InventoryPage() {
                         {item.category === 'semi_finished' && <span className="ml-2"><SemiFinishedBadge /></span>}
                       </td>
                       <td className="px-4 py-3 text-xs text-brown-muted whitespace-nowrap">
-                        {item.department ? ITEM_DEPARTMENT_LABELS[item.department] : '—'}
+                        {departmentLabels(item)}
                       </td>
                       <td className="px-4 py-3 text-right whitespace-nowrap">
                         <span className={low ? 'text-[#9E4A30] font-bold' : 'text-brown-dark font-medium'}>

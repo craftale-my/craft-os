@@ -4,12 +4,11 @@ import { supabase } from '../../shared/lib/supabase'
 import { useCan } from '../../shared/lib/permissions'
 import {
   money, qty, formatUnitCost, formatDateTimeMYT, businessDateMYT, currentRecipe, recipeVersionStatus, recipeCost,
-  estimatedUnitCost,
+  estimatedUnitCost, departmentLabels,
 } from '../../shared/lib/procurement'
 import { useBranchPicker } from './useBranchPicker'
 import { RecipeStatusBadge, SemiFinishedBadge } from './badges'
 import type { Item, Recipe, ProductionBatch, InventoryValuation } from '../../shared/types'
-import { ITEM_DEPARTMENT_LABELS } from '../../shared/types'
 
 const selectCls =
   'w-auto px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
@@ -126,7 +125,7 @@ export default function RecipeDetailPage() {
               </h1>
               <p className="text-sm text-brown-faint mt-0.5">
                 {current ? `v${current.version} in effect since ${current.effective_from}` : 'No version in effect today'}
-                {item.department && ` · ${ITEM_DEPARTMENT_LABELS[item.department]}`}
+                {item.departments.length > 0 && ` · ${departmentLabels(item)}`}
                 {' · '}
                 <Link to={`/procurement/inventory/${item.id}`} className="text-[#C4813A] hover:underline">
                   {qty(onHand)} {unit} on hand

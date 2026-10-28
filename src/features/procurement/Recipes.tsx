@@ -2,10 +2,9 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useCan } from '../../shared/lib/permissions'
-import { money, qty, formatUnitCost, businessDateMYT, currentRecipe } from '../../shared/lib/procurement'
+import { money, qty, formatUnitCost, businessDateMYT, currentRecipe, departmentLabels } from '../../shared/lib/procurement'
 import { useBranchPicker } from './useBranchPicker'
 import type { Item, Recipe, RecipeCostEstimate, InventoryValuation } from '../../shared/types'
-import { ITEM_DEPARTMENT_LABELS } from '../../shared/types'
 
 const selectCls =
   'w-auto px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
@@ -180,7 +179,7 @@ export default function RecipesPage() {
                       </Link>
                     </td>
                     <td className="px-4 py-3 text-xs text-brown-muted whitespace-nowrap">
-                      {item.department ? ITEM_DEPARTMENT_LABELS[item.department] : '—'}
+                      {departmentLabels(item)}
                     </td>
                     <td className="px-4 py-3 text-xs whitespace-nowrap">
                       {current ? (

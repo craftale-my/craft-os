@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
 import { RECEIVING_PHOTOS_BUCKET } from '../../shared/lib/photos'
 import { useSignedPhotoUrls } from '../../shared/lib/useSignedPhotoUrls'
-import { money, qty, validateWastage, weekStartBusinessDate } from '../../shared/lib/procurement'
+import { money, qty, validateWastage, weekStartBusinessDate, inDepartment } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog, WastageReason } from '../../shared/types'
 import {
@@ -129,7 +129,7 @@ export default function WastagePage() {
         supabase.from('inventory_valuation').select('*').eq('branch_id', branchId),
         supabase
           .from('wastage_logs')
-          .select('*, item:items(id,name,base_unit,department), creator:staff!wastage_logs_created_by_fkey(id,name)')
+          .select('*, item:items(id,name,base_unit,departments), creator:staff!wastage_logs_created_by_fkey(id,name)')
           .eq('branch_id', branchId)
           .gte('business_date', weekStartBusinessDate(new Date()))
           .order('created_at', { ascending: false }),
@@ -163,7 +163,7 @@ export default function WastagePage() {
     return stockByItem.get(id)?.balance ?? 0
   }
 
-  const hasUnassigned = items.some(i => i.department == null)
+  const hasUnassigned = items.some(i => i.departments.length === 0)
   const departmentOptions: { value: StockDepartmentFilter; label: string }[] = [
     { value: 'all', label: 'All' },
     ...ITEM_DEPARTMENTS.map(d => ({ value: d, label: ITEM_DEPARTMENT_LABELS[d] })),
@@ -173,8 +173,7 @@ export default function WastagePage() {
   const visibleItems = useMemo(() => {
     const term = search.trim().toLowerCase()
     return items
-      .filter(i => department === 'all'
-        || (department === 'unassigned' ? i.department == null : i.department === department))
+      .filter(i => inDepartment(i, department))
       .filter(i => !term || i.name.toLowerCase().includes(term))
   }, [items, department, search])
 

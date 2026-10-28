@@ -188,7 +188,7 @@ export default function RecipeNewPage() {
         .insert({
           name: newItem.name.trim(),
           category: 'semi_finished',
-          department: newItem.department || null,
+          departments: newItem.department ? [newItem.department] : [],
           supplier_id: null,
           purchase_unit: newItem.base_unit,
           base_unit: newItem.base_unit,

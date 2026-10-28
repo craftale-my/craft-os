@@ -65,6 +65,9 @@ export interface Item {
   /** Legacy column; not shown in the UI. */
   name_zh: string | null
   category: ItemCategory
+  /** Every department that uses the item; empty = unassigned. */
+  departments: ItemDepartment[]
+  /** Legacy single department, kept in step with departments[0] by the DB. */
   department: ItemDepartment | null
   supplier_id: string | null
   /** Unit the item is bought in — bag / box / tub. */
@@ -364,7 +367,7 @@ export interface WastageLog {
   transaction_id: string | null
   created_by: string | null
   created_at: string
-  item?: Pick<Item, 'id' | 'name' | 'base_unit' | 'department'> | null
+  item?: Pick<Item, 'id' | 'name' | 'base_unit' | 'departments'> | null
   creator?: { id: string; name: string } | null
 }
 

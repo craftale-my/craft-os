@@ -2,7 +2,7 @@ import type {
   InventoryBalance, InventoryValuation, Item, ItemDepartment, PurchaseOrder, PurchaseOrderItem, PoStatus, Recipe,
   Staff, Supplier, WastageLog,
 } from '../types'
-import { WASTAGE_REASONS } from '../types'
+import { WASTAGE_REASONS, ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS } from '../types'
 
 /** Purchase units → base units. `1 bag = 2000 g` ⇒ toBaseUnits(3, 2000) = 6000. */
 export function toBaseUnits(quantity: number, conversionRate: number): number {
@@ -232,6 +232,24 @@ export function formatUnitCost(n: number | null, baseUnit: string): string {
 
 export type StockDepartmentFilter = 'all' | ItemDepartment | 'unassigned'
 
+/**
+ * Whether an item belongs under a department filter. Items can be in several
+ * departments; 'unassigned' matches items in none.
+ */
+export function inDepartment(item: Pick<Item, 'departments'>, filter: StockDepartmentFilter): boolean {
+  const deps = item.departments ?? []
+  if (filter === 'all') return true
+  if (filter === 'unassigned') return deps.length === 0
+  return deps.includes(filter)
+}
+
+/** Department labels of an item, e.g. "Cafe & Bar, Bakery"; '—' when none. */
+export function departmentLabels(item: Pick<Item, 'departments'>): string {
+  const deps = item.departments ?? []
+  if (!deps.length) return '—'
+  return ITEM_DEPARTMENTS.filter(d => deps.includes(d)).map(d => ITEM_DEPARTMENT_LABELS[d]).join(', ')
+}
+
 export interface StockRow {
   item: Item
   /** Base units. */
@@ -280,8 +298,7 @@ export function buildStockRows({ items, balances, branchId, department, search }
 
   const term = search.trim().toLowerCase()
   return items
-    .filter(i => department === 'all'
-      || (department === 'unassigned' ? i.department == null : i.department === department))
+    .filter(i => inDepartment(i, department))
     .filter(i => !term || i.name.toLowerCase().includes(term))
     .map(item => {
       const balance = totals.get(item.id) ?? 0
@@ -360,24 +377,23 @@ export interface WastageTotals {
 /**
  * Wastage value of `logs` for the Stock on Hand filters. `branchId` 'all'
  * counts every row; `department` matches {@link buildStockRows}, judged by
- * the item's department in `items`. Logs for items not in `items` (e.g. an
+ * the item's departments in `items`. Logs for items not in `items` (e.g. an
  * item made inactive since) only count under 'all'. Rows without a value
  * (uncosted item) contribute 0.
  */
 export function sumWastage(logs: WastageValueRow[], { branchId, department, items }: {
   branchId: string
   department: StockDepartmentFilter
-  items: Pick<Item, 'id' | 'department'>[]
+  items: Pick<Item, 'id' | 'departments'>[]
 }): WastageTotals {
-  const deptOf = new Map(items.map(i => [i.id, i.department]))
+  const itemOf = new Map(items.map(i => [i.id, i]))
   const byItem = new Map<string, number>()
   let total = 0
   for (const log of logs) {
     if (branchId !== 'all' && log.branch_id !== branchId) continue
     if (department !== 'all') {
-      if (!deptOf.has(log.item_id)) continue
-      const d = deptOf.get(log.item_id) ?? null
-      if (department === 'unassigned' ? d != null : d !== department) continue
+      const item = itemOf.get(log.item_id)
+      if (!item || !inDepartment(item, department)) continue
     }
     const v = log.value == null ? 0 : Number(log.value)
     if (!Number.isFinite(v)) continue

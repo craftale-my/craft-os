@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useCan } from '../../shared/lib/permissions'
-import { money, qty, isBelowAlert } from '../../shared/lib/procurement'
+import { money, qty, isBelowAlert, departmentLabels } from '../../shared/lib/procurement'
 import type { Item, Supplier, ItemCategory, ItemDepartment, InventoryBalance } from '../../shared/types'
 import {
   ITEM_CATEGORIES, ITEM_CATEGORY_LABELS, ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS,
@@ -43,7 +43,7 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
   const [form, setForm] = useState({
     name: item?.name ?? '',
     category: (item?.category ?? 'raw') as ItemCategory,
-    department: (item?.department ?? '') as ItemDepartment | '',
+    departments: (item?.departments ?? []) as ItemDepartment[],
     supplier_id: item?.supplier_id ?? '',
     purchase_unit: item?.purchase_unit ?? '',
     base_unit: item?.base_unit ?? '',
@@ -54,7 +54,12 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+  const toggleDepartment = (d: ItemDepartment) => setForm(f => ({
+    ...f,
+    departments: f.departments.includes(d) ? f.departments.filter(x => x !== d) : [...f.departments, d],
+  }))
+
+  const set = (k: Exclude<keyof typeof form, 'departments'>) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }))
 
   const rate = Number(form.conversion_rate)
@@ -72,7 +77,8 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
     const payload = {
       name: form.name.trim(),
       category: form.category,
-      department: form.department || null,
+      // The DB keeps the legacy single `department` in step with this list.
+      departments: ITEM_DEPARTMENTS.filter(d => form.departments.includes(d)),
       supplier_id: form.supplier_id || null,
       purchase_unit: form.purchase_unit.trim(),
       base_unit: form.base_unit.trim(),
@@ -124,13 +130,26 @@ function ItemModal({ item, suppliers, onClose, onSaved }: {
           </div>
 
           <div>
-            <label className={labelCls}>Department</label>
-            <select className={inputCls} value={form.department} onChange={set('department')}>
-              <option value="">Unassigned</option>
-              {ITEM_DEPARTMENTS.map(d => (
-                <option key={d} value={d}>{ITEM_DEPARTMENT_LABELS[d]}</option>
-              ))}
-            </select>
+            <label className={labelCls}>Used by</label>
+            <div className="flex flex-wrap gap-2">
+              {ITEM_DEPARTMENTS.map(d => {
+                const on = form.departments.includes(d)
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => toggleDepartment(d)}
+                    aria-pressed={on}
+                    className={`px-3.5 py-2 rounded-full border text-sm font-semibold transition-colors ${
+                      on ? 'bg-brown-btn border-brown-btn text-white' : 'bg-white border-[#D4C5B0] text-brown-muted'
+                    }`}
+                  >
+                    {on ? '✓ ' : ''}{ITEM_DEPARTMENT_LABELS[d]}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-xs text-brown-faint mt-1">Pick every department that uses it, e.g. milk for the bar and the bakery.</p>
           </div>
 
           {/* Unit conversion — the heart of the form. */}
@@ -357,7 +376,7 @@ export default function ItemsPage() {
                       </td>
                       <td className="px-4 py-3 text-xs text-brown-muted">{ITEM_CATEGORY_LABELS[i.category]}</td>
                       <td className="px-4 py-3 text-xs text-brown-muted">
-                        {i.department ? ITEM_DEPARTMENT_LABELS[i.department] : '—'}
+                        {departmentLabels(i)}
                       </td>
                       <td className="px-4 py-3 text-xs text-brown-muted">{i.supplier?.name ?? '—'}</td>
                       <td className="px-4 py-3 text-xs text-brown-muted whitespace-nowrap">
