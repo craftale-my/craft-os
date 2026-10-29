@@ -46,7 +46,7 @@ type Dialog =
  *  (enqueue then send; a rejection keeps the cart) — and every bill action BillPanel had: void item
  *  and void bill with approval, close an empty bill, move, merge, pause QR, open for QR. */
 export default function OrderScreen({
-  branchId, target, tables, bills, summaries, refreshKey, billing, shiftOpen, lastCatalogs, initialLines, initialCatalogId,
+  branchId, target, tables, bills, summaries, refreshKey, billing, shiftOpen, locked = false, lastCatalogs, initialLines, initialCatalogId,
   submit, onCatalogs, onTarget, onBack, onSent, onPay, onSendAndPay, onChanged, onDraftCount, onSending,
 }: {
   branchId: string
@@ -57,6 +57,7 @@ export default function OrderScreen({
   refreshKey: number                         // bumped on every order, bills event and 15 s sweep
   billing: BillingConfig | null
   shiftOpen: boolean | null
+  locked?: boolean                           // the tablet is locked (POS app): dialogs close, the cart stays for the next person
   lastCatalogs: BranchCatalogs | null        // the last catalogs this iPad saw: used when the fresh read fails
   initialLines?: OrderLine[]                 // a rejected order being edited
   initialCatalogId?: string | null           // ...keeps its catalog
@@ -226,6 +227,8 @@ export default function OrderScreen({
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   useEffect(() => { setDialog(null); setConfirm(null) }, [bill?.id])
+  // a lock closes every dialog (modifier sheet, bill actions, approvals) but keeps the unsent lines
+  useEffect(() => { if (locked) { setSheet(null); setDialog(null); setConfirm(null) } }, [locked])
   const run = async (fn: () => Promise<void>, then?: () => void) => {
     if (busyRef.current) return
     busyRef.current = true; setBusy(true)

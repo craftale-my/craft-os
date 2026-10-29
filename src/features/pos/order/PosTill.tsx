@@ -86,6 +86,8 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const session = useRef(0)
   const screenRef = useRef(screen)                  // late order-screen callbacks check the cashier is still on that session
   screenRef.current = screen
+  const lockedRef = useRef(locked)                  // a Send & pay that finishes after the tablet locked must not open Payment
+  lockedRef.current = locked
   const draftCount = useRef(0)                      // the order screen's unsent items, for the menu's guard
   const orderSending = useRef(false)                // the order screen is sending: the menu stays shut until it is done
   const openBillIdRef = useRef<string | null>(null)
@@ -193,15 +195,18 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   useEffect(() => {
     if (!locked) return
     setMenuOpen(false); setStaffOpen(false); setReportOpen(false); setPaxFor(null); setConfirm(null)
-    if (screenRef.current.kind === 'payment') goHome()
+    // Payment and Transaction have no drafts to keep; the order screen stays (its own dialogs close via `locked`)
+    if (screenRef.current.kind === 'payment' || screenRef.current.kind === 'transaction') goHome()
   }, [locked])
   // the next person's sign-in: read everything again (calls made while locked were refused)
   const lastStaff = useRef(staffId)
   useEffect(() => {
     if (lastStaff.current === staffId) return
     lastStaff.current = staffId
-    bump()
-  }, [staffId, bump])
+    bump(); loadBilling()
+    // the catalogs list is read once per branch: a read refused while locked would otherwise stay empty
+    fetchBranchCatalogs(branchId).then(setBranchCatalogs, (e) => setError(msg(e)))
+  }, [staffId, bump, loadBilling, branchId])
 
   // ── the queue ──
   // A rejected order is handed straight back to the order screen (cart intact), so drop the queued
@@ -240,6 +245,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
       }
     } finally { wait.clear() }
     const out = payOutcome(billId, fresh, target)
+    if (lockedRef.current) { goHome(); return }                  // locked meanwhile: the order is sent or queued, Payment must not open
     if (out.kind === 'home') { goHome(); setNotice(out.notice); return }
     loadBilling()
     draftCount.current = 0
@@ -284,7 +290,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
       {screen.kind === 'order' && (
         <OrderScreen key={`${screen.session}:${targetKey(screen.target)}`} branchId={branchId} target={screen.target}
           tables={tables} bills={bills} summaries={summaries} refreshKey={refreshKey} billing={billing} shiftOpen={shift.open}
-          lastCatalogs={branchCatalogs} initialLines={screen.lines} initialCatalogId={screen.catalogId}
+          locked={locked} lastCatalogs={branchCatalogs} initialLines={screen.lines} initialCatalogId={screen.catalogId}
           submit={submit}
           onCatalogs={setBranchCatalogs}
           onTarget={(t) => changeTarget(screen.session, t)}
