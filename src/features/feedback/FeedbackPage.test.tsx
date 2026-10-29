@@ -155,6 +155,28 @@ describe('FeedbackPage', () => {
     expect(listInbox).toHaveBeenCalledTimes(2)
   })
 
+  it('shows Loading, not "isn\'t available", while a deep-linked item is still being fetched', async () => {
+    role = 'owner'
+    let resolveSecond!: (rows: FeedbackRow[]) => void
+    listInbox.mockResolvedValueOnce([row({ id: 'f1', message: 'First item' })])
+    listInbox.mockReturnValueOnce(new Promise<FeedbackRow[]>(r => { resolveSecond = r }))
+    render(
+      <MemoryRouter initialEntries={['/feedback?tab=inbox']}>
+        <Link to="/feedback?tab=inbox&id=f2">bell</Link>
+        <FeedbackPage />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('First item')).toBeTruthy()
+    fireEvent.click(screen.getByText('bell'))
+    await waitFor(() => expect(listInbox).toHaveBeenCalledTimes(2))
+    expect(screen.queryByText("This feedback isn't available.")).toBeNull()
+    expect(screen.getByText('Loading…')).toBeTruthy()
+    await act(async () => { resolveSecond([row({ id: 'f1', message: 'First item' }), row({ id: 'f2', message: 'Second item' })]) })
+    expect(await screen.findByText('Second item')).toBeTruthy()
+    expect(screen.queryByText('Loading…')).toBeNull()
+    expect(screen.queryByText("This feedback isn't available.")).toBeNull()
+  })
+
   it('reloads My Feedback when feedback is sent from the floating button', async () => {
     listMyFeedback.mockResolvedValueOnce([])
     listMyFeedback.mockResolvedValueOnce([row({ message: 'Just sent' })])

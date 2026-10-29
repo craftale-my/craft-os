@@ -18,13 +18,15 @@ export default function FeedbackPage() {
   const tab: 'mine' | 'inbox' = owner && params.get('tab') !== 'mine' ? 'inbox' : 'mine'
   const selectedId = params.get('id')
 
-  const [loaded, setLoaded] = useState<{ tab: 'mine' | 'inbox'; rows: FeedbackRow[] } | null>(null)
+  const [loaded, setLoaded] = useState<{ tab: 'mine' | 'inbox'; key: string; rows: FeedbackRow[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open')
   const [categoryFilter, setCategoryFilter] = useState<'all' | FeedbackCategory>('all')
 
   const staffId = staff?.id
+  // Identifies one fetch; rows stored with an older key are stale while a newer fetch is in flight.
+  const fetchKey = `${staffId}|${tab}|${reloadKey}|${navKey}`
 
   useFeedbackSent(() => setReloadKey(k => k + 1))
 
@@ -34,14 +36,16 @@ export default function FeedbackPage() {
     setError(null)
     const load = tab === 'inbox' ? listInbox() : listMyFeedback(staffId)
     load.then(
-      rows => { if (live) setLoaded({ tab, rows }) },
+      rows => { if (live) setLoaded({ tab, key: fetchKey, rows }) },
       (e: Error) => { if (live) setError(e.message) },
     )
     return () => { live = false }
-  }, [staffId, tab, reloadKey, navKey])
+  }, [staffId, tab, reloadKey, navKey, fetchKey])
 
   // Rows only count when they belong to the current tab; a same-tab reload keeps them (stale-while-revalidate).
   const items = loaded && loaded.tab === tab ? loaded.rows : null
+  // True while the rows we hold predate the latest fetch (a failed fetch is reported through `error` instead).
+  const refetching = !error && loaded !== null && loaded.key !== fetchKey
 
   function go(next: { tab?: 'mine' | 'inbox'; id?: string | null }) {
     const p = new URLSearchParams()
@@ -103,7 +107,7 @@ export default function FeedbackPage() {
       )}
 
       {items && selectedId && !selected && (
-        <p className="text-sm text-brown-muted">This feedback isn't available.</p>
+        <p className="text-sm text-brown-muted">{refetching ? 'Loading…' : "This feedback isn't available."}</p>
       )}
 
       {items && !selectedId && (
