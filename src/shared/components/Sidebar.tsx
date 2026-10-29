@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, CheckSquare, ClipboardList, FolderKanban,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
-  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays,
+  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, MessageSquare,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -14,6 +14,8 @@ import { AddToHomeScreenLogo } from './AddToHomeScreen'
 import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
 import { NotificationBell } from '../../features/notifications/NotificationBell'
+import { FeedbackButton } from '../../features/feedback/FeedbackButton'
+import { useNewFeedbackCount } from '../../features/feedback/useNewFeedbackCount'
 
 // 叶子项与大类共用一张表:大类标题也要出图标,否则它的文字会顶到
 // 图标的位置,和下面子项的标签对不齐。
@@ -32,12 +34,14 @@ const ICONS: Record<string, LucideIcon> = {
   claims: Receipt,
   salary: Wallet,
   settings: Settings,
+  feedback: MessageSquare,
 }
 
-function NavLink({ leaf, active, onNavigate }: {
+function NavLink({ leaf, active, onNavigate, badge = 0 }: {
   leaf: NavLeaf
   active: boolean
   onNavigate: () => void
+  badge?: number
 }) {
   const Icon = ICONS[leaf.id]
   return (
@@ -52,6 +56,14 @@ function NavLink({ leaf, active, onNavigate }: {
     >
       {Icon && <Icon size={16} className="flex-shrink-0" />}
       <span className="truncate">{leaf.label}</span>
+      {badge > 0 && (
+        <span
+          aria-label={`${badge} new`}
+          className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-[#C4813A] text-[10px] font-bold text-white flex items-center justify-center"
+        >
+          {badge > 9 ? '9+' : badge}
+        </span>
+      )}
     </Link>
   )
 }
@@ -63,6 +75,7 @@ export function SidebarContent({ onNavigate, onClose }: {
   const { staff, signOut } = useAuth()
   const { pathname } = useLocation()
   const { can } = useCan()
+  const newFeedback = useNewFeedbackCount(staff?.system_role === 'owner', pathname)
 
   const nav = visibleNav(can)
   const active = activeEntry(nav, pathname)
@@ -120,6 +133,7 @@ export function SidebarContent({ onNavigate, onClose }: {
                 leaf={entry}
                 active={active?.leafId === entry.id}
                 onNavigate={onNavigate}
+                badge={entry.id === 'feedback' ? newFeedback : 0}
               />
             )
           }
@@ -201,6 +215,9 @@ export function Sidebar() {
       <div className="fixed z-[60] top-0 h-14 right-4 flex items-center sm:h-auto sm:top-6 sm:right-auto sm:left-[12.25rem]">
         <NotificationBell />
       </div>
+
+      {/* 和铃铛同理只挂一次:悬浮按钮 + 反馈表单的唯一挂载点 */}
+      <FeedbackButton />
 
       {/* Desktop fixed sidebar */}
       <aside className="hidden sm:block fixed left-0 top-0 h-full w-60 z-30 bg-[#4A2E1A]">

@@ -10,7 +10,7 @@ const ids = (entries: ReturnType<typeof visibleNav>) => entries.map(e => e.id)
 describe('visibleNav', () => {
   it('无任何 capability 的店员只看到 Profile 与 Time & Pay', () => {
     const nav = visibleNav(canWith())
-    expect(ids(nav)).toEqual(['profile', 'time-pay'])
+    expect(ids(nav)).toEqual(['profile', 'time-pay', 'feedback'])
   })
 
   it('店员的 Time & Pay 保留全部五项', () => {
@@ -44,11 +44,19 @@ describe('visibleNav', () => {
 
   it('子项被 capability 全部过滤掉时整个大类消失', () => {
     // view_team 是 Team 组本身的 cap;没有它,组不出现
-    expect(ids(visibleNav(canWith('conduct_reviews')))).toEqual(['profile', 'time-pay'])
+    expect(ids(visibleNav(canWith('conduct_reviews')))).toEqual(['profile', 'time-pay', 'feedback'])
   })
 
   it('access_settings 控制 Settings 叶子项', () => {
-    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'settings'])
+    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'settings', 'feedback'])
+  })
+
+  it('Feedback 对所有人可见,排在最后', () => {
+    const none = visibleNav(canWith())
+    const all = visibleNav(() => true)
+    expect(ids(none).slice(-1)).toEqual(['feedback'])
+    expect(ids(all).slice(-1)).toEqual(['feedback'])
+    expect(activeEntry(all, '/feedback')).toEqual({ leafId: 'feedback', groupId: null })
   })
 
   it('不修改原始 NAV', () => {

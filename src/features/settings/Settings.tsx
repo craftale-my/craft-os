@@ -55,7 +55,7 @@ function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (
 
 function Toast({ message }: { message: string }) {
   return (
-    <div className="fixed bottom-6 right-6 z-50 bg-[#3D2410] text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-xl">
+    <div className="fixed bottom-20 right-6 z-50 bg-[#3D2410] text-white text-sm font-medium px-4 py-2.5 rounded-xl shadow-xl">
       ✅ {message}
     </div>
   )
