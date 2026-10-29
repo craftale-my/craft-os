@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, CheckSquare, ClipboardList, FolderKanban,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
-  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network,
+  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network, Headset, ExternalLink,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -15,6 +15,7 @@ import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
 import { Wordmark } from './ui'
 import { NotificationBell } from '../../features/notifications/NotificationBell'
+import { openCustomerService } from '../lib/customerService'
 
 // 叶子项与大类共用一张表:大类标题也要出图标,否则它的文字会顶到
 // 图标的位置,和下面子项的标签对不齐。
@@ -55,6 +56,41 @@ function NavLink({ leaf, active, onNavigate }: {
       {Icon && <Icon size={16} className="flex-shrink-0" />}
       <span className="truncate">{leaf.label}</span>
     </Link>
+  )
+}
+
+// Not a route in this app: opens Craft Marketing (the inbox) in a new tab,
+// already signed in. Lives outside NAV because it's gated by staff.cs_role,
+// not by a system-role capability.
+function CustomerServiceLink({ onNavigate }: { onNavigate: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+
+  async function handleClick() {
+    if (busy) return
+    setMessage(null)
+    setBusy(true)
+    const problem = await openCustomerService()
+    setBusy(false)
+    if (problem) { setMessage(problem); return }
+    onNavigate()
+  }
+
+  return (
+    <div>
+      <button
+        onClick={handleClick}
+        disabled={busy}
+        className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-sm text-[#D4C4B0] hover:bg-[#5A3A22] hover:text-[#F5F0E8] transition-colors disabled:opacity-60"
+      >
+        <Headset size={16} className="flex-shrink-0" />
+        <span className="truncate">Customer Service</span>
+        <ExternalLink size={12} className="ml-auto flex-shrink-0 opacity-60" />
+      </button>
+      {message && (
+        <p role="alert" className="px-3 pt-1 text-[11px] leading-snug text-[#F0C9A0]">{message}</p>
+      )}
+    </div>
   )
 }
 
@@ -158,6 +194,7 @@ export function SidebarContent({ onNavigate, onClose }: {
             </div>
           )
         })}
+        {staff?.cs_role && <CustomerServiceLink onNavigate={onNavigate} />}
       </nav>
 
       {/* Sign out */}
