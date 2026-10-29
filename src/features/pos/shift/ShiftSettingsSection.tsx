@@ -30,7 +30,7 @@ export default function ShiftSettingsSection({ branchId }: { branchId: string })
     running.current = true; setBusy(true); setOutcome(null)
     try {
       const sen = parseRinggit(text) ?? 0
-      await saveCashVarianceLimit(sen)
+      await saveCashVarianceLimit(branchId, sen)
       setOutcome({ ok: true, text: 'Shift settings saved' })
       setText(senToText(sen))                      // "2" shows as "2.00"; no reload, which would hide the outcome
     } catch (e) { setOutcome({ ok: false, text: msg(e) }) } finally { running.current = false; setBusy(false) }

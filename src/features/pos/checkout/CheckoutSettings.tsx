@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TableRow } from '../order/posApi'
 import type { BillOrderType, CashRounding } from './bill'
 import {
-  clearPin, deleteServiceChargeRule, fetchApprovers, fetchPaymentMethods, fetchProductNames, fetchReasonTemplates,
+  clearPin, deleteServiceChargeRule, fetchPaymentMethods, fetchProductNames, fetchReasonTemplates,
   fetchReceiptDetails, fetchServiceChargeRules, savePaymentMethod, saveReasonTemplate, saveReceiptDetails,
   saveServiceChargeRule, type Approver, type PaymentMethodRow, type ReceiptDetails, type ServiceChargeRuleRow,
 } from './checkoutApi'
+import { fetchOutletApprovers } from '../outlets/outletsApi'
 import { ACTION_TITLES, type ReasonAction } from './reasons'
 import { bpToPercentText, parsePercentBp, parseReasons, receiptDetailsProblem, scopeLabel } from './settingsForm'
 import type { PaymentKind } from './tender'
@@ -37,7 +38,7 @@ export default function CheckoutSettings({ branchId, routes, tables }: { branchI
       <ServiceChargeSection branchId={branchId} tables={tables} {...bind('service')} />
       <PaymentMethodsSection branchId={branchId} {...bind('methods')} />
       <ReasonsSection branchId={branchId} {...bind('reasons')} />
-      <ApproversSection {...bind('approvers')} />
+      <ApproversSection branchId={branchId} {...bind('approvers')} />
     </div>
   )
 }
@@ -66,7 +67,7 @@ function ReceiptSection({ branchId, routes, run, onError, outcome }: { branchId:
   const save = () => run(async () => {
     const problem = receiptDetailsProblem(d)
     if (problem) throw new Error(problem)
-    await saveReceiptDetails(d)
+    await saveReceiptDetails(branchId, d)
   }, 'Receipt settings saved')
   return (
     <section className={box}>
@@ -306,10 +307,10 @@ function ReasonsSection({ branchId, run, onError, outcome }: { branchId: string 
   )
 }
 
-function ApproversSection({ run, onError, outcome }: SectionProps) {
+function ApproversSection({ branchId, run, onError, outcome }: { branchId: string } & SectionProps) {
   const [rows, setRows] = useState<Approver[]>([])
-  const load = () => fetchApprovers().then(setRows, (e) => onError(msg(e)))
-  useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const load = () => fetchOutletApprovers(branchId).then(setRows, (e) => onError(msg(e)))
+  useEffect(() => { void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
   const clear = (a: Approver) => {
     if (!window.confirm(`Clear ${a.name}'s PIN? They set a new one under My PIN on the POS.`)) return
     void run(async () => { await clearPin(a.staffId); await load() }, `${a.name}'s PIN cleared`)
@@ -317,14 +318,14 @@ function ApproversSection({ run, onError, outcome }: SectionProps) {
   return (
     <section className={box}>
       <h2 className="font-semibold">Approvers</h2>
-      <p className="text-xs text-brown-muted">Staff of this branch who hold "Approve POS voids &amp; refunds" (Settings → System Roles). Each sets a PIN under My PIN on the POS.</p>
+      <p className="text-xs text-brown-muted">Staff who may work at this outlet and hold "Approve POS voids &amp; refunds" (Settings → System Roles). Each sets a PIN under My PIN on the POS.</p>
       {rows.map((a) => (
         <div key={a.staffId} className="mt-1 flex items-center justify-between text-sm">
           <span>{a.name} · {a.hasPin ? 'PIN set' : 'no PIN yet'}</span>
           {a.hasPin && <button onClick={() => clear(a)} className="text-xs text-red-700 underline">Clear PIN</button>}
         </div>
       ))}
-      {rows.length === 0 && <p className="text-sm text-brown-muted">Nobody at this branch can approve yet.</p>}
+      {rows.length === 0 && <p className="text-sm text-brown-muted">Nobody at this outlet can approve yet.</p>}
       <OutcomeBanner outcome={outcome} />
     </section>
   )

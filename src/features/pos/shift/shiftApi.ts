@@ -85,7 +85,7 @@ export async function fetchCashVarianceLimit(branchId: string): Promise<number> 
   return (data as { cash_variance_limit_sen: number } | null)?.cash_variance_limit_sen ?? DEFAULT_LIMIT_SEN
 }
 
-export async function saveCashVarianceLimit(limitSen: number): Promise<void> {
-  const { error } = await supabase.rpc('save_shift_settings', { p_cash_variance_limit_sen: limitSen })
+export async function saveCashVarianceLimit(branchId: string, limitSen: number): Promise<void> {
+  const { error } = await supabase.rpc('save_shift_settings', { p_branch_id: branchId, p_cash_variance_limit_sen: limitSen })
   if (error) fail(error)
 }

@@ -15,8 +15,8 @@ const DEFAULTS: { key: 'dineIn' | 'takeaway' | 'qr'; label: string }[] = [
 ]
 
 /** POS settings → Menu catalogs: which catalog prices each kind of order at this
- *  branch, and which catalogs a cashier may switch an order to. access_settings
- *  holders, own branch only (save_branch_catalogs). The outcome shows beside Save. */
+ *  outlet, and which catalogs a cashier may switch an order to. access_settings
+ *  holders, outlets in their scope (save_branch_catalogs). The outcome shows beside Save. */
 export default function MenuCatalogsSection({ branchId }: { branchId: string }) {
   const [catalogs, setCatalogs] = useState<CatalogRow[]>([])
   const [form, setForm] = useState<BranchCatalogSettings | null>(null)
@@ -38,7 +38,7 @@ export default function MenuCatalogsSection({ branchId }: { branchId: string }) 
     if (problem) { setOutcome({ kind: 'error', text: problem }); return }
     setSaving(true)
     try {
-      await saveBranchCatalogs(settingsToSave(form, catalogs))     // a ticked catalog switched off since is dropped
+      await saveBranchCatalogs(branchId, settingsToSave(form, catalogs))     // a ticked catalog switched off since is dropped
       try {
         await load()
       } catch (e) {

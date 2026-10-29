@@ -325,8 +325,8 @@ export async function fetchProductNames(): Promise<{ id: string; name: string }[
   return (data ?? []) as { id: string; name: string }[]
 }
 
-export async function saveReceiptDetails(d: ReceiptDetails): Promise<void> {
-  const { error } = await supabase.rpc('save_receipt_settings', { p: d })
+export async function saveReceiptDetails(branchId: string, d: ReceiptDetails): Promise<void> {
+  const { error } = await supabase.rpc('save_receipt_settings', { p_branch_id: branchId, p: d })
   if (error) fail(error)
 }
 

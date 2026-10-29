@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
-import { useAuth } from '../../auth/AuthContext'
+import { useCan } from '../../../shared/lib/permissions'
 import { fetchRoutes, fetchTables, insertTestPrint, type TableRow } from './posApi'
 import type { PrintRoute, PrinterKind } from '../print/adapter'
 import { qrLink, newQrToken } from './qrLink'
@@ -12,6 +12,9 @@ import { addTableAction, friendlyDbMessage, normalizeArea, openBillMessage, rena
 import CheckoutSettings from '../checkout/CheckoutSettings'
 import MenuCatalogsSection from './MenuCatalogsSection'
 import ShiftSettingsSection from '../shift/ShiftSettingsSection'
+import OutletsSection from '../outlets/OutletsSection'
+import { fetchMyOutlets } from '../outlets/outletsApi'
+import { OUTLET_KINDS, pickOutlet, type Outlet } from '../outlets/outlet'
 
 const KINDS: PrinterKind[] = ['agent', 'epson-epos', 'star-webprnt']
 
@@ -21,8 +24,18 @@ function check(res: { data: unknown[] | null; error: { message: string } | null 
 }
 
 export default function PosSettingsPage() {
-  const { staff } = useAuth()
-  const branchId = staff?.branch_id ?? null
+  const { can } = useCan()
+  const [params, setParams] = useSearchParams()
+  const [outlets, setOutlets] = useState<Outlet[] | null>(null)     // null while loading
+  const [outletsError, setOutletsError] = useState<string | null>(null)
+  const outlet = outlets ? pickOutlet(outlets, params.get('outlet')) : null
+  const branchId = outlet?.id ?? null
+  const loadOutlets = async () => {
+    try { setOutlets(await fetchMyOutlets()); setOutletsError(null) }
+    catch (e) { setOutletsError(e instanceof Error ? e.message : String(e)) }
+  }
+  useEffect(() => { void loadOutlets() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const chooseOutlet = (id: string) => setParams((p) => { p.set('outlet', id); return p }, { replace: true })
   const [tables, setTables] = useState<TableRow[]>([])
   const [routes, setRoutes] = useState<PrintRoute[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -45,7 +58,7 @@ export default function PosSettingsPage() {
       setError(null)
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
-  useEffect(() => { void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setTables([]); setRoutes([]); setDraft({}); dirty.current.clear(); void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async (fn: () => Promise<void>) => {
     try { await fn(); await load() } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
@@ -121,15 +134,24 @@ export default function PosSettingsPage() {
     dirty.current.delete(name)
   })
 
-  if (!branchId) return <div className="p-6">Your account has no branch — set it in Team first.</div>
+  if (outletsError) return <div className="p-6 text-red-700">Could not load your outlets: {outletsError}</div>
+  if (!outlets) return <div className="p-6">Loading…</div>
+  if (!branchId) return <div className="p-6">You have no outlets — ask HQ to set your home branch in Team.</div>
   const routeNames = [...new Set([...PRINT_ROUTES, ...routes.map((r) => r.route)])]
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">POS settings</h1>
+        <label className="text-sm">Outlet
+          <select className="ml-2 rounded border border-border p-1" value={branchId} onChange={(e) => chooseOutlet(e.target.value)}>
+            {outlets.map((o) => <option key={o.id} value={o.id}>{o.name} · {OUTLET_KINDS.find((k) => k.kind === o.kind)?.label}</option>)}
+          </select>
+        </label>
         <Link to="/pos" className="text-sm underline">Open POS</Link>
       </div>
       {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
+
+      <OutletsSection outlets={outlets} isHq={can('all_branches')} onSaved={async (id) => { await loadOutlets(); chooseOutlet(id) }} />
 
       <section className="rounded-xl border border-border bg-card p-4">
         <h2 className="font-semibold">Tables</h2>
@@ -171,7 +193,7 @@ export default function PosSettingsPage() {
               </select>
               <input className="flex-1 rounded border border-border p-1" placeholder="192.168.0.8:9100" value={d.address} onChange={(e) => { dirty.current.add(name); setDraft({ ...draft, [name]: { ...d, address: e.target.value } }) }} />
               <button onClick={() => void saveRoute(name)} className="rounded bg-brown-btn px-2 py-1 text-xs text-white">Save</button>
-              {saved && <button onClick={() => insertTestPrint(name).catch((e) => setError(e.message))} className="rounded border border-border px-2 py-1 text-xs">Test print</button>}
+              {saved && <button onClick={() => insertTestPrint(name, branchId).catch((e) => setError(e.message))} className="rounded border border-border px-2 py-1 text-xs">Test print</button>}
               {saved && <button onClick={() => void removeRoute(name)} className="text-xs text-red-700 underline">Remove</button>}
             </div>
           )

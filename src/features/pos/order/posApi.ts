@@ -84,9 +84,9 @@ export async function fetchBranchCatalogs(branchId: string): Promise<BranchCatal
   return { catalogs: (c.data ?? []) as CatalogRow[], assignments: (a.data ?? []) as BranchCatalogRow[] }
 }
 
-/** POS settings → Menu catalogs, for the caller's own branch (save_branch_catalogs checks access_settings). */
-export async function saveBranchCatalogs(s: BranchCatalogSettings): Promise<void> {
-  const { error } = await supabase.rpc('save_branch_catalogs', { p: s })
+/** POS settings → Menu catalogs of an outlet in the caller's scope (save_branch_catalogs checks access_settings). */
+export async function saveBranchCatalogs(branchId: string, s: BranchCatalogSettings): Promise<void> {
+  const { error } = await supabase.rpc('save_branch_catalogs', { p_branch_id: branchId, p: s })
   if (error) fail(error)
 }
 
@@ -217,7 +217,8 @@ export async function requeueJob(id: string): Promise<void> {
   if (error) fail(error)
 }
 
-export async function insertTestPrint(route: string): Promise<void> {
-  const { error } = await supabase.rpc('insert_test_print', { p_route: route })
+/** A test ticket on a route: the caller's home branch (the POS), or an outlet they manage (POS settings). */
+export async function insertTestPrint(route: string, branchId?: string): Promise<void> {
+  const { error } = await supabase.rpc('insert_test_print', { p_route: route, ...(branchId ? { p_branch_id: branchId } : {}) })
   if (error) fail(error)
 }
