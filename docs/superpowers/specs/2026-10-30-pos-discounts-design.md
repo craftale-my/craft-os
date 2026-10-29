@@ -75,7 +75,8 @@ New migration `supabase/migration-2026-10-30-pos-discounts.sql` with its `-verif
   ordered.
 - `order_items` item discount: `discount_kind text` (`'amount' | 'percent'`), `discount_value integer` (sen for
   amount, bp for percent), `discount_reason text`, `discount_approved_by uuid`, `discount_by uuid`,
-  `discount_at timestamptz`. A check keeps them all null or kind, value, reason, approved_by, by and at all set.
+  `discount_at timestamptz`. A check keeps them all null, or kind, value, approved_by, by and at all set (the
+  reason may be empty when the Discount reason template does not ask for one, as with voids).
   Amount > 0; percent between 100 and 10000 in steps of 100 (whole percent 1–100).
 - `bills` bill discount: the same six columns with the same checks.
 - `pos_discount_log` (append-only): `id`, `branch_id`, `bill_id`, `order_item_id` (null for a bill discount),
@@ -96,7 +97,8 @@ UPDATE with a WHERE):
 
 Rules:
 - Only on an open bill of the caller's outlet; a voided item cannot be discounted. Error words:
-  "Only an open bill can be discounted".
+  "Only an open bill can be discounted" (set), "Discounts can only change on an open bill" (clear),
+  "A voided item cannot be discounted".
 - Reason through `pos_check_reason(branch, 'discount', reason)`; PIN through `pos_check_approver`, so the approver
   must hold `pos_supervise`. A wrong PIN returns `{ok: false, error}` as voids do.
 - Setting again replaces the existing discount of that item or bill; it never stacks.
