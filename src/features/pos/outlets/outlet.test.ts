@@ -49,6 +49,8 @@ describe('dates', () => {
   })
   it('shortDay and outletDates', () => {
     expect(shortDay('2026-11-30')).toBe('30 Nov')
+    expect(shortDay('2026-09-30')).toBe('30 Sep')
+    expect(shortDay('2026-01-01')).toBe('1 Jan')
     expect(outletDates(outlet({ kind: 'popup', opensOn: '2026-12-01', closesOn: '2026-12-31' }))).toBe('1 Dec – 31 Dec')
     expect(outletDates(outlet())).toBe('')
   })

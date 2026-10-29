@@ -25,12 +25,15 @@ export function ExtraOutletsCard({ staffId, homeBranchId }: { staffId: string; h
 
   const toggle = async (o: Outlet, on: boolean) => {
     if (running.current) return
+    const id = seq.current
     running.current = true; setBusyId(o.id); setOutcome(null)
     try {
       await setStaffOutlet(staffId, o.id, on)
-      setExtra((prev) => { const next = new Set(prev); if (on) next.add(o.id); else next.delete(o.id); return next })
-      setOutcome({ ok: true, text: on ? `May now work at ${o.name}` : `No longer works at ${o.name}` })
-    } catch (e) { setOutcome({ ok: false, text: msg(e) }) } finally { running.current = false; setBusyId(null) }
+      if (id === seq.current) {
+        setExtra((prev) => { const next = new Set(prev); if (on) next.add(o.id); else next.delete(o.id); return next })
+        setOutcome({ ok: true, text: on ? `May now work at ${o.name}` : `No longer works at ${o.name}` })
+      }
+    } catch (e) { if (id === seq.current) setOutcome({ ok: false, text: msg(e) }) } finally { running.current = false; setBusyId(null) }
   }
 
   const choices = (outlets ?? []).filter((o) => o.id !== homeBranchId)

@@ -16,7 +16,7 @@
 -- O4  pos_outlet_open, staff_outlet_scope, pos_staff_may_work, pos_manages_outlet, my_outlets.
 -- O5  Approvers: anyone who may work at the outlet and holds pos_supervise (pos_approvers,
 --     pos_check_approver); pos_outlet_approvers lists them for POS settings; clear_pos_pin
---     acts on staff who work at one of the caller's outlets.
+--     acts on staff who work at one of the caller's outlets — and only HQ (all_branches) clears the PIN of staff who hold all_branches.
 -- O6  Bill numbers: pos_next_bill_no puts the outlet's prefix in front (PJ-261029-001).
 -- O7  POS settings act on a chosen outlet in the caller's scope: save_receipt_settings,
 --     save_shift_settings and save_branch_catalogs take p_branch_id first (the old

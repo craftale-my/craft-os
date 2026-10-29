@@ -75,11 +75,12 @@ export function billNoExample(prefix: string | null, now: Date): string {
   return `${prefix ? `${prefix}-` : ''}${y.slice(2)}${m}${d}-001`
 }
 
-const SHORT_DAY = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: 'numeric', month: 'short' })
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 /** '2026-11-30' → '30 Nov'. */
 export function shortDay(iso: string): string {
-  return SHORT_DAY.format(new Date(`${iso}T00:00:00Z`))
+  const [, month, day] = iso.split('-')
+  return `${Number(day)} ${MONTHS[Number(month) - 1]}`
 }
 
 /** Why an outlet is not open for POS today, or null when it is. */

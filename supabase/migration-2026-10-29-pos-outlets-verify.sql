@@ -271,7 +271,11 @@ begin
   perform pg_temp.expect_error(format('select clear_pos_pin(%L)', v_hr),
                                'Only HQ can clear the PIN of HQ staff', 'O5 a branch manager clears hr''s PIN');
   perform pg_temp.act(v_owner);
+  perform pg_temp.act(v_hr);
+  if not (set_my_pos_pin('1357', null)->>'ok')::boolean then raise exception 'FAIL O5 fixture: hr PIN not set'; end if;
+  perform pg_temp.act(v_owner);
   perform clear_pos_pin(v_hr);                                                          -- HQ may
+  if exists (select 1 from staff_pos_pins where staff_id = v_hr) then raise exception 'FAIL O5: HQ did not clear an HQ PIN'; end if;
 
   -- ── O6. bill numbers ──────────────────────────────────────────────────────
   v_text := pos_next_bill_no(v_pop);

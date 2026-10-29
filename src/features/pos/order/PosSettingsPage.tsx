@@ -140,12 +140,12 @@ export default function PosSettingsPage() {
     const d = draft[name]
     if (!branchId || !d || !d.address.trim()) throw new Error('Enter the printer address')
     check(await supabase.from('print_routes').upsert({ branch_id: branchId, name, kind: d.kind, address: d.address.trim() }).select('name'), 'Saving the printer')
-    dirty.current.delete(name)
+    if (branchId === current.current) dirty.current.delete(name)
   })
   const removeRoute = (name: string) => run(async () => {
     if (!branchId) return
     check(await supabase.from('print_routes').delete().eq('branch_id', branchId).eq('name', name).select('name'), 'Removing the printer')
-    dirty.current.delete(name)
+    if (branchId === current.current) dirty.current.delete(name)
   })
 
   if (outletsError) return <div className="p-6 text-red-700">Could not load your outlets: {outletsError}</div>
@@ -214,11 +214,11 @@ export default function PosSettingsPage() {
         })}
       </section>
 
-      <MenuCatalogsSection key={branchId} branchId={branchId} />
+      <MenuCatalogsSection key={`catalogs:${branchId}`} branchId={branchId} />
 
-      <CheckoutSettings key={branchId} branchId={branchId} routes={routes.map((r) => r.route)} tables={tables} />
+      <CheckoutSettings key={`checkout:${branchId}`} branchId={branchId} routes={routes.map((r) => r.route)} tables={tables} />
 
-      <ShiftSettingsSection key={branchId} branchId={branchId} />
+      <ShiftSettingsSection key={`shift:${branchId}`} branchId={branchId} />
 
       {card && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40" onClick={() => setCard(null)}>
