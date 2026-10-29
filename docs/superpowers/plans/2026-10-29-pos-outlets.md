@@ -55,6 +55,7 @@ Signing in at an extra outlet comes with B.
   - New message: "The approver cannot work at this outlet".
   - The settings page lists approvers with `pos_outlet_approvers(p_branch_id)`.
   - `clear_pos_pin` works on anyone who may work at one of the caller's outlets, with the new message "This person does not work at your outlets".
+  - **Amended during execution (owner, 2026-10-29, commit 14d369b):** a caller without `all_branches` cannot clear the PIN of staff who hold `all_branches` ("Only HQ can clear the PIN of HQ staff"). The code blocks in Task 1 below show the pre-fix text; the committed files are canonical.
   - With the default matrix the owner can clear anyone's PIN; the checkout verify's old "another branch" refusal therefore moves to the outlets verify, where the managers are made branch-only.
 - **Outlet form rules** (`save_outlet`):
   - the name is trimmed, 1–60 characters, and unique ignoring case;
