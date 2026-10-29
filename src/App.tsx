@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './features/auth/AuthContext'
+import { ErrorBoundary } from './shared/components/ErrorBoundary'
 import { LookupsProvider } from './shared/lib/lookups'
 import { effectiveSystemRole } from './shared/lib/permissions'
 import { ProtectedRoute, OnboardingRoute } from './features/auth/ProtectedRoute'
@@ -25,6 +26,7 @@ import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
 import HrClaimsPage from './features/hr/HrClaims'
 import SchedulePage from './features/schedule/Schedule'
+import FeedbackPage from './features/feedback/FeedbackPage'
 import OrgChartPage from './features/orgchart/OrgChart'
 import SuppliersPage from './features/procurement/Suppliers'
 import ItemsPage from './features/procurement/Items'
@@ -45,10 +47,14 @@ import InventoryPage from './features/procurement/Inventory'
 import InventoryDetailPage from './features/procurement/InventoryDetail'
 
 function AppLayout({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation()
   return (
     <div className="min-h-screen bg-[#F5F0E8]">
       <Sidebar />
-      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen">{children}</main>
+      {/* key=pathname:换页即复位。Sidebar(含反馈按钮)在 boundary 之外,页面崩了仍可用。 */}
+      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen pb-[calc(5rem+env(safe-area-inset-bottom))]">
+        <ErrorBoundary key={pathname}>{children}</ErrorBoundary>
+      </main>
     </div>
   )
 }
@@ -205,6 +211,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout><StaffProfilePage selfView /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/feedback"
+        element={
+          <ProtectedRoute>
+            <AppLayout><FeedbackPage /></AppLayout>
           </ProtectedRoute>
         }
       />

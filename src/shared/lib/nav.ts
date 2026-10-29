@@ -69,6 +69,7 @@ export const NAV: NavEntry[] = [
     ],
   },
   { id: 'settings', label: 'Settings', to: '/settings', cap: 'access_settings' },
+  { id: 'feedback', label: 'Feedback', to: '/feedback' },
 ]
 
 /** 按 capability 过滤。子项全被滤掉的大类整体消失。 */
