@@ -5,6 +5,11 @@ const h = vi.hoisted(() => ({
   saveStaffPrivate: vi.fn(),
   staffUpdate: vi.fn(),
   staffResult: { data: [{ id: 'u1' }], error: null as { message: string } | null },
+  branchId: 'b-cheras' as string | null | undefined,
+}))
+
+vi.mock('../../shared/lib/branchLookup', () => ({
+  branchIdForLabel: () => Promise.resolve(h.branchId),
 }))
 
 vi.mock('../staff/privateApi', () => ({
@@ -36,6 +41,7 @@ beforeEach(() => {
   h.saveStaffPrivate.mockReset().mockResolvedValue(undefined)
   h.staffUpdate.mockReset()
   h.staffResult = { data: [{ id: 'u1' }], error: null }
+  h.branchId = 'b-cheras'
 })
 
 describe('submitOnboarding', () => {
@@ -55,6 +61,17 @@ describe('submitOnboarding', () => {
       expect(payload).not.toHaveProperty(k)
     }
     expect(payload).toMatchObject({ name: 'Ali Bin Abu', onboarding_completed: true })
+  })
+
+  it('writes branch_id alongside the branch label', async () => {
+    await submitOnboarding('u1', FORM)
+    expect(h.staffUpdate.mock.calls[0][0]).toMatchObject({ branch: 'Cheras', branch_id: 'b-cheras' })
+  })
+
+  it('leaves branch_id out when the branch lookup failed', async () => {
+    h.branchId = undefined
+    await submitOnboarding('u1', FORM)
+    expect(h.staffUpdate.mock.calls[0][0]).not.toHaveProperty('branch_id')
   })
 
   it('does not mark onboarding complete when the private write fails', async () => {

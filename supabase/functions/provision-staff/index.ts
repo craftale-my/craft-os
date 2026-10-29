@@ -182,6 +182,23 @@ function normaliseDepartment(dept: string | null): string | null {
 }
 
 /**
+ * staff.branch 文字 → branches.id,与 branch_id 一起写入。规则同 DB 的
+ * branch_id_for_label()(migration-2026-10-29-staff-branch-id-sync.sql):
+ * 文字本身或 " (" 之前的部分等于分店名(不分大小写),active 优先;
+ * "Other" / 空 / 不认识 → null。查询失败返回 undefined,不写 branch_id,
+ * 交给 trigger staff_sync_branch_id_trg 补。
+ */
+async function branchIdForLabel(admin: SupabaseClient, label: string | null): Promise<string | null | undefined> {
+  const key = (label ?? '').split(' (')[0].trim().toLowerCase()
+  if (!key) return null
+  const { data, error } = await admin.from('branches').select('id, name, is_active').order('created_at')
+  if (error || !data) return undefined
+  const hits = (data as { id: string; name: string; is_active: boolean | null }[])
+    .filter(b => b.name.trim().toLowerCase() === key)
+  return (hits.find(b => b.is_active !== false) ?? hits[0])?.id ?? null
+}
+
+/**
  * 把由本次调用认领(reviewed_at = claimAt)、仍是 pending 的申请标成 approved,
  * 并清掉 phone(registration_requests 对 supervisor 可读,supervisor 不是电话的读者)。
  * 成功返回 null;失败返回 { race, text }:text 是可接在句子后面的片段,
@@ -263,6 +280,7 @@ Deno.serve(async (req) => {
       return json({ error: authErr?.message ?? 'Failed to create auth user' }, 400)
     }
 
+    const branchId = await branchIdForLabel(admin, branch)
     const { error: profileErr } = await admin.from('staff').insert({
       id: authData.user.id,
       name,
@@ -272,6 +290,7 @@ Deno.serve(async (req) => {
       // supervisor 拿到 staff 的能力集 —— 权限矩阵从此与实际不符。
       system_role: rankToSystemRole(rank),
       branch,
+      ...(branchId !== undefined && { branch_id: branchId }),
       department,
       onboarding_completed: rank === 'manager',
       joined_at: today(),
@@ -434,6 +453,7 @@ Deno.serve(async (req) => {
     }
 
     // 4. staff 行:insert,不是 upsert,任何情况下都不覆盖一行已存在的 staff。
+    const branchId = await branchIdForLabel(admin, branch)
     const { error: profileErr } = await admin.from('staff').insert({
       id: userId,
       name: fullName,
@@ -441,6 +461,7 @@ Deno.serve(async (req) => {
       rank: 'trainee',
       system_role: 'staff',
       branch,
+      ...(branchId !== undefined && { branch_id: branchId }),
       department,
       employment_type: employmentType,
       onboarding_completed: false,

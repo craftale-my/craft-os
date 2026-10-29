@@ -1,6 +1,7 @@
 import { supabase } from '../../shared/lib/supabase'
 import { writeOutcome } from '../../shared/lib/db-write'
 import { saveStaffPrivate } from '../staff/privateApi'
+import { branchIdForLabel } from '../../shared/lib/branchLookup'
 
 export interface OnboardingForm {
   branch: string
@@ -29,11 +30,15 @@ export async function submitOnboarding(userId: string, form: OnboardingForm): Pr
     contact_number: form.contactNumber,
   })
 
+  // branch_id follows the label; undefined (lookup failed) leaves it to the
+  // DB trigger staff_sync_branch_id_trg.
+  const branchId = await branchIdForLabel(form.branch)
   const res = await supabase.from('staff').update({
     name:                 form.fullName,
     nickname:             form.nickname || null,
     department:           form.department || null,   // already a department slug
     branch:               form.branch,
+    ...(branchId !== undefined && { branch_id: branchId }),
     employment_type:      form.employmentType,
     gender:               form.gender,
     working_experience:   form.workingExperience,
