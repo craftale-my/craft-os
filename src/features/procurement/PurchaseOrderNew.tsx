@@ -579,26 +579,40 @@ export default function PurchaseOrderNewPage() {
           </p>
         ) : (
           <>
-            {lowCount > 0 && (
-              <div className="flex gap-2 mt-3">
-                <button
-                  type="button"
-                  onClick={() => setLowOnly(false)}
-                  className={`px-3 py-1.5 rounded-full border text-[13px] font-semibold ${
-                    !lowOnly ? 'bg-brown-btn border-brown-btn text-white' : 'bg-white border-[#EDE5D8] text-brown-muted'
-                  }`}
-                >
-                  All {items.length}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLowOnly(true)}
-                  className={`px-3 py-1.5 rounded-full border text-[13px] font-semibold ${
-                    lowOnly ? 'bg-brown-btn border-brown-btn text-white' : 'bg-white border-[#EDE5D8] text-brown-muted'
-                  }`}
-                >
-                  Low {lowCount}
-                </button>
+            {(lowCount > 0 || lineCount > 0) && (
+              <div className="flex items-center gap-2 mt-3">
+                {lowCount > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setLowOnly(false)}
+                      className={`px-3 py-1.5 rounded-full border text-[13px] font-semibold ${
+                        !lowOnly ? 'bg-brown-btn border-brown-btn text-white' : 'bg-white border-[#EDE5D8] text-brown-muted'
+                      }`}
+                    >
+                      All {items.length}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLowOnly(true)}
+                      className={`px-3 py-1.5 rounded-full border text-[13px] font-semibold ${
+                        lowOnly ? 'bg-brown-btn border-brown-btn text-white' : 'bg-white border-[#EDE5D8] text-brown-muted'
+                      }`}
+                    >
+                      Low {lowCount}
+                    </button>
+                  </>
+                )}
+                {lineCount > 0 && (
+                  // A new branch can start with many suggestions; one tap empties the basket.
+                  <button
+                    type="button"
+                    onClick={() => setLines({})}
+                    className="ml-auto px-3 py-1.5 text-[13px] font-semibold text-brown-muted underline underline-offset-2"
+                  >
+                    Clear all
+                  </button>
+                )}
               </div>
             )}
 

@@ -3,6 +3,7 @@ import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { money, qty, formatUnitCost } from '../../shared/lib/procurement'
 import { useBranchPicker } from './useBranchPicker'
+import Stepper from './Stepper'
 import type { Item, ProductionBatch, ProductionPreview } from '../../shared/types'
 
 const inputCls =
@@ -148,13 +149,13 @@ export default function ProducePage() {
             </div>
             <div>
               <label htmlFor="produce-batches" className={labelCls}>Number of batches</label>
-              <input
-                id="produce-batches"
-                type="number" step="any" min="0" inputMode="decimal"
-                className={inputCls}
-                value={batches}
-                onChange={e => { setBatches(e.target.value); setDone(null); setError('') }}
-              />
+              <div id="produce-batches">
+                <Stepper
+                  value={Number(batches) || 0}
+                  onChange={n => { setBatches(String(n)); setDone(null); setError('') }}
+                  label="Number of batches"
+                />
+              </div>
               {!batchesValid && (
                 <p className="text-xs font-semibold text-[#9E4A30] mt-1">Number of batches must be greater than zero</p>
               )}
@@ -184,46 +185,32 @@ export default function ProducePage() {
                 Recipe v{preview.version} (from {preview.effective_from}) · business date {preview.business_date}
                 {previewing && ' · updating…'}
               </p>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm min-w-[600px]">
-                  <thead>
-                    <tr className="text-left text-xs text-brown-faint border-b border-[#EDE5D8]">
-                      <th className="py-2 pr-3 font-semibold">Ingredient</th>
-                      <th className="py-2 px-3 font-semibold text-right">Need</th>
-                      <th className="py-2 px-3 font-semibold text-right">On Hand</th>
-                      <th className="py-2 px-3 font-semibold">Short?</th>
-                      <th className="py-2 px-3 font-semibold text-right">Unit Cost</th>
-                      <th className="py-2 pl-3 font-semibold text-right">Line Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#F0E8DC]">
-                    {preview.lines.map(l => {
-                      const need = Number(l.need)
-                      const held = Number(l.on_hand)
-                      return (
-                        <tr key={l.item_id} className={l.short ? 'bg-[#FCF0EC]' : ''}>
-                          <td className="py-2 pr-3 text-brown-dark">{l.name}</td>
-                          <td className="py-2 px-3 text-right whitespace-nowrap text-brown-dark">{qty(need)} {l.base_unit}</td>
-                          <td className="py-2 px-3 text-right whitespace-nowrap text-brown-muted">{qty(held)} {l.base_unit}</td>
-                          <td className="py-2 px-3 whitespace-nowrap">
-                            {l.short ? (
-                              <span className="text-xs font-semibold text-[#9E4A30]">
-                                Short by {qty(need - Math.max(held, 0))} {l.base_unit}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-[#3D7A50]">OK</span>
-                            )}
-                          </td>
-                          <td className="py-2 px-3 text-right whitespace-nowrap text-xs text-brown-muted">
-                            {formatUnitCost(l.unit_cost == null ? null : Number(l.unit_cost), l.base_unit)}
-                          </td>
-                          <td className="py-2 pl-3 text-right whitespace-nowrap text-brown-dark">{money(Number(l.line_cost))}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <ul className="divide-y divide-[#F0E8DC] border-y border-[#F0E8DC]">
+                {preview.lines.map(l => {
+                  const need = Number(l.need)
+                  const held = Number(l.on_hand)
+                  return (
+                    <li key={l.item_id} className={`py-2.5 ${l.short ? 'bg-[#FCF0EC] -mx-2 px-2 rounded-lg' : ''}`}>
+                      <div className="flex justify-between gap-3">
+                        <p className="text-sm font-semibold text-brown-dark">{l.name}</p>
+                        <p className="text-sm text-brown-dark whitespace-nowrap">{money(Number(l.line_cost))}</p>
+                      </div>
+                      <div className="flex justify-between gap-3 mt-0.5 text-xs">
+                        <p className="text-brown-muted">
+                          Need <span className="font-semibold text-brown-dark">{qty(need)} {l.base_unit}</span>
+                          {' · '}on hand {qty(held)}
+                          {l.short
+                            ? <span className="font-semibold text-[#9E4A30]"> · short {qty(need - Math.max(held, 0))}</span>
+                            : <span className="text-[#3D7A50]"> · OK</span>}
+                        </p>
+                        <p className="text-brown-faint whitespace-nowrap">
+                          {formatUnitCost(l.unit_cost == null ? null : Number(l.unit_cost), l.base_unit)}
+                        </p>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
 
               <div className="rounded-xl bg-[#FBF6EE] border border-[#EDE5D8] px-4 py-3 text-sm space-y-0.5">
                 <p className="text-brown-dark">
