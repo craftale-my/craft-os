@@ -14,7 +14,8 @@ export default function FeedbackPage() {
   const owner = staff?.system_role === 'owner'
   const [params, setParams] = useSearchParams()
   const { key: navKey } = useLocation()
-  const tab: 'mine' | 'inbox' = owner && params.get('tab') === 'inbox' ? 'inbox' : 'mine'
+  // Owner opens the Inbox unless ?tab=mine; everyone else always gets My Feedback.
+  const tab: 'mine' | 'inbox' = owner && params.get('tab') !== 'mine' ? 'inbox' : 'mine'
   const selectedId = params.get('id')
 
   const [loaded, setLoaded] = useState<{ tab: 'mine' | 'inbox'; rows: FeedbackRow[] } | null>(null)
@@ -45,7 +46,7 @@ export default function FeedbackPage() {
   function go(next: { tab?: 'mine' | 'inbox'; id?: string | null }) {
     const p = new URLSearchParams()
     const t = next.tab ?? tab
-    if (t === 'inbox') p.set('tab', 'inbox')
+    if (owner) p.set('tab', t)
     const id = next.id === undefined ? selectedId : next.id
     if (id) p.set('id', id)
     setParams(p)

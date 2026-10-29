@@ -60,7 +60,7 @@ export function FeedbackSheet({ prefill, onClose, onSent }: {
 
   function toggleAnonymous(on: boolean) {
     setAnonymous(on)
-    if (on) setPhotos([])
+    if (on) { setPhotos([]); setBranch('') }
   }
 
   function addPhotos(files: FileList | null) {
@@ -196,6 +196,7 @@ export function FeedbackSheet({ prefill, onClose, onSent }: {
           <option value="">No specific branch</option>
           {branchOptions.map(b => <option key={b} value={b}>{b}</option>)}
         </select>
+        {anonymous && <p className="text-xs text-brown-muted -mt-2 mb-3">Leave this blank to stay harder to identify.</p>}
 
         {category === 'workplace' && (
           <div className="mb-3">

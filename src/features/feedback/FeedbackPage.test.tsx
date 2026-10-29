@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, act } from '@testing-library/react'
-import { MemoryRouter, Link } from 'react-router-dom'
+import { MemoryRouter, Link, useLocation } from 'react-router-dom'
 import type { FeedbackRow } from './types'
 
 const listMyFeedback = vi.fn()
@@ -31,6 +31,8 @@ const row = (over: Partial<FeedbackRow> = {}): FeedbackRow => ({
   owner_reply: null, replied_at: null, created_at: '2026-10-29T03:00:00Z', updated_at: '2026-10-29T03:00:00Z',
   submitter: null, ...over,
 })
+
+function LocationProbe() { return <div data-testid="loc">{useLocation().search}</div> }
 
 const renderAt = (url: string) => render(<MemoryRouter initialEntries={[url]}><FeedbackPage /></MemoryRouter>)
 
@@ -161,5 +163,59 @@ describe('FeedbackPage', () => {
     act(() => { notifyFeedbackSent() })
     expect(await screen.findByText('Just sent')).toBeTruthy()
     expect(listMyFeedback).toHaveBeenCalledTimes(2)
+  })
+
+  it('owner at /feedback with no tab param opens the Inbox', async () => {
+    role = 'owner'
+    listInbox.mockResolvedValue([row({ message: 'Inbox item' })])
+    renderAt('/feedback')
+    expect(await screen.findByText('Inbox item')).toBeTruthy()
+    expect(listInbox).toHaveBeenCalled()
+    expect(listMyFeedback).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Inbox' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('owner at ?tab=mine sees My Feedback', async () => {
+    role = 'owner'
+    listMyFeedback.mockResolvedValue([row({ message: 'My own item' })])
+    renderAt('/feedback?tab=mine')
+    expect(await screen.findByText('My own item')).toBeTruthy()
+    expect(listInbox).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'My Feedback' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('owner clicking My Feedback stays on My Feedback and can go back to Inbox', async () => {
+    role = 'owner'
+    listInbox.mockResolvedValue([row({ message: 'Inbox item' })])
+    listMyFeedback.mockResolvedValue([row({ message: 'My own item' })])
+    renderAt('/feedback')
+    await screen.findByText('Inbox item')
+    fireEvent.click(screen.getByRole('button', { name: 'My Feedback' }))
+    expect(await screen.findByText('My own item')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'My Feedback' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.queryByText('Inbox item')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Inbox' }))
+    expect(await screen.findByText('Inbox item')).toBeTruthy()
+  })
+
+  it('non-owner at /feedback gets My Feedback and the URL stays free of a tab param', async () => {
+    listMyFeedback.mockResolvedValue([row({ message: 'Mine' })])
+    render(
+      <MemoryRouter initialEntries={['/feedback']}>
+        <FeedbackPage />
+        <LocationProbe />
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByText('Mine'))
+    expect(screen.getByTestId('loc').textContent).toBe('?id=f1')
+    expect(listInbox).not.toHaveBeenCalled()
+  })
+
+  it('owner notification link /feedback?id= opens the Inbox detail', async () => {
+    role = 'owner'
+    listInbox.mockResolvedValue([row({ message: 'Notified item' })])
+    renderAt('/feedback?id=f1')
+    expect(await screen.findByText('Notified item')).toBeTruthy()
+    expect(screen.getByLabelText('Reply')).toBeTruthy()
   })
 })
