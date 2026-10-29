@@ -426,14 +426,14 @@ begin
   if not found or v_row.activated_at is not null then
     return jsonb_build_object('status', 'unknown');
   end if;
+  if v_row.status = 'approved' and v_row.claimed_at > now() - interval '1 minute' then
+    return jsonb_build_object('status', 'pending');                  -- another poll is creating the account: never expire it mid-way
+  end if;
   if v_row.status in ('pending', 'approved') and v_row.expires_at < now() then
     update pos_device_requests set status = 'expired' where id = v_row.id;
     return jsonb_build_object('status', 'expired');
   end if;
   if v_row.status <> 'approved' then return jsonb_build_object('status', v_row.status); end if;
-  if v_row.claimed_at is not null and v_row.claimed_at > now() - interval '1 minute' then
-    return jsonb_build_object('status', 'pending');
-  end if;
   update pos_device_requests set claimed_at = now() where id = v_row.id;
   return jsonb_build_object('status', 'issue', 'requestId', v_row.id, 'branchId', v_row.branch_id,
                             'kind', v_row.kind, 'name', v_row.device_name);
@@ -445,7 +445,8 @@ grant execute on function pos_activation_poll(text, text) to service_role;
 create or replace function pos_activation_finish(p_request_id uuid, p_user_id uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
-  v_row pos_device_requests;
+  v_row        pos_device_requests;
+  v_constraint text;
 begin
   select * into v_row from pos_device_requests r where r.id = p_request_id for update;
   if not found or v_row.status <> 'approved' or v_row.activated_at is not null or v_row.claimed_at is null then
@@ -458,7 +459,11 @@ begin
     insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by, approved_at)
     values (p_user_id, v_row.branch_id, v_row.kind, v_row.device_name, v_row.platform, v_row.prints, v_row.decided_by, v_row.decided_at);
   exception when unique_violation then
-    raise exception 'Another tablet just became the printing tablet — try again';
+    get stacked diagnostics v_constraint = constraint_name;
+    if v_constraint = 'pos_devices_one_printer' then
+      raise exception 'Another tablet just became the printing tablet — try again';
+    end if;
+    raise;
   end;
   update pos_device_requests set device_id = p_user_id, activated_at = now() where id = v_row.id;
 end $$;
@@ -561,7 +566,8 @@ begin
   if v_dev.revoked_at is not null then return; end if;
   update pos_devices set revoked_at = now(), revoked_by = auth.uid(), prints = false where id = v_dev.id;
   update pos_staff_sessions set ended_at = now(), end_reason = 'unpaired' where device_id = v_dev.id and ended_at is null;
-  update auth.users set banned_until = 'infinity' where id = v_dev.id;
+  -- a real date: Supabase Auth cannot read 'infinity' (sign-in then fails with unexpected_failure)
+  update auth.users set banned_until = now() + interval '100 years' where id = v_dev.id;
 end $$;
 revoke all on function pos_unpair_device(uuid) from public, anon;
 grant execute on function pos_unpair_device(uuid) to authenticated;
@@ -570,7 +576,8 @@ grant execute on function pos_unpair_device(uuid) to authenticated;
 create or replace function pos_set_print_tablet(p_device_id uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
-  v_dev pos_devices;
+  v_dev        pos_devices;
+  v_constraint text;
 begin
   select * into v_dev from pos_devices d where d.id = p_device_id for update;
   if not found then raise exception 'Device not found'; end if;
@@ -581,7 +588,11 @@ begin
     update pos_devices set prints = false where branch_id = v_dev.branch_id and prints and revoked_at is null;
     update pos_devices set prints = true where id = v_dev.id;
   exception when unique_violation then
-    raise exception 'Another tablet just became the printing tablet — try again';
+    get stacked diagnostics v_constraint = constraint_name;
+    if v_constraint = 'pos_devices_one_printer' then
+      raise exception 'Another tablet just became the printing tablet — try again';
+    end if;
+    raise;
   end;
 end $$;
 revoke all on function pos_set_print_tablet(uuid) from public, anon;
@@ -602,11 +613,14 @@ begin
   select * into v_ses from pos_staff_sessions s where s.device_id = v_dev.id and s.ended_at is null;
   if not found then raise exception 'no_session'; end if;
   if not pos_staff_may_work(v_ses.staff_id, v_dev.branch_id) then raise exception 'access_changed'; end if;
-  -- stamped at most every 30 s: every till call passes here
-  update pos_devices set last_seen_at = now()
-   where id = v_dev.id and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
-  update pos_staff_sessions set last_active_at = now()
-   where id = v_ses.id and last_active_at < now() - interval '30 seconds';
+  -- stamped at most every 30 s: every till call passes here. A read-only transaction (PostgREST
+  -- runs STABLE RPCs read-only) skips the stamps instead of failing the call.
+  if not current_setting('transaction_read_only')::boolean then
+    update pos_devices set last_seen_at = now()
+     where id = v_dev.id and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
+    update pos_staff_sessions set last_active_at = now()
+     where id = v_ses.id and last_active_at < now() - interval '30 seconds';
+  end if;
   device_id := v_dev.id;
   branch_id := v_dev.branch_id;
   staff_id := v_ses.staff_id;
@@ -621,8 +635,10 @@ declare
 begin
   select d.branch_id into v_branch from pos_devices d where d.id = auth.uid() and d.revoked_at is null;
   if v_branch is null then raise exception 'device_unpaired'; end if;
-  update pos_devices set last_seen_at = now()
-   where id = auth.uid() and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
+  if not current_setting('transaction_read_only')::boolean then              -- as in pos_ctx
+    update pos_devices set last_seen_at = now()
+     where id = auth.uid() and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
+  end if;
   return v_branch;
 end $$;
 revoke all on function pos_print_branch() from public, anon, authenticated;
@@ -797,9 +813,9 @@ begin
     if not (select relrowsecurity from pg_class where oid = ('public.' || r.t)::regclass) then
       raise exception 'FAIL D1: % has no RLS', r.t;
     end if;
-    if has_table_privilege('authenticated', 'public.' || r.t, 'select') or has_table_privilege('anon', 'public.' || r.t, 'select')
-       or has_table_privilege('authenticated', 'public.' || r.t, 'insert') or has_table_privilege('authenticated', 'public.' || r.t, 'update')
-       or has_table_privilege('authenticated', 'public.' || r.t, 'delete') then
+    if exists (select 1 from unnest(array['anon', 'authenticated']) as role(name),
+                             unnest(array['select', 'insert', 'update', 'delete', 'truncate']) as priv(name)
+                where has_table_privilege(role.name, 'public.' || r.t, priv.name)) then
       raise exception 'FAIL D1: % is open to clients', r.t;
     end if;
   end loop;
@@ -913,7 +929,7 @@ begin
   perform pg_temp.expect_error(format('select pos_decide_device_request(%L, false, null, null, null, null, null)', gen_random_uuid()),
                                'Request not found', 'D2 unknown request');
   perform pos_decide_device_request(v_rid, true, lower(replace(v_code, '-', ' ')), v_a, 'pos', ' Bar iPad ', true);   -- typed loosely; the printing tablet
-  if (select expires_at from pos_device_requests where id = v_rid) > now() + interval '1 hour' then
+  if coalesce((select expires_at from pos_device_requests where id = v_rid) > now() + interval '1 hour', true) then
     raise exception 'FAIL D2: an approved request is not collected within the hour';
   end if;
   perform pg_temp.expect_error(format('select pos_decide_device_request(%L, false, null, null, null, null, null)', v_rid),
@@ -995,7 +1011,7 @@ begin
   if v_text is distinct from 'Bar iPad,Kitchen iPad,Shop Mac' then raise exception 'FAIL D3: a branch manager sees %', v_text; end if;
   perform pg_temp.expect_error(format('select pos_unpair_device(%L)', v_dev4), 'This device is not at one of your outlets', 'D3 unpair elsewhere');
   -- the printing tablet: one per outlet, moved by a manager of the outlet or by approving another
-  if not (select l.prints from pos_devices_list() l where l.id = v_dev1) then raise exception 'FAIL D3: the list shows the printing tablet'; end if;
+  if not coalesce((select l.prints from pos_devices_list() l where l.id = v_dev1), false) then raise exception 'FAIL D3: the list shows the printing tablet'; end if;
   perform pos_set_print_tablet(v_dev2);
   if (select string_agg(name || ':' || prints, ',' order by name) from pos_devices where id in (v_dev1, v_dev2)) is distinct from 'Bar iPad:false,Kitchen iPad:true' then
     raise exception 'FAIL D3: moving the printing tablet';
@@ -1079,7 +1095,31 @@ begin
   if v_res->>'error' is distinct from 'Wrong PIN · 4 tries left' then raise exception 'FAIL D5: a success clears the count'; end if;
   select * into v_ctx from pos_ctx();
   if v_ctx.device_id is distinct from v_dev1 or v_ctx.branch_id is distinct from v_a or v_ctx.staff_id is distinct from v_cash then raise exception 'FAIL D4 pos_ctx: %', row_to_json(v_ctx); end if;
-  if (select last_seen_at from pos_devices where id = v_dev1) is null then raise exception 'FAIL D4: last seen not stamped'; end if;
+  -- stamps: written when older than 30 s, left alone when fresh (now() is fixed inside this transaction)
+  update pos_devices set last_seen_at = now() - interval '1 minute' where id = v_dev1;
+  update pos_staff_sessions set last_active_at = now() - interval '1 minute' where device_id = v_dev1 and ended_at is null;
+  perform pos_ctx();
+  if (select last_seen_at from pos_devices where id = v_dev1) is distinct from now()
+     or (select last_active_at from pos_staff_sessions where device_id = v_dev1 and ended_at is null) is distinct from now() then
+    raise exception 'FAIL D4: pos_ctx does not stamp an old last-seen / last-active';
+  end if;
+  update pos_devices set last_seen_at = now() - interval '10 seconds' where id = v_dev1;
+  perform pos_ctx();
+  if (select last_seen_at from pos_devices where id = v_dev1) is distinct from now() - interval '10 seconds' then
+    raise exception 'FAIL D4: pos_ctx rewrites a fresh last-seen';
+  end if;
+  -- in a read-only transaction (a STABLE RPC through PostgREST) pos_ctx still answers, without stamping
+  update pos_devices set last_seen_at = now() - interval '1 minute' where id = v_dev1;
+  begin
+    perform set_config('transaction_read_only', 'on', true);
+    select * into v_ctx from pos_ctx();
+    raise exception 'read-only ok';                                       -- leaves the read-only sub-block
+  exception when raise_exception then
+    if sqlerrm is distinct from 'read-only ok' then raise exception 'FAIL D4: pos_ctx in a read-only transaction: %', sqlerrm; end if;
+  end;
+  if (select last_seen_at from pos_devices where id = v_dev1) is distinct from now() - interval '1 minute' then
+    raise exception 'FAIL D4: pos_ctx stamped in a read-only transaction';
+  end if;
   if (pos_login_roster()->'session'->>'staffId')::uuid is distinct from v_cash then raise exception 'FAIL D5: the roster shows who is signed in'; end if;
   -- wrong tries more than 24 h ago do not count: four old ones, then one now
   insert into pos_login_attempts(staff_id, device_id, at, ok)
@@ -1116,7 +1156,9 @@ begin
   perform pg_temp.expect_error('select pos_ctx()', 'outlet_closed', 'D4 closed outlet');
   -- the print agent: prints, never runs the till
   perform pg_temp.act(v_agent);
+  update pos_devices set last_seen_at = null where id = v_agent;
   if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: the print agent''s outlet'; end if;
+  if (select last_seen_at from pos_devices where id = v_agent) is distinct from now() then raise exception 'FAIL D4: printing does not stamp last seen'; end if;
   perform pg_temp.expect_error('select pos_ctx()', 'device_unpaired', 'D4 a print agent at the till');
   perform pg_temp.act(v_dev2);
   if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: a locked tablet still prints'; end if;
@@ -1129,7 +1171,7 @@ begin
   perform pos_unpair_device(v_dev1);
   perform pos_unpair_device(v_dev1);                                                    -- twice is fine
   if (select revoked_by from pos_devices where id = v_dev1) is distinct from v_mgr
-     or (select banned_until from auth.users where id = v_dev1) is distinct from 'infinity'
+     or coalesce((select not isfinite(banned_until) or banned_until < now() + interval '99 years' from auth.users where id = v_dev1), true)
      or exists (select 1 from pos_staff_sessions where device_id = v_dev1 and ended_at is null)
      or not exists (select 1 from pos_staff_sessions where device_id = v_dev1 and end_reason = 'unpaired')
      or (select prints from pos_devices where id = v_dev1) then
@@ -1231,11 +1273,12 @@ describe('parseBody', () => {
 })
 
 describe('clientIp', () => {
-  it('the first forwarded address', () => {
-    expect(clientIp('203.0.113.7, 10.0.0.1')).toBe('203.0.113.7')
-    expect(clientIp(' 203.0.113.7 ')).toBe('203.0.113.7')
-    expect(clientIp(null)).toBeNull()
-    expect(clientIp('')).toBeNull()
+  it('the platform-set connecting IP first, then the first forwarded address, else unknown', () => {
+    expect(clientIp('198.51.100.4', '203.0.113.7, 10.0.0.1')).toBe('198.51.100.4')
+    expect(clientIp(null, '203.0.113.7, 10.0.0.1')).toBe('203.0.113.7')
+    expect(clientIp(' ', ' 203.0.113.7 ')).toBe('203.0.113.7')
+    expect(clientIp(null, null)).toBe('unknown')
+    expect(clientIp('', '')).toBe('unknown')
   })
 })
 
@@ -1295,10 +1338,12 @@ export function parseBody(body: unknown): ActivationBody | null {
   return null
 }
 
-/** The caller's IP as the platform forwards it: the first x-forwarded-for entry. */
-export function clientIp(forwardedFor: string | null): string | null {
-  const first = forwardedFor?.split(',')[0]?.trim()
-  return first ? first.slice(0, 64) : null
+/** The caller's IP as the platform sets it: cf-connecting-ip, else the first x-forwarded-for
+ *  entry (Supabase rewrites that header itself: a client-sent one never arrives, checked on dev
+ *  2026-10-29), else 'unknown' — no address still counts against one shared limit. */
+export function clientIp(connectingIp: string | null, forwardedFor: string | null): string {
+  const ip = connectingIp?.trim() || forwardedFor?.split(',')[0]?.trim()
+  return ip ? ip.slice(0, 64) : 'unknown'
 }
 
 /** A synthetic email and a random password for a device account; never shown to anyone. */
@@ -1396,13 +1441,25 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
+// no-store: the approved reply carries the device's password
 const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } })
+  new Response(JSON.stringify(body), {
+    status, headers: { ...CORS, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  })
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
+  try {
+    return await handle(req)
+  } catch (e) {
+    // an unexpected throw still answers with CORS headers, so the app sees the message
+    console.error('pos-device-activation', e instanceof Error ? e.message : String(e))
+    return json({ error: 'Something went wrong. Try again.' }, 500)
+  }
+})
 
+async function handle(req: Request): Promise<Response> {
   const serviceKey = resolveSecretKey()
   const url = Deno.env.get('SUPABASE_URL')
   if (!serviceKey || !url) return json({ error: 'Function is not configured: no secret key available' }, 500)
@@ -1415,11 +1472,11 @@ Deno.serve(async (req) => {
 
   if (input.action === 'request') {
     const { data, error } = await admin.rpc('pos_activation_request', {
-      // no forwarded address still counts against one shared limit rather than none
-      p_name: input.name, p_platform: input.platform, p_ip: clientIp(req.headers.get('x-forwarded-for')) ?? 'unknown',
+      p_name: input.name, p_platform: input.platform,
+      p_ip: clientIp(req.headers.get('cf-connecting-ip'), req.headers.get('x-forwarded-for')),
     })
-    if (error) {
-      console.error('pos_activation_request', error.message)
+    if (error || !data) {
+      console.error('pos_activation_request', error?.message ?? 'no reply')
       return json({ error: 'Could not start the activation. Try again.' }, 500)
     }
     const reply = requestReply(data as Record<string, unknown>)
@@ -1427,8 +1484,8 @@ Deno.serve(async (req) => {
   }
 
   const { data, error } = await admin.rpc('pos_activation_poll', { p_code: input.code, p_secret: input.secret })
-  if (error) {
-    console.error('pos_activation_poll', error.message)
+  if (error || !data) {
+    console.error('pos_activation_poll', error?.message ?? 'no reply')
     return json({ error: 'Could not check the activation. Try again.' }, 500)
   }
   const poll = data as { status: string; requestId?: string; branchId?: string; kind?: string; name?: string }
@@ -1447,7 +1504,8 @@ Deno.serve(async (req) => {
   const { error: finishErr } = await admin.rpc('pos_activation_finish', { p_request_id: poll.requestId, p_user_id: created.user.id })
   if (finishErr) {
     console.error('pos_activation_finish', finishErr.message)
-    await admin.auth.admin.deleteUser(created.user.id)
+    const { error: deleteErr } = await admin.auth.admin.deleteUser(created.user.id)
+    if (deleteErr) console.error('deleteUser (orphan device account left)', created.user.id, deleteErr.message)
     await admin.rpc('pos_activation_unclaim', { p_request_id: poll.requestId })
     return json({ status: 'pending' })
   }
@@ -1455,7 +1513,7 @@ Deno.serve(async (req) => {
     status: 'approved', deviceId: created.user.id, email, password,
     branchId: poll.branchId, kind: poll.kind, name: poll.name,
   })
-})
+}
 ```
 
 
@@ -1505,10 +1563,15 @@ sql() {
   echo
 }
 as_owner() { sql "begin; select set_config('request.jwt.claims', '{\"sub\":\"$OWNER\",\"role\":\"authenticated\"}', true); $1; commit;"; }
-fn() {
-  curl -s -X POST "$URL/functions/v1/pos-device-activation" -H "apikey: $ANON" -H "Authorization: Bearer $ANON" \
-    -H "Content-Type: application/json" -d "$1"
+fn() {   # fn KEY=VALUE … → POST a JSON object built from the pairs
+  python3 -c 'import json,sys; print(json.dumps(dict(a.split("=", 1) for a in sys.argv[1:])))' "$@" |
+    curl -s -X POST "$URL/functions/v1/pos-device-activation" -H "apikey: $ANON" -H "Authorization: Bearer $ANON" \
+      -H "Content-Type: application/json" --data @-
   echo
+}
+signin() {
+  python3 -c 'import json,sys; print(json.dumps({"email": sys.argv[1], "password": sys.argv[2]}))' "$1" "$2" |
+    curl -s -X POST "$URL/auth/v1/token?grant_type=password" -H "apikey: $ANON" -H "Content-Type: application/json" --data @-
 }
 field() { python3 -c "import json,sys; print(json.load(sys.stdin).get('$1', ''))"; }
 roster() {
@@ -1517,25 +1580,22 @@ roster() {
   echo
 }
 
-REQ=$(fn '{"action":"request","name":"SMOKE iPad","platform":"ipad"}')
+REQ=$(fn action=request name="SMOKE iPad" platform=ipad)
 CODE=$(echo "$REQ" | field code); SECRET=$(echo "$REQ" | field secret)
 echo "1 request → code $CODE"
-POLL="{\"action\":\"poll\",\"code\":\"$CODE\",\"secret\":\"$SECRET\"}"
-echo "2 poll before approval → $(fn "$POLL" | field status)"                                   # pending
-echo "3 wrong secret → $(fn "{\"action\":\"poll\",\"code\":\"$CODE\",\"secret\":\"nope\"}" | field status)"  # unknown
+echo "2 poll before approval → $(fn action=poll code="$CODE" secret="$SECRET" | field status)"     # pending
+echo "3 wrong secret → $(fn action=poll code="$CODE" secret=nope | field status)"                  # unknown
 as_owner "select pos_decide_device_request((select id from pos_device_requests where code = '$CODE' and status = 'pending'), true, '$CODE', '$DEMO', 'pos', 'SMOKE iPad', false)" >/dev/null
-P=$(fn "$POLL")
+P=$(fn action=poll code="$CODE" secret="$SECRET")
 echo "4 poll after approval → $(echo "$P" | field status), kind $(echo "$P" | field kind), name $(echo "$P" | field name)"   # approved, pos, SMOKE iPad
-echo "5 poll again → $(fn "$POLL" | field status)"                                            # unknown
+echo "5 poll again → $(fn action=poll code="$CODE" secret="$SECRET" | field status)"                                            # unknown
 EMAIL=$(echo "$P" | field email); PASS=$(echo "$P" | field password); DEV=$(echo "$P" | field deviceId)
-TOKEN=$(curl -s -X POST "$URL/auth/v1/token?grant_type=password" -H "apikey: $ANON" -H "Content-Type: application/json" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}" | field access_token)
+TOKEN=$(signin "$EMAIL" "$PASS" | field access_token)
 echo "6 device signs in → token ${#TOKEN} chars"
 echo "7 roster → $(roster "$TOKEN" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['device']['name'], '@', d['outlet']['name'], '· open', d['outlet']['open'], '·', len(d['staff']), 'staff')")"
 as_owner "select pos_unpair_device('$DEV')" >/dev/null
 echo "8 roster after unpair → $(roster "$TOKEN" | field message)"                             # device_unpaired
-echo "9 sign-in after unpair → $(curl -s -X POST "$URL/auth/v1/token?grant_type=password" -H "apikey: $ANON" -H "Content-Type: application/json" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error_code') or d.get('msg') or 'SIGNED IN (wrong)')")"   # user_banned
+echo "9 sign-in after unpair → $(signin "$EMAIL" "$PASS" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error_code') or d.get('msg') or 'SIGNED IN (wrong)')")"   # user_banned
 ```
 
 Expected lines:
@@ -2275,7 +2335,9 @@ git push origin feature/pos-demo
   - Last-seen stamps are written at most every 30 s.
   - A printing-tablet race gets a readable error.
   - The verify is NULL-safe and covers the missing refusals.
-  - The Edge Function sends `unknown` when no client IP is forwarded.
+  - The Edge Function keys its limit on `cf-connecting-ip` and answers every error with CORS and `no-store`.
+  - Unpairing bans with a real date (Supabase Auth cannot read `infinity`).
+  - `pos_ctx()` and `pos_print_branch()` skip their stamps in a read-only transaction.
 
   The code blocks above are the amended text.
 - **Housekeeping:** activation requests and login attempts are never deleted. That is fine at this scale; a cleanup job can come later.
