@@ -126,6 +126,21 @@ describe('PosApp', () => {
     expect(lastTill().locked).toBe(true)
   })
 
+  it('a network blip on whoami when the network returns keeps whoever is signed in', async () => {
+    signedInUntilEnded()
+    render(<PosApp />)
+    await flush()
+    expect(lastTill().locked).toBe(false)
+    const calls = api.fetchWhoAmI.mock.calls.length
+    api.fetchWhoAmI.mockRejectedValue(new TypeError('Failed to fetch'))
+    act(() => { window.dispatchEvent(new Event('offline')) })
+    act(() => { window.dispatchEvent(new Event('online')) })
+    await flush()
+    expect(api.fetchWhoAmI.mock.calls.length).toBeGreaterThan(calls)
+    expect(lastTill().locked).toBe(false)
+    expect(screen.queryByTestId('lock-screen')).toBeNull()
+  })
+
   it('two access_changed refusals together start one Lock', async () => {
     signedInUntilEnded()
     render(<PosApp />)

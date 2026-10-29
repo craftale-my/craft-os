@@ -95,7 +95,13 @@ export default function PosApp() {
     let error: string | null = null
     if (r.session) {
       // outlet_closed, no_session…: the lock screen, which says why from the roster
-      try { w = await fetchWhoAmI() } catch (e) { if (!contextCode(msg(e))) error = msg(e) }
+      try { w = await fetchWhoAmI() } catch (e) {
+        if (!contextCode(msg(e))) {
+          // a network blip (refresh runs on every 'online') keeps whoever is signed in here
+          if (whoRef.current?.staffId === r.session.staffId) w = whoRef.current
+          else error = msg(e)
+        }
+      }
       if (!current()) return
     }
     loadedOnce.current = true
