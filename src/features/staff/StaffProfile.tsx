@@ -21,6 +21,7 @@ import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
 import { Avatar } from '../../shared/components/Avatar'
 import { canPromote } from '../../shared/lib/xp'
+import { branchIdForLabel } from '../../shared/lib/branchLookup'
 import { CareerProgress } from './CareerProgress'
 import { Badge, Button, ButtonLink, Card, SegmentedTabs } from '../../shared/components/ui'
 
@@ -1224,6 +1225,13 @@ export function PersonalInfoTab({
         department: form.department || null,   // already a department slug
         employment_type: form.employmentType || null,
         working_experience: form.workingExperience || null, education: form.education || null,
+      }
+      // Only when the label changed: an unchanged label must not clear a
+      // branch_id set some other way (e.g. a POS/demo outlet with no label).
+      const nextBranch = form.branch || null
+      if (nextBranch !== (staff.branch ?? null)) {
+        const branchId = await branchIdForLabel(nextBranch)
+        if (branchId !== undefined) payload.branch_id = branchId
       }
       if (isManager && !isSelf) {
         payload.rank = form.rank
