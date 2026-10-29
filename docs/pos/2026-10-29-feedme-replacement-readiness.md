@@ -13,31 +13,52 @@ then testing and cut-over. Check items off as they land.
 
 ## 1. Owner decisions (block the build)
 
-- [ ] **D1 Grab orders.** Feedme receives Grab Food and Grab Mart orders straight into the POS (active at Cheras).
+**Answers 2026-10-29:**
+- D1 = (c). Grab orders must come into our POS through Grab's API **before** the switch; this is a hard gate
+  for cut-over. Grab integrations go through Grab's developer portal (developer.grab.com); eligibility of an own
+  in-house POS as an integration partner is not confirmed yet — the owner applies first. Fallback if Grab will
+  not let an in-house POS connect: a middleware that is already a Grab partner (e.g. Deliverect) and offers an
+  API for a custom POS — costs a subscription, check before building.
+- D2 = (a). Few Feedme members; points are kept by hand or recalculated later. Not a cut-over gate.
+- D3 = no online payment for now (QR stays pay at the counter). Pickup orders are not needed on day one.
+- D4 = confirmed as designed, plus: the Staff Meal catalog sells at 50% off the normal price.
+- D5 = no accountant export today (figures by hand). Craft OS will get its own Accounting module later, so
+  reports and sales data must be ledger-friendly (per bill, per line, per tax rate, per payment method).
+- D6 = Cheras first, Feedme kept as fallback.
+- D7 = owner asked for a recommendation: switch Manager "All branches" off on prod, as on dev. Only owner and
+  admin are HQ (approve tablets, clear HQ PINs); outlet managers keep `access_settings` for their own outlets
+  and `pos_supervise` for approvals. Set it in System Roles on prod when the POS chain goes to prod (step 4).
+- Test kit ready: one Android tablet, one Mac, one iPad, one Wi-Fi printer. Testing waits until the build items
+  below are done.
+
+- [x] **D1 Grab orders.** Feedme receives Grab Food and Grab Mart orders straight into the POS (active at Cheras).
       Craft POS has no delivery-platform link. Choose: (a) keep a Grab tablet / Feedme for Grab only, staff key
       nothing into our POS; (b) staff re-key Grab orders into a "Grab" catalog on our POS (tickets print, sales
       counted, double work); (c) build a Grab integration (needs Grab partner API access — weeks, not days).
-- [ ] **D2 Members and points.** Feedme loyalty (about 1k members, vouchers, points) only works with the Feedme POS
+- [x] **D2 Members and points.** Feedme loyalty (about 1k members, vouchers, points) only works with the Feedme POS
       and Feedme has no API. Once bills move to our POS, members stop earning. Choose: (a) accept a pause in
       earning until our own Loyalty module (build order: POS → Inventory → Loyalty); (b) keep a Feedme device
       to record member purchases (double entry); (c) pull Loyalty forward before cut-over.
-- [ ] **D3 QR payment and online pickup.** Feedme lets QR diners pay online and runs scheduled pickup orders with
+- [x] **D3 QR payment and online pickup.** Feedme lets QR diners pay online and runs scheduled pickup orders with
       SMS. Ours: QR orders only, pay at the counter, no pickup. Decide whether either is needed on day one.
-- [ ] **D4 Discount rules.** Discounts are used daily. Confirm the paused design: amount or percent, reason,
+- [x] **D4 Discount rules.** Discounts are used daily. Confirm the paused design: amount or percent, reason,
       supervisor PIN every time, service charge after the discount, one discount per bill; and decide whether an
       item-level discount and staff-meal / staff discount are also needed.
-- [ ] **D5 Accountant hand-off.** Which figures the accountant takes today from Feedme (daily sales, SST
+- [x] **D5 Accountant hand-off.** Which figures the accountant takes today from Feedme (daily sales, SST
       6% / 8% / exempt, payment methods, Xero?) — this fixes the report list in W3.
-- [ ] **D6 Cut-over style.** One outlet first (Cheras) with Feedme kept signed in for a week as a fallback, then
+- [x] **D6 Cut-over style.** One outlet first (Cheras) with Feedme kept signed in for a week as a fallback, then
       Puchong and Kepong; and the Feedme licence end date.
-- [ ] **D7 Prod roles.** Manager "All branches" off on prod (only owner/admin are HQ), as on dev.
+- [x] **D7 Prod roles.** Manager "All branches" off on prod (only owner/admin are HQ), as on dev.
 
 ## 2. Build (in this order)
 
 - [ ] **W1 POS app, Part C** — separate `craft-pos` app, tablets sign in as devices, staff name + PIN, the RPC
       swap to `pos_ctx`, scoped read policies (plan to write; Parts A and B are live on dev).
 - [ ] **W2 Bill discount** — spec from the paused design (D4), server totals, PIN approval, receipt and Z report
-      lines, discount report.
+      lines, discount report; Staff Meal catalog at 50% off the normal price.
+- [ ] **WG Grab integration (cut-over gate, D1)** — owner applies for Grab API access now (long lead); then a
+      spec: menu sync from our catalogs, order webhook into a Grab bill with tickets, accept/reject and
+      ready status, Grab payment type, sold-out sync. Built as soon as access is granted, in parallel with W3–W6.
 - [ ] **W3 Sales reports** — at least: daily sales, hourly sales, product and add-on sales, category sales, payment
       methods, discounts, voids, refunds, cash drawer, SST by rate (6% / 8% / exempt), per outlet and date range.
 - [ ] **W4 Receipt and numbers** — receipt template (logo, header, address, phone, email, hide zero-price add-ons,
