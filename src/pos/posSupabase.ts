@@ -6,16 +6,52 @@ import { contextCode, type ContextCode } from '../features/pos/deviceErrors'
  *  session lives under its own storage key, apart from any Craft OS login. */
 
 export const POS_STORAGE_KEY = 'craft-pos-auth'
-/** Fired on window with the code as `detail` when any call meets a pos_ctx() coded error. */
+/** Fired on window with the code as `detail` when any call meets a pos_ctx() coded error, or
+ *  `not_printing_tablet` (a print call from a tablet HQ no longer has print). */
 export const CONTEXT_EVENT = 'craft-pos:context'
+export const NOT_PRINTING = 'not_printing_tablet'
+export type PosSignal = ContextCode | typeof NOT_PRINTING
 
-/** fetch that announces a coded error in a failed reply (PostgREST: `{ code, message }`). */
-export function makePosFetch(base: typeof fetch, announce: (code: ContextCode) => void): typeof fetch {
+/** Whether the server answered the last call: a store to subscribe to (useSyncExternalStore). */
+export interface Reachability {
+  get: () => boolean
+  set: (reachable: boolean) => void
+  subscribe: (listener: () => void) => () => void
+}
+
+export function makeReachability(): Reachability {
+  let reachable = true
+  const listeners = new Set<() => void>()
+  return {
+    get: () => reachable,
+    set: (v) => { if (v !== reachable) { reachable = v; for (const l of listeners) l() } },
+    subscribe: (l) => { listeners.add(l); return () => { listeners.delete(l) } },
+  }
+}
+
+/** The server is reachable: fed by every call through the POS client. "Offline" in the app is
+ *  `navigator.onLine && reachability.get()`, since a Wi-Fi with no internet still says online. */
+export const reachability = makeReachability()
+
+// fetch's own network failure (TypeError), or an abort or a timeout: no reply came
+const unreachable = (e: unknown) =>
+  e instanceof TypeError || (e instanceof Error && (e.name === 'AbortError' || e.name === 'TimeoutError'))
+
+/** fetch that announces a coded error in a failed reply (PostgREST: `{ code, message }`), and
+ *  marks the server reachable on any reply (even an error) or unreachable when none came. */
+export function makePosFetch(base: typeof fetch, announce: (code: PosSignal) => void,
+  mark: (reachable: boolean) => void = () => undefined): typeof fetch {
   return async (input, init) => {
-    const res = await base(input, init)
+    let res: Response
+    try { res = await base(input, init) } catch (e) {
+      if (unreachable(e)) mark(false)
+      throw e
+    }
+    mark(true)
     if (!res.ok) {
       try {
-        const code = contextCode(((await res.clone().json()) as { message?: unknown } | null)?.message)
+        const message = ((await res.clone().json()) as { message?: unknown } | null)?.message
+        const code = message === NOT_PRINTING ? NOT_PRINTING : contextCode(message)
         if (code) announce(code)
       } catch { /* not JSON */ }
     }
@@ -30,7 +66,8 @@ export const supabase = createClient(
     auth: { storageKey: POS_STORAGE_KEY, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
     global: {
       fetch: makePosFetch((input, init) => fetch(input, init),
-        (code) => window.dispatchEvent(new CustomEvent<ContextCode>(CONTEXT_EVENT, { detail: code }))),
+        (code) => window.dispatchEvent(new CustomEvent<PosSignal>(CONTEXT_EVENT, { detail: code })),
+        reachability.set),
     },
   },
 )

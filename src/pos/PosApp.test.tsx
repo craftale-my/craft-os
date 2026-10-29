@@ -27,9 +27,12 @@ vi.mock('../features/pos/checkout/checkoutApi', () => ({ fetchProductNames: vi.f
 vi.mock('./useAppUpdate', () => ({ useAppUpdate: () => false }))
 
 const auth = vi.hoisted(() => ({ listener: null as ((event: string) => void) | null }))
+const net = vi.hoisted(() => ({ reachable: true }))
 vi.mock('./posSupabase', () => ({
   CONTEXT_EVENT: 'craft-pos:context',
+  NOT_PRINTING: 'not_printing_tablet',
   POS_STORAGE_KEY: 'craft-pos-auth',
+  reachability: { get: () => net.reachable, set: () => {}, subscribe: () => () => {} },
   supabase: {
     auth: {
       onAuthStateChange: (cb: (event: string) => void) => { auth.listener = cb; return { data: { subscription: { unsubscribe() {} } } } },
@@ -75,8 +78,9 @@ beforeEach(() => {
   till.props = []
   printHost.props = []
   auth.listener = null
+  net.reachable = true
 })
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('PosApp', () => {
   it('outlet_closed with an open session: the lock screen says the outlet is closed, and the cached person is not signed in', async () => {
@@ -94,6 +98,7 @@ describe('PosApp', () => {
 
   it('a reload with no network opens the till for whoever was signed in', async () => {
     localStorage.setItem('craft-pos-context', JSON.stringify({ roster: roster({}, aina), who }))
+    net.reachable = false                                                   // what the fetch wrapper marks on no reply
     api.fetchRoster.mockRejectedValue(new TypeError('Failed to fetch'))
     render(<PosApp />)
     await flush()
@@ -101,6 +106,79 @@ describe('PosApp', () => {
     expect(lastTill().locked).toBe(false)
     expect(lastTill().staffId).toBe('s1')
     expect(screen.queryByTestId('lock-screen')).toBeNull()
+  })
+
+  it('a reload whose roster read gets a reply (a 5xx) does not open the cached till', async () => {
+    localStorage.setItem('craft-pos-context', JSON.stringify({ roster: roster({}, aina), who }))
+    api.fetchRoster.mockRejectedValue(new Error('upstream connect error'))
+    render(<PosApp />)
+    await flush()
+    expect(screen.queryByTestId('till')).toBeNull()
+    expect(screen.getByTestId('lock-screen')).toBeTruthy()
+    expect(screen.getByText('upstream connect error')).toBeTruthy()
+  })
+
+  it('the server unreachable: the lock screen says offline, and a probe runs every 15 s', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    net.reachable = false
+    api.fetchRoster.mockRejectedValue(new TypeError('Failed to fetch'))
+    render(<PosApp />)
+    await flush()
+    expect(screen.getByText("You're offline — nobody can sign in until the network is back.")).toBeTruthy()
+    const calls = api.fetchRoster.mock.calls.length
+    act(() => { vi.advanceTimersByTime(15_000) })
+    await flush()
+    expect(api.fetchRoster.mock.calls.length).toBe(calls + 1)
+  })
+
+  it('signed in, the roster and whoami are read again every minute: HQ can move the printing role', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    signedInUntilEnded()
+    render(<PosApp />)
+    await flush()
+    expect(lastTill().prints).toBe(true)
+    api.fetchRoster.mockResolvedValue({ ...roster({}, aina), device: { id: 'd1', name: 'Counter 1', prints: false } })
+    const whoCalls = api.fetchWhoAmI.mock.calls.length
+    act(() => { vi.advanceTimersByTime(60_000) })
+    await flush()
+    expect(api.fetchWhoAmI.mock.calls.length).toBe(whoCalls + 1)
+    expect(lastTill().locked).toBe(false)
+    expect(lastTill().prints).toBe(false)
+    expect(lastTill().printHost).toBeUndefined()
+  })
+
+  it('not_printing_tablet from a print call reads the roster again at once', async () => {
+    api.fetchRoster.mockResolvedValue(roster())
+    render(<PosApp />)
+    await flush()
+    const calls = api.fetchRoster.mock.calls.length
+    api.fetchRoster.mockResolvedValue({ ...roster(), device: { id: 'd1', name: 'Counter 1', prints: false } })
+    printHost.props = []
+    act(() => fire('not_printing_tablet'))
+    await flush()
+    expect(api.fetchRoster.mock.calls.length).toBe(calls + 1)
+    expect(printHost.props).toHaveLength(0)                                 // the print host stopped
+  })
+
+  it('outlet_closed while signed in also ends the server session', async () => {
+    signedInUntilEnded()
+    render(<PosApp />)
+    await flush()
+    act(() => fire('outlet_closed'))
+    await flush()
+    expect(api.endSession).toHaveBeenCalledWith('locked')
+    expect(lastTill().locked).toBe(true)
+  })
+
+  it('access_changed with nobody signed in in this page (at boot): ends the session and says why', async () => {
+    api.fetchRoster.mockResolvedValue(roster({}, aina))
+    api.fetchWhoAmI.mockImplementation(async () => { fire('access_changed'); throw new Error('access_changed') })
+    render(<PosApp />)
+    await flush()
+    expect(api.endSession).toHaveBeenCalledTimes(1)
+    expect(api.endSession).toHaveBeenCalledWith('access_changed')
+    expect(screen.getByText('Your access here has changed. Ask your manager.')).toBeTruthy()
+    expect(screen.queryByTestId('till')).toBeNull()
   })
 
   it('device_unpaired twice, then SIGNED_OUT: one switch to the activation screen, the waiting orders held once', async () => {

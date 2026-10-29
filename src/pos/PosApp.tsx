@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import PosTill from '../features/pos/order/PosTill'
 import PrintHostPanel from '../features/pos/order/PrintHostPanel'
@@ -6,7 +6,7 @@ import ConfirmDialog, { type ConfirmRequest } from '../features/pos/shell/Confir
 import { createIdbStore } from '../features/pos/offline/idbStore'
 import type { QueuedOrder } from '../features/pos/offline/orderQueue'
 import { fetchProductNames } from '../features/pos/checkout/checkoutApi'
-import { contextCode, type ContextCode } from '../features/pos/deviceErrors'
+import { contextCode } from '../features/pos/deviceErrors'
 import ActivationScreen from './ActivationScreen'
 import LockScreen from './LockScreen'
 import { loadPending, type ActivationState } from './activation'
@@ -14,7 +14,7 @@ import {
   clearPendingLock, forgetContext, holdQueued, loadContext, loadProductNames, pendingLock, saveContext,
   saveProductNames, setPendingLock, UNPAIRED_REASON, type LockReason,
 } from './deviceStore'
-import { CONTEXT_EVENT, supabase } from './posSupabase'
+import { CONTEXT_EVENT, NOT_PRINTING, reachability, supabase, type PosSignal } from './posSupabase'
 import type { RosterReply } from './roster'
 import {
   endSession, fetchRoster, fetchWhoAmI, forgetDevice, hasDeviceSession, unpairThisDevice, type WhoAmI,
@@ -25,22 +25,26 @@ import { useIdleLock } from './useIdleLock'
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ACCESS_CHANGED = 'Your access here has changed. Ask your manager.'
 const ROSTER_MS = 60_000
+const PROBE_MS = 15_000
 
 type Phase =
   | { kind: 'boot' }
   | { kind: 'activation'; start: ActivationState; unsent: QueuedOrder[] }
   | { kind: 'device' }
 
-function useOnline(): boolean {
-  const [online, setOnline] = useState(navigator.onLine)
+/** Online means the server answers: the network is up (navigator.onLine) and the last call
+ *  through the POS client got a reply (a café Wi-Fi with no internet still says online). */
+function useOnline(): { online: boolean; reachable: boolean } {
+  const [net, setNet] = useState(navigator.onLine)
   useEffect(() => {
-    const on = () => setOnline(true)
-    const off = () => setOnline(false)
+    const on = () => setNet(true)
+    const off = () => setNet(false)
     window.addEventListener('online', on)
     window.addEventListener('offline', off)
     return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off) }
   }, [])
-  return online
+  const reachable = useSyncExternalStore(reachability.subscribe, reachability.get)
+  return { online: net && reachable, reachable }
 }
 
 /** Craft POS (spec §2, §3): activation → lock screen ⇄ the till. The till mounts at the first
@@ -57,7 +61,7 @@ export default function PosApp() {
   const [drafts, setDrafts] = useState(0)                      // the till's unsent items: an update waits for none
   const [printProblems, setPrintProblems] = useState(0)
   const [printSlot] = useState(() => document.createElement('div'))   // the staff panel shows the print host in it
-  const online = useOnline()
+  const { online, reachable } = useOnline()
   const updateReady = useAppUpdate()
   const whoRef = useRef(who)
   whoRef.current = who
@@ -66,6 +70,7 @@ export default function PosApp() {
   const leavingRef = useRef(false)      // toActivation has started: until the next activation, nothing else leaves or loads
   const seq = useRef(0)                 // the latest refresh: an older one that finishes late changes nothing
   const loadedOnce = useRef(false)      // a context was shown in this page: a failed read keeps it instead of the cache
+  const ending = useRef(false)          // a session is being ended here: a second refusal starts no second end
 
   const signedIn = (w: WhoAmI | null) => {
     setWho(w)
@@ -73,8 +78,8 @@ export default function PosApp() {
   }
 
   /** The roster and, when someone is signed in, who it is. A Lock that could not reach the
-   *  server is finished first. A tablet that boots offline opens the last context it saved;
-   *  a refusal (a coded error) never signs anyone in. */
+   *  server is finished first. A tablet that boots with the server unreachable opens the last
+   *  context it saved; a reply (a refusal, a 401, a 5xx) never signs anyone in from the cache. */
   const refresh = useCallback(async () => {
     const id = ++seq.current
     const current = () => id === seq.current && !leavingRef.current
@@ -85,7 +90,7 @@ export default function PosApp() {
       if (pending && r.session) { await endSession(pending); r = await fetchRoster() }
     } catch (e) {
       if (!current()) return
-      const c = !loadedOnce.current && !contextCode(msg(e)) ? loadContext(localStorage) : null
+      const c = !loadedOnce.current && !reachability.get() ? loadContext(localStorage) : null
       if (c) {
         loadedOnce.current = true
         setRoster(c.roster)
@@ -101,7 +106,10 @@ export default function PosApp() {
     if (r.session) {
       // outlet_closed, no_session…: the lock screen, which says why from the roster
       try { w = await fetchWhoAmI() } catch (e) {
-        if (!contextCode(msg(e))) {
+        const code = contextCode(msg(e))
+        // the session stays open on the server: end it (pos_end_session does not check the outlet)
+        if (code === 'outlet_closed' && current()) void endSession('locked').catch(() => undefined)
+        if (!code) {
           // a network blip (refresh runs on every 'online') keeps whoever is signed in here
           if (whoRef.current?.staffId === r.session.staffId) w = whoRef.current
           else error = msg(e)
@@ -156,19 +164,33 @@ export default function PosApp() {
     whoRef.current = null; seq.current++
     setWho(null); setLockNote(note); setConfirm(null)                 // e.g. "Unpair this device?" must not stay above the lock
     setPendingLock(localStorage, reason)
-    try { await endSession(reason); clearPendingLock(localStorage) } catch { /* offline: ended on the next roster read */ }
-    await refresh()
+    ending.current = true
+    try {
+      try { await endSession(reason); clearPendingLock(localStorage) } catch { /* offline: ended on the next roster read */ }
+      await refresh()
+    } finally { ending.current = false }
   }, [refresh])
 
   // a coded error from any call (posSupabase.ts)
   useEffect(() => {
     const on = (e: Event) => {
-      const code = (e as CustomEvent<ContextCode>).detail
-      if (code === 'device_unpaired') {
-        if (phaseRef.current.kind === 'device' && !leavingRef.current) void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
+      const code = (e as CustomEvent<PosSignal>).detail
+      if (phaseRef.current.kind !== 'device' || leavingRef.current) return
+      if (code === NOT_PRINTING) {
+        void refresh()                                                // HQ moved the printing role: the roster says where
+      } else if (code === 'device_unpaired') {
+        void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
       } else if (code === 'access_changed') {
         if (whoRef.current) void lock('access_changed', ACCESS_CHANGED)
-      } else if (whoRef.current) {                                    // no_session, outlet_closed: back to the lock screen
+        else if (!ending.current) {
+          // nobody signed in in this page (e.g. at boot): the server session still ends
+          ending.current = true
+          setLockNote(ACCESS_CHANGED)
+          void endSession('access_changed').catch(() => undefined).finally(() => { ending.current = false })
+        }
+      } else if (code === 'outlet_closed') {
+        if (whoRef.current) void lock('locked')                       // the lock screen says the outlet is closed
+      } else if (whoRef.current) {                                    // no_session: the server already ended it
         setWho(null)
         void refresh()
       }
@@ -185,12 +207,21 @@ export default function PosApp() {
     return () => data.subscription.unsubscribe()
   }, [toActivation])
 
-  // while locked: the roster stays fresh; back online: the session token too
+  // the roster and whoami stay fresh, signed in or not (prints, canUnpair, idleLockMinutes…);
+  // back online: the session token too
   useEffect(() => {
-    if (phase.kind !== 'device' || who) return
+    if (phase.kind !== 'device') return
     const timer = window.setInterval(() => void refresh(), ROSTER_MS)
     return () => window.clearInterval(timer)
-  }, [phase.kind, who, refresh])
+  }, [phase.kind, refresh])
+  // the server unreachable: probe it every 15 s, and at once when the network comes back
+  useEffect(() => {
+    if (phase.kind !== 'device' || reachable) return
+    const probe = () => void refresh()
+    const timer = window.setInterval(probe, PROBE_MS)
+    window.addEventListener('online', probe)
+    return () => { window.clearInterval(timer); window.removeEventListener('online', probe) }
+  }, [phase.kind, reachable, refresh])
   useEffect(() => {
     if (!online || phase.kind !== 'device') return
     void supabase.auth.getSession().then(() => refresh())
@@ -207,7 +238,7 @@ export default function PosApp() {
     if (updateReady && !who && drafts === 0) window.location.reload()
   }, [updateReady, who, drafts])
 
-  useIdleLock(roster?.idleLockMinutes ?? 10, who !== null, () => void lock('idle'))
+  useIdleLock(roster?.idleLockMinutes ?? 10, who !== null, online, () => void lock('idle'))
 
   if (phase.kind === 'boot') return <div className="flex min-h-dvh items-center justify-center bg-cream text-brown-muted">Craft POS</div>
   if (phase.kind === 'activation') {
