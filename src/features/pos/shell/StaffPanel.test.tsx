@@ -27,7 +27,8 @@ afterEach(cleanup)
 
 const panel = (open: boolean, onExit = vi.fn(), onPrintProblems = vi.fn()) => (
   <StaffPanel open={open} branchId="br" branchName="Craft Cafe" staffName="Aina" refreshKey={0} liveStatus="live"
-    canSupervise={false} onShiftChanged={() => {}} onMyPin={() => {}} onClose={() => {}} onExit={onExit} onPrintProblems={onPrintProblems} />
+    canSupervise={false} prints onShiftChanged={() => {}} onMyPin={() => {}} onClose={() => {}}
+    signOff={{ label: 'Exit POS', onClick: onExit }} onPrintProblems={onPrintProblems} />
 )
 
 describe('StaffPanel', () => {
@@ -57,5 +58,27 @@ describe('StaffPanel', () => {
     expect(screen.queryByRole('link')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Exit POS' }))
     expect(onExit).toHaveBeenCalledTimes(1)
+  })
+
+  it('on a tablet that does not print: no print host, a note instead', () => {
+    render(<StaffPanel open branchId="br" branchName="Craft Cafe" staffName="Aina" refreshKey={0} liveStatus="live"
+      canSupervise={false} prints={false} onShiftChanged={() => {}} onClose={() => {}}
+      signOff={{ label: 'Lock', onClick: () => {} }} onPrintProblems={() => {}} />)
+    expect(screen.queryByTestId('print-host')).toBeNull()
+    expect(screen.getByText(/This tablet does not print/)).toBeTruthy()
+  })
+
+  it('the POS app: Lock and Unpair this device, no My PIN', () => {
+    const onLock = vi.fn()
+    const onUnpair = vi.fn()
+    render(<StaffPanel open branchId="br" branchName="Craft Cafe" staffName="Aina" refreshKey={0} liveStatus="live"
+      canSupervise prints onShiftChanged={() => {}} onClose={() => {}}
+      signOff={{ label: 'Lock', onClick: onLock }} onUnpair={onUnpair} onPrintProblems={() => {}} />)
+    expect(screen.queryByRole('button', { name: 'My PIN' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Exit POS' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Lock' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Unpair this device' }))
+    expect(onLock).toHaveBeenCalledTimes(1)
+    expect(onUnpair).toHaveBeenCalledTimes(1)
   })
 })

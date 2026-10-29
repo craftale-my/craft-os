@@ -4,10 +4,12 @@ import PrintHostPanel from '../order/PrintHostPanel'
 import ShiftBar from '../shift/ShiftBar'
 
 /** The right-side staff panel (spec §1): the shift (Open / Close shift, Pay in / out), printers,
- *  My PIN, the live status and Exit POS. It stays MOUNTED and is only hidden when closed: the print
- *  host inside it prints the browser-route tickets of this iPad, and the shift bar keeps a pay in /
- *  pay out whose reply was lost, so neither may unmount when the cashier closes the panel. */
-export default function StaffPanel({ open, branchId, branchName, staffName, refreshKey, liveStatus, canSupervise, onShiftChanged, onMyPin, onClose, onExit, onPrintProblems }: {
+ *  My PIN (Craft OS), the live status, Unpair this device (POS app, managers) and the sign-off
+ *  button (Exit POS in Craft OS, Lock in the POS app). It stays MOUNTED and is only hidden when
+ *  closed: the print host inside it prints the browser-route tickets of this iPad, and the shift
+ *  bar keeps a pay in / pay out whose reply was lost, so neither may unmount when the cashier
+ *  closes the panel. Only the outlet's printing tablet runs a print host. */
+export default function StaffPanel({ open, branchId, branchName, staffName, refreshKey, liveStatus, canSupervise, prints, onShiftChanged, onMyPin, onClose, signOff, onUnpair, onPrintProblems }: {
   open: boolean
   branchId: string
   branchName: string
@@ -15,10 +17,12 @@ export default function StaffPanel({ open, branchId, branchName, staffName, refr
   refreshKey: number
   liveStatus: string            // usePosRealtime's status
   canSupervise: boolean         // pos_supervise: the shift bar's Shifts button
+  prints: boolean               // this device prints the outlet's tickets
   onShiftChanged: () => void
-  onMyPin: () => void
+  onMyPin?: () => void          // Craft OS only
   onClose: () => void
-  onExit: () => void            // Exit POS: PosPage asks about unsent items first, then leaves for /profile (no sign-out)
+  signOff: { label: string; onClick: () => void }   // Exit POS (asks about unsent items first) or Lock
+  onUnpair?: () => void         // POS app, a manager of this outlet signed in
   onPrintProblems: (count: number) => void   // the print host's problem count, for the bottom bar's badge
 }) {
   return (
@@ -42,13 +46,20 @@ export default function StaffPanel({ open, branchId, branchName, staffName, refr
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-brown-muted">Printers</h3>
           <div className="text-sm [&_button]:min-h-11">
-            <PrintHostPanel branchId={branchId} inline onProblems={onPrintProblems} />
+            {prints
+              ? <PrintHostPanel branchId={branchId} inline onProblems={onPrintProblems} />
+              : <p className="text-brown-muted">This tablet does not print. Tickets print on this outlet's printing tablet.</p>}
           </div>
         </section>
-        <button type="button" onClick={onMyPin} className="min-h-12 rounded-xl border border-border-mid px-4 text-left text-brown-dark">My PIN</button>
+        {onMyPin && <button type="button" onClick={onMyPin} className="min-h-12 rounded-xl border border-border-mid px-4 text-left text-brown-dark">My PIN</button>}
         <div className="text-sm text-brown-muted">Live: {liveStatus}</div>
-        <button type="button" onClick={onExit} className="mt-auto flex min-h-12 items-center justify-center rounded-xl bg-brown-btn font-medium text-white hover:bg-brown-btn-hover">
-          Exit POS
+        {onUnpair && (
+          <button type="button" onClick={onUnpair} className="min-h-12 rounded-xl border border-red-300 px-4 text-left text-red-700">
+            Unpair this device
+          </button>
+        )}
+        <button type="button" onClick={signOff.onClick} className="mt-auto flex min-h-12 items-center justify-center rounded-xl bg-brown-btn font-medium text-white hover:bg-brown-btn-hover">
+          {signOff.label}
         </button>
       </aside>
     </div>
