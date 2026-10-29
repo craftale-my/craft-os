@@ -30,9 +30,15 @@ export default function PosSettingsPage() {
   const [outletsError, setOutletsError] = useState<string | null>(null)
   const outlet = outlets ? pickOutlet(outlets, params.get('outlet')) : null
   const branchId = outlet?.id ?? null
+  const outletsLoaded = useRef(false)
   const loadOutlets = async () => {
-    try { setOutlets(await fetchMyOutlets()); setOutletsError(null) }
-    catch (e) { setOutletsError(e instanceof Error ? e.message : String(e)) }
+    try { setOutlets(await fetchMyOutlets()); outletsLoaded.current = true; setOutletsError(null) }
+    catch (e) {
+      const m = e instanceof Error ? e.message : String(e)
+      // after the first load keep the list; only the first load replaces the page with the error
+      if (outletsLoaded.current) setError(`Reloading the outlets failed: ${m}`)
+      else setOutletsError(m)
+    }
   }
   useEffect(() => { void loadOutlets() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const chooseOutlet = (id: string) => setParams((p) => { p.set('outlet', id); return p }, { replace: true })
@@ -45,10 +51,13 @@ export default function PosSettingsPage() {
 
   const dirty = useRef<Set<string>>(new Set())
 
+  const seq = useRef(0) // a slow reply for the outlet just left must not overwrite the current one
   const load = async () => {
     if (!branchId) return
+    const id = ++seq.current
     try {
       const [t, r] = await Promise.all([fetchTables(branchId), fetchRoutes(branchId)])
+      if (id !== seq.current) return
       setTables(t); setRoutes(r)
       setDraft((prev) => {
         const next: Record<string, { kind: PrinterKind; address: string }> = Object.fromEntries(r.map((x) => [x.route, { kind: x.kind, address: x.address }]))
@@ -56,9 +65,9 @@ export default function PosSettingsPage() {
         return next
       })
       setError(null)
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    } catch (e) { if (id === seq.current) setError(e instanceof Error ? e.message : String(e)) }
   }
-  useEffect(() => { setTables([]); setRoutes([]); setDraft({}); dirty.current.clear(); void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setTables([]); setRoutes([]); setDraft({}); setCard(null); setNewLabel(''); setError(null); dirty.current.clear(); void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async (fn: () => Promise<void>) => {
     try { await fn(); await load() } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
@@ -200,11 +209,11 @@ export default function PosSettingsPage() {
         })}
       </section>
 
-      <MenuCatalogsSection branchId={branchId} />
+      <MenuCatalogsSection key={branchId} branchId={branchId} />
 
-      <CheckoutSettings branchId={branchId} routes={routes.map((r) => r.route)} tables={tables} />
+      <CheckoutSettings key={branchId} branchId={branchId} routes={routes.map((r) => r.route)} tables={tables} />
 
-      <ShiftSettingsSection branchId={branchId} />
+      <ShiftSettingsSection key={branchId} branchId={branchId} />
 
       {card && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40" onClick={() => setCard(null)}>
