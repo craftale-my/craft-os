@@ -38,6 +38,13 @@ describe('CustomerServiceAccessTab', () => {
     expect(screen.queryByText('Gone')).toBeNull()
   })
 
+  it('hides deactivated staff (is_active = false)', () => {
+    const OFF = { id: 'staff-3', name: 'Deactivated', status: 'active', is_active: false, cs_role: null } as unknown as Staff
+    render(<CustomerServiceAccessTab allStaff={[{ ...ALI }, OFF]} onRefresh={vi.fn()} />)
+    expect(screen.getByText('Ali')).toBeTruthy()
+    expect(screen.queryByText('Deactivated')).toBeNull()
+  })
+
   it('saves a new level and refreshes', async () => {
     const onRefresh = vi.fn()
     render(<CustomerServiceAccessTab allStaff={[{ ...ALI }]} onRefresh={onRefresh} />)

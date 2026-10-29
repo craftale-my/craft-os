@@ -28,7 +28,7 @@ export function CustomerServiceAccessTab({ allStaff, onRefresh }: { allStaff: St
     onRefresh()
   }
 
-  const activeStaff = allStaff.filter(s => s.status !== 'resigned')
+  const activeStaff = allStaff.filter(s => s.status !== 'resigned' && s.is_active !== false)
 
   return (
     <div>
