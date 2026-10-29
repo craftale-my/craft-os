@@ -60,6 +60,7 @@ create index if not exists feedback_status_idx    on feedback (status, created_a
 create index if not exists feedback_submitter_idx on feedback (submitted_by, created_at desc);
 
 alter table feedback enable row level security;
+revoke all on table feedback from anon;   -- 未登录角色不需要任何权限;RLS 之外再加一层
 
 drop policy if exists "feedback_select" on feedback;
 create policy "feedback_select" on feedback for select
@@ -108,7 +109,7 @@ begin
     p_category,
     btrim(p_message),
     nullif(btrim(coalesce(p_branch, '')), ''),
-    p_page_path,
+    case when v_anon then null else p_page_path end,   -- 路径(如 /staff/<id>)可能缩小匿名投诉人的范围
     case when v_anon
       then jsonb_strip_nulls(jsonb_build_object('appVersion', p_context -> 'appVersion'))
       else coalesce(p_context, '{}'::jsonb) end,

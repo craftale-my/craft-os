@@ -64,6 +64,20 @@ do $$ begin
   end;
 end $$;
 
+-- ---- 4b. 照片路径必须以该条反馈 id 开头 --------------------------------------
+do $$ begin
+  begin
+    perform submit_feedback('77777777-7777-4777-8777-777777777777', 'system', 'bad photo path', null, null, '{}',
+      array['99999999-9999-4999-8999-999999999999/1.jpg'], false);
+    raise exception 'VERIFY FAIL: foreign photo path was accepted';
+  exception when others then
+    if sqlerrm = 'Invalid photo path.' then null;
+    elsif sqlerrm like 'VERIFY FAIL%' then raise;
+    else raise exception 'VERIFY FAIL: check 4b got unexpected error: %', sqlerrm;
+    end if;
+  end;
+end $$;
+
 -- ---- 5. 直接 insert 被 RLS 挡住 ----------------------------------------------
 do $$ begin
   begin
@@ -128,6 +142,10 @@ begin
   if r.submitted_by is not null then raise exception 'VERIFY FAIL: anonymous row kept submitted_by'; end if;
   if r.context <> '{"appVersion":"v"}'::jsonb then raise exception 'VERIFY FAIL: anonymous context not stripped: %', r.context; end if;
   if cardinality(r.photo_paths) <> 0 then raise exception 'VERIFY FAIL: anonymous row has photos'; end if;
+  if r.page_path is not null then raise exception 'VERIFY FAIL: anonymous row kept page_path: %', r.page_path; end if;
+  if (select page_path from feedback where id = '11111111-1111-4111-8111-111111111111') is distinct from '/profile' then
+    raise exception 'VERIFY FAIL: named row lost page_path';
+  end if;
 end $$;
 
 -- ---- 8. owner 回复实名和匿名各一条 --------------------------------------------
@@ -165,6 +183,10 @@ begin
   if (select status <> 'resolved' or owner_reply <> 'Thanks, fixed the grinder' or replied_at is null
         from feedback where id = '11111111-1111-4111-8111-111111111111') then
     raise exception 'VERIFY FAIL: reply not saved';
+  end if;
+
+  if has_table_privilege('anon', 'public.feedback', 'select') then
+    raise exception 'VERIFY FAIL: anon has privileges on feedback';
   end if;
 
   if (select public from storage.buckets where id = 'feedback-photos') is distinct from false then
