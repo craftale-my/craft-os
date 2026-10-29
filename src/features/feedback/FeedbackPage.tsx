@@ -16,24 +16,28 @@ export default function FeedbackPage() {
   const tab: 'mine' | 'inbox' = owner && params.get('tab') === 'inbox' ? 'inbox' : 'mine'
   const selectedId = params.get('id')
 
-  const [items, setItems] = useState<FeedbackRow[] | null>(null)
+  const [loaded, setLoaded] = useState<{ tab: 'mine' | 'inbox'; rows: FeedbackRow[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open')
   const [categoryFilter, setCategoryFilter] = useState<'all' | FeedbackCategory>('all')
 
+  const staffId = staff?.id
+
   useEffect(() => {
-    if (!staff) return
+    if (!staffId) return
     let live = true
-    setItems(null)
     setError(null)
-    const load = tab === 'inbox' ? listInbox() : listMyFeedback(staff.id)
+    const load = tab === 'inbox' ? listInbox() : listMyFeedback(staffId)
     load.then(
-      rows => { if (live) setItems(rows) },
+      rows => { if (live) setLoaded({ tab, rows }) },
       (e: Error) => { if (live) setError(e.message) },
     )
     return () => { live = false }
-  }, [staff, tab, reloadKey])
+  }, [staffId, tab, reloadKey])
+
+  // Rows only count when they belong to the current tab; a same-tab reload keeps them (stale-while-revalidate).
+  const items = loaded && loaded.tab === tab ? loaded.rows : null
 
   function go(next: { tab?: 'mine' | 'inbox'; id?: string | null }) {
     const p = new URLSearchParams()
@@ -90,7 +94,7 @@ export default function FeedbackPage() {
           item={selected}
           ownerView={tab === 'inbox'}
           onBack={() => go({ id: null })}
-          onSaved={() => setReloadKey(k => k + 1)}
+          onSaved={() => { setReloadKey(k => k + 1); go({ id: null }) }}
         />
       )}
 

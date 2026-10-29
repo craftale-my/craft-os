@@ -1,20 +1,25 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { FeedbackRow } from './types'
 
 const listMyFeedback = vi.fn()
 const listInbox = vi.fn()
+const replyFeedback = vi.fn()
 vi.mock('./api', () => ({
   listMyFeedback: (...a: unknown[]) => listMyFeedback(...a),
   listInbox: () => listInbox(),
-  replyFeedback: vi.fn(),
+  replyFeedback: (...a: unknown[]) => replyFeedback(...a),
   photoUrls: async () => [],
 }))
 let role = 'staff'
+const staffs: Record<string, { id: string; name: string; system_role: string }> = {}
 vi.mock('../auth/AuthContext', () => ({
-  useAuth: () => ({ staff: { id: 's1', name: 'Yong', system_role: role } }),
+  useAuth: () => {
+    const key = role
+    return { staff: (staffs[key] ??= { id: 's1', name: 'Yong', system_role: key }) }
+  },
 }))
 
 const { default: FeedbackPage } = await import('./FeedbackPage')
@@ -28,7 +33,7 @@ const row = (over: Partial<FeedbackRow> = {}): FeedbackRow => ({
 
 const renderAt = (url: string) => render(<MemoryRouter initialEntries={[url]}><FeedbackPage /></MemoryRouter>)
 
-afterEach(() => { cleanup(); listMyFeedback.mockReset(); listInbox.mockReset(); role = 'staff' })
+afterEach(() => { cleanup(); listMyFeedback.mockReset(); listInbox.mockReset(); replyFeedback.mockReset(); role = 'staff' })
 
 describe('FeedbackPage', () => {
   it('普通员工没有 Inbox 标签,?tab=inbox 回落到 My Feedback', async () => {
@@ -68,5 +73,65 @@ describe('FeedbackPage', () => {
     renderAt('/feedback?id=f1')
     await screen.findByText('Leave page is blank')
     expect(screen.queryByLabelText('Reply')).toBeNull()
+  })
+
+  it('owner Save sends status and reply, reloads the inbox and returns to the list', async () => {
+    role = 'owner'
+    listInbox.mockResolvedValue([row({ submitter: { name: 'Ali' } })])
+    replyFeedback.mockResolvedValue({ ok: true })
+    renderAt('/feedback?tab=inbox&id=f1')
+    fireEvent.change(await screen.findByLabelText('Status'), { target: { value: 'resolved' } })
+    fireEvent.change(screen.getByLabelText('Reply'), { target: { value: 'Fixed in v2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(replyFeedback).toHaveBeenCalledWith('f1', 'resolved', 'Fixed in v2'))
+    await waitFor(() => expect(listInbox).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByLabelText('Reply')).toBeNull())
+    expect(screen.queryByText('Loading…')).toBeNull()
+    expect(screen.getByRole('combobox', { name: 'Filter by status' })).toBeTruthy()
+  })
+
+  it('owner Save failure shows the reason, keeps the reply and stays on the detail', async () => {
+    role = 'owner'
+    listInbox.mockResolvedValue([row({ submitter: { name: 'Ali' } })])
+    replyFeedback.mockResolvedValue({ ok: false, reason: 'Only the owner can reply to feedback.' })
+    renderAt('/feedback?tab=inbox&id=f1')
+    fireEvent.change(await screen.findByLabelText('Reply'), { target: { value: 'Draft reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Only the owner can reply to feedback.')
+    expect((screen.getByLabelText('Reply') as HTMLTextAreaElement).value).toBe('Draft reply')
+    expect(listInbox).toHaveBeenCalledTimes(1)
+  })
+
+  it('Inbox hides resolved by default and All shows them', async () => {
+    role = 'owner'
+    listInbox.mockResolvedValue([
+      row({ id: 'a', message: 'Fresh item' }),
+      row({ id: 'b', message: 'Done item', status: 'resolved' }),
+    ])
+    renderAt('/feedback?tab=inbox')
+    expect(await screen.findByText('Fresh item')).toBeTruthy()
+    expect(screen.queryByText('Done item')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Filter by status'), { target: { value: 'all' } })
+    expect(screen.getByText('Fresh item')).toBeTruthy()
+    expect(screen.getByText('Done item')).toBeTruthy()
+  })
+
+  it('Inbox category filter hides other categories', async () => {
+    role = 'owner'
+    listInbox.mockResolvedValue([
+      row({ id: 'a', message: 'System thing', category: 'system' }),
+      row({ id: 'b', message: 'Idea thing', category: 'product_idea' }),
+    ])
+    renderAt('/feedback?tab=inbox')
+    expect(await screen.findByText('System thing')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Filter by category'), { target: { value: 'product_idea' } })
+    expect(screen.queryByText('System thing')).toBeNull()
+    expect(screen.getByText('Idea thing')).toBeTruthy()
+  })
+
+  it('shows the load error', async () => {
+    listMyFeedback.mockRejectedValue(new Error('boom'))
+    renderAt('/feedback')
+    expect((await screen.findByRole('alert')).textContent).toBe('boom')
   })
 })
