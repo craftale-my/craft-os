@@ -4,7 +4,7 @@ import ConfirmDialog, { type ConfirmRequest } from '../features/pos/shell/Confir
 import { createIdbStore } from '../features/pos/offline/idbStore'
 import type { QueuedOrder } from '../features/pos/offline/orderQueue'
 import { fetchProductNames } from '../features/pos/checkout/checkoutApi'
-import type { ContextCode } from '../features/pos/deviceErrors'
+import { contextCode, type ContextCode } from '../features/pos/deviceErrors'
 import ActivationScreen from './ActivationScreen'
 import LockScreen from './LockScreen'
 import { loadPending, type ActivationState } from './activation'
@@ -51,12 +51,16 @@ export default function PosApp() {
   const [lockNote, setLockNote] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const [drafts, setDrafts] = useState(0)                      // the till's unsent items: an update waits for none
   const online = useOnline()
   const updateReady = useAppUpdate()
   const whoRef = useRef(who)
   whoRef.current = who
   const phaseRef = useRef(phase)
   phaseRef.current = phase
+  const leavingRef = useRef(false)      // toActivation has started: until the next activation, nothing else leaves or loads
+  const seq = useRef(0)                 // the latest refresh: an older one that finishes late changes nothing
+  const loadedOnce = useRef(false)      // a context was shown in this page: a failed read keeps it instead of the cache
 
   const signedIn = (w: WhoAmI | null) => {
     setWho(w)
@@ -64,31 +68,50 @@ export default function PosApp() {
   }
 
   /** The roster and, when someone is signed in, who it is. A Lock that could not reach the
-   *  server is finished first. Offline, the last context on this tablet is used. */
+   *  server is finished first. A tablet that boots offline opens the last context it saved;
+   *  a refusal (a coded error) never signs anyone in. */
   const refresh = useCallback(async () => {
+    const id = ++seq.current
+    const current = () => id === seq.current && !leavingRef.current
+    let r: RosterReply
     try {
-      let r = await fetchRoster()
+      r = await fetchRoster()
       const pending = pendingLock(localStorage)
       if (pending && r.session) { await endSession(pending); r = await fetchRoster() }
-      clearPendingLock(localStorage)
-      const w = r.session ? await fetchWhoAmI() : null
-      setRoster(r); signedIn(w); setLoadError(null)
-      saveContext(localStorage, { roster: r, who: w })
     } catch (e) {
-      if (phaseRef.current.kind !== 'device') return                 // unpaired meanwhile (the event)
-      const c = loadContext(localStorage)
-      if (c) { setRoster(c.roster); if (!pendingLock(localStorage) && !whoRef.current) signedIn(c.who) }
+      if (!current()) return
+      const c = !loadedOnce.current && !contextCode(msg(e)) ? loadContext(localStorage) : null
+      if (c) {
+        loadedOnce.current = true
+        setRoster(c.roster)
+        if (!pendingLock(localStorage)) signedIn(c.who)
+      }
       setLoadError(msg(e))
+      return
     }
+    if (!current()) return
+    clearPendingLock(localStorage)
+    let w: WhoAmI | null = null
+    let error: string | null = null
+    if (r.session) {
+      // outlet_closed, no_session…: the lock screen, which says why from the roster
+      try { w = await fetchWhoAmI() } catch (e) { if (!contextCode(msg(e))) error = msg(e) }
+      if (!current()) return
+    }
+    loadedOnce.current = true
+    setRoster(r); signedIn(w); setLoadError(error)
+    saveContext(localStorage, { roster: r, who: w })
   }, [])
 
   const toActivation = useCallback(async (start: ActivationState, hold: boolean) => {
-    if (phaseRef.current.kind === 'activation') return
-    phaseRef.current = { kind: 'activation', start, unsent: [] }        // once, whichever signal comes first
+    if (leavingRef.current) return
+    leavingRef.current = true                                         // once, whichever signal comes first
+    phaseRef.current = { kind: 'activation', start, unsent: [] }
+    setConfirm(null); setLoadError(null); setLockNote(null)
     const unsent = hold ? await holdQueued(createIdbStore()).catch(() => []) : []
     await forgetDevice().catch(() => undefined)
     forgetContext(localStorage)
-    setWho(null); setTill(null); setRoster(null)
+    setWho(null); setTill(null); setRoster(null); setDrafts(0)
     setPhase({ kind: 'activation', start, unsent })
   }, [])
 
@@ -103,12 +126,15 @@ export default function PosApp() {
         setPhase({ kind: 'activation', start: p ? { kind: 'waiting', pending: p, note: null } : { kind: 'choose' }, unsent })
         return
       }
+      phaseRef.current = { kind: 'device' }
       setPhase({ kind: 'device' })
       await refresh()
     })()
   }, [refresh])
 
   const lock = useCallback(async (reason: LockReason, note: string | null = null) => {
+    // before any await: parallel refusals start one Lock, and a read in flight cannot sign them back in
+    whoRef.current = null; seq.current++
     setWho(null); setLockNote(note)
     setPendingLock(localStorage, reason)
     try { await endSession(reason); clearPendingLock(localStorage) } catch { /* offline: ended on the next roster read */ }
@@ -120,7 +146,7 @@ export default function PosApp() {
     const on = (e: Event) => {
       const code = (e as CustomEvent<ContextCode>).detail
       if (code === 'device_unpaired') {
-        if (phaseRef.current.kind === 'device') void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
+        if (phaseRef.current.kind === 'device' && !leavingRef.current) void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
       } else if (code === 'access_changed') {
         if (whoRef.current) void lock('access_changed', ACCESS_CHANGED)
       } else if (whoRef.current) {                                    // no_session, outlet_closed: back to the lock screen
@@ -135,7 +161,7 @@ export default function PosApp() {
   // an unpaired device's token can no longer refresh: Supabase signs it out
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT' && phaseRef.current.kind === 'device') void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
+      if (event === 'SIGNED_OUT' && phaseRef.current.kind === 'device' && !leavingRef.current) void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
     })
     return () => data.subscription.unsubscribe()
   }, [toActivation])
@@ -157,17 +183,21 @@ export default function PosApp() {
     if (whoId) fetchProductNames().then((rows) => saveProductNames(localStorage, rows), () => undefined)
   }, [whoId])
 
-  // a downloaded update opens on the lock screen only, never mid-order
+  // a downloaded update opens on the lock screen only, never mid-order or over unsent items
   useEffect(() => {
-    if (updateReady && !who) window.location.reload()
-  }, [updateReady, who])
+    if (updateReady && !who && drafts === 0) window.location.reload()
+  }, [updateReady, who, drafts])
 
   useIdleLock(roster?.idleLockMinutes ?? 10, who !== null, () => void lock('idle'))
 
   if (phase.kind === 'boot') return <div className="flex min-h-dvh items-center justify-center bg-cream text-brown-muted">Craft POS</div>
   if (phase.kind === 'activation') {
     return <ActivationScreen start={phase.start} unsent={phase.unsent} names={loadProductNames(localStorage)}
-      onActivated={() => { setPhase({ kind: 'device' }); void refresh() }} />
+      onActivated={() => {
+        leavingRef.current = false
+        phaseRef.current = { kind: 'device' }
+        setPhase({ kind: 'device' }); void refresh()
+      }} />
   }
 
   const requestLock = () => {
@@ -178,8 +208,9 @@ export default function PosApp() {
   const requestUnpair = () => setConfirm({
     title: 'Unpair this device?', message: 'It stops working until HQ activates it again.', confirmLabel: 'Unpair', danger: true,
     onConfirm: async () => {
-      try { await unpairThisDevice(); await toActivation({ kind: 'choose' }, false) }
-      catch (e) { setLoadError(msg(e)) }
+      // its waiting orders are held back, as for an unpair from HQ
+      try { await unpairThisDevice(); await toActivation({ kind: 'choose' }, true) }
+      catch (e) { setConfirm({ title: 'Could not unpair this device', message: msg(e), confirmLabel: 'OK', onConfirm: () => undefined }) }
     },
   })
 
@@ -190,7 +221,7 @@ export default function PosApp() {
           staffName={who?.staffName ?? till.staffName}
           can={{ manageMenu: false, supervise: who?.canSupervise ?? false, settings: false }}
           prints={roster?.device.prints ?? till.prints} locked={who === null}
-          onLock={requestLock} onUnpair={who?.canUnpair ? requestUnpair : undefined} />
+          onLock={requestLock} onUnpair={who?.canUnpair ? requestUnpair : undefined} onDraftCount={setDrafts} />
       )}
       {!who && (
         <LockScreen roster={roster} note={lockNote} offline={!online} loadError={loadError}

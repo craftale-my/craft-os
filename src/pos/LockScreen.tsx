@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { closedMessage, malaysiaToday, rosterPeople, type RosterPerson, type RosterReply } from './roster'
 import { startSession } from './sessionApi'
 
@@ -21,6 +21,8 @@ export default function LockScreen({ roster, note, offline, loadError, onSignedI
   const [pinError, setPinError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [screenNote, setScreenNote] = useState<string | null>(null)
+  const personRef = useRef(person)          // a reply for a keypad that has since closed is dropped
+  personRef.current = person
 
   const closed = roster ? closedMessage(roster.outlet, malaysiaToday()) : null
   const people = roster && !closed ? rosterPeople(roster.staff) : []
@@ -28,6 +30,7 @@ export default function LockScreen({ roster, note, offline, loadError, onSignedI
 
   const close = () => { setPerson(null); setPin(''); setPinError(null) }
   const press = (k: string) => {
+    if (busy) return
     setPinError(null)
     if (k === 'clear') setPin('')
     else if (k === 'back') setPin((p) => p.slice(0, -1))
@@ -35,17 +38,20 @@ export default function LockScreen({ roster, note, offline, loadError, onSignedI
   }
   const submit = async () => {
     if (!person || pin.length < 4 || busy) return
+    const asked = person.id
     setBusy(true)
     try {
-      const r = await startSession(person.id, pin)
+      const r = await startSession(asked, pin)
+      // a session that started still opens the till; a refusal for a closed keypad is not shown
       if (r.ok) { close(); setScreenNote(null); onSignedIn(); return }
+      if (personRef.current?.id !== asked) return
       setPin('')
       if (r.code === 'wrong_pin') { setPinError(r.error); return }
       close()
       setScreenNote(r.error)
       if (r.code === 'outlet_closed' || r.code === 'not_allowed') onRefresh()
     } catch (e) {
-      setPinError(offline ? OFFLINE : msg(e))
+      if (personRef.current?.id === asked) setPinError(offline ? OFFLINE : msg(e))
     } finally { setBusy(false) }
   }
 
@@ -75,7 +81,7 @@ export default function LockScreen({ roster, note, offline, loadError, onSignedI
         </div>
       </main>
       {person && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={close}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => { if (!busy) close() }}>
           <div role="dialog" aria-label={`PIN for ${person.name}`} className="w-full max-w-xs rounded-2xl bg-card p-5 shadow-card"
             onClick={(e) => e.stopPropagation()}>
             <div className="text-center text-lg font-semibold">{person.name}</div>

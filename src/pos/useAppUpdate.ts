@@ -30,13 +30,17 @@ export function useAppUpdate(): boolean {
   return ready
 }
 
+/** Resolves once the new worker is active. It may already be (no statechange would come), or
+ *  become so between the read and the listener, so the state is checked again after attaching. */
 function activated(reg: ServiceWorkerRegistration): Promise<void> {
   const w = reg.installing ?? reg.waiting
-  if (!w) return Promise.resolve()
+  if (!w || w.state === 'activated') return Promise.resolve()
   return new Promise((done, fail) => {
-    w.addEventListener('statechange', () => {
-      if (w.state === 'activated') done()
-      else if (w.state === 'redundant') fail(new Error('The update did not install'))
-    })
+    const check = () => {
+      if (w.state === 'activated') { w.removeEventListener('statechange', check); done() }
+      else if (w.state === 'redundant') { w.removeEventListener('statechange', check); fail(new Error('The update did not install')) }
+    }
+    w.addEventListener('statechange', check)
+    check()
   })
 }

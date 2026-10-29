@@ -55,13 +55,15 @@ export interface TillProps {
   onLock?: () => void
   /** The POS app, for a manager of this outlet: Unpair this device. */
   onUnpair?: () => void
+  /** The POS app: every change of the order screen's unsent items (an update waits for none). */
+  onDraftCount?: (n: number) => void
 }
 
 /** The till — the Feedme-layout POS (docs/superpowers/specs/2026-10-26-pos-feedme-frontend-design.md),
  *  run by Craft OS's /pos (PosPage) and by the POS app. Owns the data every screen shares (tables,
  *  open bills and their summaries, billing config, catalogs, the offline queue, realtime, the shift)
  *  and which screen is up. */
-export default function PosTill({ branchId, branchName, staffId, staffName, can, prints, locked, onBackOffice, onExit, myPin = false, onLock, onUnpair }: TillProps) {
+export default function PosTill({ branchId, branchName, staffId, staffName, can, prints, locked, onBackOffice, onExit, myPin = false, onLock, onUnpair, onDraftCount }: TillProps) {
   const [tables, setTables] = useState<TableRow[]>([])
   const [bills, setBills] = useState<OpenBillRow[]>([])
   const [summaries, setSummaries] = useState<Map<string, BillSummary>>(new Map())
@@ -89,6 +91,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const lockedRef = useRef(locked)                  // a Send & pay that finishes after the tablet locked must not open Payment
   lockedRef.current = locked
   const draftCount = useRef(0)                      // the order screen's unsent items, for the menu's guard
+  const setDrafts = (n: number) => { draftCount.current = n; onDraftCount?.(n) }
   const orderSending = useRef(false)                // the order screen is sending: the menu stays shut until it is done
   const openBillIdRef = useRef<string | null>(null)
   // checkout ids this iPad sent per bill: a reopened Payment re-reads with them, so an unsure payment
@@ -143,11 +146,11 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   openBillIdRef.current = orderBill?.id ?? null
 
   // ── navigation ──
-  const goHome = () => { editingFrom.current = null; draftCount.current = 0; setScreen({ kind: 'home' }) }
+  const goHome = () => { editingFrom.current = null; setDrafts(0); setScreen({ kind: 'home' }) }
   const openOrder = (target: OrderTarget, lines?: OrderLine[], catalogId?: string | null) => {
     setNotice(null)
     editingFrom.current = null                      // editRejected sets it again after opening
-    draftCount.current = lines?.reduce((n, l) => n + l.qty, 0) ?? 0
+    setDrafts(lines?.reduce((n, l) => n + l.qty, 0) ?? 0)
     setScreen({ kind: 'order', session: ++session.current, target, lines, catalogId })
   }
   /** The order screen of `sess` changed target (retarget): a move or merge onto another bill starts it
@@ -156,7 +159,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const changeTarget = (sess: number, t: OrderTarget) => {
     const { screen: next, restarted } = retarget(screenRef.current, sess, t)
     if (next === screenRef.current) return
-    if (restarted) { editingFrom.current = null; draftCount.current = 0 }
+    if (restarted) { editingFrom.current = null; setDrafts(0) }
     screenRef.current = next
     setScreen(next)
   }
@@ -166,7 +169,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const leave = (go: () => void) => {
     if (screen.kind === 'order' && draftCount.current > 0) {
       setConfirm({ title: discardQuestion(draftCount.current), confirmLabel: 'Discard', danger: true,
-        onConfirm: () => { editingFrom.current = null; draftCount.current = 0; go() } })
+        onConfirm: () => { editingFrom.current = null; setDrafts(0); go() } })
       return
     }
     go()
@@ -185,7 +188,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
     if (item === 'report') { setReportOpen(true); return }
     leave(() => {
       if (item === 'order') goHome()
-      else if (item === 'transaction') { editingFrom.current = null; draftCount.current = 0; setScreen({ kind: 'transaction' }) }
+      else if (item === 'transaction') { editingFrom.current = null; setDrafts(0); setScreen({ kind: 'transaction' }) }
       else onBackOffice?.(item === 'menu' ? '/menu' : '/pos/settings')
     })
   }
@@ -198,15 +201,17 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
     // Payment and Transaction have no drafts to keep; the order screen stays (its own dialogs close via `locked`)
     if (screenRef.current.kind === 'payment' || screenRef.current.kind === 'transaction') goHome()
   }, [locked])
-  // the next person's sign-in: read everything again (calls made while locked were refused)
-  const lastStaff = useRef(staffId)
+  // a sign-in after the lock, the same person or the next: read everything again (calls made while
+  // locked were refused). Craft OS never locks.
+  const wasLocked = useRef(locked)
   useEffect(() => {
-    if (lastStaff.current === staffId) return
-    lastStaff.current = staffId
+    const unlocked = wasLocked.current && !locked
+    wasLocked.current = locked
+    if (!unlocked) return
     bump(); loadBilling()
     // the catalogs list is read once per branch: a read refused while locked would otherwise stay empty
     fetchBranchCatalogs(branchId).then(setBranchCatalogs, (e) => setError(msg(e)))
-  }, [staffId, bump, loadBilling, branchId])
+  }, [locked, bump, loadBilling, branchId])
 
   // ── the queue ──
   // A rejected order is handed straight back to the order screen (cart intact), so drop the queued
@@ -248,7 +253,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
     if (lockedRef.current) { goHome(); return }                  // locked meanwhile: the order is sent or queued, Payment must not open
     if (out.kind === 'home') { goHome(); setNotice(out.notice); return }
     loadBilling()
-    draftCount.current = 0
+    setDrafts(0)
     setScreen({ kind: 'payment', bill: out.bill, back: out.back })
   }
 
@@ -299,7 +304,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
           onPay={(bill) => { loadBilling(); setScreen({ kind: 'payment', bill, back: screen.target }) }}
           onSendAndPay={(id) => sendAndPay(id, screen.target, screen.session)}
           onChanged={async () => { setRefreshKey((k) => k + 1); await reload() }}
-          onDraftCount={(n) => { draftCount.current = n }}
+          onDraftCount={setDrafts}
           onSending={(busy) => { orderSending.current = busy }} />
       )}
       {screen.kind === 'transaction' && <TransactionScreen branchId={branchId} />}

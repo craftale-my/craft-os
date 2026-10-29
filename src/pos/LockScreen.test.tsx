@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { RosterReply } from './roster'
 
 const api = vi.hoisted(() => ({ startSession: vi.fn() }))
@@ -68,6 +68,24 @@ describe('LockScreen', () => {
     typePin('4')
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     await waitFor(() => expect(onSignedIn).toHaveBeenCalledTimes(1))
+  })
+
+  it('the keypad stays up while a PIN is checked; a late reply for a closed keypad shows nothing', async () => {
+    let reply!: (v: unknown) => void
+    api.startSession.mockReturnValue(new Promise((r) => { reply = r }))
+    const r = roster()
+    r.staff.push({ id: 's3', name: 'Cara', hasPin: true })
+    render(<LockScreen roster={r} note={null} offline={false} loadError={null} onSignedIn={vi.fn()} onRefresh={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Aina/ }))
+    typePin('1234')
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    fireEvent.click(screen.getByRole('dialog').parentElement as HTMLElement)          // the backdrop, while busy
+    expect(screen.getByRole('dialog', { name: 'PIN for Aina' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Cara/ }))                     // Aina's keypad is gone
+    expect(screen.getByRole('dialog', { name: 'PIN for Cara' })).toBeTruthy()
+    await act(async () => { reply({ ok: false, code: 'wrong_pin', error: 'Wrong PIN · 4 tries left' }) })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'PIN for Cara' })).toBeTruthy()
   })
 
   it('shows why the last session ended, and the offline note', () => {
