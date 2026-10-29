@@ -417,6 +417,18 @@ export function isInternalSupplier(
 }
 
 /**
+ * Whether procurement lets this person work across every branch. Mirrors the
+ * "all branches" half of SQL can_access_branch (owner / admin / manager / HR,
+ * or manager rank). Deliberately not the All Branches capability: the owner
+ * decided (2026-10-29) that supervisors stay on their own branch for
+ * procurement even where the matrix gives them All Branches.
+ */
+export function seesAllBranches(staff: Pick<Staff, 'rank' | 'system_role'> | null | undefined): boolean {
+  if (!staff) return false
+  return staff.rank === 'manager' || ['owner', 'admin', 'manager', 'hr'].includes(staff.system_role)
+}
+
+/**
  * Frontend mirror of SQL can_access_branch(): manager-tier and HR roles see
  * every branch, everyone else only their own. UI gate only — RLS decides.
  */
@@ -425,8 +437,7 @@ export function canAccessBranch(
   branchId: string | null | undefined,
 ): boolean {
   if (!staff || !branchId) return false
-  if (staff.rank === 'manager') return true
-  if (['owner', 'admin', 'manager', 'hr'].includes(staff.system_role)) return true
+  if (seesAllBranches(staff)) return true
   return staff.branch_id != null && staff.branch_id === branchId
 }
 

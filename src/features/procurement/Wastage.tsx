@@ -1,10 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
-import { useCan } from '../../shared/lib/permissions'
 import { RECEIVING_PHOTOS_BUCKET } from '../../shared/lib/photos'
 import { useSignedPhotoUrls } from '../../shared/lib/useSignedPhotoUrls'
-import { money, qty, validateWastage, weekStartBusinessDate, inDepartment } from '../../shared/lib/procurement'
+import { money, qty, validateWastage, weekStartBusinessDate, inDepartment, seesAllBranches } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog, WastageReason } from '../../shared/types'
 import PhotoButton from './PhotoButton'
@@ -71,8 +70,8 @@ interface StockAt {
 
 export default function WastagePage() {
   const { staff } = useAuth()
-  const { can } = useCan()
-  const allBranches = can('all_branches')
+  // Procurement follows the DB branch rule, not the All Branches capability.
+  const allBranches = seesAllBranches(staff)
 
   const [branches, setBranches] = useState<Branch[]>([])
   const [items, setItems] = useState<Item[]>([])

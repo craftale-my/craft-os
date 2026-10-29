@@ -2,9 +2,9 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
-import { useCan } from '../../shared/lib/permissions'
 import {
   qty, money, buildStockRows, formatUnitCost, sumWastage, weekStartBusinessDate, departmentLabels,
+  seesAllBranches,
 } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog } from '../../shared/types'
@@ -28,8 +28,8 @@ const RIGHT_ALIGNED = new Set(['On Hand', 'Min Alert', 'Latest Price', 'Avg Cost
 
 export default function InventoryPage() {
   const { staff } = useAuth()
-  const { can } = useCan()
-  const allBranches = can('all_branches')
+  // Procurement follows the DB branch rule, not the All Branches capability.
+  const allBranches = seesAllBranches(staff)
 
   const [items, setItems] = useState<Item[]>([])
   const [branches, setBranches] = useState<Branch[]>([])

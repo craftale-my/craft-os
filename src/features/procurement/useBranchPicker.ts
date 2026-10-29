@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
-import { useCan } from '../../shared/lib/permissions'
+import { seesAllBranches } from '../../shared/lib/procurement'
 import type { Branch } from '../../shared/types'
 
 /**
@@ -11,8 +11,8 @@ import type { Branch } from '../../shared/types'
  */
 export function useBranchPicker(initial?: string | null) {
   const { staff } = useAuth()
-  const { can } = useCan()
-  const allBranches = can('all_branches')
+  // Procurement follows the DB branch rule, not the All Branches capability.
+  const allBranches = seesAllBranches(staff)
 
   const [branches, setBranches] = useState<Branch[]>([])
   const [branchId, setBranchId] = useState('')

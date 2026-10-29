@@ -7,7 +7,7 @@ import {
   unitCostPerBase, ledgerValue, movingAverageCost, formatUnitCost,
   overQty, lineOverReceived, deliveryNeedsNote, canCloseShort, shortfallLines,
   weekStartBusinessDate, validateWastage, sumWastage,
-  isInternalSupplier, canAccessBranch, inTransitQty, toShipQty, transferValue, inTransitValue, transitLossValue,
+  isInternalSupplier, canAccessBranch, seesAllBranches, inTransitQty, toShipQty, transferValue, inTransitValue, transitLossValue,
   shippedUnitCost, transitShortQty, validateShipLines, validateInternalReceipt, transferStatus, transferStatusLabel,
   parseTransferNote, roundQty,
   businessDateMYT, currentRecipe, recipeVersionStatus, recipeCost, estimatedUnitCost, validateRecipeDraft,
@@ -303,6 +303,17 @@ describe('priceDelta', () => {
     const d = priceDelta(0, 45)
     expect(d.direction).toBe('up')
     expect(d.percent).toBe(0)
+  })
+})
+
+describe('seesAllBranches', () => {
+  it('is for owner, admin, manager, HR and manager rank, not supervisors', () => {
+    expect(seesAllBranches({ rank: 'manager', system_role: 'staff' })).toBe(true)
+    for (const r of ['owner', 'admin', 'manager', 'hr'] as const) {
+      expect(seesAllBranches({ rank: 'senior', system_role: r })).toBe(true)
+    }
+    expect(seesAllBranches({ rank: 'supervisor', system_role: 'supervisor' })).toBe(false)
+    expect(seesAllBranches(null)).toBe(false)
   })
 })
 

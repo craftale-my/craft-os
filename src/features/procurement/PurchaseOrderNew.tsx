@@ -2,9 +2,9 @@ import { useState, useEffect, useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
-import { useCan } from '../../shared/lib/permissions'
 import {
   money, qty, poTotal, isBelowAlert, suggestedOrderPacks, packs,
+  seesAllBranches,
 } from '../../shared/lib/procurement'
 import { ITEM_DEPARTMENT_LABELS, ITEM_DEPARTMENTS } from '../../shared/types'
 import type { Item, Supplier, Branch, ItemDepartment } from '../../shared/types'
@@ -55,8 +55,8 @@ function rememberSource(s: Source) {
 export default function PurchaseOrderNewPage() {
   const navigate = useNavigate()
   const { staff } = useAuth()
-  const { can } = useCan()
-  const allBranches = can('all_branches')
+  // Procurement follows the DB branch rule, not the All Branches capability.
+  const allBranches = seesAllBranches(staff)
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [branches, setBranches] = useState<Branch[]>([])
