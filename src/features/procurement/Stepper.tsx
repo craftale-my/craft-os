@@ -5,10 +5,12 @@ import { qty } from '../../shared/lib/procurement'
  * − / + quantity control sized for thumbs (44 px targets). The middle is a
  * text field so an odd quantity (e.g. 1.5) can still be typed.
  */
-export default function Stepper({ value, onChange, min = 0, label, tone = 'normal' }: {
+export default function Stepper({ value, onChange, min = 0, max, label, tone = 'normal' }: {
   value: number
   onChange: (next: number) => void
   min?: number
+  /** Upper bound for the + button (typing above it is left to the caller's check). */
+  max?: number
   /** Accessible name, e.g. "Eggs Grade A quantity". */
   label: string
   tone?: 'normal' | 'warn'
@@ -46,8 +48,9 @@ export default function Stepper({ value, onChange, min = 0, label, tone = 'norma
       <button
         type="button"
         aria-label={`Increase ${label}`}
-        onClick={() => onChange(Math.floor(value) + 1)}
-        className="w-11 h-11 text-xl font-semibold text-brown-btn active:bg-[#F5EDE0]"
+        onClick={() => onChange(max == null ? Math.floor(value) + 1 : Math.min(max, Math.floor(value) + 1))}
+        disabled={max != null && value >= max}
+        className="w-11 h-11 text-xl font-semibold text-brown-btn active:bg-[#F5EDE0] disabled:opacity-30"
       >
         +
       </button>

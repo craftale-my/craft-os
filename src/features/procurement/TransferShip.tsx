@@ -4,14 +4,15 @@ import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import {
   money, qty, toBaseUnits, toPurchaseUnits, toShipQty, isInternalSupplier, canAccessBranch, validateShipLines,
-  formatUnitCost,
+  formatUnitCost, packs,
 } from '../../shared/lib/procurement'
 import { InternalBadge } from './badges'
+import Stepper from './Stepper'
 import type { InventoryValuation, PurchaseOrder, PurchaseOrderItem, ShipLineInput } from '../../shared/types'
 
 const inputCls =
-  'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
-const labelCls = 'block text-xs font-semibold text-brown-medium mb-1'
+  'w-full px-3 py-2.5 rounded-xl border border-[#D4C5B0] bg-white text-base text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+const labelCls = 'block text-[11px] font-bold uppercase tracking-wide text-brown-faint mb-1'
 
 /** HQ stock of one item: base units on hand and moving-average cost. */
 interface HqStock {
@@ -170,14 +171,19 @@ export default function TransferShipPage() {
     })
   }
 
+  const done = lines.filter(l => toShipQty(l, po.status) <= 0)
+  const shipCount = shippable.filter(l => qtyOf(l) > 0).length
+  const blocker = validation
+    ?? (shipCount === 0 ? 'Set a quantity on at least one line.' : null)
+
   return (
     <div className="min-h-screen bg-cream-light">
-      <div className="max-w-3xl mx-auto px-4 py-8 lg:px-8 space-y-5">
+      <div className="max-w-xl mx-auto px-3 pt-5 pb-4 sm:px-4 space-y-3">
         <div>
-          <Link to="/procurement/transfers" className="text-xs text-brown-faint hover:text-[#C4813A] transition-colors">
+          <Link to="/procurement/transfers" className="text-sm text-brown-faint hover:text-[#C4813A]">
             ← Transfers
           </Link>
-          <h1 className="text-2xl font-bold text-brown-dark mt-1 flex items-center gap-2">
+          <h1 className="text-xl font-bold text-brown-dark mt-1 flex items-center gap-2 flex-wrap">
             Ship {po.po_number} <InternalBadge />
           </h1>
           <p className="text-sm text-brown-muted">
@@ -186,11 +192,14 @@ export default function TransferShipPage() {
         </div>
 
         {error && (
-          <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">{error}</p>
+          <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5">{error}</p>
         )}
 
-        <div className="space-y-3">
-          {lines.map(l => {
+        <p className="text-xs font-bold uppercase tracking-wide text-brown-muted px-1 pt-1">
+          {shippable.length} item{shippable.length > 1 ? 's' : ''} to ship
+        </p>
+        <div className="space-y-2">
+          {shippable.map(l => {
             const unit = l.item?.purchase_unit ?? ''
             const baseUnit = l.item?.base_unit ?? ''
             const conv = convOf(l)
@@ -199,96 +208,108 @@ export default function TransferShipPage() {
             const heldBase = held?.balance ?? 0
             const q = qtyOf(l)
             const over = stock != null && toBaseUnits(q, conv) > heldBase
+            const short = q < toShip
             const est = held?.avgCost != null && q > 0 ? toBaseUnits(q, conv) * held.avgCost : null
-            const done = toShip <= 0
             return (
               <div
                 key={l.id}
-                className={`bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-3 ${done ? 'opacity-50' : ''}`}
+                className={`bg-white rounded-2xl border p-3.5 ${
+                  over ? 'border-[#E9B9A8] shadow-[inset_4px_0_0_#B46309]'
+                    : q > 0 ? 'border-[#CDB89C] shadow-[inset_4px_0_0_#2E6E9E]' : 'border-[#EDE5D8]'
+                }`}
               >
-                <div className="flex items-baseline justify-between gap-3 flex-wrap">
-                  <p className="text-base font-semibold text-brown-dark">{l.item?.name ?? 'Unknown item'}</p>
-                  <p className="text-xs text-brown-faint">1 {unit} = {qty(conv)} {baseUnit}</p>
+                <p className="font-bold text-[15px] text-brown-dark leading-snug">{l.item?.name ?? 'Unknown item'}</p>
+                <p className="text-xs text-brown-faint">1 {unit} = {qty(conv)} {baseUnit}</p>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-[#F5EDE0] text-brown-muted">
+                    Asked {qty(toShip)} {unit}
+                  </span>
+                  {Number(l.shipped_quantity ?? 0) > 0 && (
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-[#F5EDE0] text-brown-muted">
+                      Sent before {qty(Number(l.shipped_quantity))}
+                    </span>
+                  )}
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
+                    stock == null ? 'bg-[#F5EDE0] text-brown-muted'
+                      : toBaseUnits(toShip, conv) > heldBase ? 'bg-[#FCF0EC] text-[#9E4A30]' : 'bg-[#EBF5EE] text-[#3D7A50]'
+                  }`}>
+                    HQ has {stock == null ? '—' : `${packs(heldBase, conv)} ${unit}`}
+                  </span>
                 </div>
-                <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                  <div><dt className="text-brown-faint">Ordered</dt><dd className="font-semibold text-brown-dark">{qty(Number(l.quantity_ordered))} {unit}</dd></div>
-                  <div><dt className="text-brown-faint">Already shipped</dt><dd className="font-semibold text-brown-dark">{qty(Number(l.shipped_quantity ?? 0))} {unit}</dd></div>
-                  <div><dt className="text-brown-faint">Left to ship</dt><dd className="font-semibold text-brown-dark">{qty(toShip)} {unit}</dd></div>
-                  <div>
-                    <dt className="text-brown-faint">HQ on hand</dt>
-                    <dd className="font-semibold text-brown-dark">
-                      {stock == null ? '—' : <>{qty(toPurchaseUnits(heldBase, conv))} {unit} <span className="font-normal text-brown-faint">({qty(heldBase)} {baseUnit})</span></>}
-                    </dd>
-                  </div>
-                </dl>
-                {done ? (
-                  <p className="text-xs text-brown-faint">Fully shipped.</p>
-                ) : (
-                  <div>
-                    <label htmlFor={`ship-${l.id}`} className={labelCls}>Quantity to ship</label>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <input
-                        id={`ship-${l.id}`}
-                        type="number" step="any" min="0" inputMode="decimal"
-                        className={`${inputCls} w-32 ${over ? 'border-[#B46309]' : ''}`}
-                        value={quantities[l.id] ?? ''}
-                        onChange={e => setQuantities(prev => ({ ...prev, [l.id]: e.target.value }))}
-                        placeholder="0"
-                      />
-                      <span className="text-sm text-brown-muted">{unit}</span>
-                      <span className="text-xs text-brown-faint">
-                        {est != null
-                          ? <>≈ {money(est)} at HQ avg cost {formatUnitCost(held?.avgCost ?? null, baseUnit)}</>
-                          : q > 0 ? 'No cost on record at HQ' : null}
-                      </span>
-                    </div>
-                    {over && (
-                      <p className="text-xs font-semibold text-[#B46309] mt-1.5">
-                        More than HQ has on hand ({qty(heldBase)} {baseUnit}) — shipping will be refused.
-                      </p>
-                    )}
-                  </div>
+                <div className="flex items-center justify-between gap-3 mt-2.5">
+                  <p className="text-[13px] text-brown-muted min-w-0">
+                    {est != null
+                      ? <>≈ <span className="font-bold text-brown-dark">{money(est)}</span> at {formatUnitCost(held?.avgCost ?? null, baseUnit)}</>
+                      : q > 0 ? 'No cost on record at HQ' : 'Not sending this time'}
+                  </p>
+                  <Stepper
+                    value={q}
+                    max={toShip}
+                    onChange={n => setQuantities(prev => ({ ...prev, [l.id]: String(n) }))}
+                    label={`${l.item?.name ?? 'Item'} to ship`}
+                    tone={over ? 'warn' : 'normal'}
+                  />
+                </div>
+                {over ? (
+                  <p className="text-[13px] font-semibold text-[#B46309] bg-[#B4630912] rounded-lg px-3 py-2 mt-2.5">
+                    More than HQ has ({packs(heldBase, conv)} {unit}). Shipping will be refused.
+                  </p>
+                ) : q > 0 && short && (
+                  <p className="text-xs text-brown-faint mt-2">
+                    {qty(toShip - q)} {unit} stays open; you can send it later.
+                  </p>
                 )}
               </div>
             )
           })}
         </div>
 
-        <section className="bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4">
-          <div>
-            <label htmlFor="ship-notes" className={labelCls}>Notes (optional)</label>
-            <textarea
-              id="ship-notes"
-              rows={2}
-              className={`${inputCls} resize-none`}
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              placeholder="e.g. Sent by Lalamove, driver Ali"
-            />
+        {done.length > 0 && (
+          <div className="rounded-2xl border border-[#EDE5D8] bg-white/60 p-3.5">
+            <p className="text-xs font-semibold text-brown-muted mb-1">Already fully shipped</p>
+            <ul className="text-xs text-brown-faint space-y-0.5">
+              {done.map(l => <li key={l.id}>{l.item?.name ?? 'Unknown item'}</li>)}
+            </ul>
           </div>
-          <div className="flex items-center justify-between gap-4 flex-wrap border-t border-[#EDE5D8] pt-4">
-            <div>
-              <p className="text-xs text-brown-faint">Est. value shipped</p>
-              <p className="text-xl font-bold text-brown-dark">{money(estTotal)}</p>
-              {validation && <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">{validation}</p>}
-              {!validation && overOnHand.length > 0 && (
-                <p className="text-xs text-[#B46309] font-semibold mt-0.5">
-                  {overOnHand.length} line{overOnHand.length > 1 ? 's' : ''} above HQ on hand.
-                </p>
-              )}
-            </div>
-            <button
-              onClick={submit}
-              disabled={submitting || !!validation}
-              className="px-5 py-2.5 rounded-xl bg-[#2E6E9E] text-white text-sm font-semibold hover:bg-[#24587F] transition-colors disabled:opacity-50"
-            >
-              {submitting ? 'Shipping…' : 'Confirm shipment'}
-            </button>
+        )}
+
+        <div>
+          <label htmlFor="ship-notes" className={`${labelCls} px-1`}>Note (optional)</label>
+          <textarea
+            id="ship-notes"
+            rows={2}
+            className={`${inputCls} resize-none`}
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder="e.g. Sent by Lalamove, driver Ali"
+          />
+        </div>
+        <p className="text-xs text-brown-faint px-1">
+          Shipping takes the stock out of HQ at its current average cost. It enters the branch when they receive it.
+        </p>
+      </div>
+
+      <div className="sticky bottom-0 bg-white border-t border-[#EDE5D8] px-3.5 pt-3 pb-4">
+        <div className="max-w-xl mx-auto">
+          <div className="flex justify-between text-[13px] text-brown-muted mb-2.5">
+            <span>
+              {shipCount} item{shipCount === 1 ? '' : 's'} · est. value
+              {overOnHand.length > 0 && ` · ${overOnHand.length} above HQ stock`}
+            </span>
+            <span className="text-base font-bold text-brown-dark">{money(estTotal)}</span>
           </div>
-          <p className="text-xs text-brown-faint">
-            Shipping takes the stock out of HQ at its current average cost. It enters the branch when they receive it.
-          </p>
-        </section>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting || !!blocker}
+            className="w-full h-[52px] rounded-2xl bg-[#2E6E9E] text-white text-base font-bold active:bg-[#24587F] disabled:opacity-45"
+          >
+            {submitting ? 'Shipping…' : `Ship to ${po.branch?.name ?? 'branch'}`}
+          </button>
+          {blocker && !submitting && (
+            <p className="text-xs text-center text-brown-muted mt-2">{blocker}</p>
+          )}
+        </div>
       </div>
     </div>
   )

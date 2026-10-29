@@ -7,11 +7,13 @@ import {
   money, qty, toBaseUnits, transferValue, transitShortQty, validateInternalReceipt, canAccessBranch,
 } from '../../shared/lib/procurement'
 import { InternalBadge } from './badges'
+import Stepper from './Stepper'
+import PhotoButton from './PhotoButton'
 import type { PoTransferLine, PurchaseOrder, PurchaseOrderItem } from '../../shared/types'
 
 const inputCls =
-  'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
-const labelCls = 'block text-xs font-semibold text-brown-medium mb-1'
+  'w-full px-3 py-2.5 rounded-xl border border-[#D4C5B0] bg-white text-base text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+const labelCls = 'block text-[11px] font-bold uppercase tracking-wide text-brown-faint mb-1'
 
 /** Per-line state. `matched` = everything in transit arrived. */
 interface LineState {
@@ -53,6 +55,8 @@ export default function InternalReceiving({ po }: { po: PurchaseOrder }) {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  // Line opened with Edit.
+  const [openId, setOpenId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -148,117 +152,144 @@ export default function InternalReceiving({ po }: { po: PurchaseOrder }) {
     navigate(`/procurement/orders/${po.id}`)
   }
 
-  return (
-    <div className="min-h-screen bg-cream-light">
-      <div className="max-w-2xl mx-auto px-4 py-8 lg:px-8 space-y-5">
-        <div>
-          <Link to="/procurement/receiving" className="text-xs text-brown-faint hover:text-[#C4813A] transition-colors">
-            ← Receiving
-          </Link>
-          <h1 className="text-2xl font-bold text-brown-dark mt-1 flex items-center gap-2">
-            Receive {po.po_number} <InternalBadge />
-          </h1>
-          <p className="text-sm text-brown-muted">
-            Transfer from {po.supplier?.name ?? 'HQ'} · {po.branch?.name ?? '—'}
-          </p>
-        </div>
+  const allArrived = !anyLoss
 
-        {error && (
-          <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">{error}</p>
-        )}
+  function toggle(l: Line) {
+    if (openId === l.line.id) {
+      // Closing a line that ended up as shipped puts it back to "arrived".
+      const s = states[l.line.id] ?? DEFAULT_STATE
+      if (actualFor(l, s) === l.inTransit) setLineState(l.line.id, DEFAULT_STATE)
+      setOpenId(null)
+    } else {
+      setOpenId(l.line.id)
+    }
+  }
 
-        {!ownsPo ? (
-          <div className="bg-white rounded-xl border border-[#E8DDD0] px-6 py-8 text-center">
-            <p className="text-sm text-brown-muted">Only {po.branch?.name ?? 'the receiving branch'} can receive this transfer.</p>
-            <Link to={`/procurement/orders/${po.id}`} className="text-sm text-[#C4813A] font-semibold hover:underline mt-2 inline-block">
+  const header = (
+    <div>
+      <Link to="/procurement/receiving" className="text-sm text-brown-faint hover:text-[#C4813A]">
+        ← Receiving
+      </Link>
+      <h1 className="text-xl font-bold text-brown-dark mt-1 flex items-center gap-2 flex-wrap">
+        Receive {po.po_number} <InternalBadge />
+      </h1>
+      <p className="text-sm text-brown-muted">
+        Transfer from {po.supplier?.name ?? 'HQ'} · {po.branch?.name ?? '—'}
+      </p>
+    </div>
+  )
+
+  if (!ownsPo || moving.length === 0) {
+    return (
+      <div className="min-h-screen bg-cream-light">
+        <div className="max-w-xl mx-auto px-3 pt-5 pb-4 sm:px-4 space-y-3">
+          {header}
+          <div className="bg-white rounded-2xl border border-[#EDE5D8] px-5 py-8 text-center">
+            {!ownsPo ? (
+              <p className="text-sm text-brown-muted">Only {po.branch?.name ?? 'the receiving branch'} can receive this transfer.</p>
+            ) : (
+              <>
+                <p className="text-sm font-semibold text-brown-dark">Waiting for HQ to ship</p>
+                <p className="text-xs text-brown-faint mt-1">Nothing has been shipped on this order yet, so there is nothing to receive.</p>
+              </>
+            )}
+            <Link to={`/procurement/orders/${po.id}`} className="text-sm text-[#C4813A] font-semibold hover:underline mt-3 inline-block">
               ← Back to the order
             </Link>
           </div>
-        ) : moving.length === 0 ? (
-          <div className="bg-white rounded-xl border border-[#E8DDD0] px-6 py-8 text-center">
-            <p className="text-sm font-semibold text-brown-dark">Waiting for HQ to ship</p>
-            <p className="text-xs text-brown-faint mt-1">Nothing has been shipped on this order yet, so there is nothing to receive.</p>
-            <button
-              disabled
-              className="mt-4 px-5 py-2.5 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold opacity-50"
-            >
-              Confirm Receipt
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="space-y-3">
-              {moving.map((l, i) => {
-                const s = states[l.line.id] ?? DEFAULT_STATE
-                const unit = l.line.item?.purchase_unit ?? ''
-                const actual = checks[i].actual
-                const invalid = !Number.isFinite(actual) || actual < 0 || actual > l.inTransit
-                const short = invalid ? 0 : transitShortQty(l.inTransit, actual)
-                const shortValue = transferValue(short, l.conv, l.shippedCost)
-                return (
-                  <div key={l.line.id} className="bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4">
-                    <p className="text-base font-semibold text-brown-dark">{l.line.item?.name ?? 'Unknown item'}</p>
-                    <div>
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-xs text-brown-faint">Expected (in transit)</span>
-                        <span className="text-3xl font-bold text-brown-dark">{qty(l.inTransit)}</span>
-                        <span className="text-sm text-brown-muted">{unit}</span>
-                      </div>
-                      <p className="text-xs text-brown-faint mt-0.5">
-                        Ordered {qty(Number(l.line.quantity_ordered))} · Shipped {qty(Number(l.line.shipped_quantity ?? 0))}
-                        {' · '}Received so far {qty(Number(l.line.received_quantity))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-cream-light">
+      <div className="max-w-xl mx-auto px-3 pt-5 pb-4 sm:px-4 space-y-3">
+        {header}
+
+        {error && (
+          <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-2.5">{error}</p>
+        )}
+
+        <PhotoButton
+          file={photoFile}
+          onFile={setPhotoFile}
+          title="Delivery photo"
+          hint="Required · opens the camera"
+          required
+        />
+
+        <p className="text-xs font-bold uppercase tracking-wide text-brown-muted px-1 pt-1">
+          {moving.length} item{moving.length > 1 ? 's' : ''} on the way
+        </p>
+        <div className="space-y-2">
+          {moving.map((l, i) => {
+            const unit = l.line.item?.purchase_unit ?? ''
+            const actual = checks[i].actual
+            const invalid = !Number.isFinite(actual) || actual < 0 || actual > l.inTransit
+            const short = invalid ? 0 : transitShortQty(l.inTransit, actual)
+            const shortValue = transferValue(short, l.conv, l.shippedCost)
+            const differs = invalid || short > 0
+            const open = openId === l.line.id
+            return (
+              <div
+                key={l.line.id}
+                className={`bg-white rounded-2xl border p-3.5 ${
+                  differs ? 'border-[#E9B9A8] shadow-[inset_4px_0_0_#9E4A30]' : 'border-[#EDE5D8]'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-bold text-[15px] text-brown-dark leading-snug">{l.line.item?.name ?? 'Unknown item'}</p>
+                    <p className="text-xs text-brown-faint">{qty(l.inTransit)} {unit} shipped by HQ</p>
+                    {differs && !open && (
+                      <p className="text-xs font-semibold text-[#9E4A30] mt-0.5">
+                        {invalid ? 'Check the quantity' : `Arrived ${qty(actual)} · ${qty(short)} lost on the way`}
                       </p>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => setLineState(l.line.id, { matched: true, actual: '' })}
-                        className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
-                          s.matched ? 'bg-[#3D7A50] text-white' : 'border border-[#D4C5B0] text-brown-medium hover:bg-[#F5EDE0]'
-                        }`}
-                      >
-                        ✓ Matches
-                      </button>
-                      <button
-                        onClick={() => setLineState(l.line.id, { matched: false, actual: s.actual || String(l.inTransit) })}
-                        className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
-                          !s.matched ? 'bg-[#C4813A] text-white' : 'border border-[#D4C5B0] text-brown-medium hover:bg-[#F5EDE0]'
-                        }`}
-                      >
-                        Doesn't match
-                      </button>
-                    </div>
-
-                    {!s.matched && (
-                      <div className="rounded-xl border border-[#D4C5B0] bg-[#FBF6EE] p-4">
-                        <label htmlFor={`recv-${l.line.id}`} className={labelCls}>Actual received</label>
-                        <div className="flex items-center gap-2">
-                          <input
-                            id={`recv-${l.line.id}`}
-                            type="number" step="any" min="0" max={l.inTransit}
-                            className={`${inputCls} w-32 ${invalid ? 'border-[#9E4A30]' : ''}`}
-                            value={s.actual}
-                            onChange={e => setLineState(l.line.id, { actual: e.target.value })}
-                            placeholder="0"
-                            aria-invalid={invalid ? true : undefined}
-                          />
-                          <span className="text-sm text-brown-muted">{unit}</span>
-                        </div>
-                        {invalid ? (
-                          <p className="text-sm font-semibold text-[#9E4A30] mt-2.5">
-                            Enter between 0 and {qty(l.inTransit)} — no more than was shipped.
-                          </p>
-                        ) : short > 0 && (
-                          <p className="text-sm font-bold text-[#9E4A30] bg-[#9E4A3012] border border-[#9E4A3040] rounded-lg px-3 py-2 mt-2.5">
-                            Short: {qty(short)} {unit} — will be recorded as lost in transit
-                            {shortValue != null && ` (${money(shortValue)} at shipped cost)`}.
-                          </p>
-                        )}
-                      </div>
                     )}
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <button type="button" onClick={() => toggle(l)} className="h-11 px-2 text-sm font-bold text-brown-btn" aria-expanded={open}>
+                      {open ? 'Done' : 'Edit'}
+                    </button>
+                    <span
+                      aria-hidden
+                      className={`w-8 h-8 rounded-full grid place-items-center font-extrabold ${
+                        differs ? 'bg-[#FCF0EC] text-[#9E4A30]' : 'bg-[#EBF5EE] text-[#3D7A50]'
+                      }`}
+                    >
+                      {differs ? '!' : '✓'}
+                    </span>
+                  </div>
+                </div>
 
+                {open && (
+                  <div className="mt-3 pt-3 border-t border-[#E8DDD0] space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-brown-muted">
+                        Arrived
+                        <span className="block text-xs font-normal text-brown-faint">{unit}</span>
+                      </span>
+                      <Stepper
+                        value={Number.isFinite(actual) ? actual : 0}
+                        max={l.inTransit}
+                        onChange={n => setLineState(l.line.id, { matched: false, actual: String(n) })}
+                        label={`${l.line.item?.name ?? 'Item'} arrived`}
+                        tone={differs ? 'warn' : 'normal'}
+                      />
+                    </div>
+                    {invalid ? (
+                      <p className="text-[13px] font-semibold text-[#9E4A30] bg-[#FCF0EC] rounded-lg px-3 py-2">
+                        Enter between 0 and {qty(l.inTransit)}, no more than was shipped.
+                      </p>
+                    ) : short > 0 && (
+                      <p className="text-[13px] font-semibold text-[#9E4A30] bg-[#FCF0EC] rounded-lg px-3 py-2">
+                        {qty(short)} {unit} lost on the way{shortValue != null && ` (${money(shortValue)} at shipped cost)`}.
+                        HQ can send it again.
+                      </p>
+                    )}
                     {!invalid && actual > 0 && l.conv > 0 && (
-                      <p className="text-xs text-brown-faint border-t border-[#EDE5D8] pt-3">
+                      <p className="text-xs text-brown-faint">
                         Stock in {qty(toBaseUnits(actual, l.conv))} {l.line.item?.base_unit} at the shipped cost
                         {(() => {
                           const v = transferValue(actual, l.conv, l.shippedCost)
@@ -267,101 +298,75 @@ export default function InternalReceiving({ po }: { po: PurchaseOrder }) {
                       </p>
                     )}
                   </div>
-                )
-              })}
-
-              {resting.length > 0 && (
-                <div className="bg-white rounded-xl border border-[#E8DDD0] p-4 opacity-60">
-                  <p className="text-xs font-semibold text-brown-muted mb-1">Nothing in transit on these lines</p>
-                  <ul className="text-xs text-brown-faint space-y-0.5">
-                    {resting.map(l => (
-                      <li key={l.line.id} className="flex justify-between gap-3">
-                        <span>{l.line.item?.name ?? 'Unknown item'}</span>
-                        <span>
-                          Received {qty(Number(l.line.received_quantity))} of {qty(Number(l.line.quantity_ordered))}{' '}
-                          {l.line.item?.purchase_unit}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-
-            <section className="bg-white rounded-xl border border-[#E8DDD0] p-5 space-y-4">
-              <h2 className="text-sm font-bold text-brown-dark">Proof of Delivery</h2>
-              <div>
-                <label className={labelCls}>Delivery photo *</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={e => setPhotoFile(e.target.files?.[0] ?? null)}
-                  className="text-xs"
-                />
-                {photoFile
-                  ? <p className="text-xs text-[#3D7A50] mt-1">✓ {photoFile.name}</p>
-                  : <p className="text-xs text-brown-faint mt-1">Required — a transfer can't be received without a delivery photo.</p>}
-              </div>
-              <div>
-                <label className={labelCls}>Goods photo (optional)</label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={e => setGoodsFile(e.target.files?.[0] ?? null)}
-                  className="text-xs"
-                />
-                {goodsFile && <p className="text-xs text-[#3D7A50] mt-1">✓ {goodsFile.name}</p>}
-              </div>
-              <div>
-                <label htmlFor="internal-receiving-notes" className={labelCls}>Notes{anyLoss ? ' *' : ''}</label>
-                <textarea
-                  id="internal-receiving-notes"
-                  rows={2}
-                  className={`${inputCls} resize-none ${noteMissing ? 'border-[#9E4A30]' : ''}`}
-                  value={notes}
-                  onChange={e => setNotes(e.target.value)}
-                  placeholder={anyLoss ? 'e.g. 1 bag torn in the van, thrown away' : 'Optional'}
-                  required={anyLoss}
-                  aria-invalid={noteMissing ? true : undefined}
-                />
-                {anyLoss && (
-                  <p className={`text-xs mt-1 font-semibold ${noteMissing ? 'text-[#9E4A30]' : 'text-brown-faint'}`}>
-                    Note required — explain what was lost in transit
-                  </p>
                 )}
               </div>
-              <p className="text-xs text-brown-faint border-t border-[#EDE5D8] pt-3">
-                Signed off by <span className="font-semibold text-brown-muted">{staff?.name ?? '—'}</span>
-              </p>
-            </section>
-
-            <section className="bg-white rounded-xl border border-[#E8DDD0] p-5">
-              <div className="flex items-center justify-between gap-4 flex-wrap">
-                <div>
-                  <p className="text-xs text-brown-faint">Received value (shipped cost)</p>
-                  <p className="text-xl font-bold text-brown-dark">{money(receivedValue)}</p>
-                  {anyLoss && (
-                    <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">
-                      Lost in transit: {money(lossValue)}
-                    </p>
-                  )}
-                  {validation && <p className="text-xs text-[#9E4A30] font-semibold mt-0.5">{validation}</p>}
-                </div>
-                <button
-                  onClick={submit}
-                  disabled={submitting || !!validation}
-                  className="px-5 py-2.5 rounded-xl bg-[#3D7A50] text-white text-sm font-semibold hover:bg-[#2E6040] transition-colors disabled:opacity-50"
-                >
-                  {submitting ? 'Submitting…' : 'Confirm Receipt'}
-                </button>
-              </div>
-              <p className="text-xs text-brown-faint mt-3">
-                Submitting adds the stock at HQ's shipped cost and settles everything in transit. Anything short is
-                recorded as lost in transit; HQ can re-ship it or a manager can close the order short.
-              </p>
-            </section>
-          </>
+            )
+          })}
+        </div>
+        {allArrived && (
+          <p className="text-[13px] text-brown-muted px-1">
+            Something missing or broken? Tap <span className="font-bold">Edit</span> on that line only.
+          </p>
         )}
+
+        {resting.length > 0 && (
+          <div className="rounded-2xl border border-[#EDE5D8] bg-white/60 p-3.5">
+            <p className="text-xs font-semibold text-brown-muted mb-1">Not shipped yet</p>
+            <ul className="text-xs text-brown-faint space-y-0.5">
+              {resting.map(l => (
+                <li key={l.line.id} className="flex justify-between gap-3">
+                  <span>{l.line.item?.name ?? 'Unknown item'}</span>
+                  <span className="whitespace-nowrap">
+                    {qty(Number(l.line.received_quantity))} of {qty(Number(l.line.quantity_ordered))} {l.line.item?.purchase_unit}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div>
+          <label htmlFor="internal-receiving-notes" className={`${labelCls} px-1`}>
+            {anyLoss ? 'Note (needed: what was lost on the way)' : 'Note (optional)'}
+          </label>
+          <textarea
+            id="internal-receiving-notes"
+            rows={2}
+            className={`${inputCls} resize-none ${noteMissing ? 'border-[#9E4A30]' : ''}`}
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder={anyLoss ? 'e.g. 1 bag torn in the van, thrown away' : 'Anything to tell HQ'}
+            required={anyLoss}
+            aria-invalid={noteMissing ? true : undefined}
+          />
+        </div>
+
+        <PhotoButton file={goodsFile} onFile={setGoodsFile} title="Goods photo" hint="Optional" />
+
+        <p className="text-xs text-brown-faint px-1">
+          Signed off by <span className="font-semibold text-brown-muted">{staff?.name ?? '—'}</span>.
+          Stock comes in at HQ&apos;s shipped cost; anything short is recorded as lost on the way.
+        </p>
+      </div>
+
+      <div className="sticky bottom-0 bg-white border-t border-[#EDE5D8] px-3.5 pt-3 pb-4">
+        <div className="max-w-xl mx-auto">
+          <div className="flex justify-between text-[13px] text-brown-muted mb-2.5">
+            <span>Received value{anyLoss ? ` · lost ${money(lossValue)}` : ''}</span>
+            <span className="text-base font-bold text-brown-dark">{money(receivedValue)}</span>
+          </div>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting || !!validation}
+            className="w-full h-[52px] rounded-2xl bg-[#3D7A50] text-white text-base font-bold active:bg-[#2E6040] disabled:opacity-45"
+          >
+            {submitting ? 'Submitting…' : allArrived ? 'All arrived — confirm' : 'Confirm receipt'}
+          </button>
+          {validation && !submitting && (
+            <p className="text-xs text-center text-brown-muted mt-2">{validation}</p>
+          )}
+        </div>
       </div>
     </div>
   )
