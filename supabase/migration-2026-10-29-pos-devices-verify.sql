@@ -394,8 +394,10 @@ begin
   if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: the print agent''s outlet'; end if;
   if (select last_seen_at from pos_devices where id = v_agent) is distinct from now() then raise exception 'FAIL D4: printing does not stamp last seen'; end if;
   perform pg_temp.expect_error('select pos_ctx()', 'device_unpaired', 'D4 a print agent at the till');
-  perform pg_temp.act(v_dev2);
-  if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: a locked tablet still prints'; end if;
+  perform pg_temp.act(v_dev5);                                                          -- the printing tablet, no session
+  if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: a locked printing tablet still prints'; end if;
+  perform pg_temp.act(v_dev2);                                                          -- since migration-2026-10-29-pos-device-till.sql
+  perform pg_temp.expect_error('select pos_print_branch()', 'not_printing_tablet', 'D4 a tablet that is not the printing tablet');
 
   -- ── D3. unpair ────────────────────────────────────────────────────────────
   perform pg_temp.act(v_dev1);

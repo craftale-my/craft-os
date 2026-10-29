@@ -63,7 +63,7 @@ begin
   if not exists (select 1 from pg_constraint where conname = 'orders_catalog_id_fkey') then
     raise exception 'FAIL schema: orders.catalog_id has no foreign key';
   end if;
-  for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid,uuid)', 'save_branch_catalogs(uuid,jsonb)',
+  for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid,uuid,uuid)', 'save_branch_catalogs(uuid,jsonb)',
                                       'menu_import_catalogs(jsonb)', 'menu_set_catalog_product(uuid,uuid,text)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
     if not has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL grants: staff cannot call %', r.f; end if;

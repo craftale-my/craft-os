@@ -36,7 +36,7 @@ begin
   for r in select f from unnest(array['place_table_order(text,integer,jsonb,uuid)','qr_menu(text)','qr_table_state(text)']) as f loop
     if not has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon cannot call %', r.f; end if;
   end loop;
-  for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid,uuid)','claim_print_job(uuid)',
+  for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid,uuid,uuid)','claim_print_job(uuid)',
                                       'pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid,uuid)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
   end loop;

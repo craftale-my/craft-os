@@ -127,6 +127,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-26-pos-frontend.sql',
       'migration-2026-10-29-pos-outlets.sql',
       'migration-2026-10-29-pos-devices.sql',
+      'migration-2026-10-29-pos-device-till.sql',
     ]))
   })
 
@@ -233,6 +234,26 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-29-pos-outlets\.sql first/)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
     const verify = readFileSync(new URL('migration-2026-10-29-pos-devices-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+
+  it('scans the device-till migration: every re-created RPC, no auth.uid() actor left, a rolled-back verify', () => {
+    const sql = readFileSync(new URL('migration-2026-10-29-pos-device-till.sql', SUPABASE), 'utf8')
+    const names = functionBodies(sql).map((b) => b.name.replace(/^public\./, ''))
+    expect(names).toEqual(expect.arrayContaining([
+      'pos_ctx', 'pos_my_branch', 'pos_actor', 'pos_print_branch', 'pos_revoke_device', 'pos_unpair_device', 'pos_unpair_this_device',
+      'place_counter_order', 'checkout_bill', 'close_shift', 'merge_bills', 'open_shift', 'record_cash_move', 'refund_bill',
+      'void_bill', 'void_order_item', 'pos_pin_attempt', 'claim_print_job', 'finish_print_job', 'requeue_print_job', 'insert_test_print',
+    ]))
+    for (const { name, body } of functionBodies(sql)) {
+      if (/(checkout_bill|close_shift|merge_bills|open_shift|record_cash_move|refund_bill|void_bill|void_order_item|pos_pin_attempt|place_counter_order)$/i.test(name)) {
+        expect(body, name).not.toMatch(/auth\.uid\(\)/)
+      }
+    }
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-29-pos-devices\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-10-29-pos-device-till-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
