@@ -73,9 +73,9 @@ export function SidebarContent({ onNavigate, onClose }: {
   onClose?: () => void
 }) {
   const { staff, signOut } = useAuth()
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   const { can } = useCan()
-  const newFeedback = useNewFeedbackCount(staff?.system_role === 'owner', pathname)
+  const newFeedback = useNewFeedbackCount(staff?.system_role === 'owner', pathname + search)
 
   const nav = visibleNav(can)
   const active = activeEntry(nav, pathname)

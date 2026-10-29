@@ -25,6 +25,7 @@ import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
 import HrClaimsPage from './features/hr/HrClaims'
 import SchedulePage from './features/schedule/Schedule'
+import FeedbackPage from './features/feedback/FeedbackPage'
 
 function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -187,6 +188,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <AppLayout><StaffProfilePage selfView /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/feedback"
+        element={
+          <ProtectedRoute>
+            <AppLayout><FeedbackPage /></AppLayout>
           </ProtectedRoute>
         }
       />
