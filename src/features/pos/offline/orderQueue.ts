@@ -4,6 +4,7 @@
  *  resending always safe — including after a send whose reply was lost. */
 
 import type { OrderLine } from '../order/cart'
+import { contextCode } from '../deviceErrors'
 
 export type OrderType = 'dine_in' | 'takeaway'
 
@@ -18,6 +19,9 @@ export interface QueuedOrder {
   /** The menu catalog the cart was priced from. Absent on orders queued before
    *  catalogs existed: the server then uses the branch's default for the order type. */
   catalogId?: string | null
+  /** Who was signed in on this tablet when Send was pressed (the POS app). Absent on a Craft OS
+   *  login and on older orders: the server then records the caller. */
+  staffId?: string | null
 }
 
 export interface QueueStore {
@@ -57,7 +61,7 @@ export function newQueuedOrder(
 export function counterOrderArgs(o: QueuedOrder) {
   return {
     p_table_id: o.tableId, p_order_type: o.orderType, p_pax: o.pax, p_items: o.items,
-    p_client_order_id: o.clientOrderId, p_catalog_id: o.catalogId ?? null,
+    p_client_order_id: o.clientOrderId, p_catalog_id: o.catalogId ?? null, p_staff_id: o.staffId ?? null,
   }
 }
 
@@ -110,6 +114,8 @@ const FINAL_ERROR_CODES = new Set([
 
 export function toSendResult(error: { message: string; code?: string } | null): SendResult {
   if (!error) return { ok: true }
+  // the tablet is locked, unpaired or its outlet closed: keep the order for the next sign-in
+  if (contextCode(error.message)) return { ok: false, retryable: true, reason: error.message }
   const final = error.code !== undefined && FINAL_ERROR_CODES.has(error.code)
   return { ok: false, retryable: !final, reason: error.message }
 }

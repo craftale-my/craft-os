@@ -110,7 +110,13 @@ describe('counterOrderArgs', () => {
   it('sends the catalog with the order', () => {
     expect(counterOrderArgs(newQueuedOrder('dine_in', 't1', 2, [line], 5, 'id', 'c-grab'))).toEqual({
       p_table_id: 't1', p_order_type: 'dine_in', p_pax: 2, p_items: [line], p_client_order_id: 'id', p_catalog_id: 'c-grab',
+      p_staff_id: null,
     })
+  })
+
+  it('sends who pressed Send on the tablet', () => {
+    const order = { ...newQueuedOrder('takeaway', null, null, [line], 5, 'id'), staffId: 's-aina' }
+    expect(counterOrderArgs(order).p_staff_id).toBe('s-aina')
   })
 
   it('sends null for an order queued before catalogs (the server uses the branch default)', () => {
@@ -143,6 +149,13 @@ describe('toSendResult', () => {
       ok: false, retryable: false, reason: 'new row violates check constraint',
     })
   })
+
+  it.each(['no_session', 'access_changed', 'outlet_closed', 'device_unpaired'])(
+    'keeps the order when the tablet cannot work right now (%s)',
+    (message) => {
+      expect(toSendResult({ message, code: 'P0001' })).toEqual({ ok: false, retryable: true, reason: message })
+    },
+  )
 
   it('retries an expired JWT', () => {
     expect(toSendResult({ message: 'JWT expired', code: 'PGRST301' })).toEqual({
