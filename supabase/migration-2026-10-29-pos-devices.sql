@@ -73,11 +73,12 @@ create table if not exists pos_device_requests (
   decided_by  uuid references staff(id) on delete set null,
   decided_at  timestamptz,
   claimed_at  timestamptz,                                         -- a poll is creating the device account
-  device_id   uuid references pos_devices(id) on delete set null   -- set once the account exists
+  activated_at timestamptz,                                        -- the account exists: the request is spent for good
+  device_id   uuid references pos_devices(id) on delete set null
 );
 -- a code is unique while it can still be used
 create unique index if not exists pos_device_requests_live_code on pos_device_requests (code)
-  where status = 'pending' or (status = 'approved' and device_id is null);
+  where status = 'pending' or (status = 'approved' and activated_at is null);
 create index if not exists pos_device_requests_ip on pos_device_requests (ip, created_at);
 
 create table if not exists pos_staff_sessions (
@@ -166,9 +167,11 @@ end $$;
 revoke all on function pos_activation_request(text, text, text) from public, anon, authenticated;
 grant execute on function pos_activation_request(text, text, text) to service_role;
 
--- What a poll sees. A wrong secret gets the same reply as an unknown code. An approved
--- request is claimed by one poll ('issue'), which then creates the device account and
--- calls pos_activation_finish; a claim older than a minute is taken over.
+-- What a poll sees. A wrong secret gets the same reply as an unknown code, and so does a
+-- spent request (activated_at) — even if its device was later deleted. An approved request
+-- must be collected within an hour of approval; it is claimed by one poll ('issue'), which
+-- then creates the device account and calls pos_activation_finish; a claim older than a
+-- minute is taken over.
 create or replace function pos_activation_poll(p_code text, p_secret text) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -179,10 +182,10 @@ begin
      and r.secret_hash = encode(extensions.digest(coalesce(p_secret, ''), 'sha256'), 'hex')
    order by r.created_at desc limit 1
    for update;
-  if not found or (v_row.status = 'approved' and v_row.device_id is not null) then
+  if not found or v_row.activated_at is not null then
     return jsonb_build_object('status', 'unknown');
   end if;
-  if v_row.status = 'pending' and v_row.expires_at < now() then
+  if v_row.status in ('pending', 'approved') and v_row.expires_at < now() then
     update pos_device_requests set status = 'expired' where id = v_row.id;
     return jsonb_build_object('status', 'expired');
   end if;
@@ -204,15 +207,19 @@ declare
   v_row pos_device_requests;
 begin
   select * into v_row from pos_device_requests r where r.id = p_request_id for update;
-  if not found or v_row.status <> 'approved' or v_row.device_id is not null or v_row.claimed_at is null then
+  if not found or v_row.status <> 'approved' or v_row.activated_at is not null or v_row.claimed_at is null then
     raise exception 'This request cannot be finished';
   end if;
-  if v_row.prints then                                               -- the outlet's printing tablet moves to this one
-    update pos_devices set prints = false where branch_id = v_row.branch_id and prints and revoked_at is null;
-  end if;
-  insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by, approved_at)
-  values (p_user_id, v_row.branch_id, v_row.kind, v_row.device_name, v_row.platform, v_row.prints, v_row.decided_by, v_row.decided_at);
-  update pos_device_requests set device_id = p_user_id where id = v_row.id;
+  begin
+    if v_row.prints then                                             -- the outlet's printing tablet moves to this one
+      update pos_devices set prints = false where branch_id = v_row.branch_id and prints and revoked_at is null;
+    end if;
+    insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by, approved_at)
+    values (p_user_id, v_row.branch_id, v_row.kind, v_row.device_name, v_row.platform, v_row.prints, v_row.decided_by, v_row.decided_at);
+  exception when unique_violation then
+    raise exception 'Another tablet just became the printing tablet — try again';
+  end;
+  update pos_device_requests set device_id = p_user_id, activated_at = now() where id = v_row.id;
 end $$;
 revoke all on function pos_activation_finish(uuid, uuid) from public, anon, authenticated;
 grant execute on function pos_activation_finish(uuid, uuid) to service_role;
@@ -221,7 +228,7 @@ grant execute on function pos_activation_finish(uuid, uuid) to service_role;
 create or replace function pos_activation_unclaim(p_request_id uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 begin
-  update pos_device_requests set claimed_at = null where id = p_request_id and device_id is null;
+  update pos_device_requests set claimed_at = null where id = p_request_id and activated_at is null;
 end $$;
 revoke all on function pos_activation_unclaim(uuid) from public, anon, authenticated;
 grant execute on function pos_activation_unclaim(uuid) to service_role;
@@ -276,7 +283,8 @@ begin
   end if;
   update pos_device_requests
      set status = 'approved', branch_id = p_branch_id, kind = p_kind, device_name = v_name,
-         prints = coalesce(p_prints, false), decided_by = auth.uid(), decided_at = now()
+         prints = coalesce(p_prints, false), decided_by = auth.uid(), decided_at = now(),
+         expires_at = least(expires_at, now() + interval '1 hour')     -- the device collects its login within the hour
    where id = v_row.id;
 end $$;
 revoke all on function pos_decide_device_request(uuid, boolean, text, uuid, text, text, boolean) from public, anon;
@@ -328,8 +336,12 @@ begin
   if not pos_manages_outlet(v_dev.branch_id) then raise exception 'This device is not at one of your outlets'; end if;
   if v_dev.kind <> 'pos' or v_dev.revoked_at is not null then raise exception 'Only an active POS tablet can print'; end if;
   if v_dev.prints then return; end if;
-  update pos_devices set prints = false where branch_id = v_dev.branch_id and prints and revoked_at is null;
-  update pos_devices set prints = true where id = v_dev.id;
+  begin
+    update pos_devices set prints = false where branch_id = v_dev.branch_id and prints and revoked_at is null;
+    update pos_devices set prints = true where id = v_dev.id;
+  exception when unique_violation then
+    raise exception 'Another tablet just became the printing tablet — try again';
+  end;
 end $$;
 revoke all on function pos_set_print_tablet(uuid) from public, anon;
 grant execute on function pos_set_print_tablet(uuid) to authenticated;
@@ -349,8 +361,11 @@ begin
   select * into v_ses from pos_staff_sessions s where s.device_id = v_dev.id and s.ended_at is null;
   if not found then raise exception 'no_session'; end if;
   if not pos_staff_may_work(v_ses.staff_id, v_dev.branch_id) then raise exception 'access_changed'; end if;
-  update pos_devices set last_seen_at = now() where id = v_dev.id;
-  update pos_staff_sessions set last_active_at = now() where id = v_ses.id;
+  -- stamped at most every 30 s: every till call passes here
+  update pos_devices set last_seen_at = now()
+   where id = v_dev.id and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
+  update pos_staff_sessions set last_active_at = now()
+   where id = v_ses.id and last_active_at < now() - interval '30 seconds';
   device_id := v_dev.id;
   branch_id := v_dev.branch_id;
   staff_id := v_ses.staff_id;
@@ -365,7 +380,8 @@ declare
 begin
   select d.branch_id into v_branch from pos_devices d where d.id = auth.uid() and d.revoked_at is null;
   if v_branch is null then raise exception 'device_unpaired'; end if;
-  update pos_devices set last_seen_at = now() where id = auth.uid();
+  update pos_devices set last_seen_at = now()
+   where id = auth.uid() and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
   return v_branch;
 end $$;
 revoke all on function pos_print_branch() from public, anon, authenticated;
@@ -402,7 +418,8 @@ revoke all on function pos_login_roster() from public, anon;
 grant execute on function pos_login_roster() to authenticated;
 
 -- Tap a name, type the PIN. Refusals come back as { ok: false, code, error } so the try is
--- still recorded (a raise would roll it back). Tries are serialized per person.
+-- still recorded (a raise would roll it back). Locks in the order device → person → session
+-- (as pos_ctx and pos_unpair_device): tries are serialized per device and per person.
 create or replace function pos_start_session(p_staff_id uuid, p_pin text) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -415,7 +432,7 @@ declare
   v_id         uuid;
   v_locked     constant text := 'Too many tries. Try again in 10 minutes.';
 begin
-  select * into v_dev from pos_devices d where d.id = auth.uid() and d.kind = 'pos' and d.revoked_at is null;
+  select * into v_dev from pos_devices d where d.id = auth.uid() and d.kind = 'pos' and d.revoked_at is null for update;
   if not found then raise exception 'device_unpaired'; end if;
   if not pos_outlet_open(v_dev.branch_id) then
     return jsonb_build_object('ok', false, 'code', 'outlet_closed', 'error', 'This outlet is not open for the POS today');
@@ -423,7 +440,7 @@ begin
   if not pos_staff_may_work(p_staff_id, v_dev.branch_id) then
     return jsonb_build_object('ok', false, 'code', 'not_allowed', 'error', 'This person cannot sign in here');
   end if;
-  select st.name into v_name from staff st where st.id = p_staff_id for update;           -- one try at a time per person
+  select st.name into v_name from staff st where st.id = p_staff_id for no key update;    -- one try at a time per person
   select p.pin_hash into v_hash from staff_pos_pins p where p.staff_id = p_staff_id;
   if v_hash is null then
     return jsonb_build_object('ok', false, 'code', 'no_pin', 'error', 'Set a PIN in Craft OS first');
@@ -443,9 +460,9 @@ begin
       'error', format('Wrong PIN · %s %s left', 5 - v_wrong, case when 5 - v_wrong = 1 then 'try' else 'tries' end));
   end if;
   insert into pos_login_attempts(staff_id, device_id, ok) values (p_staff_id, v_dev.id, true);
+  update pos_devices set last_seen_at = now() where id = v_dev.id;
   update pos_staff_sessions set ended_at = now(), end_reason = 'switched' where device_id = v_dev.id and ended_at is null;
   insert into pos_staff_sessions(device_id, staff_id) values (v_dev.id, p_staff_id) returning id into v_id;
-  update pos_devices set last_seen_at = now() where id = v_dev.id;
   return jsonb_build_object('ok', true, 'sessionId', v_id, 'staff', jsonb_build_object('id', p_staff_id, 'name', v_name));
 end $$;
 revoke all on function pos_start_session(uuid, text) from public, anon;
