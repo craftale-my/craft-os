@@ -126,6 +126,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-25-menu-list-photo.sql',
       'migration-2026-10-26-pos-frontend.sql',
       'migration-2026-10-29-pos-outlets.sql',
+      'migration-2026-10-29-pos-devices.sql',
     ]))
   })
 
@@ -213,6 +214,25 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-26-pos-frontend\.sql first/)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
     const verify = readFileSync(new URL('migration-2026-10-29-pos-outlets-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+
+  it('scans the devices migration: its write functions, service-role-only activation, a rolled-back verify', () => {
+    const sql = readFileSync(new URL('migration-2026-10-29-pos-devices.sql', SUPABASE), 'utf8')
+    expect(functionBodies(sql).map((b) => b.name)).toEqual(expect.arrayContaining([
+      'pos_activation_request', 'pos_activation_poll', 'pos_activation_finish', 'pos_activation_unclaim',
+      'pos_decide_device_request', 'pos_unpair_device', 'pos_set_print_tablet', 'pos_ctx', 'pos_print_branch', 'pos_start_session',
+      'pos_end_session', 'save_lock_settings',
+    ]))
+    for (const f of ['pos_activation_request\\(text, text, text\\)', 'pos_activation_poll\\(text, text\\)',
+                     'pos_activation_finish\\(uuid, uuid\\)', 'pos_activation_unclaim\\(uuid\\)']) {
+      expect(sql).toMatch(new RegExp(`revoke all on function ${f} from public, anon, authenticated;`))
+      expect(sql).toMatch(new RegExp(`grant execute on function ${f} to service_role;`))
+    }
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-29-pos-outlets\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-10-29-pos-devices-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
