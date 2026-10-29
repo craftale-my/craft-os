@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { X } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
@@ -25,11 +25,33 @@ export function FeedbackSheet({ prefill, onClose, onSent }: {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const dialogRef = useRef<HTMLDivElement>(null)
+  // 没有文字也没有照片才算"干净",干净时背景点击/Escape 才允许关闭
+  const dirty = message.trim() !== '' || photos.length > 0
+
   // 员工资料里的分店不在清单里时也要能选到
   const branchOptions = staff?.branch && !BRANCHES.includes(staff.branch) ? [staff.branch, ...BRANCHES] : BRANCHES
 
   const previews = useMemo(() => photos.map(f => URL.createObjectURL(f)), [photos])
   useEffect(() => () => previews.forEach(u => URL.revokeObjectURL(u)), [previews])
+
+  // 挂载时把焦点放到对话框本身(不聚焦输入框,避免手机键盘盖住分类卡片),卸载时还原
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null
+    dialogRef.current?.focus()
+    return () => {
+      if (opener && opener !== document.body && document.contains(opener)) opener.focus()
+    }
+  }, [])
+
+  // Escape:提交中或有草稿时不关闭
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !submitting && !dirty) onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [submitting, dirty, onClose])
 
   function pickCategory(c: FeedbackCategory) {
     setCategory(c)
@@ -57,31 +79,43 @@ export function FeedbackSheet({ prefill, onClose, onSent }: {
     if (errors.length > 0 || !category) { setError(errors[0] ?? 'Choose a category.'); return }
     setSubmitting(true)
     setError(null)
-    const res = await submitFeedback({
-      category,
-      message: message.trim(),
-      branch: branch || null,
-      anonymous,
-      photos,
-      pagePath: pathname,
-      context: feedbackContext(prefill.errorMessage),
-    })
-    setSubmitting(false)
-    if (res.ok) onSent()
-    else setError(res.reason)
+    try {
+      const res = await submitFeedback({
+        category,
+        message: message.trim(),
+        branch: branch || null,
+        anonymous,
+        photos,
+        pagePath: pathname,
+        context: feedbackContext(prefill.errorMessage),
+      })
+      if (res.ok) onSent()
+      else setError(res.reason)
+    } catch {
+      setError('Something went wrong. Try again.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  function onBackdropClick() {
+    if (!submitting && !dirty) onClose()
   }
 
   return (
-    <div className="fixed inset-0 z-[70] bg-black/40 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-[70] bg-black/40 flex items-end sm:items-center justify-center" onClick={onBackdropClick}>
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
         aria-label="Send feedback"
-        className="bg-white w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl max-h-[90vh] overflow-y-auto p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))]"
+        tabIndex={-1}
+        className="bg-white focus:outline-none w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl max-h-[90vh] overflow-y-auto p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))]"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-brown-dark">Send feedback</h2>
-          <button onClick={onClose} aria-label="Close" className="text-brown-muted hover:text-brown-dark p-1">
+          <button type="button" onClick={onClose} disabled={submitting} aria-label="Close" className="text-brown-muted hover:text-brown-dark p-1 disabled:opacity-40">
             <X size={20} />
           </button>
         </div>
@@ -178,7 +212,7 @@ export function FeedbackSheet({ prefill, onClose, onSent }: {
         {error && <p role="alert" className="text-sm text-red-600 mb-3">{error}</p>}
 
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="text-sm px-4 py-2 rounded-lg text-brown-muted hover:bg-gray-100">
+          <button type="button" onClick={onClose} disabled={submitting} className="text-sm px-4 py-2 rounded-lg text-brown-muted hover:bg-gray-100 disabled:opacity-40">
             Cancel
           </button>
           <button

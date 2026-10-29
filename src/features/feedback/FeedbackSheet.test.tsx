@@ -17,13 +17,17 @@ const { FeedbackSheet } = await import('./FeedbackSheet')
 
 afterEach(() => { cleanup(); submitFeedback.mockReset(); feedbackContext.mockClear() })
 
-function renderSheet(prefill = {}, onSent = vi.fn()) {
+function renderSheet(prefill = {}, onSent = vi.fn(), onClose = vi.fn()) {
   render(
     <MemoryRouter initialEntries={['/hr/leave']}>
-      <FeedbackSheet prefill={prefill} onClose={vi.fn()} onSent={onSent} />
+      <FeedbackSheet prefill={prefill} onClose={onClose} onSent={onSent} />
     </MemoryRouter>,
   )
-  return { onSent }
+  return { onSent, onClose }
+}
+
+function backdrop() {
+  return screen.getByRole('dialog').parentElement as HTMLElement
 }
 
 describe('FeedbackSheet', () => {
@@ -90,5 +94,93 @@ describe('FeedbackSheet', () => {
     await waitFor(() => expect(submitFeedback).toHaveBeenCalled())
     expect(feedbackContext).toHaveBeenCalledWith('x is undefined')
     expect(submitFeedback.mock.calls[0][0].context).toEqual({ appVersion: 't', errorMessage: 'x is undefined' })
+  })
+
+  it('Escape 在表单为空时关闭', () => {
+    const { onClose } = renderSheet()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('Escape 在已输入内容时不关闭', () => {
+    const { onClose } = renderSheet()
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'draft' } })
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('点击背景在表单为空时关闭', () => {
+    const { onClose } = renderSheet()
+    fireEvent.click(backdrop())
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('点击背景在已输入内容时不关闭', () => {
+    const { onClose } = renderSheet()
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'draft' } })
+    fireEvent.click(backdrop())
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('提交中 Cancel 禁用、按钮显示 Sending…,且 Escape 与背景都不能关闭', async () => {
+    let resolve!: (v: unknown) => void
+    submitFeedback.mockReturnValue(new Promise(r => { resolve = r }))
+    const { onClose, onSent } = renderSheet()
+    fireEvent.click(screen.getByRole('button', { name: /Product Quality/ }))
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Ice is cloudy' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send feedback' }))
+    expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Close' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Sending…' })).toBeTruthy()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.click(backdrop())
+    expect(onClose).not.toHaveBeenCalled()
+    resolve({ ok: true, id: 'x' })
+    await waitFor(() => expect(onSent).toHaveBeenCalled())
+  })
+
+  it('提交抛异常时显示通用错误、保留内容并恢复按钮', async () => {
+    submitFeedback.mockRejectedValue(new Error('network down'))
+    const { onSent } = renderSheet()
+    fireEvent.click(screen.getByRole('button', { name: /Product Quality/ }))
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Ice is cloudy' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send feedback' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Something went wrong. Try again.'))
+    expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('Ice is cloudy')
+    expect(screen.getByRole('button', { name: 'Send feedback' })).toBeTruthy()
+    expect(onSent).not.toHaveBeenCalled()
+  })
+
+  it('匿名 Workplace 提交带 anonymous: true 且 photos 为空', async () => {
+    submitFeedback.mockResolvedValue({ ok: true, id: 'x' })
+    const { onSent } = renderSheet()
+    fireEvent.click(screen.getByRole('button', { name: /Workplace \/ Complaint/ }))
+    fireEvent.click(screen.getByLabelText('Submit anonymously'))
+    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Too hot in the kitchen' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send feedback' }))
+    await waitFor(() => expect(onSent).toHaveBeenCalled())
+    expect(submitFeedback).toHaveBeenCalledWith(expect.objectContaining({
+      category: 'workplace',
+      anonymous: true,
+      photos: [],
+    }))
+  })
+
+  it('对话框是 modal 且挂载时获得焦点', () => {
+    renderSheet()
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.getAttribute('aria-modal')).toBe('true')
+    expect(document.activeElement).toBe(dialog)
+  })
+
+  it('关闭时把焦点还给打开前的元素', () => {
+    const opener = document.createElement('button')
+    document.body.appendChild(opener)
+    opener.focus()
+    renderSheet()
+    expect(document.activeElement).not.toBe(opener)
+    cleanup()
+    expect(document.activeElement).toBe(opener)
+    opener.remove()
   })
 })
