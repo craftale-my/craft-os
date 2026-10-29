@@ -14,13 +14,14 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import type { Option } from '../../shared/lib/lookups'
-import { canReviewStaff } from '../../shared/lib/permissions'
+import { canReviewStaff, useCan } from '../../shared/lib/permissions'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
 import { Avatar } from '../../shared/components/Avatar'
 import { canPromote } from '../../shared/lib/xp'
 import { CareerProgress } from './CareerProgress'
+import { ExtraOutletsCard } from '../pos/outlets/ExtraOutletsCard'
 
 type Tab = 'missions' | 'skills' | 'career' | 'personal' | 'reviews' | 'history'
 
@@ -56,6 +57,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
   const isSelf       = selfView || staffId === currentStaff?.id
   const isManager    = currentStaff?.rank === 'manager'
+  const { can }      = useCan()
   // Scope-aware review permission: mirrors canReviewStaff (manager tier is
   // unconditionally true; supervisor tier requires same branch+department
   // and a target rank below supervisor). Gates review scoring + skill
@@ -330,6 +332,11 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
             <ManagerNotesCard staff={staff} onSaved={refreshAll} />
             <EmploymentStatusCard staff={staff} onSetStatus={handleSetStatus} />
             <DangerZoneCard staff={staff} onReset={handleReset} />
+          </div>
+        )}
+        {can('access_settings') && !isSelf && (
+          <div className="mt-4">
+            <ExtraOutletsCard staffId={staff.id} homeBranchId={staff.branch_id ?? null} />
           </div>
         )}
       </div>
