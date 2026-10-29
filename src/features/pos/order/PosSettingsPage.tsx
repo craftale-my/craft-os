@@ -12,6 +12,7 @@ import { addTableAction, friendlyDbMessage, normalizeArea, openBillMessage, rena
 import CheckoutSettings from '../checkout/CheckoutSettings'
 import MenuCatalogsSection from './MenuCatalogsSection'
 import ShiftSettingsSection from '../shift/ShiftSettingsSection'
+import LockSettingsSection from '../devices/LockSettingsSection'
 import OutletsSection from '../outlets/OutletsSection'
 import { fetchMyOutlets } from '../outlets/outletsApi'
 import { OUTLET_KINDS, pickOutlet, type Outlet } from '../outlets/outlet'
@@ -219,6 +220,8 @@ export default function PosSettingsPage() {
       <CheckoutSettings key={`checkout:${branchId}`} branchId={branchId} routes={routes.map((r) => r.route)} tables={tables} />
 
       <ShiftSettingsSection key={`shift:${branchId}`} branchId={branchId} />
+
+      <LockSettingsSection key={`lock:${branchId}`} branchId={branchId} />
 
       {card && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40" onClick={() => setCard(null)}>
