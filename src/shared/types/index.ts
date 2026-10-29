@@ -11,6 +11,15 @@ export type StaffStatus = 'active' | 'resigned'
 
 export type SystemRole = 'owner' | 'admin' | 'hr' | 'manager' | 'supervisor' | 'staff'
 
+/** Customer Service (Craft Marketing inbox) access. null on Staff = no access. */
+export type CsRole = 'agent' | 'supervisor' | 'admin'
+export const CS_ROLES: CsRole[] = ['agent', 'supervisor', 'admin']
+export const CS_ROLE_LABELS: Record<CsRole, string> = {
+  agent: 'Agent — reply to conversations',
+  supervisor: 'Supervisor — reassign + view team',
+  admin: 'Admin — channels, automation, knowledge base',
+}
+
 export const SYSTEM_ROLES: SystemRole[] = ['owner', 'admin', 'hr', 'manager', 'supervisor', 'staff']
 
 export const SYSTEM_ROLE_LABELS: Record<SystemRole, string> = {
@@ -121,6 +130,8 @@ export interface Staff {
   avatar: string | null
   rank: Rank
   system_role: SystemRole
+  /** Optional so older fixtures still type-check; null/undefined = no access. */
+  cs_role?: CsRole | null
   job_title_id: string | null
   branch_id: string | null
   supervisor_id: string | null
