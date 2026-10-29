@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the server half of HQ-approved device activation and name + PIN staff sessions. A tablet or print agent asks for activation, HQ approves it in Craft OS, and the device receives its own login once. Devices can sign staff in with a PIN, lock and switch staff, and every later till call can be checked with `pos_ctx()`. Managers see and unpair their outlets' devices and set the auto-lock minutes.
+**Goal:** Build the server half of HQ-approved device activation and name + PIN staff sessions. A tablet or print agent asks for activation, HQ approves it in Craft OS (and marks the outlet's printing tablet), and the device receives its own login once. Devices can sign staff in with a PIN, lock and switch staff, and every later till call can be checked with `pos_ctx()`. Managers see and unpair their outlets' devices, move the printing tablet, and set the auto-lock minutes.
 
 **Architecture:**
 - One idempotent migration, `supabase/migration-2026-10-29-pos-devices.sql` (sections `D1`–`D6`), with a rolled-back self-check. It holds four new tables, service-role-only activation functions, HQ decision RPCs, the device context `pos_ctx()` / `pos_print_branch()`, and the sign-in RPCs.
@@ -28,6 +28,8 @@ The spec's step 2 (devices and login) includes swapping every front-of-house RPC
 - **C — the POS app.**
   - Its own Vite entry and Supabase client, the manifest and service worker, and the `craft-pos` Vercel project.
   - The activation, lock and PIN screens; auto-lock; "Unpair this device".
+  - The first screen picks what the device is for. Only **POS** for now; a customer display can come later. No main/sub linking (owner, 2026-10-29).
+  - Print hosting and the cash drawer run only on the printing tablet (`device.prints` in the roster).
   - The swap of the front-of-house RPCs to `pos_ctx()` and of the print RPCs to `pos_print_branch()`.
   - The `pos_readable_branches()` read policies, the `device_id` audit columns and the offline queue's `staffId`.
   - The Craft OS `/pos` "moved" notice.
@@ -55,6 +57,13 @@ The spec's step 2 (devices and login) includes swapping every front-of-house RPC
   - a random 48-hex password;
   - `email_confirm: true`, `app_metadata.pos_device = true`.
   - They have no `staff` row, so every Craft OS capability check is false for them.
+- **All tablets are equal** (owner, 2026-10-29: no Feedme-style main/sub linking; every tablet talks to Supabase on its own).
+  - One POS tablet per outlet is the **printing tablet**, which prints and holds the cash drawer: `pos_devices.prints`.
+  - A partial unique index allows only one per outlet among active devices, and only a `pos` device can hold it.
+  - HQ ticks "This tablet prints and holds the cash drawer" when approving, and the new tablet takes over from the outlet's current one in `pos_activation_finish`.
+  - A manager of the outlet moves the role later with `pos_set_print_tablet` (Devices → "Make printing tablet").
+  - Unpairing clears it.
+  - The roster reports it as `device.prints`; Part C runs the print host only there.
 - **Unpairing** is done by a manager of the device's outlet (`pos_manages_outlet`; HQ manages every outlet). It:
   - sets `revoked_at` / `revoked_by`;
   - ends the open session with `unpaired`;
@@ -126,13 +135,15 @@ The spec's step 2 (devices and login) includes swapping every front-of-house RPC
 **SQL checks.** The SQL was replayed on a scratch PostgreSQL 18 with Supabase stand-ins, after the POS chain and Sub-plan A:
 - The migration applies twice.
 - The new verify prints `VERIFY OK`, and so do the outlets, hardening, checkout, shifts and front-end verifies.
-- The new verify fails for each of six deliberate faults:
+- The new verify fails for each of eight deliberate faults:
   - lockout counted per device;
   - a success not clearing the count;
   - `pos_ctx()` without the may-work check;
   - a poll that ignores the secret;
   - unpairing outside the caller's outlets;
-  - approval without the code.
+  - approval without the code;
+  - approving a new printing tablet without clearing the outlet's old one;
+  - moving the printing tablet at another outlet.
 
 ---
 
@@ -154,9 +165,10 @@ The spec's step 2 (devices and login) includes swapping every front-of-house RPC
     - `pos_activation_unclaim(p_request_id uuid)`
   - **Craft OS** (Tasks 3–4):
     - `pos_device_requests_pending() → table(id, code, name, platform, created_at, expires_at)`
-    - `pos_decide_device_request(p_request_id uuid, p_approve boolean, p_code text, p_branch_id uuid, p_kind text, p_name text)`
-    - `pos_devices_list() → table(id, name, branch_id, outlet_name, kind, platform, approved_by_name, approved_at, last_seen_at, revoked_at)`
+    - `pos_decide_device_request(p_request_id uuid, p_approve boolean, p_code text, p_branch_id uuid, p_kind text, p_name text, p_prints boolean)`
+    - `pos_devices_list() → table(id, name, branch_id, outlet_name, kind, platform, prints, approved_by_name, approved_at, last_seen_at, revoked_at)`
     - `pos_unpair_device(p_device_id uuid)`
+    - `pos_set_print_tablet(p_device_id uuid)`
     - `save_lock_settings(p_branch_id uuid, p_idle_lock_minutes integer)`
     - column `branch_pos_settings.idle_lock_minutes`
   - **Devices** (Part C): `pos_login_roster() → jsonb`, `pos_start_session(p_staff_id uuid, p_pin text) → jsonb`, `pos_end_session(p_reason text)`.
@@ -201,7 +213,7 @@ with:
     const sql = readFileSync(new URL('migration-2026-10-29-pos-devices.sql', SUPABASE), 'utf8')
     expect(functionBodies(sql).map((b) => b.name)).toEqual(expect.arrayContaining([
       'pos_activation_request', 'pos_activation_poll', 'pos_activation_finish', 'pos_activation_unclaim',
-      'pos_decide_device_request', 'pos_unpair_device', 'pos_ctx', 'pos_print_branch', 'pos_start_session',
+      'pos_decide_device_request', 'pos_unpair_device', 'pos_set_print_tablet', 'pos_ctx', 'pos_print_branch', 'pos_start_session',
       'pos_end_session', 'save_lock_settings',
     ]))
     for (const f of ['pos_activation_request\\(text, text, text\\)', 'pos_activation_poll\\(text, text\\)',
@@ -245,7 +257,10 @@ Create `supabase/migration-2026-10-29-pos-devices.sql`:
 --     (pos_decide_device_request), typing the code shown on the tablet.
 -- D3  Devices in Craft OS: pos_devices_list (the caller's outlets); pos_unpair_device
 --     (a manager of the device's outlet; HQ manages every outlet) revokes the device,
---     bans its auth user and ends its open session.
+--     bans its auth user and ends its open session. All tablets are equal (no main/sub):
+--     one POS tablet per outlet is the printing tablet (pos_devices.prints — it prints
+--     and holds the cash drawer). HQ marks it when approving; a manager of the outlet
+--     moves it with pos_set_print_tablet. Marking one clears the outlet's previous one.
 -- D4  Device context: pos_ctx() → (device_id, branch_id, staff_id) with the coded errors
 --     device_unpaired / outlet_closed / no_session / access_changed; pos_print_branch().
 --     Both are internal: Part C's front-of-house RPCs call them.
@@ -272,6 +287,7 @@ create table if not exists pos_devices (
   kind         text not null check (kind in ('pos', 'print_agent')),
   name         text not null check (name = btrim(name) and char_length(name) between 1 and 40),
   platform     text not null check (platform in ('ipad', 'android', 'other', 'agent')),
+  prints       boolean not null default false check (not prints or kind = 'pos'),   -- the printing tablet
   approved_by  uuid references staff(id) on delete set null,
   approved_at  timestamptz not null default now(),
   last_seen_at timestamptz,
@@ -279,6 +295,7 @@ create table if not exists pos_devices (
   revoked_by   uuid references staff(id) on delete set null
 );
 create index if not exists pos_devices_branch on pos_devices (branch_id);
+create unique index if not exists pos_devices_one_printer on pos_devices (branch_id) where prints and revoked_at is null;
 
 create table if not exists pos_device_requests (
   id          uuid primary key default gen_random_uuid(),
@@ -293,6 +310,7 @@ create table if not exists pos_device_requests (
   branch_id   uuid references branches(id),                       -- set by HQ on approval
   kind        text check (kind in ('pos', 'print_agent')),
   device_name text,
+  prints      boolean not null default false,
   decided_by  uuid references staff(id) on delete set null,
   decided_at  timestamptz,
   claimed_at  timestamptz,                                         -- a poll is creating the device account
@@ -430,8 +448,11 @@ begin
   if not found or v_row.status <> 'approved' or v_row.device_id is not null or v_row.claimed_at is null then
     raise exception 'This request cannot be finished';
   end if;
-  insert into pos_devices(id, branch_id, kind, name, platform, approved_by, approved_at)
-  values (p_user_id, v_row.branch_id, v_row.kind, v_row.device_name, v_row.platform, v_row.decided_by, v_row.decided_at);
+  if v_row.prints then                                               -- the outlet's printing tablet moves to this one
+    update pos_devices set prints = false where branch_id = v_row.branch_id and prints and revoked_at is null;
+  end if;
+  insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by, approved_at)
+  values (p_user_id, v_row.branch_id, v_row.kind, v_row.device_name, v_row.platform, v_row.prints, v_row.decided_by, v_row.decided_at);
   update pos_device_requests set device_id = p_user_id where id = v_row.id;
 end $$;
 revoke all on function pos_activation_finish(uuid, uuid) from public, anon, authenticated;
@@ -461,9 +482,11 @@ end $$;
 revoke all on function pos_device_requests_pending() from public, anon;
 grant execute on function pos_device_requests_pending() to authenticated;
 
--- HQ approves (outlet, kind, name, and the code typed from the tablet) or rejects.
+-- HQ approves (outlet, kind, name, whether it is the printing tablet, and the code typed
+-- from the tablet) or rejects.
 create or replace function pos_decide_device_request(p_request_id uuid, p_approve boolean, p_code text,
-                                                     p_branch_id uuid, p_kind text, p_name text) returns void
+                                                     p_branch_id uuid, p_kind text, p_name text,
+                                                     p_prints boolean) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_row  pos_device_requests;
@@ -489,23 +512,26 @@ begin
   end if;
   if p_kind is null or p_kind not in ('pos', 'print_agent') then raise exception 'Choose POS or Print agent'; end if;
   if v_name is null or char_length(v_name) > 40 then raise exception 'Enter the device name (up to 40 characters)'; end if;
+  if coalesce(p_prints, false) and p_kind <> 'pos' then
+    raise exception 'Only a POS tablet can print and hold the cash drawer';
+  end if;
   update pos_device_requests
      set status = 'approved', branch_id = p_branch_id, kind = p_kind, device_name = v_name,
-         decided_by = auth.uid(), decided_at = now()
+         prints = coalesce(p_prints, false), decided_by = auth.uid(), decided_at = now()
    where id = v_row.id;
 end $$;
-revoke all on function pos_decide_device_request(uuid, boolean, text, uuid, text, text) from public, anon;
-grant execute on function pos_decide_device_request(uuid, boolean, text, uuid, text, text) to authenticated;
+revoke all on function pos_decide_device_request(uuid, boolean, text, uuid, text, text, boolean) from public, anon;
+grant execute on function pos_decide_device_request(uuid, boolean, text, uuid, text, text, boolean) to authenticated;
 
 -- ── D3. Devices in Craft OS ─────────────────────────────────────────────────
 create or replace function pos_devices_list()
-returns table (id uuid, name text, branch_id uuid, outlet_name text, kind text, platform text,
+returns table (id uuid, name text, branch_id uuid, outlet_name text, kind text, platform text, prints boolean,
                approved_by_name text, approved_at timestamptz, last_seen_at timestamptz, revoked_at timestamptz)
 language plpgsql stable security definer set search_path = public, pg_temp as $$
 begin
   if not has_menu_cap('access_settings') then raise exception 'Only a manager can see devices'; end if;
   return query
-    select d.id, d.name, d.branch_id, b.name, d.kind, d.platform, s.name, d.approved_at, d.last_seen_at, d.revoked_at
+    select d.id, d.name, d.branch_id, b.name, d.kind, d.platform, d.prints, s.name, d.approved_at, d.last_seen_at, d.revoked_at
       from pos_devices d
       join branches b on b.id = d.branch_id
       left join staff s on s.id = d.approved_by
@@ -525,12 +551,29 @@ begin
   if not found then raise exception 'Device not found'; end if;
   if not pos_manages_outlet(v_dev.branch_id) then raise exception 'This device is not at one of your outlets'; end if;
   if v_dev.revoked_at is not null then return; end if;
-  update pos_devices set revoked_at = now(), revoked_by = auth.uid() where id = v_dev.id;
+  update pos_devices set revoked_at = now(), revoked_by = auth.uid(), prints = false where id = v_dev.id;
   update pos_staff_sessions set ended_at = now(), end_reason = 'unpaired' where device_id = v_dev.id and ended_at is null;
   update auth.users set banned_until = 'infinity' where id = v_dev.id;
 end $$;
 revoke all on function pos_unpair_device(uuid) from public, anon;
 grant execute on function pos_unpair_device(uuid) to authenticated;
+
+-- A manager of the outlet makes an active POS tablet the outlet's printing tablet.
+create or replace function pos_set_print_tablet(p_device_id uuid) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_dev pos_devices;
+begin
+  select * into v_dev from pos_devices d where d.id = p_device_id for update;
+  if not found then raise exception 'Device not found'; end if;
+  if not pos_manages_outlet(v_dev.branch_id) then raise exception 'This device is not at one of your outlets'; end if;
+  if v_dev.kind <> 'pos' or v_dev.revoked_at is not null then raise exception 'Only an active POS tablet can print'; end if;
+  if v_dev.prints then return; end if;
+  update pos_devices set prints = false where branch_id = v_dev.branch_id and prints and revoked_at is null;
+  update pos_devices set prints = true where id = v_dev.id;
+end $$;
+revoke all on function pos_set_print_tablet(uuid) from public, anon;
+grant execute on function pos_set_print_tablet(uuid) to authenticated;
 
 -- ── D4. Device context (internal; Part C's RPCs call these) ─────────────────
 -- The caller must be an active POS device, at an open outlet, with an open staff session
@@ -582,7 +625,7 @@ begin
   select * into v_b from branches b where b.id = v_dev.branch_id;
   v_open := pos_outlet_open(v_b.id);
   return jsonb_build_object(
-    'device', jsonb_build_object('id', v_dev.id, 'name', v_dev.name),
+    'device', jsonb_build_object('id', v_dev.id, 'name', v_dev.name, 'prints', v_dev.prints),
     'outlet', jsonb_build_object('id', v_b.id, 'name', v_b.name, 'kind', v_b.kind, 'opensOn', v_b.opens_on,
                                  'closesOn', v_b.closes_on, 'isActive', coalesce(v_b.is_active, false), 'open', v_open),
     'idleLockMinutes', coalesce((select ps.idle_lock_minutes from branch_pos_settings ps where ps.branch_id = v_b.id), 10),
@@ -725,6 +768,7 @@ declare
   v_dev2  uuid := 'eeeeeeee-0000-0000-0000-0000000000d2';   -- second POS tablet at A
   v_agent uuid := 'eeeeeeee-0000-0000-0000-0000000000d3';   -- print agent at A
   v_dev4  uuid := 'eeeeeeee-0000-0000-0000-0000000000d4';   -- POS tablet at the closed pop-up
+  v_dev5  uuid := 'eeeeeeee-0000-0000-0000-0000000000d5';   -- a later POS tablet at A, approved as the printing tablet
   v_a uuid; v_b uuid; v_pop uuid;
   v_res jsonb; v_req jsonb; v_code text; v_secret text; v_rid uuid; v_ctx record;
   v_today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
@@ -750,8 +794,8 @@ begin
       raise exception 'FAIL grants: % must be service role only', r.f;
     end if;
   end loop;
-  for r in select f from unnest(array['pos_device_requests_pending()', 'pos_decide_device_request(uuid,boolean,text,uuid,text,text)',
-                                      'pos_devices_list()', 'pos_unpair_device(uuid)', 'pos_login_roster()',
+  for r in select f from unnest(array['pos_device_requests_pending()', 'pos_decide_device_request(uuid,boolean,text,uuid,text,text,boolean)',
+                                      'pos_devices_list()', 'pos_unpair_device(uuid)', 'pos_set_print_tablet(uuid)', 'pos_login_roster()',
                                       'pos_start_session(uuid,text)', 'pos_end_session(text)', 'save_lock_settings(uuid,integer)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
     if not has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL grants: clients cannot call %', r.f; end if;
@@ -765,7 +809,7 @@ begin
             where ns.nspname = 'public'
               and p.proname = any (array['pos_is_hq', 'pos_activation_request', 'pos_activation_poll', 'pos_activation_finish',
                                          'pos_activation_unclaim', 'pos_device_requests_pending', 'pos_decide_device_request',
-                                         'pos_devices_list', 'pos_unpair_device', 'pos_ctx', 'pos_print_branch',
+                                         'pos_devices_list', 'pos_unpair_device', 'pos_set_print_tablet', 'pos_ctx', 'pos_print_branch',
                                          'pos_login_roster', 'pos_start_session', 'pos_end_session', 'save_lock_settings'])
               and not coalesce(p.proconfig @> array['search_path=public, pg_temp'], false) loop
     raise exception 'FAIL search_path: % does not pin search_path = public, pg_temp', r.proname;
@@ -824,22 +868,24 @@ begin
   perform pg_temp.act(v_mgr);
   perform pg_temp.expect_error('select count(*) from pos_device_requests_pending()', 'Only HQ can approve devices', 'D2 list by a branch manager');
   select id into v_rid from pos_device_requests where code = v_code;
-  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L)', v_rid, v_code, v_a, 'pos', 'Bar iPad'),
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, false)', v_rid, v_code, v_a, 'pos', 'Bar iPad'),
                                'Only HQ can approve devices', 'D2 approval by a branch manager');
   perform pg_temp.act(v_owner);
   if not exists (select 1 from pos_device_requests_pending() p where p.code = v_code and p.name = 'Bar iPad') then
     raise exception 'FAIL D2: HQ does not see the waiting request';
   end if;
-  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L)', v_rid, 'ABC-DEF', v_a, 'pos', 'Bar iPad'),
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, false)', v_rid, 'ABC-DEF', v_a, 'pos', 'Bar iPad'),
                                'The code does not match the tablet', 'D2 wrong code');
-  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, null, %L, %L)', v_rid, v_code, 'pos', 'Bar iPad'),
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, null, %L, %L, false)', v_rid, v_code, 'pos', 'Bar iPad'),
                                'Choose the outlet', 'D2 no outlet');
-  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L)', v_rid, v_code, v_a, 'till', 'Bar iPad'),
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, false)', v_rid, v_code, v_a, 'till', 'Bar iPad'),
                                'Choose POS or Print agent', 'D2 bad kind');
-  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L)', v_rid, v_code, v_a, 'pos', repeat('x', 41)),
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, false)', v_rid, v_code, v_a, 'pos', repeat('x', 41)),
                                'Enter the device name (up to 40 characters)', 'D2 long name');
-  perform pos_decide_device_request(v_rid, true, lower(replace(v_code, '-', ' ')), v_a, 'pos', ' Bar iPad ');   -- typed loosely
-  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, false, null, null, null, null)', v_rid),
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, true)', v_rid, v_code, v_a, 'print_agent', 'Shop Mac'),
+                               'Only a POS tablet can print and hold the cash drawer', 'D2 a printing print agent');
+  perform pos_decide_device_request(v_rid, true, lower(replace(v_code, '-', ' ')), v_a, 'pos', ' Bar iPad ', true);   -- typed loosely; the printing tablet
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, false, null, null, null, null, null)', v_rid),
                                'This request is no longer waiting', 'D2 deciding twice');
   perform set_config('request.jwt.claims', '', true);
   v_res := pos_activation_poll(v_code, v_secret);
@@ -854,8 +900,8 @@ begin
   if pos_activation_poll(v_code, v_secret)->>'status' <> 'issue' then raise exception 'FAIL D2: retry after unclaim'; end if;
   insert into auth.users (id) values (v_dev1);
   perform pos_activation_finish(v_rid, v_dev1);
-  if (select branch_id || '|' || kind || '|' || name || '|' || platform || '|' || approved_by from pos_devices where id = v_dev1)
-       <> v_a || '|pos|Bar iPad|ipad|' || v_owner then
+  if (select branch_id || '|' || kind || '|' || name || '|' || platform || '|' || prints || '|' || approved_by from pos_devices where id = v_dev1)
+       <> v_a || '|pos|Bar iPad|ipad|true|' || v_owner then
     raise exception 'FAIL D2: the device row';
   end if;
   if pos_activation_poll(v_code, v_secret)->>'status' <> 'unknown' then raise exception 'FAIL D2: credentials handed out twice'; end if;
@@ -863,7 +909,7 @@ begin
   -- reject and expire
   v_req := pos_activation_request(null, 'other', null);
   perform pg_temp.act(v_owner);
-  perform pos_decide_device_request((select id from pos_device_requests where code = v_req->>'code'), false, null, null, null, null);
+  perform pos_decide_device_request((select id from pos_device_requests where code = v_req->>'code'), false, null, null, null, null, null);
   perform set_config('request.jwt.claims', '', true);
   if pos_activation_poll(v_req->>'code', v_req->>'secret')->>'status' <> 'rejected' then raise exception 'FAIL D2: rejected'; end if;
   v_req := pos_activation_request(null, 'other', null);
@@ -893,6 +939,31 @@ begin
   select string_agg(l.name, ',' order by l.name) into v_text from pos_devices_list() l where l.id in (v_dev1, v_dev2, v_agent, v_dev4);
   if v_text is distinct from 'Bar iPad,Kitchen iPad,Shop Mac' then raise exception 'FAIL D3: a branch manager sees %', v_text; end if;
   perform pg_temp.expect_error(format('select pos_unpair_device(%L)', v_dev4), 'This device is not at one of your outlets', 'D3 unpair elsewhere');
+  -- the printing tablet: one per outlet, moved by a manager of the outlet or by approving another
+  if not (select l.prints from pos_devices_list() l where l.id = v_dev1) then raise exception 'FAIL D3: the list shows the printing tablet'; end if;
+  perform pos_set_print_tablet(v_dev2);
+  if (select string_agg(name || ':' || prints, ',' order by name) from pos_devices where id in (v_dev1, v_dev2)) <> 'Bar iPad:false,Kitchen iPad:true' then
+    raise exception 'FAIL D3: moving the printing tablet';
+  end if;
+  perform pg_temp.expect_error(format('select pos_set_print_tablet(%L)', v_agent), 'Only an active POS tablet can print', 'D3 a print agent as printing tablet');
+  perform pg_temp.expect_error(format('select pos_set_print_tablet(%L)', v_dev4), 'This device is not at one of your outlets', 'D3 printing tablet elsewhere');
+  begin
+    update pos_devices set prints = true where id = v_dev1;
+    raise exception 'FAIL D3: two printing tablets at one outlet';
+  exception when unique_violation then null;
+  end;
+  perform pg_temp.act(v_owner);
+  perform set_config('request.jwt.claims', '', true);
+  v_req := pos_activation_request('Front iPad', 'ipad', null);
+  perform pg_temp.act(v_owner);
+  perform pos_decide_device_request((select id from pos_device_requests where code = v_req->>'code'), true, v_req->>'code', v_a, 'pos', 'Front iPad', true);
+  perform set_config('request.jwt.claims', '', true);
+  v_res := pos_activation_poll(v_req->>'code', v_req->>'secret');
+  insert into auth.users (id) values (v_dev5);
+  perform pos_activation_finish((v_res->>'requestId')::uuid, v_dev5);
+  if (select string_agg(name || ':' || prints, ',' order by name) from pos_devices where id in (v_dev2, v_dev5)) <> 'Front iPad:true,Kitchen iPad:false' then
+    raise exception 'FAIL D3: approving a new printing tablet moves the role';
+  end if;
 
   -- ── D5. the lock screen and sign-in ───────────────────────────────────────
   perform pg_temp.act(v_cash);                                                          -- a staff email login is no device
@@ -901,7 +972,8 @@ begin
   perform pg_temp.expect_error('select pos_login_roster()', 'device_unpaired', 'D5 roster for a print agent');
   perform pg_temp.act(v_dev1);
   v_res := pos_login_roster();
-  if v_res->'device'->>'name' <> 'Bar iPad' or v_res->'outlet'->>'name' <> 'VERIFY D A' or not (v_res->'outlet'->>'open')::boolean
+  if v_res->'device'->>'name' <> 'Bar iPad' or (v_res->'device'->>'prints')::boolean
+     or v_res->'outlet'->>'name' <> 'VERIFY D A' or not (v_res->'outlet'->>'open')::boolean
      or (v_res->>'idleLockMinutes')::int <> 10 or v_res->'session' <> 'null'::jsonb then
     raise exception 'FAIL D5 roster: %', v_res;
   end if;
@@ -979,7 +1051,8 @@ begin
   if (select revoked_by from pos_devices where id = v_dev1) is distinct from v_mgr
      or (select banned_until from auth.users where id = v_dev1) <> 'infinity'
      or exists (select 1 from pos_staff_sessions where device_id = v_dev1 and ended_at is null)
-     or not exists (select 1 from pos_staff_sessions where device_id = v_dev1 and end_reason = 'unpaired') then
+     or not exists (select 1 from pos_staff_sessions where device_id = v_dev1 and end_reason = 'unpaired')
+     or (select prints from pos_devices where id = v_dev1) then
     raise exception 'FAIL D3: unpairing (revoked by, banned, session ended as unpaired)';
   end if;
   perform pg_temp.act(v_dev1);
@@ -1369,7 +1442,7 @@ echo "1 request → code $CODE"
 POLL="{\"action\":\"poll\",\"code\":\"$CODE\",\"secret\":\"$SECRET\"}"
 echo "2 poll before approval → $(fn "$POLL" | field status)"                                   # pending
 echo "3 wrong secret → $(fn "{\"action\":\"poll\",\"code\":\"$CODE\",\"secret\":\"nope\"}" | field status)"  # unknown
-as_owner "select pos_decide_device_request((select id from pos_device_requests where code = '$CODE' and status = 'pending'), true, '$CODE', '$DEMO', 'pos', 'SMOKE iPad')" >/dev/null
+as_owner "select pos_decide_device_request((select id from pos_device_requests where code = '$CODE' and status = 'pending'), true, '$CODE', '$DEMO', 'pos', 'SMOKE iPad', false)" >/dev/null
 P=$(fn "$POLL")
 echo "4 poll after approval → $(echo "$P" | field status), kind $(echo "$P" | field kind), name $(echo "$P" | field name)"   # approved, pos, SMOKE iPad
 echo "5 poll again → $(fn "$POLL" | field status)"                                            # unknown
@@ -1441,7 +1514,7 @@ describe('normalizeCode', () => {
 })
 
 describe('approveProblem', () => {
-  const ok: ApproveDraft = { code: 'abc def', branchId: 'b1', kind: 'pos', name: 'Bar iPad' }
+  const ok: ApproveDraft = { code: 'abc def', branchId: 'b1', kind: 'pos', name: 'Bar iPad', prints: true }
   it('passes a complete form', () => {
     expect(approveProblem(ok, 'ABC-DEF')).toBeNull()
   })
@@ -1450,6 +1523,8 @@ describe('approveProblem', () => {
     expect(approveProblem({ ...ok, branchId: '' }, 'ABC-DEF')).toBe('Choose the outlet')
     expect(approveProblem({ ...ok, name: '  ' }, 'ABC-DEF')).toBe('Enter the device name (up to 40 characters)')
     expect(approveProblem({ ...ok, name: 'x'.repeat(41) }, 'ABC-DEF')).toBe('Enter the device name (up to 40 characters)')
+    expect(approveProblem({ ...ok, kind: 'print_agent' }, 'ABC-DEF')).toBe('Only a POS tablet can print and hold the cash drawer')
+    expect(approveProblem({ ...ok, kind: 'print_agent', prints: false }, 'ABC-DEF')).toBeNull()
   })
 })
 
@@ -1520,6 +1595,7 @@ export interface DeviceRow {
   outletName: string
   kind: DeviceKind
   platform: DevicePlatform
+  prints: boolean
   approvedByName: string | null
   approvedAt: string
   lastSeenAt: string | null
@@ -1531,6 +1607,7 @@ export interface ApproveDraft {
   branchId: string
   kind: DeviceKind
   name: string
+  prints: boolean        // the outlet's printing tablet (prints and holds the cash drawer)
 }
 
 /** A code as typed ("abc def", "ABCDEF") in the tablet's form "ABC-DEF", or null. */
@@ -1545,6 +1622,7 @@ export function approveProblem(d: ApproveDraft, requestCode: string): string | n
   if (!d.branchId) return 'Choose the outlet'
   const name = d.name.trim()
   if (!name || name.length > 40) return 'Enter the device name (up to 40 characters)'
+  if (d.prints && d.kind !== 'pos') return 'Only a POS tablet can print and hold the cash drawer'
   return null
 }
 
@@ -1602,17 +1680,18 @@ export async function fetchPendingRequests(): Promise<PendingRequest[]> {
     .map((r) => ({ id: r.id, code: r.code, name: r.name, platform: r.platform, createdAt: r.created_at, expiresAt: r.expires_at }))
 }
 
-/** HQ approves a request (the code typed from the tablet, outlet, kind, name). */
+/** HQ approves a request (the code typed from the tablet, outlet, kind, name, printing tablet). */
 export async function approveRequest(requestId: string, d: ApproveDraft): Promise<void> {
   const { error } = await supabase.rpc('pos_decide_device_request', {
     p_request_id: requestId, p_approve: true, p_code: d.code, p_branch_id: d.branchId, p_kind: d.kind, p_name: d.name,
+    p_prints: d.prints,
   })
   if (error) fail(error)
 }
 
 export async function rejectRequest(requestId: string): Promise<void> {
   const { error } = await supabase.rpc('pos_decide_device_request', {
-    p_request_id: requestId, p_approve: false, p_code: null, p_branch_id: null, p_kind: null, p_name: null,
+    p_request_id: requestId, p_approve: false, p_code: null, p_branch_id: null, p_kind: null, p_name: null, p_prints: null,
   })
   if (error) fail(error)
 }
@@ -1622,16 +1701,22 @@ export async function fetchDevices(): Promise<DeviceRow[]> {
   const { data, error } = await supabase.rpc('pos_devices_list')
   if (error) fail(error)
   return ((data ?? []) as {
-    id: string; name: string; branch_id: string; outlet_name: string; kind: DeviceKind; platform: DevicePlatform
+    id: string; name: string; branch_id: string; outlet_name: string; kind: DeviceKind; platform: DevicePlatform; prints: boolean
     approved_by_name: string | null; approved_at: string; last_seen_at: string | null; revoked_at: string | null
   }[]).map((r) => ({
-    id: r.id, name: r.name, branchId: r.branch_id, outletName: r.outlet_name, kind: r.kind, platform: r.platform,
+    id: r.id, name: r.name, branchId: r.branch_id, outletName: r.outlet_name, kind: r.kind, platform: r.platform, prints: r.prints,
     approvedByName: r.approved_by_name, approvedAt: r.approved_at, lastSeenAt: r.last_seen_at, revokedAt: r.revoked_at,
   }))
 }
 
 export async function unpairDevice(deviceId: string): Promise<void> {
   const { error } = await supabase.rpc('pos_unpair_device', { p_device_id: deviceId })
+  if (error) fail(error)
+}
+
+/** Makes an active POS tablet its outlet's printing tablet (the previous one stops). */
+export async function setPrintTablet(deviceId: string): Promise<void> {
+  const { error } = await supabase.rpc('pos_set_print_tablet', { p_device_id: deviceId })
   if (error) fail(error)
 }
 
@@ -1662,7 +1747,7 @@ import {
   KIND_LABELS, PLATFORM_LABELS, approveProblem, lastSeenText, mytDateTime,
   type ApproveDraft, type DeviceKind, type DeviceRow, type PendingRequest,
 } from './devices'
-import { approveRequest, fetchDevices, fetchPendingRequests, rejectRequest, unpairDevice } from './devicesApi'
+import { approveRequest, fetchDevices, fetchPendingRequests, rejectRequest, setPrintTablet, unpairDevice } from './devicesApi'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const box = 'rounded-xl border border-border bg-card p-4'
@@ -1694,13 +1779,18 @@ export default function DevicesPage() {
   }, [])
   useEffect(() => { void loadDevices() }, [loadDevices])
 
-  const unpair = async (d: DeviceRow) => {
+  const act = async (d: DeviceRow, fn: () => Promise<void>, done: string) => {
     if (running.current) return
-    if (!window.confirm(`Unpair ${d.name}? It stops working at once and needs a new activation.`)) return
     running.current = true; setBusyId(d.id); setOutcome(null)
-    try { await unpairDevice(d.id); setOutcome({ ok: true, text: `${d.name} unpaired` }); await loadDevices() }
+    try { await fn(); setOutcome({ ok: true, text: done }); await loadDevices() }
     catch (e) { setOutcome({ ok: false, text: msg(e) }) } finally { running.current = false; setBusyId(null) }
   }
+  const unpair = (d: DeviceRow) => {
+    if (!window.confirm(`Unpair ${d.name}? It stops working at once and needs a new activation.`)) return
+    void act(d, () => unpairDevice(d.id), `${d.name} unpaired`)
+  }
+  const makePrinter = (d: DeviceRow) =>
+    void act(d, () => setPrintTablet(d.id), `${d.name} now prints and holds the cash drawer at ${d.outletName}`)
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
@@ -1708,21 +1798,24 @@ export default function DevicesPage() {
       {isHq && <PendingSection onApproved={loadDevices} />}
       <section className={box}>
         <h2 className="font-semibold">Devices</h2>
-        <p className="text-xs text-brown-muted">Tablets and print agents activated for your outlets. Unpairing stops a device at once; to move it to another outlet, unpair it and activate it again.</p>
+        <p className="text-xs text-brown-muted">Tablets and print agents activated for your outlets. Every tablet works on its own; one per outlet is the printing tablet (it prints and holds the cash drawer). Unpairing stops a device at once; to move it to another outlet, unpair it and activate it again.</p>
         {devices && devices.length === 0 && <p className="mt-2 text-sm text-brown-muted">No devices yet.</p>}
         {devices && devices.length > 0 && (
           <table className="mt-3 w-full text-sm">
-            <thead><tr className="text-left text-xs text-brown-muted"><th>Device</th><th>Outlet</th><th>Kind</th><th>Approved</th><th>Last seen</th><th></th></tr></thead>
+            <thead><tr className="text-left text-xs text-brown-muted"><th>Device</th><th>Outlet</th><th>Kind</th><th>Approved</th><th>Last seen</th><th></th><th></th></tr></thead>
             <tbody>
               {devices.map((d) => (
                 <tr key={d.id} className={`border-t border-border ${d.revokedAt ? 'text-brown-muted' : ''}`}>
                   <td className="py-2 font-medium">{d.name}<span className="ml-2 text-xs text-brown-muted">{PLATFORM_LABELS[d.platform]}</span></td>
                   <td>{d.outletName}</td>
-                  <td>{KIND_LABELS[d.kind]}</td>
+                  <td>{KIND_LABELS[d.kind]}{d.prints && <span className="ml-2 rounded bg-amber-100 px-1 text-xs text-amber-800">Prints · cash drawer</span>}</td>
                   <td className="text-xs">{d.approvedByName ?? '—'} · {mytDateTime(d.approvedAt)}</td>
                   <td className="text-xs">{d.revokedAt ? `Unpaired ${mytDateTime(d.revokedAt)}` : lastSeenText(d.lastSeenAt, new Date())}</td>
                   <td className="text-right">
-                    {!d.revokedAt && <button disabled={busyId !== null} onClick={() => void unpair(d)} className="text-xs text-red-700 underline disabled:opacity-50">{busyId === d.id ? 'Unpairing…' : 'Unpair'}</button>}
+                    {!d.revokedAt && d.kind === 'pos' && !d.prints && <button disabled={busyId !== null} onClick={() => makePrinter(d)} className="text-xs underline disabled:opacity-50">Make printing tablet</button>}
+                  </td>
+                  <td className="text-right">
+                    {!d.revokedAt && <button disabled={busyId !== null} onClick={() => unpair(d)} className="text-xs text-red-700 underline disabled:opacity-50">{busyId === d.id ? 'Unpairing…' : 'Unpair'}</button>}
                   </td>
                 </tr>
               ))}
@@ -1788,7 +1881,7 @@ function PendingSection({ onApproved }: { onApproved: () => Promise<void> }) {
           <span>{r.name ?? 'Unnamed device'}</span>
           <span className="text-xs text-brown-muted">{PLATFORM_LABELS[r.platform]} · asked {mytDateTime(r.createdAt)}</span>
           <span className="ml-auto space-x-3">
-            <button disabled={busy} onClick={() => { setOpen({ request: r, draft: { code: '', branchId: '', kind: r.platform === 'agent' ? 'print_agent' : 'pos', name: r.name ?? '' } }); setOutcome(null) }} className="text-xs underline">Approve…</button>
+            <button disabled={busy} onClick={() => { setOpen({ request: r, draft: { code: '', branchId: '', kind: r.platform === 'agent' ? 'print_agent' : 'pos', name: r.name ?? '', prints: false } }); setOutcome(null) }} className="text-xs underline">Approve…</button>
             <button disabled={busy} onClick={() => reject(r)} className="text-xs text-red-700 underline">Reject</button>
           </span>
         </div>
@@ -1806,13 +1899,20 @@ function PendingSection({ onApproved }: { onApproved: () => Promise<void> }) {
             </select>
           </label>
           <label className="block">Kind
-            <select className={`${input} ml-2`} value={open.draft.kind} onChange={(e) => change({ ...open.draft, kind: e.target.value as DeviceKind })}>
+            <select className={`${input} ml-2`} value={open.draft.kind} onChange={(e) => { const kind = e.target.value as DeviceKind; change({ ...open.draft, kind, prints: kind === 'pos' && open.draft.prints }) }}>
               {(Object.keys(KIND_LABELS) as DeviceKind[]).map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
             </select>
           </label>
           <label className="block">Name
             <input className={`${input} ml-2 w-64`} maxLength={40} placeholder="e.g. Cheras Counter iPad" value={open.draft.name} onChange={(e) => change({ ...open.draft, name: e.target.value })} />
           </label>
+          {open.draft.kind === 'pos' && (
+            <label className="block">
+              <input type="checkbox" checked={open.draft.prints} onChange={(e) => change({ ...open.draft, prints: e.target.checked })} />
+              <span className="ml-2">This tablet prints and holds the cash drawer</span>
+              <span className="ml-2 text-xs text-brown-muted">One per outlet: it takes over from the current printing tablet.</span>
+            </label>
+          )}
           <div className="flex gap-2">
             <button disabled={busy} onClick={approve} className="rounded bg-brown-btn px-3 py-1 text-white disabled:opacity-50">{busy ? 'Approving…' : 'Approve'}</button>
             <button disabled={busy} onClick={() => { setOpen(null); setOutcome(null) }} className="rounded border border-border px-3 py-1">Cancel</button>
@@ -2058,7 +2158,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   3. Approve… with a wrong code → "The code does not match the tablet", shown beside the form.
   4. With the right code, outlet Demo, kind POS → "BROWSER iPad approved — …".
   5. A poll with the secret returns `approved`. The device then appears in the Devices list ("Never" last seen).
-- [ ] **Step 3: Unpair.** Unpair BROWSER iPad → confirm → "BROWSER iPad unpaired". The row greys and shows "Unpaired …".
+- [ ] **Step 2b: Printing tablet.**
+  1. Approve a second request "BROWSER Front" at Demo with "This tablet prints and holds the cash drawer" ticked, and poll it.
+  2. Its row shows "Prints · cash drawer".
+  3. Press "Make printing tablet" on BROWSER iPad → "BROWSER iPad now prints and holds the cash drawer at Demo". The badge moves.
+  4. With Kind "Print agent" the checkbox is hidden.
+- [ ] **Step 3: Unpair.** Unpair BROWSER iPad and BROWSER Front → confirm → "… unpaired". The rows grey and show "Unpaired …", and the badge is gone.
 - [ ] **Step 4: Reject.** Create a second request and Reject it → "Request … rejected". A poll returns `rejected`.
 - [ ] **Step 5: Lock setting.** POS settings → Lock: 0 → "Enter between 1 and 60 minutes"; 15 → "Lock setting saved". Switching the outlet shows that outlet's own value.
 - [ ] **Step 6: Branch-only manager view.** As a dev manager login, if the owner signs one in: no "Waiting for approval" section, and only that manager's outlets' devices. If no manager login is available, say so in the report.
