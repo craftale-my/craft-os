@@ -44,6 +44,7 @@ export type Capability =
   | 'manage_projects'  // create/edit/delete Projects; edit the Tasks tag vocabulary
   | 'pos_supervise'    // approve POS voids & refunds with a PIN (SQL: has_menu_cap / staff_has_cap)
   | 'manage_menu'      // edit the company-wide menu and its catalogs (SQL: has_menu_cap / staff_has_cap)
+  | 'pos_login'        // sign in to the POS with a PIN where one may work (SQL: has_menu_cap / staff_has_cap)
 
 export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'view_team',           label: 'View Team' },
@@ -59,6 +60,7 @@ export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'manage_system_roles', label: 'Manage System Roles' },
   { key: 'pos_supervise',       label: 'Approve POS voids & refunds' },
   { key: 'manage_menu',         label: 'Edit menu' },
+  { key: 'pos_login',           label: 'Sign in to the POS' },
 ]
 
 type CapMap = Partial<Record<Capability, boolean>>
@@ -71,6 +73,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     access_settings: true, manage_system_roles: true, manage_projects: true,
     pos_supervise: true,
     manage_menu: true,
+    pos_login: true,
   },
   admin: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
@@ -78,6 +81,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     access_settings: true, manage_system_roles: false, manage_projects: true,
     pos_supervise: true,
     manage_menu: true,
+    pos_login: true,
   },
   hr: {
     view_team: true, manage_staff: true, manage_schedule: false, conduct_reviews: false,
@@ -85,6 +89,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     access_settings: false, manage_system_roles: false, manage_projects: true,
     pos_supervise: false,
     manage_menu: false,
+    pos_login: false,
   },
   manager: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
@@ -92,6 +97,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     access_settings: true, manage_system_roles: false, manage_projects: true,
     pos_supervise: true,
     manage_menu: false,
+    pos_login: true,
   },
   supervisor: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
@@ -99,6 +105,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     access_settings: false, manage_system_roles: false, manage_projects: true,
     pos_supervise: true,
     manage_menu: false,
+    pos_login: true,
   },
   staff: {
     view_team: false, manage_staff: false, manage_schedule: false, conduct_reviews: false,
@@ -106,6 +113,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     access_settings: false, manage_system_roles: false, manage_projects: false,
     pos_supervise: false,
     manage_menu: false,
+    pos_login: true,
   },
 }
 
