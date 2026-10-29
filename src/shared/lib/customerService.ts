@@ -58,25 +58,32 @@ export async function openCustomerService(): Promise<string | null> {
   if (!apiUrl || !marketingUrl) return CS_MESSAGES.unavailable
 
   const tab = window.open('about:blank', '_blank')
-  if (tab) {
-    tab.opener = null
-    tab.document.title = 'Customer Service'
-    tab.document.body.textContent = 'Signing you in…'
+  // Anything that throws after the tab exists must close it, or the user is
+  // left on a blank "Signing you in…" page.
+  try {
+    if (tab) {
+      tab.opener = null
+      tab.document.title = 'Customer Service'
+      tab.document.body.textContent = 'Signing you in…'
+    }
+
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    const result: TicketResult = token
+      ? await requestCsTicket(apiUrl, token)
+      : { ok: false, reason: 'signed_out' }
+
+    if (!result.ok) {
+      tab?.close()
+      return CS_MESSAGES[result.reason]
+    }
+
+    const url = ssoUrl(marketingUrl, result.ticket)
+    if (tab) tab.location.href = url
+    else window.location.href = url // pop-up blocked anyway: use this tab
+    return null
+  } catch {
+    try { tab?.close() } catch { /* already gone */ }
+    return CS_MESSAGES.unavailable
   }
-
-  const { data } = await supabase.auth.getSession()
-  const token = data.session?.access_token
-  const result: TicketResult = token
-    ? await requestCsTicket(apiUrl, token)
-    : { ok: false, reason: 'signed_out' }
-
-  if (!result.ok) {
-    tab?.close()
-    return CS_MESSAGES[result.reason]
-  }
-
-  const url = ssoUrl(marketingUrl, result.ticket)
-  if (tab) tab.location.href = url
-  else window.location.href = url // pop-up blocked anyway: use this tab
-  return null
 }

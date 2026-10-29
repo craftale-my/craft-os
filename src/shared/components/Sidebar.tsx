@@ -70,8 +70,12 @@ function CustomerServiceLink({ onNavigate }: { onNavigate: () => void }) {
     if (busy) return
     setMessage(null)
     setBusy(true)
-    const problem = await openCustomerService()
-    setBusy(false)
+    let problem: string | null
+    try {
+      problem = await openCustomerService()
+    } finally {
+      setBusy(false)
+    }
     if (problem) { setMessage(problem); return }
     onNavigate()
   }
