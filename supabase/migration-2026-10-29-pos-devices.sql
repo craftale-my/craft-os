@@ -372,11 +372,14 @@ begin
   select * into v_ses from pos_staff_sessions s where s.device_id = v_dev.id and s.ended_at is null;
   if not found then raise exception 'no_session'; end if;
   if not pos_staff_may_work(v_ses.staff_id, v_dev.branch_id) then raise exception 'access_changed'; end if;
-  -- stamped at most every 30 s: every till call passes here
-  update pos_devices set last_seen_at = now()
-   where id = v_dev.id and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
-  update pos_staff_sessions set last_active_at = now()
-   where id = v_ses.id and last_active_at < now() - interval '30 seconds';
+  -- stamped at most every 30 s: every till call passes here. A read-only transaction (PostgREST
+  -- runs STABLE RPCs read-only) skips the stamps instead of failing the call.
+  if not current_setting('transaction_read_only')::boolean then
+    update pos_devices set last_seen_at = now()
+     where id = v_dev.id and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
+    update pos_staff_sessions set last_active_at = now()
+     where id = v_ses.id and last_active_at < now() - interval '30 seconds';
+  end if;
   device_id := v_dev.id;
   branch_id := v_dev.branch_id;
   staff_id := v_ses.staff_id;
@@ -391,8 +394,10 @@ declare
 begin
   select d.branch_id into v_branch from pos_devices d where d.id = auth.uid() and d.revoked_at is null;
   if v_branch is null then raise exception 'device_unpaired'; end if;
-  update pos_devices set last_seen_at = now()
-   where id = auth.uid() and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
+  if not current_setting('transaction_read_only')::boolean then              -- as in pos_ctx
+    update pos_devices set last_seen_at = now()
+     where id = auth.uid() and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
+  end if;
   return v_branch;
 end $$;
 revoke all on function pos_print_branch() from public, anon, authenticated;

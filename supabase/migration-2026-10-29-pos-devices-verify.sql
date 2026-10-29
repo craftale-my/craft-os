@@ -342,6 +342,18 @@ begin
   if (select last_seen_at from pos_devices where id = v_dev1) is distinct from now() - interval '10 seconds' then
     raise exception 'FAIL D4: pos_ctx rewrites a fresh last-seen';
   end if;
+  -- in a read-only transaction (a STABLE RPC through PostgREST) pos_ctx still answers, without stamping
+  update pos_devices set last_seen_at = now() - interval '1 minute' where id = v_dev1;
+  begin
+    perform set_config('transaction_read_only', 'on', true);
+    select * into v_ctx from pos_ctx();
+    raise exception 'read-only ok';                                       -- leaves the read-only sub-block
+  exception when raise_exception then
+    if sqlerrm is distinct from 'read-only ok' then raise exception 'FAIL D4: pos_ctx in a read-only transaction: %', sqlerrm; end if;
+  end;
+  if (select last_seen_at from pos_devices where id = v_dev1) is distinct from now() - interval '1 minute' then
+    raise exception 'FAIL D4: pos_ctx stamped in a read-only transaction';
+  end if;
   if (pos_login_roster()->'session'->>'staffId')::uuid is distinct from v_cash then raise exception 'FAIL D5: the roster shows who is signed in'; end if;
   -- wrong tries more than 24 h ago do not count: four old ones, then one now
   insert into pos_login_attempts(staff_id, device_id, at, ok)
