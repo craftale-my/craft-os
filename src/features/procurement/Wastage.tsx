@@ -7,6 +7,7 @@ import { useSignedPhotoUrls } from '../../shared/lib/useSignedPhotoUrls'
 import { money, qty, validateWastage, weekStartBusinessDate, inDepartment } from '../../shared/lib/procurement'
 import type { StockDepartmentFilter } from '../../shared/lib/procurement'
 import type { Item, Branch, InventoryValuation, WastageLog, WastageReason } from '../../shared/types'
+import PhotoButton from './PhotoButton'
 import {
   ITEM_DEPARTMENTS, ITEM_DEPARTMENT_LABELS, WASTAGE_REASONS, WASTAGE_REASON_LABELS,
 } from '../../shared/types'
@@ -432,19 +433,7 @@ export default function WastagePage() {
             />
           </div>
 
-          <div>
-            <label htmlFor="wastage-photo" className={labelCls}>Photo (optional)</label>
-            <input
-              key={photoKey}
-              id="wastage-photo"
-              type="file"
-              accept="image/*"
-              capture="environment"
-              onChange={e => setPhoto(e.target.files?.[0] ?? null)}
-              className="text-xs"
-            />
-            {photo && <p className="text-xs text-[#3D7A50] mt-1">✓ {photo.name}</p>}
-          </div>
+          <PhotoButton key={photoKey} file={photo} onFile={setPhoto} title="Photo" hint="Optional · opens the camera" />
 
           <div className="border-t border-[#EDE5D8] pt-4 space-y-3">
             {showValidation && validation && (

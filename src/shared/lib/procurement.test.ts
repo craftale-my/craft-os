@@ -751,10 +751,10 @@ describe('validateWastage', () => {
     expect(validateWastage({ ...ok, reason: 'damaged', note: null })).toBeNull()
   })
 
-  it('requires one of the four reasons', () => {
+  it('requires one of the known reasons', () => {
     expect(validateWastage({ ...ok, reason: null })).toBe('Pick a reason')
     expect(validateWastage({ ...ok, reason: 'stolen' })).toBe('Unknown wastage reason: stolen')
-    for (const r of ['expired', 'damaged', 'production_error']) {
+    for (const r of ['expired', 'damaged', 'production_error', 'staff_meal', 'customer_return']) {
       expect(validateWastage({ ...ok, reason: r })).toBeNull()
     }
   })

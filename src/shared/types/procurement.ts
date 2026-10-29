@@ -334,14 +334,18 @@ export interface InventoryValuation {
 
 // ─── Wastage ──────────────────────────────────────────────────────────────────
 
-export type WastageReason = 'expired' | 'damaged' | 'production_error' | 'other'
+export type WastageReason = 'expired' | 'damaged' | 'production_error' | 'staff_meal' | 'customer_return' | 'other'
 
-export const WASTAGE_REASONS: WastageReason[] = ['expired', 'damaged', 'production_error', 'other']
+export const WASTAGE_REASONS: WastageReason[] = [
+  'expired', 'damaged', 'production_error', 'staff_meal', 'customer_return', 'other',
+]
 
 export const WASTAGE_REASON_LABELS: Record<WastageReason, string> = {
   expired:          'Expired',
   damaged:          'Damaged',
   production_error: 'Production error',
+  staff_meal:       'Staff meal',
+  customer_return:  'Returned by customer',
   other:            'Other',
 }
 
