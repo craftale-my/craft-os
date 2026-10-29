@@ -13,6 +13,7 @@ import { useLookups } from '../../shared/lib/lookups'
 import { parseBranchGeofence } from '../../shared/lib/geofence'
 import { useCan } from '../../shared/lib/permissions'
 import { writeOutcome } from '../../shared/lib/db-write'
+import { CustomerServiceAccessTab } from './CustomerServiceAccessTab'
 
 const TABS = [
   { id: 'company',        label: 'Company Info',        icon: '🏢' },
@@ -724,12 +725,15 @@ function RoleModal({ role, onClose, onSaved }: {
 }
 
 function RolesTab({ roles, allStaff, onRefresh }: { roles: Role[]; allStaff: Staff[]; onRefresh: () => void }) {
-  const { isOwner } = useCan()
-  const [sub, setSub] = useState<'titles' | 'system'>('titles')
+  const { isOwner, role } = useCan()
+  // Matches staff_guard_cs_role(): owner or admin may grant inbox access.
+  const canManageCs = isOwner || role === 'admin'
+  const [sub, setSub] = useState<'titles' | 'system' | 'cs'>('titles')
 
-  const subTabs: { id: 'titles' | 'system'; label: string }[] = [
+  const subTabs: { id: 'titles' | 'system' | 'cs'; label: string }[] = [
     { id: 'titles', label: 'Job Titles' },
     ...(isOwner ? [{ id: 'system' as const, label: 'System Roles' }] : []),
+    ...(canManageCs ? [{ id: 'cs' as const, label: 'Customer Service' }] : []),
   ]
 
   return (
@@ -737,7 +741,7 @@ function RolesTab({ roles, allStaff, onRefresh }: { roles: Role[]; allStaff: Sta
       <div>
         <h2 className="text-base font-bold text-brown-dark">Roles & Permissions</h2>
         <p className="text-xs text-brown-faint mt-0.5">
-          Job Titles are display headlines. System Roles control access to Craft OS.
+          Job Titles are display headlines. System Roles control access to Craft OS. Customer Service controls who can open the inbox.
         </p>
       </div>
 
@@ -757,6 +761,7 @@ function RolesTab({ roles, allStaff, onRefresh }: { roles: Role[]; allStaff: Sta
 
       {sub === 'titles' && <JobTitlesTab roles={roles} onRefresh={onRefresh} />}
       {sub === 'system' && isOwner && <SystemRolesTab allStaff={allStaff} onRefresh={onRefresh} />}
+      {sub === 'cs' && canManageCs && <CustomerServiceAccessTab allStaff={allStaff} onRefresh={onRefresh} />}
     </div>
   )
 }
