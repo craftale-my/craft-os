@@ -1,4 +1,5 @@
 // src/features/pos/shell/StaffPanel.tsx
+import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import PrintHostPanel from '../order/PrintHostPanel'
 import ShiftBar from '../shift/ShiftBar'
@@ -8,8 +9,9 @@ import ShiftBar from '../shift/ShiftBar'
  *  button (Exit POS in Craft OS, Lock in the POS app). It stays MOUNTED and is only hidden when
  *  closed: the print host inside it prints the browser-route tickets of this iPad, and the shift
  *  bar keeps a pay in / pay out whose reply was lost, so neither may unmount when the cashier
- *  closes the panel. Only the outlet's printing tablet runs a print host. */
-export default function StaffPanel({ open, branchId, branchName, staffName, refreshKey, liveStatus, canSupervise, prints, onShiftChanged, onMyPin, onClose, signOff, onUnpair, onPrintProblems }: {
+ *  closes the panel. Only the outlet's printing tablet runs a print host. The POS app runs its
+ *  own above the till (it prints on the lock screen too) and hands it in as `printSlot`. */
+export default function StaffPanel({ open, branchId, branchName, staffName, refreshKey, liveStatus, canSupervise, prints, locked = false, onShiftChanged, onMyPin, onClose, signOff, onUnpair, onPrintProblems, printSlot }: {
   open: boolean
   branchId: string
   branchName: string
@@ -18,12 +20,14 @@ export default function StaffPanel({ open, branchId, branchName, staffName, refr
   liveStatus: string            // usePosRealtime's status
   canSupervise: boolean         // pos_supervise: the shift bar's Shifts button
   prints: boolean               // this device prints the outlet's tickets
+  locked?: boolean              // POS app: the tablet is locked, so the shift sheets close
   onShiftChanged: () => void
   onMyPin?: () => void          // Craft OS only
   onClose: () => void
   signOff: { label: string; onClick: () => void }   // Exit POS (asks about unsent items first) or Lock
   onUnpair?: () => void         // POS app, a manager of this outlet signed in
   onPrintProblems: (count: number) => void   // the print host's problem count, for the bottom bar's badge
+  printSlot?: HTMLElement       // POS app: the element its one print host renders into; none here then
 }) {
   return (
     <div className={open ? 'fixed inset-0 z-30 bg-black/40' : 'hidden'} onClick={onClose}>
@@ -40,14 +44,14 @@ export default function StaffPanel({ open, branchId, branchName, staffName, refr
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-brown-muted">Shift</h3>
           <div className="flex flex-wrap items-center gap-2 text-sm [&_button]:min-h-11">
-            <ShiftBar branchId={branchId} refreshKey={refreshKey} canSupervise={canSupervise} onChanged={onShiftChanged} />
+            <ShiftBar branchId={branchId} refreshKey={refreshKey} canSupervise={canSupervise} locked={locked} onChanged={onShiftChanged} />
           </div>
         </section>
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-brown-muted">Printers</h3>
           <div className="text-sm [&_button]:min-h-11">
             {prints
-              ? <PrintHostPanel branchId={branchId} inline onProblems={onPrintProblems} />
+              ? printSlot ? <Slot el={printSlot} /> : <PrintHostPanel branchId={branchId} inline onProblems={onPrintProblems} />
               : <p className="text-brown-muted">This tablet does not print. Tickets print on this outlet's printing tablet.</p>}
           </div>
         </section>
@@ -64,4 +68,15 @@ export default function StaffPanel({ open, branchId, branchName, staffName, refr
       </aside>
     </div>
   )
+}
+
+/** Shows an element rendered elsewhere (the POS app's print host) in place, without remounting it. */
+function Slot({ el }: { el: HTMLElement }) {
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const b = box.current
+    b?.appendChild(el)
+    return () => { if (el.parentNode === b) b?.removeChild(el) }
+  }, [el])
+  return <div ref={box} />
 }

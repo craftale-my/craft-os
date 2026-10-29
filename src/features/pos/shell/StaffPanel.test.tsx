@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useEffect } from 'react'
 
-const life = vi.hoisted(() => ({ mounts: { print: 0, shift: 0 }, unmounts: { print: 0, shift: 0 }, printProps: null as null | Record<string, unknown> }))
+const life = vi.hoisted(() => ({
+  mounts: { print: 0, shift: 0 }, unmounts: { print: 0, shift: 0 },
+  printProps: null as null | Record<string, unknown>, shiftProps: null as null | Record<string, unknown>,
+}))
 vi.mock('../order/PrintHostPanel', () => ({
   default: (props: Record<string, unknown>) => {
     life.printProps = props
@@ -14,7 +17,8 @@ vi.mock('../order/PrintHostPanel', () => ({
   },
 }))
 vi.mock('../shift/ShiftBar', () => ({
-  default: () => {
+  default: (props: Record<string, unknown>) => {
+    life.shiftProps = props
     useEffect(() => { life.mounts.shift++; return () => { life.unmounts.shift++ } }, [])
     return <div data-testid="shift-bar" />
   },
@@ -22,7 +26,7 @@ vi.mock('../shift/ShiftBar', () => ({
 
 import StaffPanel from './StaffPanel'
 
-beforeEach(() => { life.mounts = { print: 0, shift: 0 }; life.unmounts = { print: 0, shift: 0 }; life.printProps = null })
+beforeEach(() => { life.mounts = { print: 0, shift: 0 }; life.unmounts = { print: 0, shift: 0 }; life.printProps = null; life.shiftProps = null })
 afterEach(cleanup)
 
 const panel = (open: boolean, onExit = vi.fn(), onPrintProblems = vi.fn()) => (
@@ -66,6 +70,27 @@ describe('StaffPanel', () => {
       signOff={{ label: 'Lock', onClick: () => {} }} onPrintProblems={() => {}} />)
     expect(screen.queryByTestId('print-host')).toBeNull()
     expect(screen.getByText(/This tablet does not print/)).toBeTruthy()
+  })
+
+  it('the POS app: shows the print host it hands in, and mounts none of its own', () => {
+    const slot = document.createElement('div')
+    slot.appendChild(document.createElement('span')).textContent = 'the app print host'
+    const props = { open: true, branchId: 'br', branchName: 'Craft Cafe', staffName: 'Aina', refreshKey: 0, liveStatus: 'live',
+      canSupervise: false, prints: true, onShiftChanged: () => {}, onClose: () => {},
+      signOff: { label: 'Lock', onClick: () => {} }, onPrintProblems: () => {}, printSlot: slot }
+    const { rerender } = render(<StaffPanel {...props} />)
+    expect(screen.getByText('the app print host')).toBeTruthy()
+    expect(screen.queryByTestId('print-host')).toBeNull()
+    expect(life.mounts.print).toBe(0)
+    rerender(<StaffPanel {...props} open={false} />)
+    expect(slot.isConnected).toBe(true)                                     // hidden, still in place
+  })
+
+  it('passes the lock on to the shift bar', () => {
+    render(<StaffPanel open={false} branchId="br" branchName="Craft Cafe" staffName="Aina" refreshKey={0} liveStatus="live"
+      canSupervise={false} prints={false} locked onShiftChanged={() => {}} onClose={() => {}}
+      signOff={{ label: 'Lock', onClick: () => {} }} onPrintProblems={() => {}} />)
+    expect(life.shiftProps?.locked).toBe(true)
   })
 
   it('the POS app: Lock and Unpair this device, no My PIN', () => {

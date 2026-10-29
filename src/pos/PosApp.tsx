@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import PosTill from '../features/pos/order/PosTill'
+import PrintHostPanel from '../features/pos/order/PrintHostPanel'
 import ConfirmDialog, { type ConfirmRequest } from '../features/pos/shell/ConfirmDialog'
 import { createIdbStore } from '../features/pos/offline/idbStore'
 import type { QueuedOrder } from '../features/pos/offline/orderQueue'
@@ -42,7 +44,8 @@ function useOnline(): boolean {
 }
 
 /** Craft POS (spec §2, §3): activation → lock screen ⇄ the till. The till mounts at the first
- *  sign-in and stays mounted under the lock screen, so unsent items wait for the next person. */
+ *  sign-in and stays mounted under the lock screen, so unsent items wait for the next person.
+ *  The printing tablet's print host runs here, apart from the till: a locked iPad still prints. */
 export default function PosApp() {
   const [phase, setPhase] = useState<Phase>({ kind: 'boot' })
   const [roster, setRoster] = useState<RosterReply | null>(null)
@@ -52,6 +55,8 @@ export default function PosApp() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [drafts, setDrafts] = useState(0)                      // the till's unsent items: an update waits for none
+  const [printProblems, setPrintProblems] = useState(0)
+  const [printSlot] = useState(() => document.createElement('div'))   // the staff panel shows the print host in it
   const online = useOnline()
   const updateReady = useAppUpdate()
   const whoRef = useRef(who)
@@ -112,13 +117,21 @@ export default function PosApp() {
   const toActivation = useCallback(async (start: ActivationState, hold: boolean) => {
     if (leavingRef.current) return
     leavingRef.current = true                                         // once, whichever signal comes first
+    const before = phaseRef.current
     phaseRef.current = { kind: 'activation', start, unsent: [] }
-    setConfirm(null); setLoadError(null); setLockNote(null)
-    const unsent = hold ? await holdQueued(createIdbStore()).catch(() => []) : []
-    await forgetDevice().catch(() => undefined)
-    forgetContext(localStorage)
-    setWho(null); setTill(null); setRoster(null); setDrafts(0)
-    setPhase({ kind: 'activation', start, unsent })
+    let switched = false
+    try {
+      setConfirm(null); setLoadError(null); setLockNote(null)
+      const unsent = hold ? await holdQueued(createIdbStore()).catch(() => []) : []
+      await forgetDevice().catch(() => undefined)
+      forgetContext(localStorage)
+      setWho(null); setTill(null); setRoster(null); setDrafts(0)
+      setPhase({ kind: 'activation', start, unsent })
+      switched = true
+    } finally {
+      // something threw before the switch: the next signal may try again
+      if (!switched) { leavingRef.current = false; phaseRef.current = before }
+    }
   }, [])
 
   // boot
@@ -141,7 +154,7 @@ export default function PosApp() {
   const lock = useCallback(async (reason: LockReason, note: string | null = null) => {
     // before any await: parallel refusals start one Lock, and a read in flight cannot sign them back in
     whoRef.current = null; seq.current++
-    setWho(null); setLockNote(note)
+    setWho(null); setLockNote(note); setConfirm(null)                 // e.g. "Unpair this device?" must not stay above the lock
     setPendingLock(localStorage, reason)
     try { await endSession(reason); clearPendingLock(localStorage) } catch { /* offline: ended on the next roster read */ }
     await refresh()
@@ -201,6 +214,7 @@ export default function PosApp() {
     return <ActivationScreen start={phase.start} unsent={phase.unsent} names={loadProductNames(localStorage)}
       onActivated={() => {
         leavingRef.current = false
+        loadedOnce.current = false                                    // nothing is shown yet for the new device
         phaseRef.current = { kind: 'device' }
         setPhase({ kind: 'device' }); void refresh()
       }} />
@@ -220,13 +234,16 @@ export default function PosApp() {
     },
   })
 
+  // the printing tablet prints whether or not anyone is signed in (pos_print_branch() needs no session)
+  const printing = roster?.device.prints ?? false
   return (
     <>
+      {printing && roster && createPortal(<PrintHostPanel branchId={roster.outlet.id} inline onProblems={setPrintProblems} />, printSlot)}
       {till && (
         <PosTill branchId={till.outletId} branchName={till.outletName} staffId={who?.staffId ?? till.staffId}
           staffName={who?.staffName ?? till.staffName}
           can={{ manageMenu: false, supervise: who?.canSupervise ?? false, settings: false }}
-          prints={roster?.device.prints ?? till.prints} locked={who === null}
+          prints={printing} locked={who === null} printHost={printing ? { slot: printSlot, problems: printProblems } : undefined}
           onLock={requestLock} onUnpair={who?.canUnpair ? requestUnpair : undefined} onDraftCount={setDrafts} />
       )}
       {!who && (

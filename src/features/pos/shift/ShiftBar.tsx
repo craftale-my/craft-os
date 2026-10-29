@@ -15,9 +15,10 @@ const NOTE_MS = 8_000                              // "Shift opened" and the lik
  *  and Close shift; Shifts for supervisors. Read again whenever the POS page refreshes
  *  (`refreshKey`: a bill changed here or on another iPad, and every 15 s). The sheets render
  *  into document.body, so they do not take the header's small muted text. `onChanged` runs after a
- *  shift was opened and whenever a sheet closes, so the POS page re-reads whether a shift is open. */
-export default function ShiftBar({ branchId, refreshKey, canSupervise, onChanged }: {
-  branchId: string; refreshKey: number; canSupervise: boolean; onChanged?: () => void
+ *  shift was opened and whenever a sheet closes, so the POS page re-reads whether a shift is open.
+ *  `locked` (POS app): a lock closes any open sheet; an unsent pay in / out is still kept. */
+export default function ShiftBar({ branchId, refreshKey, canSupervise, locked = false, onChanged }: {
+  branchId: string; refreshKey: number; canSupervise: boolean; locked?: boolean; onChanged?: () => void
 }) {
   const [status, setStatus] = useState<ShiftStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -37,6 +38,10 @@ export default function ShiftBar({ branchId, refreshKey, canSupervise, onChanged
     } catch (e) { if (id === seq.current) setError(msg(e)) }
   }, [])
   useEffect(() => { void load() }, [load, refreshKey])
+  // the sheets portal to document.body, above the lock screen: the next person must not find them open
+  useEffect(() => {
+    if (locked) { setSheet(null); setClosing(null) }
+  }, [locked])
   useEffect(() => {
     if (!note) return
     const t = setTimeout(() => setNote(null), NOTE_MS)

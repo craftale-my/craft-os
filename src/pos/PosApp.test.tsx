@@ -16,6 +16,11 @@ vi.mock('../features/pos/order/PosTill', () => ({
   default: (p: Record<string, unknown>) => { till.props.push(p); return <div data-testid="till" /> },
 }))
 
+const printHost = vi.hoisted(() => ({ props: [] as Record<string, unknown>[] }))
+vi.mock('../features/pos/order/PrintHostPanel', () => ({
+  default: (p: Record<string, unknown>) => { printHost.props.push(p); return <div data-testid="print-host" /> },
+}))
+
 const idb = vi.hoisted(() => ({ createIdbStore: vi.fn(), all: vi.fn(), put: vi.fn() }))
 vi.mock('../features/pos/offline/idbStore', () => ({ createIdbStore: idb.createIdbStore }))
 vi.mock('../features/pos/checkout/checkoutApi', () => ({ fetchProductNames: vi.fn(() => Promise.resolve([])) }))
@@ -68,6 +73,7 @@ beforeEach(() => {
   idb.put.mockReset().mockResolvedValue(undefined)
   idb.createIdbStore.mockReset().mockReturnValue({ all: idb.all, put: idb.put })
   till.props = []
+  printHost.props = []
   auth.listener = null
 })
 afterEach(cleanup)
@@ -139,6 +145,48 @@ describe('PosApp', () => {
     expect(api.fetchWhoAmI.mock.calls.length).toBeGreaterThan(calls)
     expect(lastTill().locked).toBe(false)
     expect(screen.queryByTestId('lock-screen')).toBeNull()
+  })
+
+  it('the printing tablet prints on the lock screen with nobody signed in since the reload', async () => {
+    api.fetchRoster.mockResolvedValue(roster())
+    render(<PosApp />)
+    await flush()
+    expect(screen.getByTestId('lock-screen')).toBeTruthy()
+    expect(screen.queryByTestId('till')).toBeNull()
+    expect(printHost.props.length).toBeGreaterThan(0)
+    expect(printHost.props[printHost.props.length - 1].branchId).toBe('b1')
+  })
+
+  it('a tablet that does not print runs no print host', async () => {
+    api.fetchRoster.mockResolvedValue({ ...roster(), device: { id: 'd1', name: 'Counter 1', prints: false } })
+    render(<PosApp />)
+    await flush()
+    expect(printHost.props).toHaveLength(0)
+  })
+
+  it('the print host stays mounted across a sign-in, and the till shows it instead of its own', async () => {
+    signedInUntilEnded()
+    render(<PosApp />)
+    await flush()
+    expect(lastTill().locked).toBe(false)
+    const host = lastTill().printHost as { slot: HTMLElement; problems: number }
+    expect(host.slot).toBeInstanceOf(HTMLElement)
+    expect(host.slot.querySelector('[data-testid="print-host"]')).toBeTruthy()
+    act(() => { (lastTill().onLock as () => void)() })
+    await flush()
+    expect(lastTill().locked).toBe(true)
+    expect((lastTill().printHost as { slot: HTMLElement }).slot).toBe(host.slot)
+  })
+
+  it('a lock closes PosApp\'s own Unpair question', async () => {
+    signedInUntilEnded()
+    render(<PosApp />)
+    await flush()
+    act(() => { (lastTill().onUnpair as () => void)() })
+    expect(screen.getByText('Unpair this device?')).toBeTruthy()
+    act(() => fire('access_changed'))
+    await flush()
+    expect(screen.queryByText('Unpair this device?')).toBeNull()
   })
 
   it('two access_changed refusals together start one Lock', async () => {

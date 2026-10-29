@@ -57,13 +57,17 @@ export interface TillProps {
   onUnpair?: () => void
   /** The POS app: every change of the order screen's unsent items (an update waits for none). */
   onDraftCount?: (n: number) => void
+  /** The POS app: its one print host, mounted above the till so it prints on the lock screen too.
+   *  The staff panel shows it in `slot`; `problems` is its count for the bottom bar's badge.
+   *  Without it (Craft OS) the staff panel runs its own. */
+  printHost?: { slot: HTMLElement; problems: number }
 }
 
 /** The till — the Feedme-layout POS (docs/superpowers/specs/2026-10-26-pos-feedme-frontend-design.md),
  *  run by Craft OS's /pos (PosPage) and by the POS app. Owns the data every screen shares (tables,
  *  open bills and their summaries, billing config, catalogs, the offline queue, realtime, the shift)
  *  and which screen is up. */
-export default function PosTill({ branchId, branchName, staffId, staffName, can, prints, locked, onBackOffice, onExit, myPin = false, onLock, onUnpair, onDraftCount }: TillProps) {
+export default function PosTill({ branchId, branchName, staffId, staffName, can, prints, locked, onBackOffice, onExit, myPin = false, onLock, onUnpair, onDraftCount, printHost }: TillProps) {
   const [tables, setTables] = useState<TableRow[]>([])
   const [bills, setBills] = useState<OpenBillRow[]>([])
   const [summaries, setSummaries] = useState<Map<string, BillSummary>>(new Map())
@@ -286,7 +290,8 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
     </>
   )
   return (
-    <div className="flex h-dvh flex-col bg-cream text-brown-dark">
+    // locked: nothing under the lock screen takes focus or a tap
+    <div className="flex h-dvh flex-col bg-cream text-brown-dark" inert={locked}>
       {screen.kind === 'home' && (
         <HomeScreen tables={tables} bills={bills} summaries={summaries} newBillIds={newBillIds} banners={banners}
           onRefresh={bump} onPickTable={pickTable} onPickBill={(billId) => openOrder({ kind: 'takeaway', billId })}
@@ -317,13 +322,13 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
           onPaid={() => { checkoutIdsByBill.current.delete(screen.bill.id); goHome(); bump() }} />
       )}
       {screen.kind !== 'payment' && (
-        <BottomBar title={title} staffName={staffName} printProblems={printProblems} onMenu={() => { if (!orderSending.current) setMenuOpen(true) }} onStaff={() => setStaffOpen(true)} />
+        <BottomBar title={title} staffName={staffName} printProblems={printHost?.problems ?? printProblems} onMenu={() => { if (!orderSending.current) setMenuOpen(true) }} onStaff={() => setStaffOpen(true)} />
       )}
       {menuOpen && <GridMenu items={items} current={current} onPick={pickMenu} onClose={() => setMenuOpen(false)} />}
-      {/* always mounted, hidden when closed: the one print host and shift bar of this iPad live in it */}
+      {/* always mounted, hidden when closed: this iPad's shift bar lives in it, and its print host (Craft OS) */}
       <StaffPanel open={staffOpen} branchId={branchId} branchName={branchName} staffName={staffName}
-        refreshKey={refreshKey} liveStatus={rtStatus} canSupervise={can.supervise} prints={prints} onShiftChanged={shift.reload}
-        onMyPin={myPin ? () => setPinOpen(true) : undefined} onClose={() => setStaffOpen(false)} onPrintProblems={setPrintProblems}
+        refreshKey={refreshKey} liveStatus={rtStatus} canSupervise={can.supervise} prints={prints} locked={locked} onShiftChanged={shift.reload}
+        onMyPin={myPin ? () => setPinOpen(true) : undefined} onClose={() => setStaffOpen(false)} onPrintProblems={setPrintProblems} printSlot={printHost?.slot}
         signOff={onLock
           ? { label: 'Lock', onClick: () => { setStaffOpen(false); onLock() } }   // unsent items stay (spec §2)
           : { label: 'Exit POS', onClick: () => { if (orderSending.current) return; setStaffOpen(false); leave(() => onExit?.()) } }}
