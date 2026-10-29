@@ -47,9 +47,9 @@ begin
     if not (select relrowsecurity from pg_class where oid = ('public.' || r.t)::regclass) then
       raise exception 'FAIL D1: % has no RLS', r.t;
     end if;
-    if has_table_privilege('authenticated', 'public.' || r.t, 'select') or has_table_privilege('anon', 'public.' || r.t, 'select')
-       or has_table_privilege('authenticated', 'public.' || r.t, 'insert') or has_table_privilege('authenticated', 'public.' || r.t, 'update')
-       or has_table_privilege('authenticated', 'public.' || r.t, 'delete') then
+    if exists (select 1 from unnest(array['anon', 'authenticated']) as role(name),
+                             unnest(array['select', 'insert', 'update', 'delete', 'truncate']) as priv(name)
+                where has_table_privilege(role.name, 'public.' || r.t, priv.name)) then
       raise exception 'FAIL D1: % is open to clients', r.t;
     end if;
   end loop;
@@ -163,7 +163,7 @@ begin
   perform pg_temp.expect_error(format('select pos_decide_device_request(%L, false, null, null, null, null, null)', gen_random_uuid()),
                                'Request not found', 'D2 unknown request');
   perform pos_decide_device_request(v_rid, true, lower(replace(v_code, '-', ' ')), v_a, 'pos', ' Bar iPad ', true);   -- typed loosely; the printing tablet
-  if (select expires_at from pos_device_requests where id = v_rid) > now() + interval '1 hour' then
+  if coalesce((select expires_at from pos_device_requests where id = v_rid) > now() + interval '1 hour', true) then
     raise exception 'FAIL D2: an approved request is not collected within the hour';
   end if;
   perform pg_temp.expect_error(format('select pos_decide_device_request(%L, false, null, null, null, null, null)', v_rid),
@@ -245,7 +245,7 @@ begin
   if v_text is distinct from 'Bar iPad,Kitchen iPad,Shop Mac' then raise exception 'FAIL D3: a branch manager sees %', v_text; end if;
   perform pg_temp.expect_error(format('select pos_unpair_device(%L)', v_dev4), 'This device is not at one of your outlets', 'D3 unpair elsewhere');
   -- the printing tablet: one per outlet, moved by a manager of the outlet or by approving another
-  if not (select l.prints from pos_devices_list() l where l.id = v_dev1) then raise exception 'FAIL D3: the list shows the printing tablet'; end if;
+  if not coalesce((select l.prints from pos_devices_list() l where l.id = v_dev1), false) then raise exception 'FAIL D3: the list shows the printing tablet'; end if;
   perform pos_set_print_tablet(v_dev2);
   if (select string_agg(name || ':' || prints, ',' order by name) from pos_devices where id in (v_dev1, v_dev2)) is distinct from 'Bar iPad:false,Kitchen iPad:true' then
     raise exception 'FAIL D3: moving the printing tablet';
@@ -329,7 +329,19 @@ begin
   if v_res->>'error' is distinct from 'Wrong PIN · 4 tries left' then raise exception 'FAIL D5: a success clears the count'; end if;
   select * into v_ctx from pos_ctx();
   if v_ctx.device_id is distinct from v_dev1 or v_ctx.branch_id is distinct from v_a or v_ctx.staff_id is distinct from v_cash then raise exception 'FAIL D4 pos_ctx: %', row_to_json(v_ctx); end if;
-  if (select last_seen_at from pos_devices where id = v_dev1) is null then raise exception 'FAIL D4: last seen not stamped'; end if;
+  -- stamps: written when older than 30 s, left alone when fresh (now() is fixed inside this transaction)
+  update pos_devices set last_seen_at = now() - interval '1 minute' where id = v_dev1;
+  update pos_staff_sessions set last_active_at = now() - interval '1 minute' where device_id = v_dev1 and ended_at is null;
+  perform pos_ctx();
+  if (select last_seen_at from pos_devices where id = v_dev1) is distinct from now()
+     or (select last_active_at from pos_staff_sessions where device_id = v_dev1 and ended_at is null) is distinct from now() then
+    raise exception 'FAIL D4: pos_ctx does not stamp an old last-seen / last-active';
+  end if;
+  update pos_devices set last_seen_at = now() - interval '10 seconds' where id = v_dev1;
+  perform pos_ctx();
+  if (select last_seen_at from pos_devices where id = v_dev1) is distinct from now() - interval '10 seconds' then
+    raise exception 'FAIL D4: pos_ctx rewrites a fresh last-seen';
+  end if;
   if (pos_login_roster()->'session'->>'staffId')::uuid is distinct from v_cash then raise exception 'FAIL D5: the roster shows who is signed in'; end if;
   -- wrong tries more than 24 h ago do not count: four old ones, then one now
   insert into pos_login_attempts(staff_id, device_id, at, ok)
@@ -366,7 +378,9 @@ begin
   perform pg_temp.expect_error('select pos_ctx()', 'outlet_closed', 'D4 closed outlet');
   -- the print agent: prints, never runs the till
   perform pg_temp.act(v_agent);
+  update pos_devices set last_seen_at = null where id = v_agent;
   if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: the print agent''s outlet'; end if;
+  if (select last_seen_at from pos_devices where id = v_agent) is distinct from now() then raise exception 'FAIL D4: printing does not stamp last seen'; end if;
   perform pg_temp.expect_error('select pos_ctx()', 'device_unpaired', 'D4 a print agent at the till');
   perform pg_temp.act(v_dev2);
   if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: a locked tablet still prints'; end if;

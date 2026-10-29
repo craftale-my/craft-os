@@ -185,14 +185,14 @@ begin
   if not found or v_row.activated_at is not null then
     return jsonb_build_object('status', 'unknown');
   end if;
+  if v_row.status = 'approved' and v_row.claimed_at > now() - interval '1 minute' then
+    return jsonb_build_object('status', 'pending');                  -- another poll is creating the account: never expire it mid-way
+  end if;
   if v_row.status in ('pending', 'approved') and v_row.expires_at < now() then
     update pos_device_requests set status = 'expired' where id = v_row.id;
     return jsonb_build_object('status', 'expired');
   end if;
   if v_row.status <> 'approved' then return jsonb_build_object('status', v_row.status); end if;
-  if v_row.claimed_at is not null and v_row.claimed_at > now() - interval '1 minute' then
-    return jsonb_build_object('status', 'pending');
-  end if;
   update pos_device_requests set claimed_at = now() where id = v_row.id;
   return jsonb_build_object('status', 'issue', 'requestId', v_row.id, 'branchId', v_row.branch_id,
                             'kind', v_row.kind, 'name', v_row.device_name);
@@ -204,7 +204,8 @@ grant execute on function pos_activation_poll(text, text) to service_role;
 create or replace function pos_activation_finish(p_request_id uuid, p_user_id uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
-  v_row pos_device_requests;
+  v_row        pos_device_requests;
+  v_constraint text;
 begin
   select * into v_row from pos_device_requests r where r.id = p_request_id for update;
   if not found or v_row.status <> 'approved' or v_row.activated_at is not null or v_row.claimed_at is null then
@@ -217,7 +218,11 @@ begin
     insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by, approved_at)
     values (p_user_id, v_row.branch_id, v_row.kind, v_row.device_name, v_row.platform, v_row.prints, v_row.decided_by, v_row.decided_at);
   exception when unique_violation then
-    raise exception 'Another tablet just became the printing tablet — try again';
+    get stacked diagnostics v_constraint = constraint_name;
+    if v_constraint = 'pos_devices_one_printer' then
+      raise exception 'Another tablet just became the printing tablet — try again';
+    end if;
+    raise;
   end;
   update pos_device_requests set device_id = p_user_id, activated_at = now() where id = v_row.id;
 end $$;
@@ -329,7 +334,8 @@ grant execute on function pos_unpair_device(uuid) to authenticated;
 create or replace function pos_set_print_tablet(p_device_id uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
-  v_dev pos_devices;
+  v_dev        pos_devices;
+  v_constraint text;
 begin
   select * into v_dev from pos_devices d where d.id = p_device_id for update;
   if not found then raise exception 'Device not found'; end if;
@@ -340,7 +346,11 @@ begin
     update pos_devices set prints = false where branch_id = v_dev.branch_id and prints and revoked_at is null;
     update pos_devices set prints = true where id = v_dev.id;
   exception when unique_violation then
-    raise exception 'Another tablet just became the printing tablet — try again';
+    get stacked diagnostics v_constraint = constraint_name;
+    if v_constraint = 'pos_devices_one_printer' then
+      raise exception 'Another tablet just became the printing tablet — try again';
+    end if;
+    raise;
   end;
 end $$;
 revoke all on function pos_set_print_tablet(uuid) from public, anon;
