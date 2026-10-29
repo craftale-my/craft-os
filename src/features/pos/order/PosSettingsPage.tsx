@@ -30,6 +30,8 @@ export default function PosSettingsPage() {
   const [outletsError, setOutletsError] = useState<string | null>(null)
   const outlet = outlets ? pickOutlet(outlets, params.get('outlet')) : null
   const branchId = outlet?.id ?? null
+  const current = useRef(branchId) // the outlet on screen now; closures from an earlier render read it to see they are stale
+  current.current = branchId
   const outletsLoaded = useRef(false)
   const loadOutlets = async () => {
     try { setOutlets(await fetchMyOutlets()); outletsLoaded.current = true; setOutletsError(null) }
@@ -53,11 +55,12 @@ export default function PosSettingsPage() {
 
   const seq = useRef(0) // a slow reply for the outlet just left must not overwrite the current one
   const load = async () => {
-    if (!branchId) return
+    const bid = branchId
+    if (!bid || bid !== current.current) return // a stale caller neither writes nor invalidates the current load
     const id = ++seq.current
     try {
-      const [t, r] = await Promise.all([fetchTables(branchId), fetchRoutes(branchId)])
-      if (id !== seq.current) return
+      const [t, r] = await Promise.all([fetchTables(bid), fetchRoutes(bid)])
+      if (id !== seq.current || bid !== current.current) return
       setTables(t); setRoutes(r)
       setDraft((prev) => {
         const next: Record<string, { kind: PrinterKind; address: string }> = Object.fromEntries(r.map((x) => [x.route, { kind: x.kind, address: x.address }]))
@@ -65,12 +68,12 @@ export default function PosSettingsPage() {
         return next
       })
       setError(null)
-    } catch (e) { if (id === seq.current) setError(e instanceof Error ? e.message : String(e)) }
+    } catch (e) { if (id === seq.current && bid === current.current) setError(e instanceof Error ? e.message : String(e)) }
   }
   useEffect(() => { setTables([]); setRoutes([]); setDraft({}); setCard(null); setNewLabel(''); setError(null); dirty.current.clear(); void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async (fn: () => Promise<void>) => {
-    try { await fn(); await load() } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    try { await fn(); await load() } catch (e) { if (branchId === current.current) setError(e instanceof Error ? e.message : String(e)) }
   }
 
   const addTable = () => run(async () => {
@@ -85,7 +88,7 @@ export default function PosSettingsPage() {
     } else {
       check(await supabase.from('dining_tables').insert({ branch_id: branchId, label, sort_order: tables.length + 1 }).select('id'), 'Adding the table')
     }
-    setNewLabel('')
+    if (branchId === current.current) setNewLabel('')
   })
   const rename = (t: TableRow) => {
     const label = window.prompt('Table label', t.label)?.trim()
@@ -124,10 +127,12 @@ export default function PosSettingsPage() {
   }
   const showCard = async (t: TableRow) => {
     const url = qrLink(window.location.origin, t.qr_token, import.meta.env.DEV)
+    const bid = branchId
     try {
-      setCard({ table: t, url, png: await QRCode.toDataURL(url, { width: 320, margin: 1 }) })
+      const png = await QRCode.toDataURL(url, { width: 320, margin: 1 })
+      if (bid === current.current) setCard({ table: t, url, png })
     } catch (e) {
-      setError(`Could not make the QR code: ${e instanceof Error ? e.message : String(e)}`)
+      if (bid === current.current) setError(`Could not make the QR code: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -202,7 +207,7 @@ export default function PosSettingsPage() {
               </select>
               <input className="flex-1 rounded border border-border p-1" placeholder="192.168.0.8:9100" value={d.address} onChange={(e) => { dirty.current.add(name); setDraft({ ...draft, [name]: { ...d, address: e.target.value } }) }} />
               <button onClick={() => void saveRoute(name)} className="rounded bg-brown-btn px-2 py-1 text-xs text-white">Save</button>
-              {saved && <button onClick={() => insertTestPrint(name, branchId).catch((e) => setError(e.message))} className="rounded border border-border px-2 py-1 text-xs">Test print</button>}
+              {saved && <button onClick={() => insertTestPrint(name, branchId).catch((e) => { if (branchId === current.current) setError(e.message) })} className="rounded border border-border px-2 py-1 text-xs">Test print</button>}
               {saved && <button onClick={() => void removeRoute(name)} className="text-xs text-red-700 underline">Remove</button>}
             </div>
           )
