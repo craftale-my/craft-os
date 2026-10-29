@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import type { QueuedOrder } from '../features/pos/offline/orderQueue'
 import {
-  afterPoll, clearPending, detectPlatform, ENDED, isPolling, POLL_MS, savePending, type ActivationState,
+  afterPoll, clearPending, detectPlatform, ENDED, isPolling, POLL_MS, retryableSignIn, savePending, signInRetryMs,
+  type ActivationState,
 } from './activation'
 import { pollActivation, requestActivation, signInDevice } from './sessionApi'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const card = 'w-full max-w-md rounded-2xl bg-card p-6 shadow-card'
 const primary = 'min-h-12 w-full rounded-xl bg-brown-btn px-4 font-medium text-white hover:bg-brown-btn-hover disabled:opacity-40'
+
+/** Running as the installed home-screen app, not a Safari tab. */
+const standalone = () =>
+  (navigator as Navigator & { standalone?: boolean }).standalone === true
+  || window.matchMedia?.('(display-mode: standalone)').matches === true
 
 /** "This device isn't activated" (spec §2 "Activation flow", Amendments): the first screen picks
  *  what the device is for (only POS for now), asks for a code, shows it while HQ approves it in
@@ -33,7 +39,8 @@ export default function ActivationScreen({ start, unsent, names, onActivated }: 
       try {
         const next = afterPoll(pending, await pollActivation(pending))
         if (stopped) return
-        if (next.kind !== 'waiting') clearPending(localStorage)
+        // approved: the request is cleared only once the sign-in works
+        if (next.kind !== 'waiting' && next.kind !== 'signing_in') clearPending(localStorage)
         setState(next)
       } catch (e) {
         if (!stopped) setState({ kind: 'waiting', pending, note: `Can't reach the server — still trying. (${msg(e)})` })
@@ -42,15 +49,24 @@ export default function ActivationScreen({ start, unsent, names, onActivated }: 
     return () => { stopped = true; window.clearTimeout(timer) }
   }, [state])
 
-  // approved: sign in as the device, once
+  // approved: sign in as the device; a network failure tries the same credentials again
+  // (they are issued once, so a blip must not burn them)
   useEffect(() => {
     if (state.kind !== 'signing_in') return
+    const s = state
     let stopped = false
-    signInDevice(state.email, state.password).then(
-      () => { if (!stopped) activated.current() },
-      (e) => { if (!stopped) setState({ kind: 'error', message: `Could not sign in as this device (${msg(e)}). Ask HQ to unpair it in Devices and approve a new request.` }) },
+    let timer = 0
+    signInDevice(s.email, s.password).then(
+      () => { if (stopped) return; clearPending(localStorage); activated.current() },
+      (e) => {
+        if (stopped) return
+        const retries = s.retries ?? 0
+        if (retryableSignIn(e)) { timer = window.setTimeout(() => setState({ ...s, retries: retries + 1 }), signInRetryMs(retries)); return }
+        clearPending(localStorage)
+        setState({ kind: 'error', message: `Could not sign in as this device (${msg(e)}). Ask HQ to unpair it in Devices and approve a new request.` })
+      },
     )
-    return () => { stopped = true }
+    return () => { stopped = true; window.clearTimeout(timer) }
   }, [state])
 
   const request = async () => {
@@ -77,6 +93,12 @@ export default function ActivationScreen({ start, unsent, names, onActivated }: 
             <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder="e.g. Counter 1"
               className="mt-1 min-h-12 w-full rounded-xl border border-border-mid bg-white px-3" />
           </label>
+          {/* Safari and the home-screen app keep separate storage: a device activated in Safari is not activated in the app */}
+          {detectPlatform(navigator.userAgent, navigator.maxTouchPoints) === 'ipad' && !standalone() && (
+            <p role="note" className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+              On iPad, add Craft POS to the Home Screen first (Share → Add to Home Screen), then activate from the icon.
+            </p>
+          )}
           <button type="button" onClick={() => void request()} className={`mt-4 ${primary}`}>POS</button>
         </div>
       )}
@@ -91,7 +113,7 @@ export default function ActivationScreen({ start, unsent, names, onActivated }: 
           <button type="button" onClick={again} className="mt-4 min-h-11 text-sm underline">Cancel</button>
         </div>
       )}
-      {state.kind === 'signing_in' && <div className={card}><p>Approved — signing in…</p></div>}
+      {state.kind === 'signing_in' && <div className={card}><p>Approved — signing in…{state.retries ? ' (retrying)' : ''}</p></div>}
       {state.kind === 'ended' && (
         <div className={card}>
           <p className="font-medium">{ENDED[state.reason]}</p>

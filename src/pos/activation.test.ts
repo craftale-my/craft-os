@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { afterPoll, clearPending, detectPlatform, isPolling, loadPending, savePending, type Pending } from './activation'
+import {
+  afterPoll, clearPending, detectPlatform, ENDED, isPolling, loadPending, retryableSignIn, savePending, signInRetryMs, type Pending,
+} from './activation'
 
 const pending: Pending = { code: 'ABC-DEF', secret: 's3cret', expiresAt: '2026-10-31T10:00:00Z', name: 'Counter 1' }
 
@@ -60,5 +62,19 @@ describe('the waiting request on this device', () => {
     const store = memoryStorage()
     store.setItem('craft-pos-activation', '{oops')
     expect(loadPending(store)).toBeNull()
+  })
+})
+
+describe('signing in after the approval', () => {
+  it('waits 2 s, 5 s, 10 s, then every 15 s between tries', () => {
+    expect([0, 1, 2, 3, 9].map(signInRetryMs)).toEqual([2_000, 5_000, 10_000, 15_000, 15_000])
+  })
+  it('tries again after a network failure only, not a refusal', () => {
+    expect(retryableSignIn(Object.assign(new Error('Failed to fetch'), { name: 'AuthRetryableFetchError' }))).toBe(true)
+    expect(retryableSignIn(new TypeError('Failed to fetch'))).toBe(true)
+    expect(retryableSignIn(Object.assign(new Error('Invalid login credentials'), { name: 'AuthApiError' }))).toBe(false)
+  })
+  it('a sign-out with no unpair seen has its own message', () => {
+    expect(ENDED.signed_out).toBe('This device was signed out. Ask HQ to unpair it in Devices and approve a new request.')
   })
 })

@@ -17,13 +17,13 @@ export type PollReply =
   | { status: 'pending' | 'rejected' | 'expired' | 'unknown' }
   | { status: 'approved'; deviceId: string; email: string; password: string; branchId: string; kind: string; name: string }
 
-export type EndReason = 'rejected' | 'expired' | 'unknown' | 'wrong_kind' | 'unpaired'
+export type EndReason = 'rejected' | 'expired' | 'unknown' | 'wrong_kind' | 'unpaired' | 'signed_out'
 
 export type ActivationState =
   | { kind: 'choose' }                                    // the first screen: what this device is for
   | { kind: 'requesting' }
   | { kind: 'waiting'; pending: Pending; note: string | null }
-  | { kind: 'signing_in'; email: string; password: string }
+  | { kind: 'signing_in'; email: string; password: string; retries?: number }   // the credentials stay in memory until it works
   | { kind: 'ended'; reason: EndReason }
   | { kind: 'error'; message: string }
 
@@ -50,6 +50,19 @@ export const ENDED: Record<EndReason, string> = {
   unknown: 'This request is no longer valid. If HQ already approved it, ask HQ to unpair this device in Devices and approve a new request.',
   wrong_kind: 'HQ approved this device as a print agent. Ask HQ to unpair it in Devices and approve it again as POS.',
   unpaired: 'This device was unpaired. Ask HQ to activate it again.',
+  // Supabase signed the device out with no device_unpaired seen (e.g. its refresh token was revoked)
+  signed_out: 'This device was signed out. Ask HQ to unpair it in Devices and approve a new request.',
+}
+
+/** The wait before sign-in attempt `retries + 1` after a network failure: 2 s, 5 s, 10 s, then every 15 s. */
+export function signInRetryMs(retries: number): number {
+  return [2_000, 5_000, 10_000][retries] ?? 15_000
+}
+
+/** A sign-in that failed for want of a reply (Supabase's AuthRetryableFetchError, or fetch's own
+ *  TypeError): the approved credentials are still good, so it is tried again. */
+export function retryableSignIn(e: unknown): boolean {
+  return e instanceof TypeError || (e instanceof Error && e.name === 'AuthRetryableFetchError')
 }
 
 // ── The waiting request survives a reload (the secret never leaves this device) ──

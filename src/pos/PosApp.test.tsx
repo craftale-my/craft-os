@@ -24,7 +24,8 @@ vi.mock('../features/pos/order/PrintHostPanel', () => ({
 const idb = vi.hoisted(() => ({ createIdbStore: vi.fn(), all: vi.fn(), put: vi.fn() }))
 vi.mock('../features/pos/offline/idbStore', () => ({ createIdbStore: idb.createIdbStore }))
 vi.mock('../features/pos/checkout/checkoutApi', () => ({ fetchProductNames: vi.fn(() => Promise.resolve([])) }))
-vi.mock('./useAppUpdate', () => ({ useAppUpdate: () => false }))
+const upd = vi.hoisted(() => ({ build: null as string | null, reload: vi.fn() }))
+vi.mock('./useAppUpdate', () => ({ useAppUpdate: () => upd.build, reloadForUpdate: upd.reload }))
 
 const auth = vi.hoisted(() => ({ listener: null as ((event: string) => void) | null }))
 const net = vi.hoisted(() => ({ reachable: true }))
@@ -79,6 +80,8 @@ beforeEach(() => {
   printHost.props = []
   auth.listener = null
   net.reachable = true
+  upd.build = null
+  upd.reload.mockReset()
 })
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
@@ -196,6 +199,30 @@ describe('PosApp', () => {
     expect(screen.getByText('This device was unpaired. Ask HQ to activate it again.')).toBeTruthy()
     expect(idb.createIdbStore).toHaveBeenCalledTimes(1)
     expect(api.forgetDevice).toHaveBeenCalledTimes(1)
+  })
+
+  it('SIGNED_OUT with no device_unpaired seen: the device was signed out', async () => {
+    api.fetchRoster.mockResolvedValue(roster())
+    render(<PosApp />)
+    await flush()
+    act(() => { auth.listener?.('SIGNED_OUT') })
+    await flush()
+    expect(screen.getByText('This device was signed out. Ask HQ to unpair it in Devices and approve a new request.')).toBeTruthy()
+  })
+
+  it('a downloaded update reloads on the lock screen, never during an activation', async () => {
+    upd.build = 'b2'
+    localStorage.removeItem('craft-pos-auth')                               // not activated
+    const { unmount } = render(<PosApp />)
+    await flush()
+    expect(screen.getByRole('button', { name: 'POS' })).toBeTruthy()
+    expect(upd.reload).not.toHaveBeenCalled()
+    unmount()
+    localStorage.setItem('craft-pos-auth', '{}')
+    api.fetchRoster.mockResolvedValue(roster())
+    render(<PosApp />)
+    await flush()
+    expect(upd.reload).toHaveBeenCalledWith('b2')
   })
 
   it('Lock ends the session once, even when two access_changed refusals arrive with it', async () => {

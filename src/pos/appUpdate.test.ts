@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 vi.stubGlobal('__POS_BUILD__', 'b1')
-const { newerBuild, swUrl } = await import('./appUpdate')
+const { markReloaded, newerBuild, reloadedFor, swUrl } = await import('./appUpdate')
 
 describe('newerBuild', () => {
   it('names a build other than the running one', () => {
@@ -15,5 +15,20 @@ describe('newerBuild', () => {
   })
   it('registers the worker per build', () => {
     expect(swUrl('2026-10-30T10:00:00.000Z')).toBe('/sw.js?v=2026-10-30T10%3A00%3A00.000Z')
+  })
+})
+
+describe('the build this tab reloaded for', () => {
+  it('is remembered, so the same build never reloads twice', () => {
+    const data = new Map<string, string>()
+    const store = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v) } } as unknown as Storage
+    expect(reloadedFor(store)).toBeNull()
+    markReloaded(store, 'b2')
+    expect(reloadedFor(store)).toBe('b2')
+  })
+  it('a storage that throws reads as none', () => {
+    const store = { getItem: () => { throw new Error('denied') }, setItem: () => { throw new Error('denied') } } as unknown as Storage
+    expect(reloadedFor(store)).toBeNull()
+    expect(() => markReloaded(store, 'b2')).not.toThrow()
   })
 })

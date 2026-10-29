@@ -58,9 +58,11 @@ export function hasDeviceSession(): boolean {
   return localStorage.getItem(POS_STORAGE_KEY) !== null
 }
 
+/** Signs in as the device. The error keeps Supabase's name, so a network failure
+ *  (AuthRetryableFetchError) can be told from a refusal (activation.ts retryableSignIn). */
 export async function signInDevice(email: string, password: string): Promise<void> {
   const { error } = await supabase.auth.signInWithPassword({ email, password })
-  if (error) fail(error)
+  if (error) throw Object.assign(new Error(error.message), { name: error.name })
 }
 
 /** Drops this tablet's session only (the device account is already revoked or unpaired). */

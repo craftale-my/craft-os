@@ -19,7 +19,7 @@ import type { RosterReply } from './roster'
 import {
   endSession, fetchRoster, fetchWhoAmI, forgetDevice, hasDeviceSession, unpairThisDevice, type WhoAmI,
 } from './sessionApi'
-import { useAppUpdate } from './useAppUpdate'
+import { reloadForUpdate, useAppUpdate } from './useAppUpdate'
 import { useIdleLock } from './useIdleLock'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -68,6 +68,7 @@ export default function PosApp() {
   const phaseRef = useRef(phase)
   phaseRef.current = phase
   const leavingRef = useRef(false)      // toActivation has started: until the next activation, nothing else leaves or loads
+  const unpairedSeen = useRef(false)    // a device_unpaired code came: a SIGNED_OUT after it is the same unpair
   const seq = useRef(0)                 // the latest refresh: an older one that finishes late changes nothing
   const loadedOnce = useRef(false)      // a context was shown in this page: a failed read keeps it instead of the cache
   const ending = useRef(false)          // a session is being ended here: a second refusal starts no second end
@@ -179,6 +180,7 @@ export default function PosApp() {
       if (code === NOT_PRINTING) {
         void refresh()                                                // HQ moved the printing role: the roster says where
       } else if (code === 'device_unpaired') {
+        unpairedSeen.current = true
         void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
       } else if (code === 'access_changed') {
         if (whoRef.current) void lock('access_changed', ACCESS_CHANGED)
@@ -199,10 +201,13 @@ export default function PosApp() {
     return () => window.removeEventListener(CONTEXT_EVENT, on)
   }, [lock, refresh, toActivation])
 
-  // an unpaired device's token can no longer refresh: Supabase signs it out
+  // an unpaired device's token can no longer refresh: Supabase signs it out. Without a
+  // device_unpaired code first, the screen says only that it was signed out.
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_OUT' && phaseRef.current.kind === 'device' && !leavingRef.current) void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
+      if (event === 'SIGNED_OUT' && phaseRef.current.kind === 'device' && !leavingRef.current) {
+        void toActivation({ kind: 'ended', reason: unpairedSeen.current ? 'unpaired' : 'signed_out' }, true)
+      }
     })
     return () => data.subscription.unsubscribe()
   }, [toActivation])
@@ -233,10 +238,11 @@ export default function PosApp() {
     if (whoId) fetchProductNames().then((rows) => saveProductNames(localStorage, rows), () => undefined)
   }, [whoId])
 
-  // a downloaded update opens on the lock screen only, never mid-order or over unsent items
+  // a downloaded update opens on the lock screen only, never mid-order, over unsent items, or
+  // during an activation (a reload there could lose the approved sign-in)
   useEffect(() => {
-    if (updateReady && !who && drafts === 0) window.location.reload()
-  }, [updateReady, who, drafts])
+    if (updateReady && phase.kind === 'device' && !who && drafts === 0) reloadForUpdate(updateReady)
+  }, [updateReady, phase.kind, who, drafts])
 
   useIdleLock(roster?.idleLockMinutes ?? 10, who !== null, online, () => void lock('idle'))
 
@@ -245,6 +251,7 @@ export default function PosApp() {
     return <ActivationScreen start={phase.start} unsent={phase.unsent} names={loadProductNames(localStorage)}
       onActivated={() => {
         leavingRef.current = false
+        unpairedSeen.current = false
         loadedOnce.current = false                                    // nothing is shown yet for the new device
         phaseRef.current = { kind: 'device' }
         setPhase({ kind: 'device' }); void refresh()
