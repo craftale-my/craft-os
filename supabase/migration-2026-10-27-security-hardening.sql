@@ -22,8 +22,17 @@
 --
 -- Prerequisites: all procurement migrations up to
 --   migration-2026-10-27-overdelivery-close-short.sql.
--- Idempotent: safe to run more than once.
+-- Re-runnable until migration-2026-10-29-owner-decisions.sql has run; after that it STOPS.
 -- ============================================================================
+
+-- Stop if a later file already replaced what this one defines.
+do $$
+begin
+  if exists (select 1 from pg_constraint where conname = 'wastage_logs_reason_check'
+              and pg_get_constraintdef(oid) like '%staff_meal%') then
+    raise exception 'STOP: migration-2026-10-27-security-hardening.sql is superseded by migration-2026-10-29-owner-decisions.sql (has_procurement_cap). Re-run that file instead.';
+  end if;
+end $$;
 
 -- 1. Live-staff check in the procurement helpers ------------------------------
 create or replace function has_procurement_cap(p_cap text)

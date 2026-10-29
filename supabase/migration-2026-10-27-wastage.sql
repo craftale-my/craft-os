@@ -27,8 +27,18 @@
 --
 -- Prerequisites: migration-2026-10-27-cost-fix.sql,
 --   migration-2026-10-27-security-hardening.sql.
--- Idempotent: safe to run more than once.
+-- Re-runnable until migration-2026-10-29-owner-decisions.sql has run; after that it STOPS
+-- (re-running it would put back the older log_wastage — re-run the later file instead).
 -- ============================================================================
+
+-- Stop if a later file already replaced what this one defines.
+do $$
+begin
+  if exists (select 1 from pg_constraint where conname = 'wastage_logs_reason_check'
+              and pg_get_constraintdef(oid) like '%staff_meal%') then
+    raise exception 'STOP: migration-2026-10-27-wastage.sql is superseded by migration-2026-10-29-owner-decisions.sql. Re-running it would restore older function versions; re-run migration-2026-10-29-owner-decisions.sql instead.';
+  end if;
+end $$;
 
 -- 1. Ledger: allow 'wastage', add reason --------------------------------------
 alter table inventory_transactions
