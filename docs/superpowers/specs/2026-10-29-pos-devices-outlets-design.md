@@ -207,6 +207,7 @@ Prod rollout: after the whole POS SQL chain and `migration-2026-10-26-pos-fronte
 - **All tablets are equal: no main/sub.** Feedme's main/sub linking exists because its main POS holds the data on the shop network; every Craft POS tablet talks to Supabase on its own, so one tablet going down never stops the others.
   - **The first screen of the app picks what the device is for.** Only **POS** for now; a customer display can be added later as another choice. The print agent pairs from its own terminal command (§4).
   - **One POS tablet per outlet is the printing tablet**: it prints (the iPad print host) and holds the cash drawer. HQ marks it when approving; a manager of the outlet can move it on the Devices page; unpairing clears it.
+- **The offline queue's staffId is honoured only for someone who has signed in on that tablet** and may still work at the outlet (the queued staffId always comes from the tablet's own session); otherwise the order is placed by the current session's staff member. A staff login's staffId is ignored.
 - **Build order re-split.** The `pos_ctx` swap ends front-of-house access for staff email logins, so it ships with the POS app:
   - **B:** the server for devices and sessions plus the back office.
   - **C:** the POS app, the swap, read policies, audit columns, the offline `staffId`, the `/pos` notice.

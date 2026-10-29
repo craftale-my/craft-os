@@ -42,7 +42,9 @@
 --     it from the POS app. It and pos_unpair_device share pos_revoke_device().
 -- Re-run hazards: re-running an older file that defines any function re-created here
 -- (checkout-fn, bill-actions-fn, checkout-fixes, catalogs-fn, shifts-fn, hardening,
--- ordering-fn, outlets, devices) puts back its auth.uid() actor — re-run this file after it.
+-- ordering-fn, outlets, devices) puts back its auth.uid() actor, and re-running
+-- migration-2026-10-23-pos-ordering.sql or migration-2026-10-24-pos-catalogs.sql puts back the
+-- open dining_tables_update / sold-out policies — re-run this file after any of them.
 -- Every DELETE / UPDATE has a WHERE: Supabase's API role runs pg-safeupdate
 -- (src/features/pos/sqlSafeUpdate.test.ts scans this file).
 -- ============================================================================
@@ -257,6 +259,7 @@ revoke all on function pos_unpair_this_device() from public, anon;
 grant execute on function pos_unpair_this_device() to authenticated;
 
 -- ── T5. The offline queue keeps who took the order ───────────────────────────
+create index if not exists pos_staff_sessions_device_staff on pos_staff_sessions (device_id, staff_id);   -- the queue's check
 drop function if exists place_counter_order(uuid, text, integer, jsonb, uuid, uuid);
 drop function if exists place_counter_order(uuid, text, integer, jsonb, uuid);         -- checkout-fn's, if it was re-run
 create or replace function place_counter_order(p_table_id uuid, p_order_type text, p_pax integer, p_items jsonb,
