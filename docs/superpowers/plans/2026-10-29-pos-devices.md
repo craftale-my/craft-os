@@ -135,7 +135,7 @@ The spec's step 2 (devices and login) includes swapping every front-of-house RPC
 **SQL checks.** The SQL was replayed on a scratch PostgreSQL 18 with Supabase stand-ins, after the POS chain and Sub-plan A:
 - The migration applies twice.
 - The new verify prints `VERIFY OK`, and so do the outlets, hardening, checkout, shifts and front-end verifies.
-- The new verify fails for each of eight deliberate faults:
+- The new verify fails for each of thirteen deliberate faults (after the Task 1 review fix), including:
   - lockout counted per device;
   - a success not clearing the count;
   - `pos_ctx()` without the may-work check;
@@ -314,11 +314,12 @@ create table if not exists pos_device_requests (
   decided_by  uuid references staff(id) on delete set null,
   decided_at  timestamptz,
   claimed_at  timestamptz,                                         -- a poll is creating the device account
-  device_id   uuid references pos_devices(id) on delete set null   -- set once the account exists
+  activated_at timestamptz,                                        -- the account exists: the request is spent for good
+  device_id   uuid references pos_devices(id) on delete set null
 );
 -- a code is unique while it can still be used
 create unique index if not exists pos_device_requests_live_code on pos_device_requests (code)
-  where status = 'pending' or (status = 'approved' and device_id is null);
+  where status = 'pending' or (status = 'approved' and activated_at is null);
 create index if not exists pos_device_requests_ip on pos_device_requests (ip, created_at);
 
 create table if not exists pos_staff_sessions (
@@ -407,9 +408,11 @@ end $$;
 revoke all on function pos_activation_request(text, text, text) from public, anon, authenticated;
 grant execute on function pos_activation_request(text, text, text) to service_role;
 
--- What a poll sees. A wrong secret gets the same reply as an unknown code. An approved
--- request is claimed by one poll ('issue'), which then creates the device account and
--- calls pos_activation_finish; a claim older than a minute is taken over.
+-- What a poll sees. A wrong secret gets the same reply as an unknown code, and so does a
+-- spent request (activated_at) — even if its device was later deleted. An approved request
+-- must be collected within an hour of approval; it is claimed by one poll ('issue'), which
+-- then creates the device account and calls pos_activation_finish; a claim older than a
+-- minute is taken over.
 create or replace function pos_activation_poll(p_code text, p_secret text) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -420,10 +423,10 @@ begin
      and r.secret_hash = encode(extensions.digest(coalesce(p_secret, ''), 'sha256'), 'hex')
    order by r.created_at desc limit 1
    for update;
-  if not found or (v_row.status = 'approved' and v_row.device_id is not null) then
+  if not found or v_row.activated_at is not null then
     return jsonb_build_object('status', 'unknown');
   end if;
-  if v_row.status = 'pending' and v_row.expires_at < now() then
+  if v_row.status in ('pending', 'approved') and v_row.expires_at < now() then
     update pos_device_requests set status = 'expired' where id = v_row.id;
     return jsonb_build_object('status', 'expired');
   end if;
@@ -445,15 +448,19 @@ declare
   v_row pos_device_requests;
 begin
   select * into v_row from pos_device_requests r where r.id = p_request_id for update;
-  if not found or v_row.status <> 'approved' or v_row.device_id is not null or v_row.claimed_at is null then
+  if not found or v_row.status <> 'approved' or v_row.activated_at is not null or v_row.claimed_at is null then
     raise exception 'This request cannot be finished';
   end if;
-  if v_row.prints then                                               -- the outlet's printing tablet moves to this one
-    update pos_devices set prints = false where branch_id = v_row.branch_id and prints and revoked_at is null;
-  end if;
-  insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by, approved_at)
-  values (p_user_id, v_row.branch_id, v_row.kind, v_row.device_name, v_row.platform, v_row.prints, v_row.decided_by, v_row.decided_at);
-  update pos_device_requests set device_id = p_user_id where id = v_row.id;
+  begin
+    if v_row.prints then                                             -- the outlet's printing tablet moves to this one
+      update pos_devices set prints = false where branch_id = v_row.branch_id and prints and revoked_at is null;
+    end if;
+    insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by, approved_at)
+    values (p_user_id, v_row.branch_id, v_row.kind, v_row.device_name, v_row.platform, v_row.prints, v_row.decided_by, v_row.decided_at);
+  exception when unique_violation then
+    raise exception 'Another tablet just became the printing tablet — try again';
+  end;
+  update pos_device_requests set device_id = p_user_id, activated_at = now() where id = v_row.id;
 end $$;
 revoke all on function pos_activation_finish(uuid, uuid) from public, anon, authenticated;
 grant execute on function pos_activation_finish(uuid, uuid) to service_role;
@@ -462,7 +469,7 @@ grant execute on function pos_activation_finish(uuid, uuid) to service_role;
 create or replace function pos_activation_unclaim(p_request_id uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 begin
-  update pos_device_requests set claimed_at = null where id = p_request_id and device_id is null;
+  update pos_device_requests set claimed_at = null where id = p_request_id and activated_at is null;
 end $$;
 revoke all on function pos_activation_unclaim(uuid) from public, anon, authenticated;
 grant execute on function pos_activation_unclaim(uuid) to service_role;
@@ -517,7 +524,8 @@ begin
   end if;
   update pos_device_requests
      set status = 'approved', branch_id = p_branch_id, kind = p_kind, device_name = v_name,
-         prints = coalesce(p_prints, false), decided_by = auth.uid(), decided_at = now()
+         prints = coalesce(p_prints, false), decided_by = auth.uid(), decided_at = now(),
+         expires_at = least(expires_at, now() + interval '1 hour')     -- the device collects its login within the hour
    where id = v_row.id;
 end $$;
 revoke all on function pos_decide_device_request(uuid, boolean, text, uuid, text, text, boolean) from public, anon;
@@ -569,8 +577,12 @@ begin
   if not pos_manages_outlet(v_dev.branch_id) then raise exception 'This device is not at one of your outlets'; end if;
   if v_dev.kind <> 'pos' or v_dev.revoked_at is not null then raise exception 'Only an active POS tablet can print'; end if;
   if v_dev.prints then return; end if;
-  update pos_devices set prints = false where branch_id = v_dev.branch_id and prints and revoked_at is null;
-  update pos_devices set prints = true where id = v_dev.id;
+  begin
+    update pos_devices set prints = false where branch_id = v_dev.branch_id and prints and revoked_at is null;
+    update pos_devices set prints = true where id = v_dev.id;
+  exception when unique_violation then
+    raise exception 'Another tablet just became the printing tablet — try again';
+  end;
 end $$;
 revoke all on function pos_set_print_tablet(uuid) from public, anon;
 grant execute on function pos_set_print_tablet(uuid) to authenticated;
@@ -590,8 +602,11 @@ begin
   select * into v_ses from pos_staff_sessions s where s.device_id = v_dev.id and s.ended_at is null;
   if not found then raise exception 'no_session'; end if;
   if not pos_staff_may_work(v_ses.staff_id, v_dev.branch_id) then raise exception 'access_changed'; end if;
-  update pos_devices set last_seen_at = now() where id = v_dev.id;
-  update pos_staff_sessions set last_active_at = now() where id = v_ses.id;
+  -- stamped at most every 30 s: every till call passes here
+  update pos_devices set last_seen_at = now()
+   where id = v_dev.id and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
+  update pos_staff_sessions set last_active_at = now()
+   where id = v_ses.id and last_active_at < now() - interval '30 seconds';
   device_id := v_dev.id;
   branch_id := v_dev.branch_id;
   staff_id := v_ses.staff_id;
@@ -606,7 +621,8 @@ declare
 begin
   select d.branch_id into v_branch from pos_devices d where d.id = auth.uid() and d.revoked_at is null;
   if v_branch is null then raise exception 'device_unpaired'; end if;
-  update pos_devices set last_seen_at = now() where id = auth.uid();
+  update pos_devices set last_seen_at = now()
+   where id = auth.uid() and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
   return v_branch;
 end $$;
 revoke all on function pos_print_branch() from public, anon, authenticated;
@@ -643,7 +659,8 @@ revoke all on function pos_login_roster() from public, anon;
 grant execute on function pos_login_roster() to authenticated;
 
 -- Tap a name, type the PIN. Refusals come back as { ok: false, code, error } so the try is
--- still recorded (a raise would roll it back). Tries are serialized per person.
+-- still recorded (a raise would roll it back). Locks in the order device → person → session
+-- (as pos_ctx and pos_unpair_device): tries are serialized per device and per person.
 create or replace function pos_start_session(p_staff_id uuid, p_pin text) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
@@ -656,7 +673,7 @@ declare
   v_id         uuid;
   v_locked     constant text := 'Too many tries. Try again in 10 minutes.';
 begin
-  select * into v_dev from pos_devices d where d.id = auth.uid() and d.kind = 'pos' and d.revoked_at is null;
+  select * into v_dev from pos_devices d where d.id = auth.uid() and d.kind = 'pos' and d.revoked_at is null for update;
   if not found then raise exception 'device_unpaired'; end if;
   if not pos_outlet_open(v_dev.branch_id) then
     return jsonb_build_object('ok', false, 'code', 'outlet_closed', 'error', 'This outlet is not open for the POS today');
@@ -664,7 +681,7 @@ begin
   if not pos_staff_may_work(p_staff_id, v_dev.branch_id) then
     return jsonb_build_object('ok', false, 'code', 'not_allowed', 'error', 'This person cannot sign in here');
   end if;
-  select st.name into v_name from staff st where st.id = p_staff_id for update;           -- one try at a time per person
+  select st.name into v_name from staff st where st.id = p_staff_id for no key update;    -- one try at a time per person
   select p.pin_hash into v_hash from staff_pos_pins p where p.staff_id = p_staff_id;
   if v_hash is null then
     return jsonb_build_object('ok', false, 'code', 'no_pin', 'error', 'Set a PIN in Craft OS first');
@@ -684,9 +701,9 @@ begin
       'error', format('Wrong PIN · %s %s left', 5 - v_wrong, case when 5 - v_wrong = 1 then 'try' else 'tries' end));
   end if;
   insert into pos_login_attempts(staff_id, device_id, ok) values (p_staff_id, v_dev.id, true);
+  update pos_devices set last_seen_at = now() where id = v_dev.id;
   update pos_staff_sessions set ended_at = now(), end_reason = 'switched' where device_id = v_dev.id and ended_at is null;
   insert into pos_staff_sessions(device_id, staff_id) values (v_dev.id, p_staff_id) returning id into v_id;
-  update pos_devices set last_seen_at = now() where id = v_dev.id;
   return jsonb_build_object('ok', true, 'sessionId', v_id, 'staff', jsonb_build_object('id', p_staff_id, 'name', v_name));
 end $$;
 revoke all on function pos_start_session(uuid, text) from public, anon;
@@ -743,7 +760,7 @@ create function pg_temp.expect_error(p_sql text, p_message text, p_label text) r
 language plpgsql as $$
 begin
   execute p_sql;
-  raise exception 'FAIL %: no error (expected "%")', p_label, p_message;
+  raise exception 'FAIL %: no error (expected "%")', p_label, p_message using errcode = 'assert_failure';
 exception when raise_exception then
   if sqlerrm is distinct from p_message then
     raise exception 'FAIL %: got "%" (expected "%")', p_label, sqlerrm, p_message;
@@ -769,6 +786,7 @@ declare
   v_agent uuid := 'eeeeeeee-0000-0000-0000-0000000000d3';   -- print agent at A
   v_dev4  uuid := 'eeeeeeee-0000-0000-0000-0000000000d4';   -- POS tablet at the closed pop-up
   v_dev5  uuid := 'eeeeeeee-0000-0000-0000-0000000000d5';   -- a later POS tablet at A, approved as the printing tablet
+  v_dev6  uuid := 'eeeeeeee-0000-0000-0000-0000000000d6';   -- a tablet whose account is deleted after activation
   v_a uuid; v_b uuid; v_pop uuid;
   v_res jsonb; v_req jsonb; v_code text; v_secret text; v_rid uuid; v_ctx record;
   v_today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
@@ -779,8 +797,10 @@ begin
     if not (select relrowsecurity from pg_class where oid = ('public.' || r.t)::regclass) then
       raise exception 'FAIL D1: % has no RLS', r.t;
     end if;
-    if has_table_privilege('authenticated', 'public.' || r.t, 'select') or has_table_privilege('anon', 'public.' || r.t, 'select') then
-      raise exception 'FAIL D1: % is readable by clients', r.t;
+    if has_table_privilege('authenticated', 'public.' || r.t, 'select') or has_table_privilege('anon', 'public.' || r.t, 'select')
+       or has_table_privilege('authenticated', 'public.' || r.t, 'insert') or has_table_privilege('authenticated', 'public.' || r.t, 'update')
+       or has_table_privilege('authenticated', 'public.' || r.t, 'delete') then
+      raise exception 'FAIL D1: % is open to clients', r.t;
     end if;
   end loop;
   if not exists (select 1 from information_schema.columns where table_name = 'branch_pos_settings' and column_name = 'idle_lock_minutes'
@@ -835,15 +855,15 @@ begin
   update staff set system_role = 'manager' where id = v_mgr;
   update staff set system_role = 'supervisor' where id = v_sup;
   perform pg_temp.act(v_cash);
-  if not (set_my_pos_pin('1111', null)->>'ok')::boolean then raise exception 'FAIL fixture: cashier PIN'; end if;
+  if not coalesce((set_my_pos_pin('1111', null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: cashier PIN'; end if;
   perform pg_temp.act(v_sup);
-  if not (set_my_pos_pin('2222', null)->>'ok')::boolean then raise exception 'FAIL fixture: supervisor PIN'; end if;
+  if not coalesce((set_my_pos_pin('2222', null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: supervisor PIN'; end if;
   perform pg_temp.act(v_far);
-  if not (set_my_pos_pin('3333', null)->>'ok')::boolean then raise exception 'FAIL fixture: far PIN'; end if;
+  if not coalesce((set_my_pos_pin('3333', null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: far PIN'; end if;
 
   -- ── D2. activation ────────────────────────────────────────────────────────
   perform set_config('request.jwt.claims', '', true);                                  -- the Edge Function: no user
-  if pos_activation_request('Bar iPad', 'toaster', '10.0.0.1') <> '{"error": "bad_request"}'::jsonb then
+  if pos_activation_request('Bar iPad', 'toaster', '10.0.0.1') is distinct from '{"error": "bad_request"}'::jsonb then
     raise exception 'FAIL D2: a bad platform was accepted';
   end if;
   v_req := pos_activation_request('  Bar iPad  ', 'ipad', '10.0.0.1');
@@ -851,19 +871,19 @@ begin
   if v_code !~ '^[A-HJ-NP-Z2-9]{3}-[A-HJ-NP-Z2-9]{3}$' or v_secret !~ '^[0-9a-f]{48}$' or v_req->>'expiresAt' is null then
     raise exception 'FAIL D2 request: %', v_req;
   end if;
-  if (select name || '|' || platform || '|' || status from pos_device_requests where code = v_code) <> 'Bar iPad|ipad|pending'
-     or (select expires_at - created_at from pos_device_requests where code = v_code) <> interval '24 hours'
+  if (select name || '|' || platform || '|' || status from pos_device_requests where code = v_code) is distinct from 'Bar iPad|ipad|pending'
+     or (select expires_at - created_at from pos_device_requests where code = v_code) is distinct from interval '24 hours'
      or exists (select 1 from pos_device_requests where code = v_code and secret_hash = v_secret) then
     raise exception 'FAIL D2: the request row (trimmed name, 24 h, only the secret''s hash stored)';
   end if;
   for n in 1..4 loop perform pos_activation_request(null, 'android', '10.0.0.1'); end loop;   -- 5 from this IP now
-  if pos_activation_request(null, 'android', '10.0.0.1') <> '{"error": "too_many"}'::jsonb then
+  if pos_activation_request(null, 'android', '10.0.0.1') is distinct from '{"error": "too_many"}'::jsonb then
     raise exception 'FAIL D2: a sixth request from one IP within the hour';
   end if;
   if pos_activation_request(null, 'android', '10.0.0.2')->>'code' is null then raise exception 'FAIL D2: another IP is refused'; end if;
-  if pos_activation_poll(v_code, 'wrong')->>'status' <> 'unknown' then raise exception 'FAIL D2: a wrong secret is told apart'; end if;
-  if pos_activation_poll('ZZZ-ZZZ', v_secret)->>'status' <> 'unknown' then raise exception 'FAIL D2: an unknown code'; end if;
-  if pos_activation_poll(lower(v_code), v_secret)->>'status' <> 'pending' then raise exception 'FAIL D2: a pending request'; end if;
+  if pos_activation_poll(v_code, 'wrong')->>'status' is distinct from 'unknown' then raise exception 'FAIL D2: a wrong secret is told apart'; end if;
+  if pos_activation_poll('ZZZ-ZZZ', v_secret)->>'status' is distinct from 'unknown' then raise exception 'FAIL D2: an unknown code'; end if;
+  if pos_activation_poll(lower(v_code), v_secret)->>'status' is distinct from 'pending' then raise exception 'FAIL D2: a pending request'; end if;
 
   perform pg_temp.act(v_mgr);
   perform pg_temp.expect_error('select count(*) from pos_device_requests_pending()', 'Only HQ can approve devices', 'D2 list by a branch manager');
@@ -884,38 +904,49 @@ begin
                                'Enter the device name (up to 40 characters)', 'D2 long name');
   perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, true)', v_rid, v_code, v_a, 'print_agent', 'Shop Mac'),
                                'Only a POS tablet can print and hold the cash drawer', 'D2 a printing print agent');
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, false)', v_rid, v_code, v_a, 'pos', '   '),
+                               'Enter the device name (up to 40 characters)', 'D2 empty name');
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, false)', v_rid, 'ABC', v_a, 'pos', 'Bar iPad'),
+                               'The code does not match the tablet', 'D2 a short code');
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, null, %L, %L, %L, %L, false)', v_rid, v_code, v_a, 'pos', 'Bar iPad'),
+                               'Invalid request', 'D2 no decision');
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, false, null, null, null, null, null)', gen_random_uuid()),
+                               'Request not found', 'D2 unknown request');
   perform pos_decide_device_request(v_rid, true, lower(replace(v_code, '-', ' ')), v_a, 'pos', ' Bar iPad ', true);   -- typed loosely; the printing tablet
+  if (select expires_at from pos_device_requests where id = v_rid) > now() + interval '1 hour' then
+    raise exception 'FAIL D2: an approved request is not collected within the hour';
+  end if;
   perform pg_temp.expect_error(format('select pos_decide_device_request(%L, false, null, null, null, null, null)', v_rid),
                                'This request is no longer waiting', 'D2 deciding twice');
   perform set_config('request.jwt.claims', '', true);
   v_res := pos_activation_poll(v_code, v_secret);
-  if v_res->>'status' <> 'issue' or (v_res->>'requestId')::uuid <> v_rid or (v_res->>'branchId')::uuid <> v_a
-     or v_res->>'kind' <> 'pos' or v_res->>'name' <> 'Bar iPad' then
+  if v_res->>'status' is distinct from 'issue' or (v_res->>'requestId')::uuid is distinct from v_rid or (v_res->>'branchId')::uuid is distinct from v_a
+     or v_res->>'kind' is distinct from 'pos' or v_res->>'name' is distinct from 'Bar iPad' then
     raise exception 'FAIL D2 first poll after approval: %', v_res;
   end if;
-  if pos_activation_poll(v_code, v_secret)->>'status' <> 'pending' then
+  if pos_activation_poll(v_code, v_secret)->>'status' is distinct from 'pending' then
     raise exception 'FAIL D2: a second poll while the first creates the account';
   end if;
   perform pos_activation_unclaim(v_rid);                                                 -- the account could not be made
-  if pos_activation_poll(v_code, v_secret)->>'status' <> 'issue' then raise exception 'FAIL D2: retry after unclaim'; end if;
+  if pos_activation_poll(v_code, v_secret)->>'status' is distinct from 'issue' then raise exception 'FAIL D2: retry after unclaim'; end if;
   insert into auth.users (id) values (v_dev1);
   perform pos_activation_finish(v_rid, v_dev1);
   if (select branch_id || '|' || kind || '|' || name || '|' || platform || '|' || prints || '|' || approved_by from pos_devices where id = v_dev1)
-       <> v_a || '|pos|Bar iPad|ipad|true|' || v_owner then
+       is distinct from v_a || '|pos|Bar iPad|ipad|true|' || v_owner then
     raise exception 'FAIL D2: the device row';
   end if;
-  if pos_activation_poll(v_code, v_secret)->>'status' <> 'unknown' then raise exception 'FAIL D2: credentials handed out twice'; end if;
+  if pos_activation_poll(v_code, v_secret)->>'status' is distinct from 'unknown' then raise exception 'FAIL D2: credentials handed out twice'; end if;
   perform pg_temp.expect_error(format('select pos_activation_finish(%L, %L)', v_rid, v_dev2), 'This request cannot be finished', 'D2 finish twice');
   -- reject and expire
   v_req := pos_activation_request(null, 'other', null);
   perform pg_temp.act(v_owner);
   perform pos_decide_device_request((select id from pos_device_requests where code = v_req->>'code'), false, null, null, null, null, null);
   perform set_config('request.jwt.claims', '', true);
-  if pos_activation_poll(v_req->>'code', v_req->>'secret')->>'status' <> 'rejected' then raise exception 'FAIL D2: rejected'; end if;
+  if pos_activation_poll(v_req->>'code', v_req->>'secret')->>'status' is distinct from 'rejected' then raise exception 'FAIL D2: rejected'; end if;
   v_req := pos_activation_request(null, 'other', null);
   update pos_device_requests set expires_at = now() - interval '1 second' where code = v_req->>'code';
   v_res := pos_activation_poll(v_req->>'code', v_req->>'secret');
-  if v_res->>'status' <> 'expired' or (select status from pos_device_requests where code = v_req->>'code') <> 'expired' then
+  if v_res->>'status' is distinct from 'expired' or (select status from pos_device_requests where code = v_req->>'code') is distinct from 'expired' then
     raise exception 'FAIL D2: expired';
   end if;
   -- at most 50 waiting
@@ -923,8 +954,32 @@ begin
   select 'QQ' || substr('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 1 + g / 32, 1) || '-' || 'QQ'
            || substr('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 1 + g % 32, 1), 'x', 'other'
     from generate_series(0, 49 - (select count(*)::int from pos_device_requests where status = 'pending')) g;
-  if pos_activation_request(null, 'other', null) <> '{"error": "busy"}'::jsonb then raise exception 'FAIL D2: more than 50 waiting'; end if;
+  if pos_activation_request(null, 'other', null) is distinct from '{"error": "busy"}'::jsonb then raise exception 'FAIL D2: more than 50 waiting'; end if;
   delete from pos_device_requests where secret_hash = 'x';
+  -- a request waiting past its time cannot be approved; an approved one not collected in time expires
+  v_req := pos_activation_request(null, 'other', null);
+  update pos_device_requests set expires_at = now() - interval '1 second' where code = v_req->>'code';
+  perform pg_temp.act(v_owner);
+  perform pg_temp.expect_error(format('select pos_decide_device_request(%L, true, %L, %L, %L, %L, false)',
+                                      (select id from pos_device_requests where code = v_req->>'code'), v_req->>'code', v_a, 'pos', 'Late'),
+                               'This request is no longer waiting', 'D2 approving an expired request');
+  v_req := pos_activation_request(null, 'other', null);
+  perform pos_decide_device_request((select id from pos_device_requests where code = v_req->>'code'), true, v_req->>'code', v_a, 'pos', 'Slow', false);
+  update pos_device_requests set expires_at = now() - interval '1 second' where code = v_req->>'code';
+  perform set_config('request.jwt.claims', '', true);
+  v_res := pos_activation_poll(v_req->>'code', v_req->>'secret');
+  if v_res->>'status' is distinct from 'expired' then raise exception 'FAIL D2: an approved request collected too late: %', v_res; end if;
+  -- a spent request stays spent, even when its device account is deleted later
+  v_req := pos_activation_request('Gone iPad', 'ipad', null);
+  perform pg_temp.act(v_owner);
+  perform pos_decide_device_request((select id from pos_device_requests where code = v_req->>'code'), true, v_req->>'code', v_a, 'pos', 'Gone iPad', false);
+  perform set_config('request.jwt.claims', '', true);
+  v_res := pos_activation_poll(v_req->>'code', v_req->>'secret');
+  insert into auth.users (id) values (v_dev6);
+  perform pos_activation_finish((v_res->>'requestId')::uuid, v_dev6);
+  delete from auth.users where id = v_dev6;
+  v_res := pos_activation_poll(v_req->>'code', v_req->>'secret');
+  if v_res->>'status' is distinct from 'unknown' then raise exception 'FAIL D2: a deleted device''s request issued a new login: %', v_res; end if;
   -- the other test devices, made directly
   insert into auth.users (id) values (v_dev2), (v_agent), (v_dev4);
   insert into pos_devices(id, branch_id, kind, name, platform, approved_by) values
@@ -942,11 +997,17 @@ begin
   -- the printing tablet: one per outlet, moved by a manager of the outlet or by approving another
   if not (select l.prints from pos_devices_list() l where l.id = v_dev1) then raise exception 'FAIL D3: the list shows the printing tablet'; end if;
   perform pos_set_print_tablet(v_dev2);
-  if (select string_agg(name || ':' || prints, ',' order by name) from pos_devices where id in (v_dev1, v_dev2)) <> 'Bar iPad:false,Kitchen iPad:true' then
+  if (select string_agg(name || ':' || prints, ',' order by name) from pos_devices where id in (v_dev1, v_dev2)) is distinct from 'Bar iPad:false,Kitchen iPad:true' then
     raise exception 'FAIL D3: moving the printing tablet';
   end if;
   perform pg_temp.expect_error(format('select pos_set_print_tablet(%L)', v_agent), 'Only an active POS tablet can print', 'D3 a print agent as printing tablet');
   perform pg_temp.expect_error(format('select pos_set_print_tablet(%L)', v_dev4), 'This device is not at one of your outlets', 'D3 printing tablet elsewhere');
+  perform pg_temp.expect_error(format('select pos_set_print_tablet(%L)', gen_random_uuid()), 'Device not found', 'D3 printing tablet unknown');
+  perform pg_temp.expect_error(format('select pos_unpair_device(%L)', gen_random_uuid()), 'Device not found', 'D3 unpair unknown');
+  perform pg_temp.act(v_cash);
+  perform pg_temp.expect_error(format('select pos_unpair_device(%L)', v_dev2), 'This device is not at one of your outlets', 'D3 unpair by a cashier');
+  perform pg_temp.expect_error(format('select pos_set_print_tablet(%L)', v_dev2), 'This device is not at one of your outlets', 'D3 printing tablet by a cashier');
+  perform pg_temp.act(v_mgr);
   begin
     update pos_devices set prints = true where id = v_dev1;
     raise exception 'FAIL D3: two printing tablets at one outlet';
@@ -961,7 +1022,7 @@ begin
   v_res := pos_activation_poll(v_req->>'code', v_req->>'secret');
   insert into auth.users (id) values (v_dev5);
   perform pos_activation_finish((v_res->>'requestId')::uuid, v_dev5);
-  if (select string_agg(name || ':' || prints, ',' order by name) from pos_devices where id in (v_dev2, v_dev5)) <> 'Front iPad:true,Kitchen iPad:false' then
+  if (select string_agg(name || ':' || prints, ',' order by name) from pos_devices where id in (v_dev2, v_dev5)) is distinct from 'Front iPad:true,Kitchen iPad:false' then
     raise exception 'FAIL D3: approving a new printing tablet moves the role';
   end if;
 
@@ -972,9 +1033,9 @@ begin
   perform pg_temp.expect_error('select pos_login_roster()', 'device_unpaired', 'D5 roster for a print agent');
   perform pg_temp.act(v_dev1);
   v_res := pos_login_roster();
-  if v_res->'device'->>'name' <> 'Bar iPad' or (v_res->'device'->>'prints')::boolean
-     or v_res->'outlet'->>'name' <> 'VERIFY D A' or not (v_res->'outlet'->>'open')::boolean
-     or (v_res->>'idleLockMinutes')::int <> 10 or v_res->'session' <> 'null'::jsonb then
+  if v_res->'device'->>'name' is distinct from 'Bar iPad' or coalesce((v_res->'device'->>'prints')::boolean, true)
+     or v_res->'outlet'->>'name' is distinct from 'VERIFY D A' or not coalesce((v_res->'outlet'->>'open')::boolean, false)
+     or (v_res->>'idleLockMinutes')::int is distinct from 10 or v_res->'session' is distinct from 'null'::jsonb then
     raise exception 'FAIL D5 roster: %', v_res;
   end if;
   select string_agg(e->>'name' || ':' || (e->>'hasPin'), ',' order by e->>'name') into v_text
@@ -985,42 +1046,59 @@ begin
   if not exists (select 1 from jsonb_array_elements(v_res->'staff') e where (e->>'id')::uuid = v_owner) then
     raise exception 'FAIL D5: HQ is missing from the roster';
   end if;
-  if pos_start_session(v_far, '3333')->>'code' <> 'not_allowed' then raise exception 'FAIL D5: another outlet''s cashier signed in'; end if;
-  if pos_start_session(v_nopin, '1234')->>'error' <> 'Set a PIN in Craft OS first' then raise exception 'FAIL D5: no PIN'; end if;
+  v_res := pos_start_session(v_far, '3333');
+  if v_res->>'code' is distinct from 'not_allowed' or v_res->>'error' is distinct from 'This person cannot sign in here' then
+    raise exception 'FAIL D5: another outlet''s cashier signed in: %', v_res;
+  end if;
+  v_res := pos_start_session(v_nopin, '1234');
+  if v_res->>'error' is distinct from 'Set a PIN in Craft OS first' then raise exception 'FAIL D5: no PIN'; end if;
   perform pg_temp.expect_error('select pos_ctx()', 'no_session', 'D4 no session yet');
   -- four wrong tries on tablet 1, the fifth on tablet 2: locked everywhere
   for n in 1..4 loop
     v_res := pos_start_session(v_cash, '9999');
-    if v_res->>'error' <> format('Wrong PIN · %s %s left', 5 - n, case when 5 - n = 1 then 'try' else 'tries' end) then
+    if v_res->>'error' is distinct from format('Wrong PIN · %s %s left', 5 - n, case when 5 - n = 1 then 'try' else 'tries' end) then
       raise exception 'FAIL D5 wrong PIN %: %', n, v_res;
     end if;
   end loop;
   perform pg_temp.act(v_dev2);
-  if pos_start_session(v_cash, '12') ->>'code' <> 'pin_locked' then raise exception 'FAIL D5: the fifth wrong try (other tablet) does not lock'; end if;
+  v_res := pos_start_session(v_cash, '12');
+  if v_res->>'code' is distinct from 'pin_locked' then raise exception 'FAIL D5: the fifth wrong try (other tablet) does not lock'; end if;
   perform pg_temp.act(v_dev1);
-  if pos_start_session(v_cash, '1111')->>'error' <> 'Too many tries. Try again in 10 minutes.' then
+  v_res := pos_start_session(v_cash, '1111');
+  if v_res->>'error' is distinct from 'Too many tries. Try again in 10 minutes.' then
     raise exception 'FAIL D5: the right PIN works during the lock';
   end if;
-  if (select count(*) from pos_login_attempts where staff_id = v_cash) <> 5 then raise exception 'FAIL D5: tries are not all recorded'; end if;
+  if (select count(*) from pos_login_attempts where staff_id = v_cash) is distinct from 5 then raise exception 'FAIL D5: tries are not all recorded'; end if;
   update pos_login_attempts set at = at - interval '11 minutes' where staff_id = v_cash;  -- the 10 minutes pass
+  v_res := pos_start_session(v_cash, '5555');                                            -- one more wrong try locks again
+  if v_res->>'code' is distinct from 'pin_locked' then raise exception 'FAIL D5: a wrong try after the lock does not lock again: %', v_res; end if;
+  update pos_login_attempts set at = at - interval '11 minutes' where staff_id = v_cash;
   v_res := pos_start_session(v_cash, '1111');
-  if not (v_res->>'ok')::boolean or v_res->'staff'->>'name' <> 'Verify D Cashier' then raise exception 'FAIL D5 sign-in: %', v_res; end if;
-  if pos_start_session(v_cash, '0000')->>'error' <> 'Wrong PIN · 4 tries left' then raise exception 'FAIL D5: a success clears the count'; end if;
+  if not coalesce((v_res->>'ok')::boolean, false) or v_res->'staff'->>'name' is distinct from 'Verify D Cashier' then raise exception 'FAIL D5 sign-in: %', v_res; end if;
+  v_res := pos_start_session(v_cash, '0000');
+  if v_res->>'error' is distinct from 'Wrong PIN · 4 tries left' then raise exception 'FAIL D5: a success clears the count'; end if;
   select * into v_ctx from pos_ctx();
-  if v_ctx.device_id <> v_dev1 or v_ctx.branch_id <> v_a or v_ctx.staff_id <> v_cash then raise exception 'FAIL D4 pos_ctx: %', row_to_json(v_ctx); end if;
+  if v_ctx.device_id is distinct from v_dev1 or v_ctx.branch_id is distinct from v_a or v_ctx.staff_id is distinct from v_cash then raise exception 'FAIL D4 pos_ctx: %', row_to_json(v_ctx); end if;
   if (select last_seen_at from pos_devices where id = v_dev1) is null then raise exception 'FAIL D4: last seen not stamped'; end if;
-  if (pos_login_roster()->'session'->>'staffId')::uuid <> v_cash then raise exception 'FAIL D5: the roster shows who is signed in'; end if;
+  if (pos_login_roster()->'session'->>'staffId')::uuid is distinct from v_cash then raise exception 'FAIL D5: the roster shows who is signed in'; end if;
+  -- wrong tries more than 24 h ago do not count: four old ones, then one now
+  insert into pos_login_attempts(staff_id, device_id, at, ok)
+  select v_sup, v_dev2, now() - interval '25 hours', false from generate_series(1, 4);
+  v_res := pos_start_session(v_sup, '9999');
+  if v_res->>'error' is distinct from 'Wrong PIN · 4 tries left' then raise exception 'FAIL D5: tries older than 24 h count: %', v_res; end if;
   -- the supervisor takes over the tablet
-  if not (pos_start_session(v_sup, '2222')->>'ok')::boolean then raise exception 'FAIL D5: switching staff'; end if;
+  v_res := pos_start_session(v_sup, '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL D5: switching staff (old tries counted?): %', v_res; end if;
   if (select string_agg(end_reason || ':' || (ended_at is not null), ',') from pos_staff_sessions where device_id = v_dev1 and staff_id = v_cash)
-       <> 'switched:true' then
+       is distinct from 'switched:true' then
     raise exception 'FAIL D5: the previous session is not ended as switched';
   end if;
   perform pg_temp.expect_error('select pos_end_session(''bored'')', 'Invalid reason', 'D5 bad reason');
   perform pos_end_session('locked');
   perform pg_temp.expect_error('select pos_ctx()', 'no_session', 'D4 after Lock');
   -- access changes while signed in
-  if not (pos_start_session(v_cash, '1111')->>'ok')::boolean then raise exception 'FAIL D5: sign in again'; end if;
+  v_res := pos_start_session(v_cash, '1111');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL D5: sign in again'; end if;
   perform pg_temp.act(v_owner);
   update staff set status = 'resigned' where id = v_cash;
   perform pg_temp.act(v_dev1);
@@ -1031,25 +1109,27 @@ begin
   -- a closed pop-up: nobody signs in, nothing runs
   perform pg_temp.act(v_dev4);
   v_res := pos_login_roster();
-  if (v_res->'outlet'->>'open')::boolean or v_res->'staff' <> '[]'::jsonb then raise exception 'FAIL D5 closed outlet roster: %', v_res; end if;
-  if pos_start_session(v_owner, '0000')->>'code' <> 'outlet_closed' then raise exception 'FAIL D5: sign-in at a closed outlet'; end if;
+  if coalesce((v_res->'outlet'->>'open')::boolean, true) or v_res->'staff' is distinct from '[]'::jsonb then raise exception 'FAIL D5 closed outlet roster: %', v_res; end if;
+  v_res := pos_start_session(v_owner, '0000');
+  if v_res->>'code' is distinct from 'outlet_closed' then raise exception 'FAIL D5: sign-in at a closed outlet'; end if;
   insert into pos_staff_sessions(device_id, staff_id) values (v_dev4, v_owner);
   perform pg_temp.expect_error('select pos_ctx()', 'outlet_closed', 'D4 closed outlet');
   -- the print agent: prints, never runs the till
   perform pg_temp.act(v_agent);
-  if pos_print_branch() <> v_a then raise exception 'FAIL D4: the print agent''s outlet'; end if;
+  if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: the print agent''s outlet'; end if;
   perform pg_temp.expect_error('select pos_ctx()', 'device_unpaired', 'D4 a print agent at the till');
   perform pg_temp.act(v_dev2);
-  if pos_print_branch() <> v_a then raise exception 'FAIL D4: a locked tablet still prints'; end if;
+  if pos_print_branch() is distinct from v_a then raise exception 'FAIL D4: a locked tablet still prints'; end if;
 
   -- ── D3. unpair ────────────────────────────────────────────────────────────
   perform pg_temp.act(v_dev1);
-  if not (pos_start_session(v_sup, '2222')->>'ok')::boolean then raise exception 'FAIL D3 fixture: sign in before unpairing'; end if;
+  v_res := pos_start_session(v_sup, '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL D3 fixture: sign in before unpairing'; end if;
   perform pg_temp.act(v_mgr);
   perform pos_unpair_device(v_dev1);
   perform pos_unpair_device(v_dev1);                                                    -- twice is fine
   if (select revoked_by from pos_devices where id = v_dev1) is distinct from v_mgr
-     or (select banned_until from auth.users where id = v_dev1) <> 'infinity'
+     or (select banned_until from auth.users where id = v_dev1) is distinct from 'infinity'
      or exists (select 1 from pos_staff_sessions where device_id = v_dev1 and ended_at is null)
      or not exists (select 1 from pos_staff_sessions where device_id = v_dev1 and end_reason = 'unpaired')
      or (select prints from pos_devices where id = v_dev1) then
@@ -1070,7 +1150,7 @@ begin
   perform pg_temp.expect_error(format('select save_lock_settings(%L, 61)', v_a), 'Enter between 1 and 60 minutes', 'D6 61');
   perform save_lock_settings(v_a, 15);
   perform pg_temp.act(v_dev2);
-  if (pos_login_roster()->>'idleLockMinutes')::int <> 15 then raise exception 'FAIL D6: the roster carries the lock minutes'; end if;
+  if (pos_login_roster()->>'idleLockMinutes')::int is distinct from 15 then raise exception 'FAIL D6: the roster carries the lock minutes'; end if;
 
   raise notice 'VERIFY OK';
 end $$;
@@ -1335,7 +1415,8 @@ Deno.serve(async (req) => {
 
   if (input.action === 'request') {
     const { data, error } = await admin.rpc('pos_activation_request', {
-      p_name: input.name, p_platform: input.platform, p_ip: clientIp(req.headers.get('x-forwarded-for')),
+      // no forwarded address still counts against one shared limit rather than none
+      p_name: input.name, p_platform: input.platform, p_ip: clientIp(req.headers.get('x-forwarded-for')) ?? 'unknown',
     })
     if (error) {
       console.error('pos_activation_request', error.message)
@@ -2187,4 +2268,14 @@ git push origin feature/pos-demo
   - `branch_menu_status_write` (`pos_caller_branch`).
 
   It should also add an index on `staff_outlets(branch_id)` and scope `dining_tables_update using (true)`.
+- **Amended during execution (Task 1 review, 2026-10-29):**
+  - Completion is recorded in `activated_at`, so a deleted device account cannot revive its request.
+  - Approved requests must be collected within an hour.
+  - Lock order is device → person → session.
+  - Last-seen stamps are written at most every 30 s.
+  - A printing-tablet race gets a readable error.
+  - The verify is NULL-safe and covers the missing refusals.
+  - The Edge Function sends `unknown` when no client IP is forwarded.
+
+  The code blocks above are the amended text.
 - **Housekeeping:** activation requests and login attempts are never deleted. That is fine at this scale; a cleanup job can come later.
