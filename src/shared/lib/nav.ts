@@ -30,6 +30,7 @@ export function isGroup(entry: NavEntry): entry is NavGroup {
 
 export const NAV: NavEntry[] = [
   { id: 'profile', label: 'Profile', to: '/profile' },
+  { id: 'org-chart', label: 'Org Chart', to: '/org-chart' },
   {
     id: 'team',
     label: 'Team',
@@ -51,6 +52,20 @@ export const NAV: NavEntry[] = [
       { id: 'leave',      label: 'Leave',      to: '/hr/leave' },
       { id: 'claims',     label: 'Claims',     to: '/hr/claims' },
       { id: 'salary',     label: 'Salary',     to: '/hr/salary' },
+    ],
+  },
+  {
+    id: 'procurement',
+    label: 'Procurement',
+    children: [
+      { id: 'proc-suppliers', label: 'Suppliers', to: '/procurement/suppliers', cap: 'manage_procurement' },
+      { id: 'proc-items',     label: 'Items',     to: '/procurement/items',     cap: 'manage_procurement' },
+      { id: 'proc-orders',    label: 'Purchase Orders', to: '/procurement/orders', cap: 'use_procurement' },
+      { id: 'proc-receiving', label: 'Receiving', to: '/procurement/receiving', cap: 'use_procurement' },
+      { id: 'proc-transfers', label: 'Transfers', to: '/procurement/transfers', cap: 'use_procurement' },
+      { id: 'proc-wastage',   label: 'Wastage',   to: '/procurement/wastage',   cap: 'use_procurement' },
+      { id: 'proc-recipes',   label: 'Recipes',   to: '/procurement/recipes',   cap: 'use_procurement' },
+      { id: 'proc-inventory', label: 'Stock on Hand', to: '/procurement/inventory', cap: 'use_procurement' },
     ],
   },
   { id: 'settings', label: 'Settings', to: '/settings', cap: 'access_settings' },

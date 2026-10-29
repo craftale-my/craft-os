@@ -84,3 +84,43 @@ export function useCan() {
     ownBranchOnly: !can('all_branches'),
   }
 }
+
+/**
+ * Frontend mirror of SQL can_read_staff_private(): who may read colleagues'
+ * IC / DOB / phone / address (staff_private) and manager notes
+ * (staff_manager_notes). Same set as the salary tier. Supervisors are
+ * deliberately excluded. UI gate only — RLS is the real boundary.
+ */
+export function canReadStaffPrivate(
+  staff: Pick<Staff, 'rank' | 'system_role'> | null | undefined,
+): boolean {
+  if (!staff) return false
+  if (staff.rank === 'manager') return true
+  return staff.system_role === 'hr' || staff.system_role === 'manager'
+      || staff.system_role === 'admin' || staff.system_role === 'owner'
+}
+
+/**
+ * Frontend mirror of the manager-tier test in SQL staff_guard_authority_update()
+ * (supabase/migration-2026-10-23-staff-authority-guard.sql) and provision-staff:
+ * rank manager, or system_role manager/admin/owner. UI gate only.
+ */
+export function isManagerTier(
+  staff: Pick<Staff, 'rank' | 'system_role'> | null | undefined,
+): boolean {
+  if (!staff) return false
+  return staff.rank === 'manager' || staff.system_role === 'manager'
+      || staff.system_role === 'admin' || staff.system_role === 'owner'
+}
+
+const ALL_RANKS: readonly Rank[] = ['trainee', 'junior', 'senior', 'supervisor', 'manager']
+const LOW_RANKS: readonly Rank[] = ['trainee', 'junior', 'senior']
+
+/** Ranks the caller may give a new staff member: everything for manager-tier,
+ *  trainee/junior/senior for everyone else (supervisor, hr). provision-staff
+ *  and the DB guard enforce the same rule; this only keeps the form honest. */
+export function creatableRanks(
+  staff: Pick<Staff, 'rank' | 'system_role'> | null | undefined,
+): readonly Rank[] {
+  return isManagerTier(staff) ? ALL_RANKS : LOW_RANKS
+}

@@ -18,7 +18,7 @@ export function XPBar({ xp, level, showLabels = true }: Props) {
           <span>{xpInLevel} / {XP_PER_LEVEL} XP</span>
         </div>
       )}
-      <div className="h-2 rounded-full bg-brown-track overflow-hidden">
+      <div className="h-2.5 rounded-full bg-brown-track overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{ width: `${percent}%`, background: 'linear-gradient(90deg, #8B6344, #C4813A)' }}

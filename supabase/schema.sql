@@ -102,7 +102,7 @@ returns text language sql security definer stable as $$
 $$;
 
 -- Staff policies
-create policy "staff_select" on staff for select using (true);
+create policy "staff_select" on staff for select to authenticated using (true);
 create policy "staff_insert" on staff for insert
   with check (current_rank() in ('manager'));
 -- Supervisors need staff updates too: probation hire/eliminate writes
@@ -111,7 +111,7 @@ create policy "staff_update" on staff for update
   using (id = auth.uid() or current_rank() in ('supervisor','manager'));
 
 -- Mission policies
-create policy "missions_select" on missions for select using (true);
+create policy "missions_select" on missions for select to authenticated using (true);
 create policy "missions_insert" on missions for insert
   with check (current_rank() = 'manager');
 create policy "missions_update" on missions for update
@@ -128,7 +128,7 @@ create policy "completions_update" on mission_completions for update
   using (current_rank() in ('supervisor','manager'));
 
 -- Skill rating policies
-create policy "skills_select" on skill_ratings for select using (true);
+create policy "skills_select" on skill_ratings for select to authenticated using (true);
 create policy "skills_insert" on skill_ratings for insert
   with check (current_rank() in ('supervisor','manager'));
 create policy "skills_update" on skill_ratings for update
@@ -171,11 +171,11 @@ alter table staff drop constraint if exists staff_department_check;
 -- Add onboarding + HR fields to staff
 alter table staff add column if not exists onboarding_completed boolean not null default false;
 alter table staff add column if not exists nickname            text;
-alter table staff add column if not exists ic_number          text;
-alter table staff add column if not exists address            text;
+-- IC number, address, date of birth, phone and manager notes are NOT staff
+-- columns: they live in staff_private / staff_manager_notes with their own
+-- RLS. See migration-2026-10-23-staff-private.sql (run after
+-- migration-2026-07-06-rbac.sql, which it depends on).
 alter table staff add column if not exists gender             text;
-alter table staff add column if not exists date_of_birth      date;
-alter table staff add column if not exists contact_number     text;
 alter table staff add column if not exists branch             text;
 alter table staff add column if not exists employment_type    text;
 alter table staff add column if not exists working_experience text;
@@ -190,7 +190,6 @@ update staff set onboarding_completed = true where rank = 'manager';
 -- =============================================
 
 -- Manager notes and level-up tracking
-alter table staff add column if not exists manager_notes    text;
 alter table staff add column if not exists last_level_up_at timestamptz;
 
 -- =============================================
@@ -876,3 +875,16 @@ alter table scheduled_shifts add constraint scheduled_shifts_shift_or_leave
     (shift_type_id is not null and leave_type is null)
     or (shift_type_id is null and leave_type is not null)
   );
+
+-- =============================================
+-- Procurement & Inventory — Phase 1 (2026-07-29)
+--
+-- The full, commented definition lives in:
+--   supabase/migration-2026-07-29-procurement.sql
+--   supabase/migration-2026-07-30-procurement-grants-fix.sql  (grants patch)
+--
+-- Both are idempotent. Run them in order on a fresh database rather than
+-- duplicating ~400 lines of DDL here — they are the source of truth for
+-- suppliers, items, purchase_orders, receivings, inventory_transactions,
+-- the inventory_balances view and the submit_receiving RPC.
+-- =============================================

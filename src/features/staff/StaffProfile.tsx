@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams, Navigate, Link } from 'react-router-dom'
+import { useParams, Navigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { ErrorBoundary } from '../../shared/components/ErrorBoundary'
 import { StarRating } from '../../shared/components/StarRating'
 import { ScoreChart } from '../../shared/components/ScoreChart'
-import type { Staff, Mission, MissionCompletion, SkillRating, VerificationType, MonthlyReview, ProbationReview, Role } from '../../shared/types'
+import type { Staff, StaffPrivate, Mission, MissionCompletion, SkillRating, VerificationType, MonthlyReview, ProbationReview, Role } from '../../shared/types'
 import {
   SKILL_CATEGORIES, MISSION_CATEGORY_LABELS, RANK_LABELS, getProbationDay,
   VERIFICATION_CONFIG,
@@ -14,13 +14,16 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import type { Option } from '../../shared/lib/lookups'
-import { canReviewStaff } from '../../shared/lib/permissions'
+import { canReviewStaff, canReadStaffPrivate } from '../../shared/lib/permissions'
+import { fetchStaffPrivate, saveStaffPrivate, fetchManagerNotes, saveManagerNotes } from './privateApi'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
 import { SkillDots } from '../../shared/components/SkillDots'
 import { Avatar } from '../../shared/components/Avatar'
 import { canPromote } from '../../shared/lib/xp'
+import { branchIdForLabel } from '../../shared/lib/branchLookup'
 import { CareerProgress } from './CareerProgress'
+import { Badge, Button, ButtonLink, Card, SegmentedTabs } from '../../shared/components/ui'
 
 type Tab = 'missions' | 'skills' | 'career' | 'personal' | 'reviews' | 'history'
 
@@ -31,6 +34,14 @@ const TAB_LABELS: Record<Tab, string> = {
   personal: 'Personal',
   reviews:  'Reviews',
   history:  'History',
+}
+
+// Time-of-day greeting for the self-view header.
+function greeting(d = new Date()) {
+  const h = d.getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 18) return 'Good afternoon'
+  return 'Good evening'
 }
 
 const now = new Date()
@@ -44,6 +55,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
   const staffId = selfView ? currentStaff?.id : id
 
   const [staff, setStaff]           = useState<Staff | null>(null)
+  const [priv, setPriv]             = useState<StaffPrivate | null>(null)
   const [missions, setMissions]     = useState<Mission[]>([])
   const [completions, setCompletions] = useState<MissionCompletion[]>([])
   const [skills, setSkills]         = useState<SkillRating[]>([])
@@ -53,9 +65,12 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
   const [loading, setLoading]       = useState(true)
   const [notFound, setNotFound]     = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey]   = useState(0)
 
   const isSelf       = selfView || staffId === currentStaff?.id
   const isManager    = currentStaff?.rank === 'manager'
+  // hr/manager/admin/owner (or rank manager): may read staff_private and manager notes.
+  const canSeePrivate = canReadStaffPrivate(currentStaff)
   // Scope-aware review permission: mirrors canReviewStaff (manager tier is
   // unconditionally true; supervisor tier requires same branch+department
   // and a target rank below supervisor). Gates review scoring + skill
@@ -76,7 +91,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
     async function load() {
       try {
-        const [staffRes, missionRes, completionRes, skillRes, reviewRes, probationRes] = await Promise.all([
+        const [staffRes, missionRes, completionRes, skillRes, reviewRes, probationRes, privRow] = await Promise.all([
           supabase.from('staff').select('*').eq('id', staffId!).single(),
           supabase.from('missions').select('*').order('created_at'),
           supabase.from('mission_completions').select('*, mission:missions(*)').eq('staff_id', staffId!),
@@ -87,6 +102,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
           supabase.from('probation_reviews').select('*')
             .eq('staff_id', staffId!).is('overall_result', null)
             .order('created_at', { ascending: false }).limit(1).maybeSingle(),
+          fetchStaffPrivate(staffId!),
         ])
         if (cancelled) return
         if (!staffRes.data) { setNotFound(true) }
@@ -96,6 +112,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         setSkills((skillRes.data ?? []) as SkillRating[])
         setPendingReviewStatus(reviewRes.data?.status ?? null)
         setProbation((probationRes.data ?? null) as ProbationReview | null)
+        setPriv(privRow)
       } catch (err) {
         if (!cancelled) setFetchError(err instanceof Error ? err.message : 'Failed to load profile.')
       } finally {
@@ -104,18 +121,23 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
     }
     load()
     return () => { cancelled = true }
-  }, [staffId])
+  }, [staffId, reloadKey])
 
   async function refreshAll() {
     if (!staffId) return
     try {
-      const [staffRes, completionRes, reviewRes] = await Promise.all([
+      const [staffRes, completionRes, reviewRes, privResult] = await Promise.all([
         supabase.from('staff').select('*').eq('id', staffId).single(),
         supabase.from('mission_completions').select('*, mission:missions(*)').eq('staff_id', staffId),
         supabase.from('monthly_reviews').select('status')
           .eq('staff_id', staffId).eq('month', CURRENT_MONTH).eq('year', CURRENT_YEAR).maybeSingle(),
+        // A failed private fetch must not discard the other results, and must
+        // not read as "Restricted" (null) — so it is caught here and the
+        // previous priv is kept.
+        fetchStaffPrivate(staffId).then(row => ({ row }), () => null),
       ])
       if (staffRes.data) setStaff(staffRes.data as Staff)
+      if (privResult) setPriv(privResult.row)
       setCompletions((completionRes.data ?? []) as MissionCompletion[])
       setPendingReviewStatus(reviewRes.data?.status ?? null)
       if (isSelf) await refreshStaff()
@@ -186,10 +208,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         <p className="text-2xl mb-2">⚠️</p>
         <p className="text-brown-dark font-semibold mb-1">Could not load profile</p>
         <p className="text-brown-muted text-sm mb-4">{fetchError}</p>
-        <button onClick={() => { setFetchError(null); setLoading(true) }}
-          className="text-sm bg-brown-btn hover:bg-brown-btn-hover text-white px-4 py-2 rounded-lg transition-colors">
-          Retry
-        </button>
+        <Button variant="dark" onClick={() => { setFetchError(null); setLoading(true); setReloadKey(k => k + 1) }}>Retry</Button>
       </div>
     )
   }
@@ -199,13 +218,15 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
   return (
     <ErrorBoundary>
-      <div className="max-w-3xl mx-auto px-4 py-8">
+      <div className="max-w-3xl mx-auto px-4 py-8 font-brand">
+        {isSelf && <p className="type-eyebrow text-[11px] text-brown-brand mb-2.5">{greeting()}</p>}
+
         {/* Probation banner */}
         {staff.rank === 'trainee' && probation && (
-          <div className="bg-[#FEF3E2] border border-[#C4813A40] rounded-xl px-4 py-3 mb-4 flex items-center gap-3">
+          <Card tone="tint" padded={false} className="px-4 py-3 mb-4 flex items-center gap-3">
             <span className="text-xl flex-shrink-0">🌱</span>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-[#C4813A]">
+              <p className="type-semicondensed text-[15px] font-bold text-[#A86C2C]">
                 Probation Period — Day {getProbationDay(probation.start_date)} of 3
               </p>
               <div className="flex gap-1.5 mt-1.5">
@@ -221,79 +242,61 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
               </div>
             </div>
             {canReview && (
-              <Link
-                to={`/probation/${staff.id}`}
-                className="text-xs font-semibold text-[#C4813A] px-3 py-1.5 rounded-lg border border-[#C4813A40] hover:bg-[#C4813A10] transition-colors flex-shrink-0"
-              >
-                View Review →
-              </Link>
+              <ButtonLink to={`/probation/${staff.id}`} variant="secondary" size="sm" className="flex-shrink-0">
+                View review →
+              </ButtonLink>
             )}
-          </div>
+          </Card>
         )}
 
         {/* Profile header */}
-        <div className="bg-white rounded-2xl shadow-card p-6 mb-6">
+        <Card className="p-6 mb-4">
           <div className="flex items-start gap-4">
-            <Avatar name={staff.name} avatar={staff.avatar} />
+            <div className="rounded-full ring-4 ring-cream flex-shrink-0">
+              <Avatar name={staff.name} avatar={staff.avatar} />
+            </div>
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-3 flex-wrap mb-1">
-                <h1 className="font-display text-xl font-bold text-brown-dark">{staff.name}</h1>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="type-wordmark text-[28px] text-brown-dark break-words">{staff.name}</h1>
                 <RankBadge rank={staff.rank} size="sm" />
-                {staff.status === 'resigned' && (
-                  <span className="text-xs text-[#9E4A30] border border-[#C0624240] bg-[#C0624210] rounded-full px-2 py-0.5 font-medium">
-                    Resigned
-                  </span>
-                )}
-                {promote && (
-                  <span className="text-xs text-[#C4813A] border border-[#C4813A40] bg-[#C4813A0C] rounded-full px-2 py-0.5">
-                    Ready to Promote
-                  </span>
-                )}
+                {staff.status === 'resigned' && <Badge tone="danger">Resigned</Badge>}
+                {promote && <Badge tone="brand">Ready to promote</Badge>}
               </div>
-              <p className="text-xs text-brown-faint capitalize mb-3">
+              <p className="type-condensed text-[15px] text-brown-muted capitalize mt-1.5 mb-4">
                 {deptName(staff.department) || '—'} · Level {staff.level}
               </p>
               <XPBar xp={staff.xp ?? 0} level={staff.level ?? 1} />
             </div>
           </div>
-        </div>
+        </Card>
 
         {/* Review banner — shown when self-view and current month review is pending */}
         {isSelf && pendingReviewStatus === 'pending' && (
-          <div className="bg-[#FEF3E2] border border-[#C4813A35] rounded-xl px-5 py-4 mb-6 flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold text-[#8B5E2E]">Monthly review is ready</p>
+          <Card tone="tint" padded={false} className="px-5 py-4 mb-4 flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="type-semicondensed text-[15px] font-bold text-[#8B5E2E]">Your monthly review is ready</p>
               <p className="text-xs text-brown-muted mt-0.5">
                 Complete your self-evaluation for {MONTHS_FULL[CURRENT_MONTH - 1]}
               </p>
             </div>
-            <button
-              onClick={() => setTab('reviews')}
-              className="shrink-0 text-sm bg-[#C4813A] hover:bg-[#B8722E] text-white px-4 py-2 rounded-lg transition-colors font-medium"
-            >
+            <Button size="sm" className="shrink-0 !h-9 !px-4 !text-sm" onClick={() => setTab('reviews')}>
               Start →
-            </button>
-          </div>
+            </Button>
+          </Card>
         )}
 
         {/* Tabs */}
-        <div className="flex gap-1 mb-6 bg-white shadow-card rounded-xl p-1 overflow-x-auto">
-          {(Object.keys(TAB_LABELS) as Tab[]).map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`flex-1 py-2 text-sm rounded-lg whitespace-nowrap px-2 transition-colors relative ${
-                tab === t
-                  ? 'bg-[#4A2E1A] text-[#F5F0E8] font-medium'
-                  : 'text-brown-muted hover:text-brown-dark'
-              }`}
-            >
-              {TAB_LABELS[t]}
-              {t === 'reviews' && pendingReviewStatus === 'pending' && tab !== 'reviews' && (
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[#C4813A]" />
-              )}
-            </button>
-          ))}
+        <div className="mt-6 mb-6">
+          <SegmentedTabs
+            label="Profile sections"
+            value={tab}
+            onChange={setTab}
+            tabs={(Object.keys(TAB_LABELS) as Tab[]).map(t => ({
+              id: t,
+              label: TAB_LABELS[t],
+              dot: t === 'reviews' && pendingReviewStatus === 'pending',
+            }))}
+          />
         </div>
 
         {tab === 'missions' && (
@@ -306,6 +309,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         {tab === 'personal' && (
           <PersonalInfoTab
             staff={staff}
+            priv={priv}
             isSelf={isSelf}
             isManager={isManager}
             email={staff.email ?? (isSelf ? (user?.email ?? '') : '')}
@@ -324,12 +328,15 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
         )}
         {tab === 'history' && <HistoryTab completions={completions} />}
 
-        {/* Manager-only sections */}
-        {isManager && !isSelf && (
+        {/* Notes: hr/manager/admin/owner. Status + danger zone: rank manager (unchanged).
+            canSeePrivate already includes rank manager, so it gates the whole block. */}
+        {canSeePrivate && !isSelf && (
           <div className="mt-6 space-y-4">
-            <ManagerNotesCard staff={staff} onSaved={refreshAll} />
-            <EmploymentStatusCard staff={staff} onSetStatus={handleSetStatus} />
-            <DangerZoneCard staff={staff} onReset={handleReset} />
+            {canSeePrivate && currentStaff && (
+              <ManagerNotesCard staffId={staff.id} actorId={currentStaff.id} />
+            )}
+            {isManager && <EmploymentStatusCard staff={staff} onSetStatus={handleSetStatus} />}
+            {isManager && <DangerZoneCard staff={staff} onReset={handleReset} />}
           </div>
         )}
       </div>
@@ -915,7 +922,7 @@ function MissionsTab({
 
   if (available.length === 0 && pendingMissions.length === 0) {
     return (
-      <div className="bg-white rounded-xl shadow-card px-5 py-8 text-center">
+      <div className="bg-white rounded-2xl shadow-card px-5 py-8 text-center">
         <p className="text-2xl mb-2">🏆</p>
         <p className="text-brown-dark font-semibold">All missions completed!</p>
         <p className="text-brown-muted text-sm mt-1">Check back with your manager for new challenges.</p>
@@ -932,11 +939,11 @@ function MissionsTab({
             {pendingMissions.map(m => {
               const completion = pendingMap.get(m.id)
               return (
-                <div key={m.id} className="bg-white rounded-xl shadow-card px-5 py-4 flex items-center justify-between gap-4">
+                <div key={m.id} className="bg-white rounded-2xl shadow-card px-5 py-4 flex items-center justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-brown-dark">{m.title}</p>
+                    <p className="type-semicondensed text-base font-bold text-brown-dark">{m.title}</p>
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      <span className="text-xs text-[#C4813A] font-semibold">+{m.xp_reward} XP</span>
+                      <span className="type-condensed text-sm text-accent-text font-semibold">+{m.xp_reward} XP</span>
                       {m.verification_type && <VerificationTag type={m.verification_type} />}
                       {completion?.photo_url && (
                         <button onClick={() => window.open(completion.photo_url!, '_blank')}
@@ -944,9 +951,7 @@ function MissionsTab({
                       )}
                     </div>
                   </div>
-                  <span className="shrink-0 text-xs text-[#C4813A] border border-[#C4813A35] bg-[#C4813A10] px-2.5 py-0.5 rounded-full whitespace-nowrap">
-                    Pending
-                  </span>
+                  <Badge tone="brand" className="shrink-0 whitespace-nowrap">Pending</Badge>
                 </div>
               )
             })}
@@ -959,27 +964,25 @@ function MissionsTab({
           <div className="space-y-2">
             {available.map(m => (
               <div key={m.id}>
-                <div className="bg-white rounded-xl shadow-card px-5 py-4 flex items-center justify-between gap-4">
+                <div className="bg-white rounded-2xl shadow-card px-5 py-4 flex items-center justify-between gap-4">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-brown-dark">{m.title}</p>
+                    <p className="type-semicondensed text-base font-bold text-brown-dark">{m.title}</p>
                     {m.description && <p className="text-xs text-brown-muted mt-0.5 line-clamp-1">{m.description}</p>}
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      <span className="text-xs text-[#C4813A] font-semibold">+{m.xp_reward} XP</span>
+                      <span className="type-condensed text-sm text-accent-text font-semibold">+{m.xp_reward} XP</span>
                       {m.category && <span className="text-xs text-brown-faint">{MISSION_CATEGORY_LABELS[m.category]}</span>}
                       {m.verification_type && <VerificationTag type={m.verification_type} />}
                     </div>
                   </div>
                   {isSelf && (
-                    <button
+                    <Button
+                      size="sm"
+                      variant={activeId === m.id ? 'dark' : 'secondary'}
+                      className="shrink-0"
                       onClick={() => setActiveId(prev => prev === m.id ? null : m.id)}
-                      className={`shrink-0 text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                        activeId === m.id
-                          ? 'bg-brown-btn text-white border-brown-btn'
-                          : 'border-[#8B634440] text-[#8B6344] bg-[#8B634408] hover:bg-[#8B634418]'
-                      }`}
                     >
                       {activeId === m.id ? 'Cancel' : 'Complete'}
-                    </button>
+                    </Button>
                   )}
                 </div>
                 {activeId === m.id && isSelf && (
@@ -1159,11 +1162,14 @@ export function supervisorOptions(allStaff: SupervisorCandidate[], staff: Pick<S
 }
 
 export function PersonalInfoTab({
-  staff, isSelf, isManager, email, authEmail, onSaved,
+  staff, priv, isSelf, isManager, email, authEmail, onSaved,
 }: {
-  staff: Staff; isSelf: boolean; isManager: boolean; email: string; authEmail: string; onSaved: () => void
+  staff: Staff; priv: StaffPrivate | null; isSelf: boolean; isManager: boolean; email: string; authEmail: string; onSaved: () => void
 }) {
   const canEdit = isSelf || (isManager && !isSelf)
+  // null ⇒ RLS hid this staff member's private row from the viewer.
+  const restricted = priv === null
+  const privValue = (v: string | null | undefined) => (restricted ? 'Restricted' : (v ?? '—'))
   const { departmentOptions, deptName, employmentTypeOptions } = useLookups()
   const deptDisplay = deptName(staff.department)   // slug → display label
   const [editing, setEditing]   = useState(false)
@@ -1172,7 +1178,7 @@ export function PersonalInfoTab({
 
   const [form, setForm] = useState<PersonalFormData>({
     fullName: staff.name ?? '', nickname: staff.nickname ?? '', gender: staff.gender ?? '',
-    contactNumber: staff.contact_number ?? '', address: staff.address ?? '',
+    contactNumber: priv?.contact_number ?? '', address: priv?.address ?? '',
     branch: staff.branch ?? '', department: staff.department ?? '',   // store the slug
     employmentType: staff.employment_type ?? '', workingExperience: staff.working_experience ?? '',
     education: staff.education ?? '', rank: staff.rank, level: String(staff.level),
@@ -1215,11 +1221,17 @@ export function PersonalInfoTab({
     try {
       const payload: Record<string, unknown> = {
         name: form.fullName, nickname: form.nickname || null, gender: form.gender || null,
-        contact_number: form.contactNumber || null, address: form.address || null,
         branch: form.branch || null,
         department: form.department || null,   // already a department slug
         employment_type: form.employmentType || null,
         working_experience: form.workingExperience || null, education: form.education || null,
+      }
+      // Only when the label changed: an unchanged label must not clear a
+      // branch_id set some other way (e.g. a POS/demo outlet with no label).
+      const nextBranch = form.branch || null
+      if (nextBranch !== (staff.branch ?? null)) {
+        const branchId = await branchIdForLabel(nextBranch)
+        if (branchId !== undefined) payload.branch_id = branchId
       }
       if (isManager && !isSelf) {
         payload.rank = form.rank
@@ -1230,6 +1242,11 @@ export function PersonalInfoTab({
       }
       const { error } = await supabase.from('staff').update(payload).eq('id', staff.id)
       if (error) throw error
+      const nextContact = form.contactNumber || null
+      const nextAddress = form.address || null
+      if (priv && (nextContact !== priv.contact_number || nextAddress !== priv.address)) {
+        await saveStaffPrivate(staff.id, { contact_number: nextContact, address: nextAddress })
+      }
       // Job title changed → create the skill records for its career path
       // (idempotent RPC; no-op if the title has no active path).
       if (isManager && !isSelf && form.jobTitleId && form.jobTitleId !== (staff.job_title_id ?? '')) {
@@ -1242,7 +1259,7 @@ export function PersonalInfoTab({
 
   function cancel() {
     setForm({ fullName: staff.name ?? '', nickname: staff.nickname ?? '', gender: staff.gender ?? '',
-      contactNumber: staff.contact_number ?? '', address: staff.address ?? '', branch: staff.branch ?? '',
+      contactNumber: priv?.contact_number ?? '', address: priv?.address ?? '', branch: staff.branch ?? '',
       department: staff.department ?? '', employmentType: staff.employment_type ?? '',
       workingExperience: staff.working_experience ?? '', education: staff.education ?? '',
       rank: staff.rank, level: String(staff.level), jobTitleId: staff.job_title_id ?? '',
@@ -1351,8 +1368,8 @@ export function PersonalInfoTab({
               <PIInputRow label="Full Name" value={form.fullName} onChange={v => update('fullName', v)} />
               <PIInputRow label="Nickname"  value={form.nickname} onChange={v => update('nickname', v)} placeholder="Optional" />
             </div>
-            <InfoRow label="IC Number"     value={staff.ic_number ?? '—'}    note="Cannot be changed" />
-            <InfoRow label="Date of Birth" value={staff.date_of_birth ?? '—'} note="Cannot be changed" />
+            <InfoRow label="IC Number"     value={privValue(priv?.ic_number)}     note="Cannot be changed" />
+            <InfoRow label="Date of Birth" value={privValue(priv?.date_of_birth)} note="Cannot be changed" />
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <p className={labelCls}>Gender</p>
@@ -1367,21 +1384,25 @@ export function PersonalInfoTab({
                   ))}
                 </div>
               </div>
-              <PIInputRow label="Contact Number" type="tel" value={form.contactNumber} onChange={v => update('contactNumber', v)} />
+              {!restricted && (
+                <PIInputRow label="Contact Number" type="tel" value={form.contactNumber} onChange={v => update('contactNumber', v)} />
+              )}
             </div>
             <InfoRow label="Email" value={email} note="From your account" />
-            <PITextareaRow label="Address" value={form.address} onChange={v => update('address', v)} />
+            {!restricted && (
+              <PITextareaRow label="Address" value={form.address} onChange={v => update('address', v)} />
+            )}
           </div>
         ) : (
           <div className="space-y-2">
             <InfoRow label="Full Name"     value={staff.name} />
             <InfoRow label="Nickname"      value={staff.nickname ?? '—'} />
-            <InfoRow label="IC Number"     value={staff.ic_number ?? '—'} />
-            <InfoRow label="Date of Birth" value={staff.date_of_birth ?? '—'} />
+            <InfoRow label="IC Number"     value={privValue(priv?.ic_number)} />
+            <InfoRow label="Date of Birth" value={privValue(priv?.date_of_birth)} />
             <InfoRow label="Gender"        value={staff.gender ?? '—'} />
-            <InfoRow label="Contact"       value={staff.contact_number ?? '—'} />
+            <InfoRow label="Contact"       value={privValue(priv?.contact_number)} />
             <InfoRow label="Email"         value={email} />
-            <InfoRow label="Address"       value={staff.address ?? '—'} multiline />
+            <InfoRow label="Address"       value={privValue(priv?.address)} multiline />
           </div>
         )}
       </div>
@@ -1576,29 +1597,42 @@ function ChangePasswordCard({ email }: { email: string }) {
 
 // ─── Manager Cards ────────────────────────────────────────────────────────────
 
-function ManagerNotesCard({ staff, onSaved }: { staff: Staff; onSaved: () => void }) {
-  const [notes, setNotes]   = useState(staff.manager_notes ?? '')
+function ManagerNotesCard({ staffId, actorId }: { staffId: string; actorId: string }) {
+  const [notes, setNotes]   = useState('')
+  const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved]   = useState(false)
+  const [error, setError]   = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetchManagerNotes(staffId)
+      .then(n => { if (!cancelled) { setNotes(n ?? ''); setLoaded(true) } })
+      .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load notes.') })
+    return () => { cancelled = true }
+  }, [staffId])
 
   async function save() {
-    setSaving(true)
+    setSaving(true); setError('')
     try {
-      await supabase.from('staff').update({ manager_notes: notes || null }).eq('id', staff.id)
-      setSaved(true); setTimeout(() => setSaved(false), 2000); onSaved()
-    } catch { /* silent */ } finally { setSaving(false) }
+      await saveManagerNotes(staffId, notes || null, actorId)
+      setSaved(true); setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save notes.')
+    } finally { setSaving(false) }
   }
 
   return (
     <div className="bg-white rounded-xl shadow-card p-5">
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest">Manager Notes</p>
-        <span className="text-xs text-brown-faint italic">Private — only visible to managers</span>
+        <span className="text-xs text-brown-faint italic">Private — only visible to HR and managers</span>
       </div>
-      <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
+      {error && <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 mb-3">{error}</p>}
+      <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} disabled={!loaded}
         placeholder="Performance notes, observations, development feedback…"
         className={`${inputCls} resize-none mb-3`} />
-      <button onClick={save} disabled={saving}
+      <button onClick={save} disabled={saving || !loaded}
         className={`text-xs px-3 py-1.5 rounded-lg border transition-colors font-medium ${
           saved ? 'bg-[#EBF5EE] text-[#3D7A50] border-[#5B9E6A30]'
                 : 'border-[#8B634440] text-[#8B6344] bg-[#8B634408] hover:bg-[#8B634418]'
@@ -1798,10 +1832,10 @@ function StatusPill({ status }: { status: string }) {
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest mb-3">{children}</p>
+  return <p className="type-eyebrow text-[11px] text-brown-brand mb-3">{children}</p>
 }
 function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <p className="text-xs font-semibold text-brown-muted uppercase tracking-widest">{children}</p>
+  return <p className="type-eyebrow text-[11px] text-brown-brand">{children}</p>
 }
 function InfoRow({ label, value, note, multiline }: { label: string; value: string; note?: string; multiline?: boolean }) {
   return (

@@ -3,7 +3,9 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, CheckSquare, ClipboardList, FolderKanban,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
-  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, MessageSquare,
+  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network,
+  ShoppingBasket, Truck, Package, ShoppingCart, PackageCheck, Boxes, Trash2, ArrowLeftRight,
+  ChefHat, MessageSquare,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -13,6 +15,7 @@ import type { NavLeaf, NavGroup } from '../lib/nav'
 import { AddToHomeScreenLogo } from './AddToHomeScreen'
 import { RankBadge } from './RankBadge'
 import { Avatar } from './Avatar'
+import { Wordmark } from './ui'
 import { NotificationBell } from '../../features/notifications/NotificationBell'
 import { FeedbackButton } from '../../features/feedback/FeedbackButton'
 import { useNewFeedbackCount } from '../../features/feedback/useNewFeedbackCount'
@@ -21,6 +24,7 @@ import { useNewFeedbackCount } from '../../features/feedback/useNewFeedbackCount
 // 图标的位置,和下面子项的标签对不齐。
 const ICONS: Record<string, LucideIcon> = {
   profile: User,
+  'org-chart': Network,
   team: Users,
   'time-pay': Clock,
   directory: BookUser,
@@ -33,6 +37,15 @@ const ICONS: Record<string, LucideIcon> = {
   leave: Palmtree,
   claims: Receipt,
   salary: Wallet,
+  procurement: ShoppingBasket,
+  'proc-suppliers': Truck,
+  'proc-items': Package,
+  'proc-orders': ShoppingCart,
+  'proc-receiving': PackageCheck,
+  'proc-transfers': ArrowLeftRight,
+  'proc-wastage': Trash2,
+  'proc-recipes': ChefHat,
+  'proc-inventory': Boxes,
   settings: Settings,
   feedback: MessageSquare,
 }
@@ -92,12 +105,12 @@ export function SidebarContent({ onNavigate, onClose }: {
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 font-brand">
       {/* Logo */}
       <div className="flex items-center justify-between px-4 pt-5 pb-4 flex-shrink-0">
-        <Link to="/" className="flex items-center gap-2.5">
-          <img src="/craft-logo.jpg" alt="Craft Cafe" className="w-9 h-9 rounded-full object-cover flex-shrink-0" />
-          <span className="font-display text-xl font-bold text-[#F5F0E8] tracking-wide">Craft OS</span>
+        <Link to="/" className="flex items-center gap-2">
+          <img src="/craft-logo.jpg" alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+          <Wordmark />
         </Link>
         {/* No bell here — see the comment on <Sidebar> for why it lives
             there instead, mounted exactly once. */}
@@ -114,7 +127,7 @@ export function SidebarContent({ onNavigate, onClose }: {
           <div className="flex items-center gap-3 p-3 rounded-xl bg-[#3D2410]">
             <Avatar name={staff.name} avatar={staff.avatar} size="md" />
             <div className="min-w-0">
-              <p className="text-sm font-semibold text-[#F5F0E8] truncate">{staff.name}</p>
+              <p className="type-semicondensed text-sm font-bold text-[#F5F0E8] truncate">{staff.name}</p>
               <div className="mt-1">
                 <RankBadge rank={staff.rank} size="sm" />
               </div>
@@ -151,7 +164,7 @@ export function SidebarContent({ onNavigate, onClose }: {
               >
                 <span className="flex items-center gap-3 min-w-0">
                   {GroupIcon && <GroupIcon size={16} className="flex-shrink-0" />}
-                  <span className="font-semibold tracking-wide truncate">{entry.label}</span>
+                  <span className="type-semicondensed font-bold tracking-wide truncate">{entry.label}</span>
                 </span>
                 <ChevronDown size={14} className={`flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
               </button>

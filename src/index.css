@@ -29,3 +29,53 @@
     background: #B8A890;
   }
 }
+
+/* Brand type roles (Archivo widths: 87.5% = semi-condensed, 75% = condensed). */
+@layer components {
+  /* Logo-style heavy caps: CRAFT wordmark, page titles, staff name. */
+  .type-wordmark {
+    @apply font-brand font-black uppercase leading-none;
+    font-stretch: 87.5%;
+    letter-spacing: 0.01em;
+  }
+  /* Spaced serif caps, like CAFE under the logo: greetings, section labels. */
+  .type-eyebrow {
+    @apply font-label font-bold uppercase;
+    letter-spacing: 0.3em;
+  }
+  /* Narrow menu-style text: meta lines, prices, XP. */
+  .type-condensed {
+    @apply font-brand;
+    font-stretch: 75%;
+    letter-spacing: 0.03em;
+  }
+  .type-semicondensed {
+    @apply font-brand;
+    font-stretch: 87.5%;
+  }
+}
+
+/* Org chart connector lines: nested <ul>/<li>, lines drawn with borders. */
+.org-tree { width: max-content; min-width: 100%; }
+.org-tree ul { display: flex; justify-content: center; position: relative; padding-top: 20px; }
+.org-tree li { display: flex; flex-direction: column; align-items: center; position: relative; padding: 20px 6px 0; }
+.org-tree li::before,
+.org-tree li::after { content: ''; position: absolute; top: 0; right: 50%; width: 50%; height: 20px; border-top: 1px solid #D4C5B0; }
+.org-tree li::after { right: auto; left: 50%; border-left: 1px solid #D4C5B0; }
+.org-tree li:only-child { padding-top: 0; }
+.org-tree li:only-child::before,
+.org-tree li:only-child::after { display: none; }
+.org-tree li:first-child::before,
+.org-tree li:last-child::after { border: 0 none; }
+.org-tree li:last-child::before { border-right: 1px solid #D4C5B0; border-top-right-radius: 6px; }
+.org-tree li:first-child::after { border-top-left-radius: 6px; }
+.org-tree ul ul::before { content: ''; position: absolute; top: 0; left: 50%; height: 20px; border-left: 1px solid #D4C5B0; }
+.org-tree > ul { padding-top: 0; }
+.org-tree > ul > li { padding-top: 0; }
+.org-tree > ul > li::before,
+.org-tree > ul > li::after { display: none; }
+/* A column of reports without teams of their own; the rail runs behind the
+   cards so the gaps between them read as one connected line. */
+.org-tree .org-stack { display: flex; flex-direction: column; align-items: center; gap: 8px; position: relative; }
+.org-tree .org-stack::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; border-left: 1px solid #D4C5B0; }
+.org-tree .org-stack > * { position: relative; }

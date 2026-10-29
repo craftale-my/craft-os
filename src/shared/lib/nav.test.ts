@@ -10,7 +10,12 @@ const ids = (entries: ReturnType<typeof visibleNav>) => entries.map(e => e.id)
 describe('visibleNav', () => {
   it('无任何 capability 的店员只看到 Profile 与 Time & Pay', () => {
     const nav = visibleNav(canWith())
-    expect(ids(nav)).toEqual(['profile', 'time-pay', 'feedback'])
+    expect(ids(nav)).toEqual(['profile', 'org-chart', 'time-pay', 'feedback'])
+  })
+
+  it('shows Org Chart to staff with no capabilities at all', () => {
+    // 组织图人人可看:不放在需要 view_team 的 Team 组里。
+    expect(ids(visibleNav(canWith()))).toContain('org-chart')
   })
 
   it('店员的 Time & Pay 保留全部五项', () => {
@@ -44,11 +49,11 @@ describe('visibleNav', () => {
 
   it('子项被 capability 全部过滤掉时整个大类消失', () => {
     // view_team 是 Team 组本身的 cap;没有它,组不出现
-    expect(ids(visibleNav(canWith('conduct_reviews')))).toEqual(['profile', 'time-pay', 'feedback'])
+    expect(ids(visibleNav(canWith('conduct_reviews')))).toEqual(['profile', 'org-chart', 'time-pay', 'feedback'])
   })
 
   it('access_settings 控制 Settings 叶子项', () => {
-    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'settings', 'feedback'])
+    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'org-chart', 'time-pay', 'settings', 'feedback'])
   })
 
   it('Feedback 对所有人可见,排在最后', () => {
@@ -83,6 +88,7 @@ describe('activeEntry', () => {
 
   it('顶层叶子项没有 groupId', () => {
     expect(activeEntry(full, '/profile')).toEqual({ leafId: 'profile', groupId: null })
+    expect(activeEntry(full, '/org-chart')).toEqual({ leafId: 'org-chart', groupId: null })
   })
 
   it('/team/projects 命中 Projects,不会误点亮 Directory', () => {
@@ -114,5 +120,40 @@ describe('visibleNav 的扁平化结果', () => {
     const full = visibleNav(() => true)
     const flatTo = full.flatMap(e => (isGroup(e) ? e.children.map(c => c.to) : [e.to]))
     expect(new Set(flatTo).size).toBe(flatTo.length)
+  })
+})
+
+describe('Procurement group', () => {
+  const childIds = (nav: ReturnType<typeof visibleNav>) => {
+    const group = nav.find(e => e.id === 'procurement')
+    return group && isGroup(group) ? group.children.map(c => c.id) : null
+  }
+
+  it('is hidden from users with neither procurement capability', () => {
+    expect(childIds(visibleNav(canWith('view_team', 'manage_hr')))).toBeNull()
+  })
+
+  it('shows supervisors (use_procurement only) orders, receiving, transfers, wastage, recipes and inventory, not master data', () => {
+    expect(childIds(visibleNav(canWith('use_procurement')))).toEqual([
+      'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-recipes', 'proc-inventory',
+    ])
+  })
+
+  it('shows managers (both capabilities) every procurement page', () => {
+    expect(childIds(visibleNav(canWith('manage_procurement', 'use_procurement')))).toEqual([
+      'proc-suppliers', 'proc-items', 'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage',
+      'proc-recipes', 'proc-inventory',
+    ])
+  })
+
+  it('detail routes highlight their list page', () => {
+    const full = visibleNav(() => true)
+    expect(activeEntry(full, '/procurement/orders/new')).toEqual({ leafId: 'proc-orders', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/receiving/po-1')).toEqual({ leafId: 'proc-receiving', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/items/item-1')).toEqual({ leafId: 'proc-items', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/inventory/item-1')).toEqual({ leafId: 'proc-inventory', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/wastage')).toEqual({ leafId: 'proc-wastage', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/transfers/po-1/ship')).toEqual({ leafId: 'proc-transfers', groupId: 'procurement' })
+    expect(activeEntry(full, '/procurement/recipes/item-1/produce')).toEqual({ leafId: 'proc-recipes', groupId: 'procurement' })
   })
 })

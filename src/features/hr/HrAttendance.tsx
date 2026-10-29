@@ -1,15 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ShiftType, ScheduleLeaveType } from '../../shared/types'
+import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ScheduledShift, ShiftType, ScheduleLeaveType } from '../../shared/types'
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
 import { writeOutcome, writeOutcomeWithRow, type WriteOutcome, type WriteOutcomeWithRow } from '../../shared/lib/db-write'
 import { DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES, LATE_REASON_LABELS, type LateReasonCode } from '../../shared/lib/lateReason'
+import { buildStaffReport } from '../../shared/lib/attendance-report'
+import type { DailyDetail } from '../../shared/lib/attendance-report'
 import { Avatar } from '../../shared/components/Avatar'
-import { MapPin, CheckCircle, X, AlertTriangle, ZoomIn, Coffee } from 'lucide-react'
+import { MapPin, CheckCircle, X, AlertTriangle, ZoomIn, Coffee, ChevronDown, ChevronRight } from 'lucide-react'
 import { ClockModal, type ClockResult } from './ClockModal'
 import { LateReasonStep } from './LateReasonStep'
 
@@ -21,6 +23,15 @@ function todayStr(): string {
 
 function daysInMonth(year: number, month: number): number {
   return new Date(year, month, 0).getDate()
+}
+
+/**
+ * Resigned staff stay out of the team views unless they have something on
+ * record for the period being viewed: a month they actually worked still
+ * needs their row, the months after they left do not.
+ */
+export function hideIdleResigned(staff: Staff[], withRecords: Set<string>): Staff[] {
+  return staff.filter(s => s.status !== 'resigned' || withRecords.has(s.id))
 }
 
 function fmtTime(iso: string): string {
@@ -110,7 +121,9 @@ export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; manage
   }
 
   async function markAllPresent() {
-    const rows = visibleStaff.map(s => ({
+    // A resigned row is only on screen because of an existing record; never
+    // overwrite it with a fresh "present".
+    const rows = visibleStaff.filter(s => s.status !== 'resigned').map(s => ({
       staff_id: s.id,
       date,
       status: 'present' as const,
@@ -151,7 +164,7 @@ export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; manage
     else { setRosterError(null); load() }
   }
 
-  const visibleStaff = allStaff.filter(s => {
+  const visibleStaff = hideIdleResigned(allStaff, new Set(Object.keys(records))).filter(s => {
     if (filterBranch && s.branch !== filterBranch) return false
     if (filterDept && s.department !== filterDept) return false
     return true
@@ -374,6 +387,7 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
     if (!map[r.staff_id]) map[r.staff_id] = {}
     map[r.staff_id][day] = r
   })
+  const gridStaff = hideIdleResigned(allStaff, new Set(Object.keys(map)))
 
   async function exportCSV() {
     setExporting(true)
@@ -407,7 +421,7 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
             </tr>
           </thead>
           <tbody>
-            {allStaff.map((s, i) => (
+            {gridStaff.map((s, i) => (
               <tr key={s.id} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
                 <td className="px-3 py-1.5 font-medium text-brown-dark sticky left-0 bg-white whitespace-nowrap">{s.name}</td>
                 {days.map(d => {
@@ -431,6 +445,601 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+// ─── Manager: date-range report ───────────────────────────────────────────────
+
+/** A scheduled_shifts row with its shift_type embedded — the shape
+ *  buildStaffReport reads shift name/start/end from. */
+type ReportShift = ScheduledShift & {
+  shift_type?: Pick<ShiftType, 'name' | 'start_time' | 'end_time'> | null
+}
+
+type RangePreset = 'last7' | 'last30' | 'this_month' | 'last_month' | 'custom'
+
+const RANGE_PRESETS: { key: Exclude<RangePreset, 'custom'>; label: string }[] = [
+  { key: 'last7',      label: 'Last 7 days' },
+  { key: 'last30',     label: 'Last 30 days' },
+  { key: 'this_month', label: 'This month' },
+  { key: 'last_month', label: 'Last month' },
+]
+
+/** PostgREST answers at most this many rows per request. */
+const PAGE_SIZE = 1000
+
+/** Ceiling on a single report's reads, so a runaway filter cannot page forever.
+ *  50 staff over a year is ~18k attendance rows, so no real range reaches it. */
+const REPORT_MAX_ROWS = 20000
+
+/** Reads every page of a range instead of accepting PostgREST's first one.
+ *
+ *  Taking the capped slice silently was worse than an under-count: attendance
+ *  came back ordered by date, so its cut fell at a date boundary, while
+ *  scheduled_shifts came back unordered, so its cut fell anywhere. A scheduled
+ *  day whose attendance row had been dropped then looked like a missed
+ *  clock-in that never happened — on a full roster the untouched "Last 30 days"
+ *  default invented dated absences for staff who clocked in every day, and both
+ *  CSV exports carried them. Paging needs a total order to be stable, so every
+ *  caller sorts on a unique tiebreaker. */
+async function fetchAllRows<T>(
+  page: (lo: number, hi: number) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+): Promise<{ rows: T[]; truncated: boolean; error: { message: string } | null }> {
+  const rows: T[] = []
+  for (let lo = 0; lo < REPORT_MAX_ROWS; lo += PAGE_SIZE) {
+    const { data, error } = await page(lo, lo + PAGE_SIZE - 1)
+    if (error) return { rows, truncated: false, error }
+    const batch = (data as T[] | null) ?? []
+    rows.push(...batch)
+    if (batch.length < PAGE_SIZE) return { rows, truncated: false, error: null }
+  }
+  return { rows, truncated: true, error: null }
+}
+
+/** `dateStr` shifted by whole calendar days — prevDateStr, generalised. */
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00`)
+  d.setDate(d.getDate() + days)
+  return localDateStr(d)
+}
+
+/** First and last day of the month `offset` months from the current one.
+ *  Day 0 of the next month is the last day of this one — same trick as
+ *  daysInMonth above. */
+function monthBounds(offset: number): { first: string; last: string } {
+  const now = new Date()
+  return {
+    first: localDateStr(new Date(now.getFullYear(), now.getMonth() + offset, 1)),
+    last: localDateStr(new Date(now.getFullYear(), now.getMonth() + offset + 1, 0)),
+  }
+}
+
+function presetRange(preset: Exclude<RangePreset, 'custom'>): { from: string; to: string } {
+  const today = todayStr()
+  if (preset === 'last7') return { from: addDays(today, -6), to: today }
+  if (preset === 'last30') return { from: addDays(today, -29), to: today }
+  // "This month" stops at today — days that haven't happened yet would only pad
+  // the detail table with empty rows.
+  if (preset === 'this_month') return { from: monthBounds(0).first, to: today }
+  const prev = monthBounds(-1)
+  return { from: prev.first, to: prev.last }
+}
+
+/** 465 → "7h 45m", 45 → "45m", null (a missing clock) → "—". */
+function fmtWorked(minutes: number | null): string {
+  if (minutes == null) return '—'
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+function weekdayShort(date: string): string {
+  return new Date(`${date}T00:00:00`).toLocaleDateString('en-MY', { weekday: 'short' })
+}
+
+/** "Morning 9:30am–6:00pm", the leave label on a leave-marker day, else "—". */
+function shiftLabel(d: DailyDetail): string {
+  if (d.leaveType) return SCHEDULE_LEAVE_LABELS[d.leaveType as ScheduleLeaveType] ?? d.leaveType
+  if (!d.shiftName) return '—'
+  if (!d.shiftStart || !d.shiftEnd) return d.shiftName
+  return `${d.shiftName} ${fmtTime2(d.shiftStart)}–${fmtTime2(d.shiftEnd)}`
+}
+
+type ReportBreak = DailyDetail['breaks'][number]
+
+const breakAt = (d: DailyDetail, n: 1 | 2): ReportBreak | null => d.breaks.find(b => b.number === n) ?? null
+
+/** Every other value on a report row is fixed Malaysian time — `date` and the
+ *  shift's `start_time`/`end_time` are date/time columns, and `late_minutes` was
+ *  computed on the staff member's own on-site device. Only clock_in/clock_out
+ *  are timestamptz, so reading them with the viewer's local hours put "1:32am"
+ *  next to "Morning 9:30am–6:00pm" on a laptop set to UTC, and made the exported
+ *  CSV differ depending on who ran it. Pin them to the same zone as everything
+ *  beside them. */
+const MYT_CLOCK = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Kuala_Lumpur', hour: 'numeric', minute: '2-digit', hour12: true,
+})
+
+/** ISO timestamp -> `9:32am` in Malaysian time. The page-wide `fmtTime` renders
+ *  `09:32 am` (zero-padded, spaced); the report puts clock times next to shift
+ *  times formatted by `fmtTime2`, so it needs the same compact spelling.
+ *  Changing `fmtTime` itself would restyle the clock card and daily roster. */
+function fmtClock(iso: string): string {
+  const parts = MYT_CLOCK.formatToParts(new Date(iso))
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? ''
+  return `${get('hour')}:${get('minute')}${get('dayPeriod').toLowerCase().replace(/\s/g, '')}`
+}
+
+/** The Malaysian calendar date an instant falls on. */
+function mytDateOf(iso: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kuala_Lumpur', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(iso))
+}
+
+/** A clock time that says so when it belongs to a later day than the row it sits
+ *  on. An overnight shift is filed under the day it STARTS, so its clock-out
+ *  lands on the next calendar date — printed bare, `1:04am` beside a `5:02pm`
+ *  clock-in reads as a clock-out eight hours before the clock-in, and the CSV
+ *  carries the same trap into whatever a payroll clerk computes from it. */
+function fmtClockOn(iso: string, rowDate: string): string {
+  const base = fmtClock(iso)
+  const stamp = mytDateOf(iso)
+  if (stamp === rowDate) return base
+  const days = Math.round(
+    (new Date(`${stamp}T00:00:00`).getTime() - new Date(`${rowDate}T00:00:00`).getTime()) / 86400000,
+  )
+  return `${base} ${days > 0 ? '+' : ''}${days}d`
+}
+
+/** "12:05pm–12:38pm (33m)" — the overtime suffix is added separately so the UI
+ *  can paint it red while the CSV keeps it inline. */
+function fmtBreakWindow(b: ReportBreak | null): string {
+  if (!b?.start) return '—'
+  if (!b.end) return `${fmtClock(b.start)}–…`
+  return `${fmtClock(b.start)}–${fmtClock(b.end)}${b.durationMinutes != null ? ` (${b.durationMinutes}m)` : ''}`
+}
+
+function breakCellText(b: ReportBreak | null): string {
+  const base = fmtBreakWindow(b)
+  if (base === '—' || !b?.isOvertime) return base
+  return `${base} +${b.overtimeMinutes}m`
+}
+
+/** Status as plain text for the CSV — the missed-clock-in chip becomes a suffix. */
+function statusText(d: DailyDetail): string {
+  const base = d.status ? ATTENDANCE_STATUS_LABELS[d.status] : 'No record'
+  return d.missedClockIn ? `${base} · Missed` : base
+}
+
+const SUMMARY_HEADERS = ['Staff', 'Present', 'Late', 'Late mins', 'Absent', 'Leave', 'Half day', 'Missed clock-in', 'Break OT']
+const DETAIL_HEADERS = ['Staff', 'Date', 'Day', 'Shift', 'Clock In', 'Clock Out', 'Worked', 'Break 1', 'Break 2', 'Late', 'Status', 'GPS']
+
+/** Summary counter cell: zero is muted, non-zero is highlighted in the column's
+ *  warning colour (red for absent/missed, amber for late/break overtime). */
+function CountCell({ value, warnColor }: { value: number; warnColor?: string }) {
+  const hot = value > 0 && !!warnColor
+  return (
+    <td
+      className={`px-3 py-2 text-center tabular-nums ${
+        value === 0 ? 'text-brown-faint' : hot ? 'font-semibold' : 'text-brown-dark'
+      }`}
+      style={hot ? { color: warnColor } : undefined}
+    >
+      {value}
+    </td>
+  )
+}
+
+// Exported for tests — the range/query behaviour is pinned in
+// HrAttendance.report-range.test.tsx.
+export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
+  const [preset, setPreset] = useState<RangePreset>('last30')
+  const [from, setFrom] = useState(() => presetRange('last30').from)
+  const [to, setTo] = useState(() => presetRange('last30').to)
+  const [filterStaff, setFilterStaff] = useState('')
+  const [filterBranch, setFilterBranch] = useState('')
+  const [filterDept, setFilterDept] = useState('')
+  const [attendance, setAttendance] = useState<Attendance[]>([])
+  const [breaks, setBreaks] = useState<AttendanceBreak[]>([])
+  const [shifts, setShifts] = useState<ReportShift[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [truncated, setTruncated] = useState(false)
+  const [expanded, setExpanded] = useState<string | null>(null)
+  /** Newest load() run. Anything older must not touch state — see load(). */
+  const runIdRef = useRef(0)
+
+  // Branch/department narrow the pool the staff dropdown offers; the dropdown
+  // then narrows the report itself to one person.
+  const scopeStaff = allStaff.filter(s => {
+    if (filterBranch && s.branch !== filterBranch) return false
+    if (filterDept && s.department !== filterDept) return false
+    return true
+  })
+  const visibleStaff = filterStaff ? scopeStaff.filter(s => s.id === filterStaff) : scopeStaff
+  const staffIds = visibleStaff.map(s => s.id)
+  // Effect key — the id array itself is a fresh object on every render.
+  const staffKey = staffIds.join(',')
+
+  async function load() {
+    // The three result sets are only meaningful together: breaks join to
+    // attendance rows by id, shifts join by date. Publishing them one-by-one
+    // means a later failure leaves fresh attendance beside the PREVIOUS
+    // selection's breaks/shifts, so the Shift column and Missed clock-in count
+    // silently read as empty instead of as an error. Clear on every exit that
+    // isn't a full success; publish all three together at the end.
+    const clear = () => { setAttendance([]); setBreaks([]); setShifts([]); setTruncated(false) }
+
+    // Each run stakes a claim on the newest request id. Changing the range or
+    // the filters starts a run without cancelling the one already in flight, and
+    // the reads are paged, so a superseded run can answer seconds after the one
+    // that replaced it. Whoever answered last used to win: the table showed an
+    // abandoned selection's rows under the current heading, an abandoned run's
+    // failure blanked a result that had loaded fine, and both CSV exports read
+    // that same state. Every publish below is gated on still being current.
+    const runId = ++runIdRef.current
+    const current = () => runIdRef.current === runId
+    const fail = (message: string) => {
+      if (!current()) return
+      clear(); setError(message); setLoading(false)
+    }
+
+    setTruncated(false)
+    if (staffIds.length === 0) { clear(); setError(null); return }
+    // Clearing a date input leaves an empty string, which is not caught by the
+    // ordering compare below ('' > '2026-08-31' is false) and reaches PostgREST
+    // as `date=gte.`, surfacing a raw `invalid input syntax for type date` at
+    // the manager. Name the field that is actually empty.
+    if (!from || !to) { clear(); setError(!from ? 'Pick a start date.' : 'Pick an end date.'); return }
+    if (from > to) { clear(); setError('Start date must be on or before the end date.'); return }
+    setLoading(true)
+    setError(null)
+
+    const att = await fetchAllRows<Attendance>((lo, hi) => supabase
+      .from('attendance')
+      .select('*')
+      .in('staff_id', staffIds)
+      .gte('date', from)
+      .lte('date', to)
+      .order('date')
+      .order('id')
+      .range(lo, hi))
+    if (att.error) { fail(`Could not load attendance — ${att.error.message}`); return }
+    if (!current()) return
+    const attRows = att.rows
+    // All three reads page to the same ceiling, and all three matter: a dropped
+    // break inflates Worked minutes and hides break overtime, a dropped shift
+    // loses the Shift column, a dropped attendance row fabricates a missed
+    // clock-in. The banner reflects whichever ran out.
+    let hitLimit = att.truncated
+
+    // Breaks are filtered through the parent row's own date/staff predicates
+    // rather than by listing the attendance ids we just read. supabase-js puts
+    // an `.in()` list in the query string, so an id-per-row filter grew the URL
+    // by ~39 bytes per attendance day: a full roster crossed the API gateway's
+    // ~25KB ceiling at around 17 days and the request came back a bare
+    // `400 Bad Request`. Joined this way the URL tracks the roster, not the
+    // range. `!inner` makes the embedded filters restrict the breaks themselves.
+    let brkRows: AttendanceBreak[] = []
+    if (attRows.length > 0) {
+      const brk = await fetchAllRows<AttendanceBreak & { attendance?: unknown }>((lo, hi) => supabase
+        .from('attendance_breaks')
+        .select('*, attendance!inner(staff_id, date)')
+        .in('attendance.staff_id', staffIds)
+        .gte('attendance.date', from)
+        .lte('attendance.date', to)
+        .order('attendance_id')
+        .order('break_number')
+        .range(lo, hi))
+      if (brk.error) { fail(`Could not load breaks — ${brk.error.message}`); return }
+      if (!current()) return
+      // Drop the embedded parent — buildStaffReport groups on attendance_id,
+      // which every row still carries.
+      brkRows = brk.rows.map(({ attendance: _parent, ...b }) => b as AttendanceBreak)
+      if (brk.truncated) hitLimit = true
+    }
+
+    // Shifts drive the "missed clock-in" count and the detail table's shift column.
+    const shift = await fetchAllRows<ReportShift>((lo, hi) => supabase
+      .from('scheduled_shifts')
+      .select('*, shift_type:shift_types(name,start_time,end_time)')
+      .in('staff_id', staffIds)
+      .gte('date', from)
+      .lte('date', to)
+      .order('date')
+      .order('id')
+      .range(lo, hi))
+    if (shift.error) { fail(`Could not load shifts — ${shift.error.message}`); return }
+    if (!current()) return
+    const shiftRows = shift.rows
+    if (shift.truncated) hitLimit = true
+
+    setAttendance(attRows)
+    setBreaks(brkRows)
+    setShifts(shiftRows)
+    setTruncated(hitLimit)
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [from, to, staffKey])
+  // Picking one person makes their detail the whole point — open it immediately.
+  useEffect(() => { setExpanded(filterStaff || null) }, [filterStaff])
+
+  function applyPreset(p: Exclude<RangePreset, 'custom'>) {
+    const r = presetRange(p)
+    setPreset(p)
+    setFrom(r.from)
+    setTo(r.to)
+  }
+
+  // `now` decides which rostered days have had their chance to be worked — a
+  // shift still in progress is not a missed clock-in. Passed explicitly so the
+  // dependency on the clock is visible at the call site.
+  const withRecords = new Set([...attendance.map(a => a.staff_id), ...shifts.map(sh => sh.staff_id)])
+  const shownIds = new Set(hideIdleResigned(visibleStaff, withRecords).map(s => s.id))
+  const summaries = buildStaffReport(staffIds, attendance, breaks, shifts, new Date())
+    .filter(s => shownIds.has(s.staffId))
+  const staffName = (id: string) => allStaff.find(s => s.id === id)?.name ?? id
+
+  // A CSV outlives the screen it came from: it gets mailed to payroll with no
+  // banner attached. So the export refuses to run while the numbers on screen
+  // are not real, and when a read did truncate, the warning travels inside the
+  // file and in its name rather than staying on the page.
+  const exportBlocked = loading || error != null || staffIds.length === 0
+  const INCOMPLETE_NOTE = `INCOMPLETE EXPORT — this range passed the ${REPORT_MAX_ROWS.toLocaleString()}-record read ceiling. Rows were left out: totals are understated and missed clock-ins may be overstated. Narrow the date range or pick one staff member before acting on these numbers.`
+  const exportName = (kind: string) =>
+    `attendance_${kind}_${from}_${to}${truncated ? '_INCOMPLETE' : ''}.csv`
+
+  function exportSummaryCSV() {
+    if (exportBlocked) return
+    const rows = summaries.map(s => [
+      staffName(s.staffId), s.present, s.late, s.lateMinutes,
+      s.absent, s.onLeave, s.halfDay, s.missedClockIn, s.breakOvertimes,
+    ])
+    if (truncated) rows.push([INCOMPLETE_NOTE])
+    downloadCSV(exportName('summary'), toCSV(SUMMARY_HEADERS, rows))
+  }
+
+  function exportDetailCSV() {
+    if (exportBlocked) return
+    const rows = summaries.flatMap(s => s.days.map(d => [
+      staffName(s.staffId),
+      d.date,
+      weekdayShort(d.date),
+      shiftLabel(d),
+      d.clockIn ? fmtClockOn(d.clockIn, d.date) : '—',
+      d.clockOut ? fmtClockOn(d.clockOut, d.date) : '—',
+      fmtWorked(d.workedMinutes),
+      breakCellText(breakAt(d, 1)),
+      breakCellText(breakAt(d, 2)),
+      d.lateMinutes > 0 ? `+${d.lateMinutes}m` : '',
+      statusText(d),
+      d.distanceM != null ? `${d.distanceM}m` : '',
+    ]))
+    if (truncated) rows.push([INCOMPLETE_NOTE])
+    downloadCSV(exportName('detail'), toCSV(DETAIL_HEADERS, rows))
+  }
+
+  const selectCls = 'px-3 py-1.5 rounded-lg border border-[#D4C5B0] bg-white text-xs text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+
+  return (
+    <div className="space-y-4">
+      {/* Range presets */}
+      <div className="flex flex-wrap items-center gap-2">
+        {RANGE_PRESETS.map(p => (
+          <button
+            key={p.key}
+            onClick={() => applyPreset(p.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${
+              preset === p.key
+                ? 'bg-[#C4813A] text-white border-[#C4813A]'
+                : 'bg-white text-brown-muted border-[#D4C5B0] hover:bg-[#F5EDE0]'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+        <input
+          type="date"
+          value={from}
+          onChange={e => { setFrom(e.target.value); setPreset('custom') }}
+          className={selectCls}
+        />
+        <span className="text-xs text-brown-faint">to</span>
+        <input
+          type="date"
+          value={to}
+          onChange={e => { setTo(e.target.value); setPreset('custom') }}
+          className={selectCls}
+        />
+      </div>
+
+      {/* Staff / branch / department + exports */}
+      <div className="flex flex-wrap items-center gap-2">
+        <select className={selectCls} value={filterStaff} onChange={e => setFilterStaff(e.target.value)}>
+          <option value="">All staff</option>
+          {scopeStaff.map(s => <option key={s.id} value={s.id}>{s.status === 'resigned' ? `${s.name} (resigned)` : s.name}</option>)}
+        </select>
+        <select
+          className={selectCls}
+          value={filterBranch}
+          onChange={e => { setFilterBranch(e.target.value); setFilterStaff('') }}
+        >
+          <option value="">All branches</option>
+          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <select
+          className={selectCls}
+          value={filterDept}
+          onChange={e => { setFilterDept(e.target.value); setFilterStaff('') }}
+        >
+          <option value="">All depts</option>
+          {Object.entries(DEPT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <button
+          onClick={exportSummaryCSV}
+          disabled={exportBlocked}
+          className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+        >
+          Export Summary CSV
+        </button>
+        <button
+          onClick={exportDetailCSV}
+          disabled={exportBlocked}
+          className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+        >
+          Export Detail CSV
+        </button>
+        {loading && <span className="text-xs text-brown-faint">Loading…</span>}
+      </div>
+
+      {error && (
+        <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
+      )}
+
+      {truncated && (
+        <p className="text-xs text-[#9E4A30] bg-[#FDF3F0] rounded-lg px-3 py-2">
+          This range passed the {REPORT_MAX_ROWS.toLocaleString()}-record ceiling, so some rows were left out. Totals below can be understated <em>and</em> the missed clock-in count overstated, because a day whose attendance row was dropped still counts against its scheduled shift — narrow the date range or pick one staff member before acting on these numbers.
+        </p>
+      )}
+
+      {staffIds.length === 0 ? (
+        <div className="bg-white rounded-xl border border-[#E8DDD0] px-4 py-8 text-center">
+          <p className="text-sm text-brown-muted font-medium">No staff match these filters.</p>
+          <p className="text-xs text-brown-faint mt-1">Try clearing the branch or department filter.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-[#E8DDD0] overflow-x-auto">
+          <table className="text-xs min-w-max w-full">
+            <thead>
+              <tr className="border-b border-[#EDE5D8]">
+                <th className="text-left px-3 py-2 font-semibold text-brown-faint">Staff</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Present</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Late</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Late mins</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Absent</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Leave</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Half day</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Missed clock-in</th>
+                <th className="px-3 py-2 font-semibold text-brown-faint text-center">Break OT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summaries.map(s => {
+                const open = expanded === s.staffId
+                return (
+                  <Fragment key={s.staffId}>
+                    <tr
+                      onClick={() => setExpanded(open ? null : s.staffId)}
+                      className="border-t border-[#F0E8DC] cursor-pointer hover:bg-[#FBF7F0] transition-colors"
+                    >
+                      <td className="px-3 py-2 font-medium text-brown-dark whitespace-nowrap">
+                        <span className="flex items-center gap-1.5">
+                          {open
+                            ? <ChevronDown size={13} className="text-brown-faint" />
+                            : <ChevronRight size={13} className="text-brown-faint" />}
+                          {staffName(s.staffId)}
+                        </span>
+                      </td>
+                      <CountCell value={s.present} />
+                      <CountCell value={s.late} warnColor="#C4813A" />
+                      <CountCell value={s.lateMinutes} warnColor="#C4813A" />
+                      <CountCell value={s.absent} warnColor="#9E4A30" />
+                      <CountCell value={s.onLeave} />
+                      <CountCell value={s.halfDay} />
+                      <CountCell value={s.missedClockIn} warnColor="#9E4A30" />
+                      <CountCell value={s.breakOvertimes} warnColor="#C4813A" />
+                    </tr>
+                    {open && (
+                      <tr className="border-t border-[#F0E8DC] bg-[#FDFBF7]">
+                        <td colSpan={9} className="px-3 py-3">
+                          <DailyDetailTable days={s.days} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DailyDetailTable({ days }: { days: DailyDetail[] }) {
+  if (days.length === 0) {
+    return <p className="text-xs text-brown-faint py-2">No attendance or scheduled shifts in this range.</p>
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-xs min-w-max w-full">
+        <thead>
+          <tr className="border-b border-[#EDE5D8]">
+            {['Date', 'Day', 'Shift', 'Clock In', 'Clock Out', 'Worked', 'Break 1', 'Break 2', 'Late', 'Status', 'GPS'].map(h => (
+              <th key={h} className="text-left px-2.5 py-1.5 font-semibold text-brown-faint whitespace-nowrap">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {days.map(d => {
+            const b1 = breakAt(d, 1)
+            const b2 = breakAt(d, 2)
+            const highDist = d.distanceM != null && d.distanceM > 200
+            return (
+              <tr
+                key={d.date}
+                className={`border-t border-[#F0E8DC] ${d.missedClockIn ? 'bg-[#FDF3F0]' : ''}`}
+              >
+                <td className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">{d.date}</td>
+                <td className="px-2.5 py-1.5 text-brown-faint whitespace-nowrap">{weekdayShort(d.date)}</td>
+                <td className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">{shiftLabel(d)}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockIn ? fmtClockOn(d.clockIn, d.date) : '—'}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockOut ? fmtClockOn(d.clockOut, d.date) : '—'}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap tabular-nums">{fmtWorked(d.workedMinutes)}</td>
+                {[b1, b2].map((b, i) => (
+                  <td key={i} className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">
+                    {fmtBreakWindow(b)}
+                    {b?.isOvertime && <span className="text-[#9E4A30] font-semibold"> +{b.overtimeMinutes}m</span>}
+                  </td>
+                ))}
+                <td className="px-2.5 py-1.5 whitespace-nowrap font-semibold text-[#9E4A30]">
+                  {d.lateMinutes > 0 ? `+${d.lateMinutes}m` : ''}
+                </td>
+                <td className="px-2.5 py-1.5 whitespace-nowrap">
+                  <span className="flex items-center gap-1.5">
+                    {d.status ? (
+                      <span
+                        className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                        style={{ background: `${ATTENDANCE_STATUS_COLORS[d.status]}20`, color: ATTENDANCE_STATUS_COLORS[d.status] }}
+                      >
+                        {ATTENDANCE_STATUS_LABELS[d.status]}
+                      </span>
+                    ) : (
+                      <span className="text-brown-faint">No record</span>
+                    )}
+                    {d.missedClockIn && (
+                      <span
+                        className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#FCF0EC] text-[#9E4A30]"
+                        title="Scheduled to work but never clocked in"
+                      >
+                        Missed
+                      </span>
+                    )}
+                  </span>
+                </td>
+                <td className={`px-2.5 py-1.5 whitespace-nowrap tabular-nums ${highDist ? 'text-[#9E4A30] font-semibold' : 'text-brown-faint'}`}>
+                  {d.distanceM != null ? `${d.distanceM}m` : '—'}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -1175,11 +1784,13 @@ export function MyAttendance({ staff }: { staff: Staff }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+const VIEW_LABELS = { daily: 'Daily', monthly: 'Monthly', report: 'Report' } as const
+
 export default function HrAttendancePage() {
   const { staff } = useAuth()
   const { can, ownBranchOnly } = useCan()
   const [allStaff, setAllStaff] = useState<Staff[]>([])
-  const [view, setView] = useState<'daily' | 'monthly'>('daily')
+  const [view, setView] = useState<'daily' | 'monthly' | 'report'>('daily')
   const canSeeTeam = can('manage_hr')
 
   useEffect(() => {
@@ -1211,7 +1822,7 @@ export default function HrAttendancePage() {
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-base font-bold text-brown-dark">Team Attendance</h2>
               <div className="flex gap-1 bg-white rounded-lg border border-[#E8DDD0] p-0.5">
-                {(['daily', 'monthly'] as const).map(v => (
+                {(['daily', 'monthly', 'report'] as const).map(v => (
                   <button
                     key={v}
                     onClick={() => setView(v)}
@@ -1219,15 +1830,17 @@ export default function HrAttendancePage() {
                       view === v ? 'bg-[#C4813A] text-white' : 'text-brown-muted hover:bg-[#F5EDE0]'
                     }`}
                   >
-                    {v === 'daily' ? 'Daily' : 'Monthly'}
+                    {VIEW_LABELS[v]}
                   </button>
                 ))}
               </div>
             </div>
             {view === 'daily' ? (
               <DailyRoster allStaff={scopedStaff} managerId={staff.id} />
-            ) : (
+            ) : view === 'monthly' ? (
               <MonthlyGrid allStaff={scopedStaff} />
+            ) : (
+              <AttendanceReport allStaff={scopedStaff} />
             )}
           </section>
         )}

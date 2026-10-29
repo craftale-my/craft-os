@@ -39,6 +39,13 @@ vi.mock('../../shared/lib/supabase', () => ({
   },
 }))
 
+vi.mock('./privateApi', () => ({
+  fetchStaffPrivate: async () => null,
+  saveStaffPrivate: async () => {},
+  fetchManagerNotes: async () => null,
+  saveManagerNotes: async () => {},
+}))
+
 const { PersonalInfoTab, supervisorOptions } = await import('./StaffProfile')
 const { LookupsProvider } = await import('../../shared/lib/lookups')
 
@@ -54,7 +61,7 @@ const OTHER_ACTIVE_2 = { id: 'sup-2', name: 'Manager Wong', status: 'active' } a
 function renderTab(staff: Staff, onSaved: () => void = () => {}) {
   return render(
     <LookupsProvider>
-      <PersonalInfoTab staff={staff} isSelf={false} isManager={true} email="ali@x.com" authEmail="ali@x.com" onSaved={onSaved} />
+      <PersonalInfoTab staff={staff} priv={null} isSelf={false} isManager={true} email="ali@x.com" authEmail="ali@x.com" onSaved={onSaved} />
     </LookupsProvider>
   )
 }
@@ -156,7 +163,7 @@ describe('Supervisor read-only row on a staff member\'s own profile', () => {
   it('shows the read-only Supervisor row to a staff member viewing their own profile', async () => {
     render(
       <LookupsProvider>
-        <PersonalInfoTab staff={staffWithSupervisor} isSelf={true} isManager={false}
+        <PersonalInfoTab staff={staffWithSupervisor} priv={null} isSelf={true} isManager={false}
           email="ali@x.com" authEmail="ali@x.com" onSaved={() => {}} />
       </LookupsProvider>
     )
@@ -167,7 +174,7 @@ describe('Supervisor read-only row on a staff member\'s own profile', () => {
   it('does not offer the editable Supervisor control to a staff member viewing their own profile', async () => {
     render(
       <LookupsProvider>
-        <PersonalInfoTab staff={staffWithSupervisor} isSelf={true} isManager={false}
+        <PersonalInfoTab staff={staffWithSupervisor} priv={null} isSelf={true} isManager={false}
           email="ali@x.com" authEmail="ali@x.com" onSaved={() => {}} />
       </LookupsProvider>
     )
