@@ -11,7 +11,10 @@
 --     auth.uid() as the actor (checkout_bill, close_shift, merge_bills, open_shift,
 --     place_counter_order, record_cash_move, refund_bill, void_bill, void_order_item) and
 --     pos_pin_attempt (the approval lockout's caller) are re-created from their live text
---     with auth.uid() → pos_actor().
+--     with auth.uid() → pos_actor() (pos_pin_attempt: pos_actor() for a device, auth.uid() for a
+--     Craft OS login, so My PIN keeps working). pos_shift_list, pos_shift_zreport and
+--     reprint_zreport check pos_supervise of pos_actor() instead of has_menu_cap (a device has
+--     no staff row).
 --     TRANSITION (removed in Sub-plan C3): pos_ctx() still accepts a staff login at its home
 --     branch, with pos_my_branch()'s old messages, so the Craft OS /pos keeps working until
 --     the POS app replaces it. A device is never treated as a staff login.
@@ -23,14 +26,18 @@
 --     outlets of staff_outlet_scope. The open read policies (pos_read) of the branch tables
 --     and order_items, and dining_tables_update, use it; print_jobs_update (no client
 --     writes it any more) is dropped. Realtime follows the same policies.
---     pos_caller_branch() (sold-out writes) is a device's outlet for a device.
+--     Writes from the till (sold out, pause QR) need a session: pos_session_branch() is the
+--     outlet of a POS device with an open session at an open outlet (a staff login: its home
+--     branch during the transition); branch_menu_status_write and dining_tables_update allow
+--     that outlet or one the caller manages. pos_caller_branch() is a device's outlet for a device.
 -- T4  Audit: device_id on orders, payments, refunds, pos_cash_moves and
 --     pos_shifts.opened_device_id are filled by default from pos_current_device();
 --     bills.closed_device_id, order_items.voided_device_id and pos_shifts.closed_device_id
 --     are set by the RPCs that close, void or close a shift.
--- T5  The offline queue: place_counter_order takes p_staff_id (who queued the order); the
---     order is placed by that person when they may still work at the outlet, otherwise by
---     the session's staff member.
+-- T5  The offline queue: place_counter_order takes p_staff_id (who queued the order); on a
+--     device the order is placed by that person when they have signed in on this tablet before
+--     and may still work at the outlet, otherwise by the session's staff member. A staff login's
+--     p_staff_id is ignored.
 -- T6  pos_unpair_this_device(): a manager of the outlet, signed in on the tablet, unpairs
 --     it from the POS app. It and pos_unpair_device share pos_revoke_device().
 -- Re-run hazards: re-running an older file that defines any function re-created here
@@ -137,7 +144,7 @@ begin
     return pos_my_branch();                       -- TRANSITION (removed in C3): a staff login prints for its home branch
   end if;
   if v_dev.revoked_at is not null then raise exception 'device_unpaired'; end if;
-  if v_dev.kind = 'pos' and not v_dev.prints then raise exception 'not_printing_tablet'; end if;
+  if not (v_dev.kind = 'print_agent' or (v_dev.kind = 'pos' and v_dev.prints)) then raise exception 'not_printing_tablet'; end if;
   if not current_setting('transaction_read_only')::boolean then              -- as in pos_ctx
     update pos_devices set last_seen_at = now()
      where id = v_dev.id and (last_seen_at is null or last_seen_at < now() - interval '30 seconds');
@@ -158,7 +165,22 @@ $$;
 revoke all on function pos_readable_branches() from public, anon;
 grant execute on function pos_readable_branches() to authenticated;
 
--- Sold-out writes (branch_menu_status_write): a device's outlet, else the staff member's home branch.
+-- The outlet of a till write made directly on a table (sold out, pause QR): a POS device with an
+-- open session of someone who may still work there, at an open outlet. Non-writing (used by RLS).
+create or replace function pos_session_branch() returns uuid
+language sql stable security definer set search_path = public, pg_temp as $$
+  select case when exists (select 1 from pos_devices d where d.id = auth.uid())
+              then (select d.branch_id from pos_devices d
+                     where d.id = auth.uid() and d.kind = 'pos' and d.revoked_at is null and pos_outlet_open(d.branch_id)
+                       and exists (select 1 from pos_staff_sessions s
+                                    where s.device_id = d.id and s.ended_at is null and pos_staff_may_work(s.staff_id, d.branch_id)))
+              -- TRANSITION (removed in Sub-plan C3): a staff login writes at its home branch
+              else (select s.branch_id from staff s where s.id = auth.uid() and s.is_active and s.status = 'active') end
+$$;
+revoke all on function pos_session_branch() from public, anon;
+grant execute on function pos_session_branch() to authenticated;
+
+-- Sold-out writes (branch_menu_status_write, before this file): a device's outlet, else the staff member's home branch.
 create or replace function pos_caller_branch() returns uuid
 language sql stable security definer set search_path = public, pg_temp as $$
   select case when exists (select 1 from pos_devices d where d.id = auth.uid())
@@ -183,7 +205,12 @@ create policy pos_read on order_items for select to authenticated
   using (exists (select 1 from bills b where b.id = order_items.bill_id and b.branch_id in (select pos_readable_branches())));
 drop policy if exists dining_tables_update on dining_tables;
 create policy dining_tables_update on dining_tables for update to authenticated
-  using (branch_id in (select pos_readable_branches())) with check (branch_id in (select pos_readable_branches()));
+  using (branch_id = pos_session_branch() or pos_manages_outlet(branch_id))
+  with check (branch_id = pos_session_branch() or pos_manages_outlet(branch_id));
+drop policy if exists branch_menu_status_write on branch_menu_status;
+create policy branch_menu_status_write on branch_menu_status for all to authenticated
+  using (branch_id = pos_session_branch() or pos_manages_outlet(branch_id))
+  with check (branch_id = pos_session_branch() or pos_manages_outlet(branch_id));
 drop policy if exists print_jobs_update on print_jobs;
 
 -- ── T6. Unpairing, shared ────────────────────────────────────────────────────
@@ -231,6 +258,7 @@ grant execute on function pos_unpair_this_device() to authenticated;
 
 -- ── T5. The offline queue keeps who took the order ───────────────────────────
 drop function if exists place_counter_order(uuid, text, integer, jsonb, uuid, uuid);
+drop function if exists place_counter_order(uuid, text, integer, jsonb, uuid);         -- checkout-fn's, if it was re-run
 create or replace function place_counter_order(p_table_id uuid, p_order_type text, p_pax integer, p_items jsonb,
                                                p_client_order_id uuid, p_catalog_id uuid default null,
                                                p_staff_id uuid default null) returns uuid
@@ -240,8 +268,11 @@ declare
   v_by  uuid;
 begin
   select * into v_ctx from pos_ctx();
-  -- an order sent from the offline queue is placed by whoever queued it, if they may still work here
-  v_by := case when p_staff_id is not null and pos_staff_may_work(p_staff_id, v_ctx.branch_id) then p_staff_id
+  -- an order sent from this tablet's offline queue is placed by whoever queued it: someone who has
+  -- signed in on this tablet and may still work here; anyone else, or a staff login, is ignored
+  v_by := case when p_staff_id is not null and v_ctx.device_id is not null
+                    and exists (select 1 from pos_staff_sessions s where s.device_id = v_ctx.device_id and s.staff_id = p_staff_id)
+                    and pos_staff_may_work(p_staff_id, v_ctx.branch_id) then p_staff_id
                else v_ctx.staff_id end;
   return pos_insert_order(v_ctx.branch_id, p_table_id, p_order_type, p_pax, 'counter', v_by, p_items,
                           p_client_order_id, p_catalog_id);
@@ -735,7 +766,7 @@ CREATE OR REPLACE FUNCTION pos_pin_attempt(p_staff_id uuid, p_pin text)
  SET search_path TO 'public', 'pg_temp'
 AS $function$
 declare
-  v_caller uuid := pos_actor();
+  v_caller uuid := case when exists (select 1 from pos_devices d where d.id = auth.uid()) then pos_actor() else auth.uid() end;   -- a device: the session's staff member; Craft OS (My PIN): the login
   v_hash   text;
   v_try    pos_pin_attempts;
   v_n      integer;
@@ -765,6 +796,69 @@ begin
   update pos_pin_attempts set failed_attempts = v_n, locked_until = null, updated_at = now()
    where approver_id = p_staff_id and caller_id = v_caller;
   return format('Wrong PIN — %s %s left', 5 - v_n, case when 5 - v_n = 1 then 'try' else 'tries' end);
+end $function$;
+
+-- pos_shift_list: re-created (see the header)
+CREATE OR REPLACE FUNCTION pos_shift_list()
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+begin
+  if not staff_has_cap(pos_actor(), 'pos_supervise') then raise exception 'Only a supervisor can see past shifts'; end if;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'id', x.id,
+             'openedAt', to_char(x.opened_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+             'closedAt', to_char(x.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+             'openedBy', (select st.name from staff st where st.id = x.opened_by),
+             'closedBy', (select st.name from staff st where st.id = x.closed_by),
+             'nettSen', coalesce((x.report->'summary'->>'nettSen')::integer, 0),
+             'varianceSen', x.variance_sen)
+           order by x.closed_at desc, x.opened_at desc)
+      from (select * from pos_shifts s where s.branch_id = v_branch and s.status = 'closed'
+             order by s.closed_at desc, s.opened_at desc limit 30) x), '[]'::jsonb);
+end $function$;
+
+-- pos_shift_zreport: re-created (see the header)
+CREATE OR REPLACE FUNCTION pos_shift_zreport(p_shift_id uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_report jsonb;
+begin
+  if not staff_has_cap(pos_actor(), 'pos_supervise') then raise exception 'Only a supervisor can see past shifts'; end if;
+  select s.report into v_report from pos_shifts s
+   where s.id = p_shift_id and s.branch_id = v_branch and s.status = 'closed';
+  if v_report is null then raise exception 'Shift not found'; end if;
+  return v_report;
+end $function$;
+
+-- reprint_zreport: re-created (see the header)
+CREATE OR REPLACE FUNCTION reprint_zreport(p_shift_id uuid)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_report jsonb;
+begin
+  if not staff_has_cap(pos_actor(), 'pos_supervise') then raise exception 'Only a supervisor can reprint a Z report'; end if;
+  select s.report into v_report from pos_shifts s
+   where s.id = p_shift_id and s.branch_id = v_branch and s.status = 'closed';
+  if v_report is null then raise exception 'Shift not found'; end if;
+  if not pos_queue_zreport(v_branch, v_report, true) then
+    raise exception 'No receipt printer is set — choose one in POS settings';
+  end if;
 end $function$;
 
 -- claim_print_job: re-created (see the header)

@@ -2,7 +2,8 @@
 -- migration-2026-10-29-pos-device-till.sql. Everything is rolled back. Success = a result row
 -- "VERIFY OK". Sections follow the migration: A schema and grants; T1 the till on a device
 -- session (actor = the session's staff member, the device recorded); T5 the offline queue;
--- T2 printing; T3 reads; T6 unpairing from the tablet; the C1 transition for staff logins.
+-- T2 printing; T3 reads and the till's direct writes; T6 unpairing from the tablet; the C1
+-- transition for staff logins; My PIN for staff with no home branch.
 -- The other POS verify scripts keep passing as staff logins through the transition.
 begin;
 
@@ -31,6 +32,7 @@ declare
   v_sup   uuid := 'eeeeeeee-0000-0000-0000-000000000092';   -- supervisor of VERIFY T A
   v_mgr   uuid := 'eeeeeeee-0000-0000-0000-000000000093';   -- manager of VERIFY T A (branch-only)
   v_far   uuid := 'eeeeeeee-0000-0000-0000-000000000094';   -- cashier of VERIFY T B
+  v_nob   uuid := 'eeeeeeee-0000-0000-0000-000000000095';   -- staff with no home branch
   v_dev1  uuid := 'eeeeeeee-0000-0000-0000-0000000000e1';   -- the printing tablet of A
   v_dev2  uuid := 'eeeeeeee-0000-0000-0000-0000000000e2';   -- another tablet of A
   v_devb  uuid := 'eeeeeeee-0000-0000-0000-0000000000e3';   -- a tablet of B
@@ -54,7 +56,7 @@ begin
       raise exception 'FAIL grants: % is internal but callable', r.f;
     end if;
   end loop;
-  for r in select f from unnest(array['pos_unpair_this_device()', 'pos_readable_branches()',
+  for r in select f from unnest(array['pos_unpair_this_device()', 'pos_readable_branches()', 'pos_session_branch()',
                                       'place_counter_order(uuid,text,integer,jsonb,uuid,uuid,uuid)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
     if not has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL grants: clients cannot call %', r.f; end if;
@@ -68,7 +70,7 @@ begin
   end if;
   for r in select p.proname from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
             where ns.nspname = 'public' and p.proname in ('checkout_bill', 'close_shift', 'merge_bills', 'open_shift', 'record_cash_move',
-                                                         'refund_bill', 'void_bill', 'void_order_item', 'pos_pin_attempt', 'place_counter_order')
+                                                         'refund_bill', 'void_bill', 'void_order_item', 'place_counter_order')
               and pg_get_functiondef(p.oid) like '%auth.uid()%' loop
     raise exception 'FAIL T1: % still records auth.uid() — re-run migration-2026-10-29-pos-device-till.sql', r.proname;
   end loop;
@@ -95,12 +97,13 @@ begin
   v_items := jsonb_build_array(jsonb_build_object('productId', v_plate, 'variantId', v_plate_v));
   update staff set branch_id = v_a where id = v_owner;
   perform pg_temp.act(v_owner);
-  insert into auth.users (id) values (v_cash), (v_sup), (v_mgr), (v_far), (v_dev1), (v_dev2), (v_devb), (v_agent);
+  insert into auth.users (id) values (v_cash), (v_sup), (v_mgr), (v_far), (v_nob), (v_dev1), (v_dev2), (v_devb), (v_agent);
   insert into staff (id, name, rank, onboarding_completed, joined_at, system_role, branch_id) values
     (v_cash, 'Verify T Cashier',    'trainee', true, current_date, 'staff', v_a),
     (v_sup,  'Verify T Supervisor', 'trainee', true, current_date, 'staff', v_a),
     (v_mgr,  'Verify T Manager',    'trainee', true, current_date, 'staff', v_a),
-    (v_far,  'Verify T Far',        'trainee', true, current_date, 'staff', v_b);
+    (v_far,  'Verify T Far',        'trainee', true, current_date, 'staff', v_b),
+    (v_nob,  'Verify T No Branch',  'trainee', true, current_date, 'staff', null);
   update staff set system_role = 'supervisor' where id = v_sup;
   update staff set system_role = 'manager' where id = v_mgr;
   for r in select * from (values (v_cash, '1111'), (v_sup, '2222'), (v_mgr, '3333'), (v_far, '4444')) as x(id, pin) loop
@@ -176,22 +179,27 @@ begin
      or (select closed_device_id from pos_shifts where id = v_shift) is distinct from v_dev1 then
     raise exception 'FAIL T1: closing the shift: %', v_res;
   end if;
+  -- shift reports follow the session's staff member: a supervisor may, a cashier may not
+  perform pg_temp.expect_error('select pos_shift_list()', 'Only a supervisor can see past shifts', 'T1 shift reports for a cashier');
+  v_res := pos_start_session(v_sup, '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL fixture: supervisor sign-in: %', v_res; end if;
+  v_res := pos_shift_list();
+  if v_res::text not like '%' || v_shift || '%' then raise exception 'FAIL T1: a supervisor on a tablet lists the closed shift: %', v_res; end if;
+  v_res := pos_start_session(v_cash, '1111');                                          -- the cashier takes the tablet back
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL fixture: cashier sign-in again'; end if;
   -- another outlet's tablet cannot touch this outlet's bill
   perform pg_temp.act(v_devb);
   v_res := pos_start_session(v_far, '4444');
   if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL fixture: far sign-in: %', v_res; end if;
   v_billb := open_table(v_tb, 2);
-  v_ok := false;
-  begin
-    perform open_table(v_ta2, 2);
-  exception when raise_exception then v_ok := true;
-  end;
-  if not v_ok then raise exception 'FAIL T1: a tablet of B opened a table of A'; end if;
+  perform pg_temp.expect_error(format('select open_table(%L, 2)', v_ta2), 'Invalid table', 'T1 a tablet of B opens a table of A');
 
   -- ── T5. the offline queue ─────────────────────────────────────────────────
   perform pg_temp.act(v_dev1);
-  v_order := place_counter_order(null, 'takeaway', null, v_items, gen_random_uuid(), null, v_sup);    -- queued by the supervisor
+  v_order := place_counter_order(null, 'takeaway', null, v_items, gen_random_uuid(), null, v_sup);    -- queued by the supervisor (signed in here before)
   if (select placed_by from orders where id = v_order) is distinct from v_sup then raise exception 'FAIL T5: the queued order keeps who took it'; end if;
+  v_order := place_counter_order(null, 'takeaway', null, v_items, gen_random_uuid(), null, v_mgr);    -- may work here, never signed in on this tablet
+  if (select placed_by from orders where id = v_order) is distinct from v_cash then raise exception 'FAIL T5: a queued order by someone never signed in on this tablet'; end if;
   v_order := place_counter_order(null, 'takeaway', null, v_items, gen_random_uuid(), null, v_far);    -- may not work here any more
   if (select placed_by from orders where id = v_order) is distinct from v_cash then raise exception 'FAIL T5: a queued order by someone not allowed here'; end if;
 
@@ -220,15 +228,40 @@ begin
 
   -- ── T3. reads ─────────────────────────────────────────────────────────────
   perform pg_temp.act(v_dev1);
+  v_res := pos_start_session(v_cash, '1111');                                          -- signed in again after T2's lock
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL fixture: sign-in for T3'; end if;
   if pos_caller_branch() is distinct from v_a then raise exception 'FAIL T3: pos_caller_branch of a device'; end if;
   set local role authenticated;
   select count(*) into n from bills where id in (v_bill, v_bill2, v_billb);
   if n is distinct from 2 then raise exception 'FAIL T3: a tablet of A reads % of A''s 2 bills (and none of B''s)', n; end if;
   select count(*) into n from order_items where bill_id = v_billb;
   if n is distinct from 0 then raise exception 'FAIL T3: a tablet of A reads B''s order items'; end if;
+  select count(*) into n from order_items where bill_id = v_bill;
+  if n is distinct from 1 then raise exception 'FAIL T3: a tablet of A reads % of its own order items (expected 1)', n; end if;
   select count(*) into n from print_jobs where id = v_job_b;
   if n is distinct from 0 then raise exception 'FAIL T3: a tablet of A reads B''s print jobs'; end if;
+  select count(*) into n from print_jobs where id = v_job_a;
+  if n is distinct from 1 then raise exception 'FAIL T3: a tablet of A does not read its own print job'; end if;
+  -- the till's direct writes need an open session: pause QR with one, not without
+  update dining_tables set qr_paused = true where id = v_ta;
+  get diagnostics n = row_count;
+  if n is distinct from 1 then raise exception 'FAIL T3: a signed-in tablet cannot pause its table''s QR'; end if;
   reset role;
+  perform pos_end_session('locked');
+  set local role authenticated;
+  update dining_tables set qr_paused = false where id = v_ta;
+  get diagnostics n = row_count;
+  if n is distinct from 0 then raise exception 'FAIL T3: a locked tablet paused a table''s QR'; end if;
+  reset role;
+  perform pg_temp.act(v_agent);                                                         -- a print agent writes nothing at the till
+  set local role authenticated;
+  begin
+    insert into branch_menu_status(branch_id, product_id, is_sold_out) values (v_a, v_plate, true);
+    raise exception 'FAIL T3: the print agent marked a product sold out';
+  exception when insufficient_privilege then null;
+  end;
+  reset role;
+  perform pg_temp.act(v_dev1);
   perform pg_temp.act(v_devb);
   set local role authenticated;
   select count(*) into n from bills where id in (v_bill, v_bill2, v_billb);
@@ -269,11 +302,16 @@ begin
   perform pg_temp.expect_error('select pos_unpair_this_device()', 'device_unpaired', 'T6 a staff login');
   v_bill2 := open_table(v_ta2, 3);
   if (select branch_id from bills where id = v_bill2) is distinct from v_a then raise exception 'FAIL transition: a staff login''s table'; end if;
-  v_order := place_counter_order(v_ta2, 'dine_in', 3, v_items, gen_random_uuid());
+  v_order := place_counter_order(v_ta2, 'dine_in', 3, v_items, gen_random_uuid(), null, v_sup);     -- p_staff_id ignored
   if (select placed_by from orders where id = v_order) is distinct from v_cash
      or (select device_id from orders where id = v_order) is not null then
-    raise exception 'FAIL transition: a staff login''s order (by them, no device)';
+    raise exception 'FAIL transition: a staff login''s order (by them, no device, p_staff_id ignored)';
   end if;
+  -- My PIN in Craft OS still works for staff with no home branch (pos_pin_attempt's caller is the login)
+  perform pg_temp.act(v_nob);
+  if not coalesce((set_my_pos_pin('5555', null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: no-branch PIN'; end if;
+  v_res := set_my_pos_pin('6666', '5555');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL: changing a PIN with no home branch: %', v_res; end if;
 
   raise notice 'VERIFY OK';
 end $$;

@@ -245,9 +245,10 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'pos_ctx', 'pos_my_branch', 'pos_actor', 'pos_print_branch', 'pos_revoke_device', 'pos_unpair_device', 'pos_unpair_this_device',
       'place_counter_order', 'checkout_bill', 'close_shift', 'merge_bills', 'open_shift', 'record_cash_move', 'refund_bill',
       'void_bill', 'void_order_item', 'pos_pin_attempt', 'claim_print_job', 'finish_print_job', 'requeue_print_job', 'insert_test_print',
+      'pos_session_branch', 'pos_shift_list', 'pos_shift_zreport', 'reprint_zreport',
     ]))
     for (const { name, body } of functionBodies(sql)) {
-      if (/(checkout_bill|close_shift|merge_bills|open_shift|record_cash_move|refund_bill|void_bill|void_order_item|pos_pin_attempt|place_counter_order)$/i.test(name)) {
+      if (/(checkout_bill|close_shift|merge_bills|open_shift|record_cash_move|refund_bill|void_bill|void_order_item|place_counter_order)$/i.test(name)) {
         expect(body, name).not.toMatch(/auth\.uid\(\)/)
       }
     }

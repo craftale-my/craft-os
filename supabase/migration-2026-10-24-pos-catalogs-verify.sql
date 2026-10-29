@@ -49,8 +49,8 @@ begin
     end if;
   end loop;
   if not exists (select 1 from pg_policies where tablename = 'branch_menu_status' and policyname = 'branch_menu_status_write'
-                  and qual like '%pos_caller_branch()%' and with_check like '%pos_caller_branch()%') then
-    raise exception 'FAIL rls: sold-out writes are not limited to the caller''s branch';
+                  and qual like '%pos_session_branch()%' and with_check like '%pos_session_branch()%') then
+    raise exception 'FAIL rls: sold-out writes are not limited to the caller''s outlet and session';
   end if;
   if not exists (select 1 from pg_policies where tablename = 'branch_catalogs' and policyname = 'branch_catalogs_manage'
                   and qual like '%pos_manages_outlet(branch_id)%'
