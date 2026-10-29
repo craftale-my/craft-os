@@ -30,9 +30,11 @@
 -- dining_tables policies), migration-2026-10-24-pos-bill-actions-fn.sql (pos_approvers,
 -- pos_check_approver, clear_pos_pin) or migration-2026-10-26-pos-frontend.sql
 -- (dining_tables_guard) puts the older versions back — re-run this file afterwards.
--- Re-running catalogs-fn, shifts-fn or ordering-fn re-creates an old one-argument settings
--- function next to the new one; it acts on the caller's home branch only and the app no
--- longer calls it.
+-- Re-running catalogs-fn or shifts-fn re-creates an old one-argument settings function next to
+-- the new one; it acts on the caller's home branch only and the app no longer calls it.
+-- Re-running ordering-fn re-creates insert_test_print(text) next to insert_test_print(text, uuid):
+-- the POS's call with p_route only then becomes ambiguous and fails — drop the old one
+-- (drop function insert_test_print(text);) or re-run this file.
 -- Every DELETE / UPDATE has a WHERE: Supabase's API role runs pg-safeupdate
 -- (src/features/pos/sqlSafeUpdate.test.ts scans this file).
 -- ============================================================================
@@ -237,7 +239,11 @@ begin
       if v_id is null then raise exception 'Outlet not found'; end if;
     end if;
   exception when unique_violation then
-    raise exception 'The bill prefix % is used by another outlet', v_prefix;
+    get stacked diagnostics v_other = constraint_name;
+    if v_other = 'branches_bill_prefix_key' then
+      raise exception 'The bill prefix % is used by another outlet', v_prefix;
+    end if;
+    raise;
   end;
   return v_id;
 end $$;
@@ -310,6 +316,9 @@ create or replace function clear_pos_pin(p_staff_id uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp as $$
 begin
   if not has_menu_cap('access_settings') then raise exception 'Only a manager can clear a PIN'; end if;
+  if staff_has_cap(p_staff_id, 'all_branches') and not has_menu_cap('all_branches') then   -- O5: HQ's PIN, HQ only
+    raise exception 'Only HQ can clear the PIN of HQ staff';
+  end if;
   if not exists (select 1 from staff_outlet_scope(p_staff_id) t(id) where pos_manages_outlet(t.id)) then   -- O5
     raise exception 'This person does not work at your outlets';
   end if;
@@ -453,7 +462,7 @@ declare v_branch uuid; v_id uuid;
 begin
   if auth.uid() is null then raise exception 'Sign in required'; end if;
   if p_branch_id is null then                                                                -- O7
-    select branch_id into v_branch from staff where id = auth.uid() and is_active;
+    select branch_id into v_branch from staff where id = auth.uid() and is_active and status = 'active';
     if v_branch is null then raise exception 'Your account has no branch'; end if;
   elsif pos_manages_outlet(p_branch_id) then
     v_branch := p_branch_id;

@@ -32,7 +32,6 @@ declare
   v_hr    uuid := 'eeeeeeee-0000-0000-0000-000000000074';   -- hr, home VERIFY O A
   v_a uuid; v_b uuid; v_pop uuid; v_kiosk uuid; v_id uuid;
   v_today date := (now() at time zone 'Asia/Kuala_Lumpur')::date;
-  v_cat uuid;
   n integer; r record; v_text text;
 begin
   -- ── A. schema, grants, search_path ────────────────────────────────────────
@@ -129,6 +128,13 @@ begin
                                'Only HQ can add or change outlets', 'O1 a branch manager');
   perform pg_temp.expect_error(format('update branches set kind = %L where id = %L', 'kiosk', v_a),
                                'Only HQ can change an outlet''s kind, dates or bill prefix', 'O1 direct write by a branch manager');
+  perform pg_temp.expect_error($q$insert into branches(name, kind) values ('VERIFY O Z', 'kiosk')$q$,
+                               'Only HQ can change an outlet''s kind, dates or bill prefix', 'O1 direct insert of a kiosk by a branch manager');
+  perform pg_temp.act(v_hr);                                                            -- all_branches without access_settings
+  perform pg_temp.expect_error($q$select save_outlet(null, 'VERIFY O POP', 'popup', current_date, current_date, null)$q$,
+                               'Only HQ can add or change outlets', 'O1 hr');
+  perform pg_temp.expect_error(format('update branches set bill_prefix = %L where id = %L', 'ZQ6', v_a),
+                               'Only HQ can change an outlet''s kind, dates or bill prefix', 'O1 direct write by hr');
   perform pg_temp.act(v_owner);
   perform pg_temp.expect_error($q$select save_outlet(null, '  ', 'branch', null, null, null)$q$, 'Enter the outlet name', 'O1 no name');
   perform pg_temp.expect_error($q$select save_outlet(null, 'VERIFY O X', 'stall', null, null, null)$q$,
@@ -260,11 +266,18 @@ begin
   perform pg_temp.act(v_mgr);
   perform clear_pos_pin(v_sup);
   if exists (select 1 from staff_pos_pins where staff_id = v_sup) then raise exception 'FAIL O5: the PIN was not cleared'; end if;
+  perform pg_temp.expect_error(format('select clear_pos_pin(%L)', v_owner),
+                               'Only HQ can clear the PIN of HQ staff', 'O5 a branch manager clears HQ''s PIN');
+  perform pg_temp.expect_error(format('select clear_pos_pin(%L)', v_hr),
+                               'Only HQ can clear the PIN of HQ staff', 'O5 a branch manager clears hr''s PIN');
+  perform pg_temp.act(v_owner);
+  perform clear_pos_pin(v_hr);                                                          -- HQ may
 
   -- ── O6. bill numbers ──────────────────────────────────────────────────────
-  if pos_next_bill_no(v_pop) !~ '^ZQ8-\d{6}-001$' or pos_next_bill_no(v_pop) !~ '^ZQ8-\d{6}-002$' then
-    raise exception 'FAIL O6: a prefixed bill number';
-  end if;
+  v_text := pos_next_bill_no(v_pop);
+  if v_text !~ '^ZQ8-\d{6}-001$' then raise exception 'FAIL O6: a prefixed bill number: %', v_text; end if;
+  v_text := pos_next_bill_no(v_pop);
+  if v_text !~ '^ZQ8-\d{6}-002$' then raise exception 'FAIL O6: the next prefixed bill number: %', v_text; end if;
   if pos_next_bill_no(v_b) !~ '^\d{6}-001$' then raise exception 'FAIL O6: a bill number without a prefix'; end if;
   if pos_next_bill_no(v_pop) <> 'ZQ8-' || to_char(v_today, 'YYMMDD') || '-003' then
     raise exception 'FAIL O6: the prefix, the Malaysia day and the running number';
@@ -299,6 +312,10 @@ begin
   perform save_shift_settings(v_b, 900);
   if (select cash_variance_limit_sen from branch_pos_settings where branch_id = v_b) is distinct from 900 then
     raise exception 'FAIL O7: shift settings of an extra outlet';
+  end if;
+  perform save_receipt_settings(v_b, '{"receiptTitle": "Verify O B"}'::jsonb);
+  if (select receipt_title from branches where id = v_b) is distinct from 'Verify O B' then
+    raise exception 'FAIL O7: receipt settings of an extra outlet';
   end if;
   perform pg_temp.act(v_owner);
   perform set_staff_outlet(v_mgr, v_b, false);
