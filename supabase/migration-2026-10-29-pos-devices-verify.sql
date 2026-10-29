@@ -393,7 +393,7 @@ begin
   perform pos_unpair_device(v_dev1);
   perform pos_unpair_device(v_dev1);                                                    -- twice is fine
   if (select revoked_by from pos_devices where id = v_dev1) is distinct from v_mgr
-     or (select banned_until from auth.users where id = v_dev1) is distinct from 'infinity'
+     or coalesce((select not isfinite(banned_until) or banned_until < now() + interval '99 years' from auth.users where id = v_dev1), true)
      or exists (select 1 from pos_staff_sessions where device_id = v_dev1 and ended_at is null)
      or not exists (select 1 from pos_staff_sessions where device_id = v_dev1 and end_reason = 'unpaired')
      or (select prints from pos_devices where id = v_dev1) then

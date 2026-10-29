@@ -325,7 +325,8 @@ begin
   if v_dev.revoked_at is not null then return; end if;
   update pos_devices set revoked_at = now(), revoked_by = auth.uid(), prints = false where id = v_dev.id;
   update pos_staff_sessions set ended_at = now(), end_reason = 'unpaired' where device_id = v_dev.id and ended_at is null;
-  update auth.users set banned_until = 'infinity' where id = v_dev.id;
+  -- a real date: Supabase Auth cannot read 'infinity' (sign-in then fails with unexpected_failure)
+  update auth.users set banned_until = now() + interval '100 years' where id = v_dev.id;
 end $$;
 revoke all on function pos_unpair_device(uuid) from public, anon;
 grant execute on function pos_unpair_device(uuid) to authenticated;

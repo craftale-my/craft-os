@@ -24,10 +24,12 @@ export function parseBody(body: unknown): ActivationBody | null {
   return null
 }
 
-/** The caller's IP as the platform forwards it: the first x-forwarded-for entry. */
-export function clientIp(forwardedFor: string | null): string | null {
-  const first = forwardedFor?.split(',')[0]?.trim()
-  return first ? first.slice(0, 64) : null
+/** The caller's IP as the platform sets it: cf-connecting-ip, else the first x-forwarded-for
+ *  entry (Supabase rewrites that header itself: a client-sent one never arrives, checked on dev
+ *  2026-10-29), else 'unknown' — no address still counts against one shared limit. */
+export function clientIp(connectingIp: string | null, forwardedFor: string | null): string {
+  const ip = connectingIp?.trim() || forwardedFor?.split(',')[0]?.trim()
+  return ip ? ip.slice(0, 64) : 'unknown'
 }
 
 /** A synthetic email and a random password for a device account; never shown to anyone. */

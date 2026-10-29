@@ -24,11 +24,12 @@ describe('parseBody', () => {
 })
 
 describe('clientIp', () => {
-  it('the first forwarded address', () => {
-    expect(clientIp('203.0.113.7, 10.0.0.1')).toBe('203.0.113.7')
-    expect(clientIp(' 203.0.113.7 ')).toBe('203.0.113.7')
-    expect(clientIp(null)).toBeNull()
-    expect(clientIp('')).toBeNull()
+  it('the platform-set connecting IP first, then the first forwarded address, else unknown', () => {
+    expect(clientIp('198.51.100.4', '203.0.113.7, 10.0.0.1')).toBe('198.51.100.4')
+    expect(clientIp(null, '203.0.113.7, 10.0.0.1')).toBe('203.0.113.7')
+    expect(clientIp(' ', ' 203.0.113.7 ')).toBe('203.0.113.7')
+    expect(clientIp(null, null)).toBe('unknown')
+    expect(clientIp('', '')).toBe('unknown')
   })
 })
 
