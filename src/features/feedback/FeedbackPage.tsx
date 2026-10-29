@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { listInbox, listMyFeedback } from './api'
 import { CATEGORIES, CATEGORY_LABELS, STATUS_LABELS } from './types'
 import type { FeedbackCategory, FeedbackRow, FeedbackStatus } from './types'
 import { FeedbackDetail, formatWhen } from './FeedbackDetail'
-import { openFeedback } from './feedbackBus'
+import { openFeedback, useFeedbackSent } from './feedbackBus'
 
 type StatusFilter = 'open' | 'all' | FeedbackStatus
 
@@ -13,6 +13,7 @@ export default function FeedbackPage() {
   const { staff } = useAuth()
   const owner = staff?.system_role === 'owner'
   const [params, setParams] = useSearchParams()
+  const { key: navKey } = useLocation()
   const tab: 'mine' | 'inbox' = owner && params.get('tab') === 'inbox' ? 'inbox' : 'mine'
   const selectedId = params.get('id')
 
@@ -24,6 +25,8 @@ export default function FeedbackPage() {
 
   const staffId = staff?.id
 
+  useFeedbackSent(() => setReloadKey(k => k + 1))
+
   useEffect(() => {
     if (!staffId) return
     let live = true
@@ -34,7 +37,7 @@ export default function FeedbackPage() {
       (e: Error) => { if (live) setError(e.message) },
     )
     return () => { live = false }
-  }, [staffId, tab, reloadKey])
+  }, [staffId, tab, reloadKey, navKey])
 
   // Rows only count when they belong to the current tab; a same-tab reload keeps them (stale-while-revalidate).
   const items = loaded && loaded.tab === tab ? loaded.rows : null
@@ -59,7 +62,7 @@ export default function FeedbackPage() {
   })
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-6 pb-24">
+    <div className="max-w-2xl mx-auto px-4 py-6">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-display font-bold text-brown-dark">Feedback</h1>
         <button

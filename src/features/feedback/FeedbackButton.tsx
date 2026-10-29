@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { MessageSquare } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { FeedbackSheet } from './FeedbackSheet'
-import { useFeedbackRequests } from './feedbackBus'
+import { notifyFeedbackSent, useFeedbackRequests } from './feedbackBus'
 import type { FeedbackPrefill } from './feedbackBus'
 
 /** 每页右下角的悬浮按钮,同时是表单的唯一挂载点。在 <Sidebar> 里只挂一次。 */
@@ -45,7 +45,7 @@ export function FeedbackButton() {
           key={session.n}
           prefill={session.prefill}
           onClose={() => setSession(null)}
-          onSent={() => { setSession(null); setThanks(true) }}
+          onSent={() => { setSession(null); setThanks(true); notifyFeedbackSent() }}
         />
       )}
 

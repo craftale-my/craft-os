@@ -34,7 +34,7 @@ function AppLayout({ children }: { children: ReactNode }) {
     <div className="min-h-screen bg-[#F5F0E8]">
       <Sidebar />
       {/* key=pathname:换页即复位。Sidebar(含反馈按钮)在 boundary 之外,页面崩了仍可用。 */}
-      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen">
+      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen pb-[calc(5rem+env(safe-area-inset-bottom))]">
         <ErrorBoundary key={pathname}>{children}</ErrorBoundary>
       </main>
     </div>

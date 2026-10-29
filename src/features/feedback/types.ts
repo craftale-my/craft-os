@@ -55,4 +55,6 @@ export const MAX_MESSAGE = 2000
 export const MAX_PHOTOS = 3
 export const MAX_PHOTO_BYTES = 5 * 1024 * 1024
 /** 与 feedback-photos bucket 允许的 MIME 类型保持一致。 */
+/** 选择器里只列这几种:列出 HEIC 会让 iOS Safari 上传原始 HEIC 而不是转成 JPEG。 */
+export const PICKER_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 export const ACCEPTED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/heic', 'image/heif']

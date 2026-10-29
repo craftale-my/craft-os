@@ -27,3 +27,20 @@ export function useFeedbackRequests(onOpen: Listener) {
     return () => { listeners.delete(l) }
   }, [])
 }
+
+const sentListeners = new Set<() => void>()
+
+/** 反馈发送成功后通知页面刷新(例如正停在 /feedback 的 My Feedback)。 */
+export function notifyFeedbackSent() {
+  sentListeners.forEach(l => l())
+}
+
+export function useFeedbackSent(onSent: () => void) {
+  const ref = useRef(onSent)
+  useEffect(() => { ref.current = onSent })
+  useEffect(() => {
+    const l = () => ref.current()
+    sentListeners.add(l)
+    return () => { sentListeners.delete(l) }
+  }, [])
+}

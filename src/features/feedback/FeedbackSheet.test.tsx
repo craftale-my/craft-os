@@ -40,6 +40,13 @@ describe('FeedbackSheet', () => {
     expect(screen.getByLabelText('Submit anonymously')).toBeTruthy()
   })
 
+  it('file picker does not list HEIC so iOS converts to JPEG', () => {
+    renderSheet()
+    const accept = (screen.getByLabelText('Add photos') as HTMLInputElement).accept
+    expect(accept).toBe('image/jpeg,image/png,image/webp,image/gif')
+    expect(accept).not.toMatch(/heic|heif/)
+  })
+
   it('打开匿名后照片区隐藏并出现提示', () => {
     renderSheet()
     fireEvent.click(screen.getByRole('button', { name: /Workplace \/ Complaint/ }))

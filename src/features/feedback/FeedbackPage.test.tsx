@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { render, screen, cleanup, waitFor, fireEvent, act } from '@testing-library/react'
+import { MemoryRouter, Link } from 'react-router-dom'
 import type { FeedbackRow } from './types'
 
 const listMyFeedback = vi.fn()
@@ -23,6 +23,7 @@ vi.mock('../auth/AuthContext', () => ({
 }))
 
 const { default: FeedbackPage } = await import('./FeedbackPage')
+const { notifyFeedbackSent } = await import('./feedbackBus')
 
 const row = (over: Partial<FeedbackRow> = {}): FeedbackRow => ({
   id: 'f1', category: 'system', message: 'Leave page is blank', branch: null, page_path: '/hr/leave',
@@ -133,5 +134,32 @@ describe('FeedbackPage', () => {
     listMyFeedback.mockRejectedValue(new Error('boom'))
     renderAt('/feedback')
     expect((await screen.findByRole('alert')).textContent).toBe('boom')
+  })
+
+  it('reloads when a Link inside /feedback changes only the query (notification click)', async () => {
+    role = 'owner'
+    listInbox.mockResolvedValueOnce([row({ id: 'f1', message: 'First item' })])
+    listInbox.mockResolvedValueOnce([row({ id: 'f1', message: 'First item' }), row({ id: 'f2', message: 'Second item' })])
+    render(
+      <MemoryRouter initialEntries={['/feedback?tab=inbox']}>
+        <Link to="/feedback?tab=inbox&id=f2">bell</Link>
+        <FeedbackPage />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('First item')).toBeTruthy()
+    fireEvent.click(screen.getByText('bell'))
+    expect(await screen.findByText('Second item')).toBeTruthy()
+    expect(screen.queryByText("This feedback isn't available.")).toBeNull()
+    expect(listInbox).toHaveBeenCalledTimes(2)
+  })
+
+  it('reloads My Feedback when feedback is sent from the floating button', async () => {
+    listMyFeedback.mockResolvedValueOnce([])
+    listMyFeedback.mockResolvedValueOnce([row({ message: 'Just sent' })])
+    renderAt('/feedback')
+    expect(await screen.findByText('No feedback yet. Tap Feedback to send one.')).toBeTruthy()
+    act(() => { notifyFeedbackSent() })
+    expect(await screen.findByText('Just sent')).toBeTruthy()
+    expect(listMyFeedback).toHaveBeenCalledTimes(2)
   })
 })

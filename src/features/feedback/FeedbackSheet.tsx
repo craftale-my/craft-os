@@ -4,7 +4,7 @@ import { X } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { BRANCHES } from '../../shared/types'
 import { submitFeedback, feedbackContext } from './api'
-import { CATEGORIES, MAX_MESSAGE, MAX_PHOTOS, ACCEPTED_PHOTO_TYPES } from './types'
+import { CATEGORIES, MAX_MESSAGE, MAX_PHOTOS, PICKER_PHOTO_TYPES } from './types'
 import type { FeedbackCategory } from './types'
 import { validateFeedbackDraft, isAcceptablePhoto } from './validate'
 import type { FeedbackPrefill } from './feedbackBus'
@@ -174,7 +174,7 @@ export function FeedbackSheet({ prefill, onClose, onSent }: {
                   + Add
                   <input
                     type="file"
-                    accept={ACCEPTED_PHOTO_TYPES.join(',')}
+                    accept={PICKER_PHOTO_TYPES.join(',')}
                     multiple
                     aria-label="Add photos"
                     className="sr-only"
