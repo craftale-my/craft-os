@@ -76,8 +76,8 @@ begin
   -- settings tables: written only by a live manager of the row's own branch (fixes I1)
   for r in select t from unnest(array['service_charge_rules','payment_methods','reason_templates']) as t loop
     if not exists (select 1 from pg_policies where tablename = r.t and policyname = r.t || '_manage' and cmd = 'ALL'
-                    and qual like '%pos_caller_branch()%' and qual like '%has_menu_cap%'
-                    and with_check like '%pos_caller_branch()%' and with_check like '%has_menu_cap%') then
+                    and qual like '%pos_manages_outlet(branch_id)%'
+                    and with_check like '%pos_manages_outlet(branch_id)%') then
       raise exception 'FAIL rls: %_manage is not limited to the caller''s branch', r.t;
     end if;
   end loop;
@@ -97,7 +97,7 @@ begin
   -- callable by staff, never by anon
   for r in select f from unnest(array[
       'pos_compute_bill(jsonb)', 'pos_bill_totals(uuid)', 'checkout_bill(uuid,jsonb,uuid)', 'reprint_receipt(uuid)',
-      'save_receipt_settings(jsonb)', 'pos_approvers()', 'set_my_pos_pin(text,text)', 'clear_pos_pin(uuid)',
+      'save_receipt_settings(uuid,jsonb)', 'pos_approvers()', 'set_my_pos_pin(text,text)', 'clear_pos_pin(uuid)',
       'void_order_item(uuid,text,uuid,text)', 'void_bill(uuid,text,uuid,text)', 'move_bill(uuid,uuid)',
       'merge_bills(uuid,uuid)', 'refund_bill(uuid,uuid,integer,uuid,text,uuid,text)', 'open_table(uuid,integer)',
       'pos_caller_branch()', 'pos_refundable_methods(uuid)']) as f loop
@@ -170,6 +170,7 @@ begin
   insert into reason_templates(branch_id, action, reasons, compulsory, allow_other)
     values (v_branch, 'void_item', array['Wrong item keyed', 'Customer changed mind'], true, false);
   update system_role_permissions set permissions = permissions - 'pos_supervise';   -- code defaults for this run
+  update system_role_permissions set permissions = permissions || '{"all_branches": false}' where system_role = 'manager';   -- managers: own branch only
   update staff set branch_id = v_branch where id = v_owner;
   delete from staff_pos_pins where staff_id = v_owner;                           -- the owner approves without a PIN below
   insert into auth.users (id) values (v_sup), (v_staff), (v_far);
@@ -354,14 +355,14 @@ begin
   begin perform void_order_item(v_item, 'Wrong item keyed', v_staff, '1234'); raise exception 'FAIL: cashier approved';
   exception when raise_exception then if sqlerrm <> 'This person cannot approve voids or refunds' then raise; end if; end;
   begin perform void_order_item(v_item, 'Wrong item keyed', v_far, '9999'); raise exception 'FAIL: other branch approved';
-  exception when raise_exception then if sqlerrm <> 'The approver is not active staff of this branch' then raise; end if; end;
+  exception when raise_exception then if sqlerrm <> 'The approver cannot work at this outlet' then raise; end if; end;
   -- a resigned person keeps is_active = true; status = 'resigned' must end their authority
   -- (only manager-tier may change another's status — 9d3f7f5's staff guard — so the owner does it)
   perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
   update staff set status = 'resigned' where id = v_sup;
   perform set_config('request.jwt.claims', json_build_object('sub', v_staff, 'role', 'authenticated')::text, true);
   begin perform void_order_item(v_item, 'Wrong item keyed', v_sup, '1234'); raise exception 'FAIL: resigned approver approved';
-  exception when raise_exception then if sqlerrm <> 'The approver is not active staff of this branch' then raise; end if; end;
+  exception when raise_exception then if sqlerrm <> 'The approver cannot work at this outlet' then raise; end if; end;
   perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
   update staff set status = 'active' where id = v_sup;
   update staff set status = 'resigned' where id = v_staff;                     -- the owner changes it (staff_guard)
@@ -616,14 +617,13 @@ begin
   update branch_pos_settings set qr_requires_open_bill = false where branch_id = v_branch;
 
   -- ── M. receipt settings: managers only, route must have a printer ─────────
-  begin perform save_receipt_settings('{"receiptTitle": "Nope"}'::jsonb); raise exception 'FAIL: cashier saved settings';
+  begin perform save_receipt_settings(v_branch, '{"receiptTitle": "Nope"}'::jsonb); raise exception 'FAIL: cashier saved settings';
   exception when raise_exception then if sqlerrm <> 'Only a manager can change the receipt settings' then raise; end if; end;
   perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
-  begin perform clear_pos_pin(v_far); raise exception 'FAIL: cleared a PIN of another branch';
-  exception when raise_exception then if sqlerrm <> 'This person is not staff of your branch' then raise; end if; end;
-  begin perform save_receipt_settings('{"receiptTitle": "Verify Cafe", "receiptRoute": "Nowhere"}'::jsonb); raise exception 'FAIL: unknown route';
+  -- clear_pos_pin's outlet scope (the owner holds all_branches) is checked in migration-2026-10-29-pos-outlets-verify.sql
+  begin perform save_receipt_settings(v_branch, '{"receiptTitle": "Verify Cafe", "receiptRoute": "Nowhere"}'::jsonb); raise exception 'FAIL: unknown route';
   exception when raise_exception then if sqlerrm <> 'No printer is set for route Nowhere' then raise; end if; end;
-  perform save_receipt_settings('{"receiptTitle": " Verify Cafe 2 ", "legalName": "", "phone": "03-1234", "footer": "Thanks!",
+  perform save_receipt_settings(v_branch, '{"receiptTitle": " Verify Cafe 2 ", "legalName": "", "phone": "03-1234", "footer": "Thanks!",
                                   "receiptRoute": "Bar", "sstRegistered": false, "cashRounding": "none", "qrRequiresOpenBill": true}'::jsonb);
   -- legalName "" clears it; address is absent from the payload, so it stays as it was
   if (select receipt_title || '|' || coalesce(legal_name, 'null') || '|' || phone || '|' || address from branches where id = v_branch)

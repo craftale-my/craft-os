@@ -125,6 +125,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-25-pos-hardening.sql',
       'migration-2026-10-25-menu-list-photo.sql',
       'migration-2026-10-26-pos-frontend.sql',
+      'migration-2026-10-29-pos-outlets.sql',
     ]))
   })
 
@@ -199,6 +200,19 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(sql).toMatch(/grant execute on function pos_set_bill_pax\(uuid, integer\) to authenticated;/)
     expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-25-pos-hardening\.sql first/)
     const verify = readFileSync(new URL('migration-2026-10-26-pos-frontend-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+
+  it('scans the outlets migration: its write functions, the STOP guard, a rolled-back verify', () => {
+    const sql = readFileSync(new URL('migration-2026-10-29-pos-outlets.sql', SUPABASE), 'utf8')
+    expect(functionBodies(sql).map((b) => b.name)).toEqual(expect.arrayContaining([
+      'branches_outlet_guard', 'save_outlet', 'set_staff_outlet', 'clear_pos_pin', 'pos_next_bill_no',
+      'save_receipt_settings', 'save_shift_settings', 'save_branch_catalogs', 'insert_test_print', 'dining_tables_guard',
+    ]))
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-26-pos-frontend\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-10-29-pos-outlets-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })

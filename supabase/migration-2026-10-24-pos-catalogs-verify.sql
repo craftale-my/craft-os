@@ -53,8 +53,8 @@ begin
     raise exception 'FAIL rls: sold-out writes are not limited to the caller''s branch';
   end if;
   if not exists (select 1 from pg_policies where tablename = 'branch_catalogs' and policyname = 'branch_catalogs_manage'
-                  and qual like '%pos_caller_branch()%' and qual like '%access_settings%'
-                  and with_check like '%pos_caller_branch()%' and with_check like '%access_settings%') then
+                  and qual like '%pos_manages_outlet(branch_id)%'
+                  and with_check like '%pos_manages_outlet(branch_id)%') then
     raise exception 'FAIL rls: branch_catalogs writes are not limited to a manager of the branch';
   end if;
   if not exists (select 1 from pg_indexes where indexname = 'branch_catalogs_one_per_role') then
@@ -63,7 +63,7 @@ begin
   if not exists (select 1 from pg_constraint where conname = 'orders_catalog_id_fkey') then
     raise exception 'FAIL schema: orders.catalog_id has no foreign key';
   end if;
-  for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid,uuid)', 'save_branch_catalogs(jsonb)',
+  for r in select f from unnest(array['place_counter_order(uuid,text,integer,jsonb,uuid,uuid)', 'save_branch_catalogs(uuid,jsonb)',
                                       'menu_import_catalogs(jsonb)', 'menu_set_catalog_product(uuid,uuid,text)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
     if not has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL grants: staff cannot call %', r.f; end if;
@@ -123,6 +123,7 @@ begin
 
   -- ── C. fixture: two branches, staff, a latte with a milk add-on, a toast, six catalogs ─
   update system_role_permissions set permissions = permissions - 'manage_menu';   -- code defaults for this run
+  update system_role_permissions set permissions = permissions || '{"all_branches": false}' where system_role = 'manager';   -- managers: own branch only
   insert into branches(name, address) values ('VERIFY', 'verify') returning id into v_branch;
   insert into branches(name, address) values ('VERIFY2', 'far away') returning id into v_branch2;
   insert into dining_tables(branch_id, label) values (v_branch, 'V1') returning * into v_t1;
@@ -456,21 +457,21 @@ begin
 
   -- ── I. branch catalogs: a manager of the branch only ──────────────────────
   perform set_config('request.jwt.claims', json_build_object('sub', v_cashier, 'role', 'authenticated')::text, true);
-  begin perform save_branch_catalogs(jsonb_build_object('dineIn', c_dine, 'takeaway', c_take, 'qr', c_qr, 'additional', '[]'::jsonb));
+  begin perform save_branch_catalogs(v_branch, jsonb_build_object('dineIn', c_dine, 'takeaway', c_take, 'qr', c_qr, 'additional', '[]'::jsonb));
     raise exception 'FAIL I: a cashier saved the branch catalogs';
   exception when raise_exception then if sqlerrm <> 'Only a manager can change the menu catalogs' then raise; end if; end;
   perform set_config('request.jwt.claims', json_build_object('sub', v_mgr, 'role', 'authenticated')::text, true);
-  begin perform save_branch_catalogs(jsonb_build_object('dineIn', c_dine, 'takeaway', c_take, 'qr', null, 'additional', '[]'::jsonb));
+  begin perform save_branch_catalogs(v_branch, jsonb_build_object('dineIn', c_dine, 'takeaway', c_take, 'qr', null, 'additional', '[]'::jsonb));
     raise exception 'FAIL I: saved without a QR catalog';
   exception when raise_exception then if sqlerrm <> 'Choose the QR catalog' then raise; end if; end;
-  begin perform save_branch_catalogs(jsonb_build_object('dineIn', c_dine, 'takeaway', c_take, 'qr', c_qr, 'additional', jsonb_build_array(c_old)));
+  begin perform save_branch_catalogs(v_branch, jsonb_build_object('dineIn', c_dine, 'takeaway', c_take, 'qr', c_qr, 'additional', jsonb_build_array(c_old)));
     raise exception 'FAIL I: saved an inactive catalog';
   exception when raise_exception then if sqlerrm <> 'This catalog is not available — refresh and try again' then raise; end if; end;
-  begin perform save_branch_catalogs(jsonb_build_object('dineIn', 'nope', 'takeaway', c_take, 'qr', c_qr, 'additional', '[]'::jsonb));
+  begin perform save_branch_catalogs(v_branch, jsonb_build_object('dineIn', 'nope', 'takeaway', c_take, 'qr', c_qr, 'additional', '[]'::jsonb));
     raise exception 'FAIL I: saved a malformed id';
   exception when raise_exception then if sqlerrm <> 'Invalid catalog settings' then raise; end if; end;
   set local role authenticated;
-  perform save_branch_catalogs(jsonb_build_object('dineIn', c_dine, 'takeaway', c_dine, 'qr', c_qr,
+  perform save_branch_catalogs(v_branch, jsonb_build_object('dineIn', c_dine, 'takeaway', c_dine, 'qr', c_qr,
                                                   'additional', jsonb_build_array(c_staff, c_grab, c_staff)));
   reset role;
   select string_agg(role || ':' || (select name from menu_catalogs m where m.id = catalog_id), ',' order by role, catalog_id::text)

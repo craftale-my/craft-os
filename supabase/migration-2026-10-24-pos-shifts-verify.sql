@@ -45,7 +45,7 @@ begin
   for r in select f from unnest(array[
              'pos_current_shift()', 'open_shift(integer)', 'record_cash_move(uuid,text,integer,text,uuid,text)',
              'close_shift(uuid,integer,text,uuid,text,integer)', 'pos_shift_list()', 'pos_shift_zreport(uuid)',
-             'reprint_zreport(uuid)', 'save_shift_settings(integer)', 'checkout_bill(uuid,jsonb,uuid)',
+             'reprint_zreport(uuid)', 'save_shift_settings(uuid,integer)', 'checkout_bill(uuid,jsonb,uuid)',
              'refund_bill(uuid,uuid,integer,uuid,text,uuid,text)']) as f loop
     if has_function_privilege('anon', r.f, 'execute') then raise exception 'FAIL grants: anon can call %', r.f; end if;
     if not has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL grants: staff cannot call %', r.f; end if;
@@ -270,10 +270,10 @@ begin
   if pos_shift_expected_cash(s1) is distinct from 14515 then raise exception 'FAIL E expected cash: %', pos_shift_expected_cash(s1); end if;
 
   -- ── F. close shift 1: blind count, above the limit, approval, first count kept ──
-  perform pg_temp.expect_error('select save_shift_settings(800)', 'Only a manager can change the shift settings', 'F settings by the cashier');
+  perform pg_temp.expect_error(format('select save_shift_settings(%L, 800)', v_branch), 'Only a manager can change the shift settings', 'F settings by the cashier');
   perform pg_temp.act(v_owner);
-  perform pg_temp.expect_error('select save_shift_settings(-1)', 'Enter a cash variance limit between RM 0.00 and RM 10000.00', 'F bad limit');
-  perform save_shift_settings(500);
+  perform pg_temp.expect_error(format('select save_shift_settings(%L, -1)', v_branch), 'Enter a cash variance limit between RM 0.00 and RM 10000.00', 'F bad limit');
+  perform save_shift_settings(v_branch, 500);
   if (select cash_variance_limit_sen from branch_pos_settings where branch_id = v_branch) is distinct from 500
      or (select receipt_route from branch_pos_settings where branch_id = v_branch) is distinct from 'Bar' then
     raise exception 'FAIL F settings';
