@@ -201,7 +201,7 @@ grant  execute on function reply_feedback(uuid, text, text) to authenticated;
 -- Photos: private bucket, signed URLs only
 -- ---------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('feedback-photos', 'feedback-photos', false, 5242880, array['image/*'])
+values ('feedback-photos', 'feedback-photos', false, 5242880, array['image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif'])
 on conflict (id) do update
   set public = false,
       file_size_limit = excluded.file_size_limit,
@@ -223,6 +223,9 @@ create policy "feedback_photos_select" on storage.objects for select to authenti
     bucket_id = 'feedback-photos'
     and (
       public.current_is_owner()
+      -- 上传者永远看得到自己传的文件。删除(storage remove)要先 select 再 delete,
+      -- 孤儿照片没有对应的 feedback 行,没有这一条的话清理会静默删 0 行。
+      or owner_id = auth.uid()::text
       or exists (select 1 from public.feedback f
                   where f.id::text = (storage.foldername(name))[1]
                     and f.submitted_by = auth.uid())

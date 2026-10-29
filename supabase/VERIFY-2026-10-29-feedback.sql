@@ -34,7 +34,10 @@ do $$ begin
     perform submit_feedback('44444444-4444-4444-8444-444444444444', 'system', 'x', null, null, '{}', '{}', true);
     raise exception 'VERIFY FAIL: anonymous system feedback was accepted';
   exception when others then
-    if sqlerrm like 'VERIFY FAIL%' then raise; end if;
+    if sqlerrm = 'Only Workplace feedback can be anonymous.' then null;
+    elsif sqlerrm like 'VERIFY FAIL%' then raise;
+    else raise exception 'VERIFY FAIL: check 2 got unexpected error: %', sqlerrm;
+    end if;
   end;
 end $$;
 
@@ -54,7 +57,10 @@ do $$ begin
     perform reply_feedback('11111111-1111-4111-8111-111111111111', 'resolved', 'hi');
     raise exception 'VERIFY FAIL: staff could reply';
   exception when others then
-    if sqlerrm like 'VERIFY FAIL%' then raise; end if;
+    if sqlerrm = 'Only the owner can reply to feedback.' then null;
+    elsif sqlerrm like 'VERIFY FAIL%' then raise;
+    else raise exception 'VERIFY FAIL: check 4 got unexpected error: %', sqlerrm;
+    end if;
   end;
 end $$;
 
@@ -64,8 +70,25 @@ do $$ begin
     insert into feedback (id, category, message) values ('55555555-5555-4555-8555-555555555555', 'system', 'direct');
     raise exception 'VERIFY FAIL: direct insert allowed';
   exception when others then
-    if sqlerrm like 'VERIFY FAIL%' then raise; end if;
+    if sqlstate = '42501' then null;
+    elsif sqlerrm like 'VERIFY FAIL%' then raise;
+    else raise exception 'VERIFY FAIL: check 5 got unexpected error % (%)', sqlerrm, sqlstate;
+    end if;
   end;
+end $$;
+
+-- ---- 5b. 孤儿照片:上传者自己看得到,别的 staff 看不到 ------------------------
+-- 删除那半(storage.protect_delete 禁止 SQL 直接 delete storage.objects)改在浏览器测试里覆盖;
+-- 这里只验证 select policy 的 owner_id 分支(storage remove 要先 select 才能 delete)。
+insert into storage.objects (bucket_id, name, owner_id)
+values ('feedback-photos', '66666666-6666-4666-8666-666666666666/1.jpg', auth.uid()::text);
+
+do $$ begin
+  if (select count(*) from storage.objects
+       where bucket_id = 'feedback-photos'
+         and name = '66666666-6666-4666-8666-666666666666/1.jpg') <> 1 then
+    raise exception 'VERIFY FAIL: uploader cannot see own orphan photo';
+  end if;
 end $$;
 
 -- ---- 6. 另一个 staff 一条都看不到 ---------------------------------------------
@@ -79,6 +102,11 @@ do $$ begin
         '22222222-2222-4222-8222-222222222222',
         '33333333-3333-4333-8333-333333333333')) <> 0 then
     raise exception 'VERIFY FAIL: other staff can see feedback';
+  end if;
+  if exists (select 1 from storage.objects
+              where bucket_id = 'feedback-photos'
+                and name = '66666666-6666-4666-8666-666666666666/1.jpg') then
+    raise exception 'VERIFY FAIL: other staff can see someone else''s orphan photo';
   end if;
 end $$;
 
