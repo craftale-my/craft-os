@@ -1,8 +1,205 @@
-import { supabase } from '../shared/lib/supabase'
-import { POS_STORAGE_KEY } from './posSupabase'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import PosTill from '../features/pos/order/PosTill'
+import ConfirmDialog, { type ConfirmRequest } from '../features/pos/shell/ConfirmDialog'
+import { createIdbStore } from '../features/pos/offline/idbStore'
+import type { QueuedOrder } from '../features/pos/offline/orderQueue'
+import { fetchProductNames } from '../features/pos/checkout/checkoutApi'
+import type { ContextCode } from '../features/pos/deviceErrors'
+import ActivationScreen from './ActivationScreen'
+import LockScreen from './LockScreen'
+import { loadPending, type ActivationState } from './activation'
+import {
+  clearPendingLock, forgetContext, holdQueued, loadContext, loadProductNames, pendingLock, saveContext,
+  saveProductNames, setPendingLock, UNPAIRED_REASON, type LockReason,
+} from './deviceStore'
+import { CONTEXT_EVENT, supabase } from './posSupabase'
+import type { RosterReply } from './roster'
+import {
+  endSession, fetchRoster, fetchWhoAmI, forgetDevice, hasDeviceSession, unpairThisDevice, type WhoAmI,
+} from './sessionApi'
+import { useAppUpdate } from './useAppUpdate'
+import { useIdleLock } from './useIdleLock'
 
-/** Replaced by the real app in Task 6. Shows which client the build wired in. */
+const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const ACCESS_CHANGED = 'Your access here has changed. Ask your manager.'
+const ROSTER_MS = 60_000
+
+type Phase =
+  | { kind: 'boot' }
+  | { kind: 'activation'; start: ActivationState; unsent: QueuedOrder[] }
+  | { kind: 'device' }
+
+function useOnline(): boolean {
+  const [online, setOnline] = useState(navigator.onLine)
+  useEffect(() => {
+    const on = () => setOnline(true)
+    const off = () => setOnline(false)
+    window.addEventListener('online', on)
+    window.addEventListener('offline', off)
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off) }
+  }, [])
+  return online
+}
+
+/** Craft POS (spec §2, §3): activation → lock screen ⇄ the till. The till mounts at the first
+ *  sign-in and stays mounted under the lock screen, so unsent items wait for the next person. */
 export default function PosApp() {
-  const swapped = (supabase as unknown as { auth: { storageKey?: string } }).auth.storageKey === POS_STORAGE_KEY
-  return <div className="p-8 text-center text-brown-dark">Craft POS · client {swapped ? 'POS' : 'Craft OS'}</div>
+  const [phase, setPhase] = useState<Phase>({ kind: 'boot' })
+  const [roster, setRoster] = useState<RosterReply | null>(null)
+  const [who, setWho] = useState<WhoAmI | null>(null)          // null: locked
+  const [till, setTill] = useState<WhoAmI | null>(null)        // the last signed-in context: keeps the till mounted
+  const [lockNote, setLockNote] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const online = useOnline()
+  const updateReady = useAppUpdate()
+  const whoRef = useRef(who)
+  whoRef.current = who
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
+
+  const signedIn = (w: WhoAmI | null) => {
+    setWho(w)
+    if (w) { setTill(w); setLockNote(null) }
+  }
+
+  /** The roster and, when someone is signed in, who it is. A Lock that could not reach the
+   *  server is finished first. Offline, the last context on this tablet is used. */
+  const refresh = useCallback(async () => {
+    try {
+      let r = await fetchRoster()
+      const pending = pendingLock(localStorage)
+      if (pending && r.session) { await endSession(pending); r = await fetchRoster() }
+      clearPendingLock(localStorage)
+      const w = r.session ? await fetchWhoAmI() : null
+      setRoster(r); signedIn(w); setLoadError(null)
+      saveContext(localStorage, { roster: r, who: w })
+    } catch (e) {
+      if (phaseRef.current.kind !== 'device') return                 // unpaired meanwhile (the event)
+      const c = loadContext(localStorage)
+      if (c) { setRoster(c.roster); if (!pendingLock(localStorage) && !whoRef.current) signedIn(c.who) }
+      setLoadError(msg(e))
+    }
+  }, [])
+
+  const toActivation = useCallback(async (start: ActivationState, hold: boolean) => {
+    if (phaseRef.current.kind === 'activation') return
+    phaseRef.current = { kind: 'activation', start, unsent: [] }        // once, whichever signal comes first
+    const unsent = hold ? await holdQueued(createIdbStore()).catch(() => []) : []
+    await forgetDevice().catch(() => undefined)
+    forgetContext(localStorage)
+    setWho(null); setTill(null); setRoster(null)
+    setPhase({ kind: 'activation', start, unsent })
+  }, [])
+
+  // boot
+  useEffect(() => {
+    void (async () => {
+      if (!hasDeviceSession()) {
+        const p = loadPending(localStorage)
+        // orders held back when this tablet was unpaired stay listed until it is activated again
+        const unsent = (await createIdbStore().all().catch(() => [] as QueuedOrder[]))
+          .filter((o) => o.failedReason === UNPAIRED_REASON).sort((a, b) => a.queuedAt - b.queuedAt)
+        setPhase({ kind: 'activation', start: p ? { kind: 'waiting', pending: p, note: null } : { kind: 'choose' }, unsent })
+        return
+      }
+      setPhase({ kind: 'device' })
+      await refresh()
+    })()
+  }, [refresh])
+
+  const lock = useCallback(async (reason: LockReason, note: string | null = null) => {
+    setWho(null); setLockNote(note)
+    setPendingLock(localStorage, reason)
+    try { await endSession(reason); clearPendingLock(localStorage) } catch { /* offline: ended on the next roster read */ }
+    await refresh()
+  }, [refresh])
+
+  // a coded error from any call (posSupabase.ts)
+  useEffect(() => {
+    const on = (e: Event) => {
+      const code = (e as CustomEvent<ContextCode>).detail
+      if (code === 'device_unpaired') {
+        if (phaseRef.current.kind === 'device') void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
+      } else if (code === 'access_changed') {
+        if (whoRef.current) void lock('access_changed', ACCESS_CHANGED)
+      } else if (whoRef.current) {                                    // no_session, outlet_closed: back to the lock screen
+        setWho(null)
+        void refresh()
+      }
+    }
+    window.addEventListener(CONTEXT_EVENT, on)
+    return () => window.removeEventListener(CONTEXT_EVENT, on)
+  }, [lock, refresh, toActivation])
+
+  // an unpaired device's token can no longer refresh: Supabase signs it out
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT' && phaseRef.current.kind === 'device') void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
+    })
+    return () => data.subscription.unsubscribe()
+  }, [toActivation])
+
+  // while locked: the roster stays fresh; back online: the session token too
+  useEffect(() => {
+    if (phase.kind !== 'device' || who) return
+    const timer = window.setInterval(() => void refresh(), ROSTER_MS)
+    return () => window.clearInterval(timer)
+  }, [phase.kind, who, refresh])
+  useEffect(() => {
+    if (!online || phase.kind !== 'device') return
+    void supabase.auth.getSession().then(() => refresh())
+  }, [online, phase.kind, refresh])
+
+  // product names for the unpaired screen's list
+  const whoId = who?.staffId
+  useEffect(() => {
+    if (whoId) fetchProductNames().then((rows) => saveProductNames(localStorage, rows), () => undefined)
+  }, [whoId])
+
+  // a downloaded update opens on the lock screen only, never mid-order
+  useEffect(() => {
+    if (updateReady && !who) window.location.reload()
+  }, [updateReady, who])
+
+  useIdleLock(roster?.idleLockMinutes ?? 10, who !== null, () => void lock('idle'))
+
+  if (phase.kind === 'boot') return <div className="flex min-h-dvh items-center justify-center bg-cream text-brown-muted">Craft POS</div>
+  if (phase.kind === 'activation') {
+    return <ActivationScreen start={phase.start} unsent={phase.unsent} names={loadProductNames(localStorage)}
+      onActivated={() => { setPhase({ kind: 'device' }); void refresh() }} />
+  }
+
+  const requestLock = () => {
+    if (online) { void lock('locked'); return }
+    setConfirm({ title: "You're offline — nobody can sign in until the network is back.", confirmLabel: 'Lock anyway',
+      onConfirm: () => void lock('locked') })
+  }
+  const requestUnpair = () => setConfirm({
+    title: 'Unpair this device?', message: 'It stops working until HQ activates it again.', confirmLabel: 'Unpair', danger: true,
+    onConfirm: async () => {
+      try { await unpairThisDevice(); await toActivation({ kind: 'choose' }, false) }
+      catch (e) { setLoadError(msg(e)) }
+    },
+  })
+
+  return (
+    <>
+      {till && (
+        <PosTill branchId={till.outletId} branchName={till.outletName} staffId={who?.staffId ?? till.staffId}
+          staffName={who?.staffName ?? till.staffName}
+          can={{ manageMenu: false, supervise: who?.canSupervise ?? false, settings: false }}
+          prints={roster?.device.prints ?? till.prints} locked={who === null}
+          onLock={requestLock} onUnpair={who?.canUnpair ? requestUnpair : undefined} />
+      )}
+      {!who && (
+        <LockScreen roster={roster} note={lockNote} offline={!online} loadError={loadError}
+          onSignedIn={() => void refresh()} onRefresh={() => void refresh()} />
+      )}
+      {confirm && (
+        <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)}
+          onConfirm={() => { const c = confirm; setConfirm(null); c.onConfirm() }} />
+      )}
+    </>
+  )
 }
