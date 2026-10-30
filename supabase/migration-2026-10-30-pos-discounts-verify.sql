@@ -199,7 +199,11 @@ begin
     'This person cannot approve voids or refunds', 'D a cashier without pos_supervise as approver');
   perform pg_temp.expect_error(format('select menu_set_catalog_discount(%L, 1000)', v_catalog),
     'Not allowed to edit the menu', 'D a non-editor setting the catalog discount');
+  update bills set updated_at = now() - interval '1 day' where id = v_bill;           -- now() is fixed in this transaction: age the row first
   v_res := set_item_discount(v_item2, 'percent', 1000, 'Regular', v_sup, '2222');
+  if (select updated_at from bills where id = v_bill) is distinct from now() then
+    raise exception 'FAIL D: setting an item discount did not bump bills.updated_at';
+  end if;
   if not coalesce((v_res->>'ok')::boolean, false)
      or (select discount_kind || ':' || discount_value || ':' || discount_reason from order_items where id = v_item2) is distinct from 'percent:1000:Regular'
      or (select discount_approved_by from order_items where id = v_item2) is distinct from v_sup
@@ -210,6 +214,29 @@ begin
   if (select discount_kind || ':' || discount_value from order_items where id = v_item2) is distinct from 'amount:500' then
     raise exception 'FAIL D: setting again did not replace the item discount';
   end if;
+  -- clearing an item discount: all six columns back to null, one log row; a retry is ok and writes nothing
+  update bills set updated_at = now() - interval '1 day' where id = v_bill;
+  v_res := clear_item_discount(v_item2);
+  if not coalesce((v_res->>'ok')::boolean, false)
+     or exists (select 1 from order_items where id = v_item2
+                 and (discount_kind is not null or discount_value is not null or discount_reason is not null
+                      or discount_approved_by is not null or discount_by is not null or discount_at is not null)) then
+    raise exception 'FAIL D: clearing the item discount: %', v_res;
+  end if;
+  if (select updated_at from bills where id = v_bill) is distinct from now() then
+    raise exception 'FAIL D: clearing an item discount did not bump bills.updated_at';
+  end if;
+  if (select count(*) from pos_discount_log where order_item_id = v_item2 and action = 'clear' and kind = 'amount'
+         and value = 500 and reason = 'Regular' and actor = v_cash and approved_by is null) <> 1 then
+    raise exception 'FAIL D: the clear did not log the discount it removed';
+  end if;
+  v_res := clear_item_discount(v_item2);                                               -- a retry: nothing to clear
+  if not coalesce((v_res->>'ok')::boolean, false)
+     or (select count(*) from pos_discount_log where order_item_id = v_item2 and action = 'clear') <> 1 then
+    raise exception 'FAIL D: clearing an item with no discount: %', v_res;
+  end if;
+  v_res := set_item_discount(v_item2, 'amount', 500, 'Regular', v_sup, '2222');         -- back again for the totals below
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL D: setting after a clear: %', v_res; end if;
   -- 21.50 + (43.00 − 5.00) = 59.50; a 10% bill discount = 5.95
   v_res := set_bill_discount(v_bill, 'percent', 1000, 'Regular', v_sup, '2222');
   v_tot := pos_bill_totals(v_bill);
@@ -227,8 +254,10 @@ begin
   end if;
   v_res := clear_bill_discount(v_bill);                                               -- a retry
   if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL D: clearing twice: %', v_res; end if;
-  if (select count(*) from pos_discount_log where bill_id = v_bill) <> 4                -- item set ×2, bill set, bill clear
-     or (select count(*) from pos_discount_log where bill_id = v_bill and action = 'clear' and actor = v_cash and approved_by is null) <> 1 then
+  -- one row per effective call: item set ×2, item clear, item set, bill set, bill clear = 6; refused calls and no-op retries write none
+  if (select count(*) from pos_discount_log where bill_id = v_bill) <> 6
+     or (select count(*) from pos_discount_log where bill_id = v_bill and order_item_id is null
+                and action = 'clear' and actor = v_cash and approved_by is null) <> 1 then
     raise exception 'FAIL D: the discount log';
   end if;
   perform merge_bills(v_bill, v_bill2);                                               -- the item discount travels
@@ -247,6 +276,16 @@ begin
     'Only an open bill can be discounted', 'D paid bill');
   perform pg_temp.expect_error(format('select clear_bill_discount(%L)', v_bill2),
     'Discounts can only change on an open bill', 'D paid bill clear');
+  -- a voided item cannot be discounted: a fresh bill on the freed table, its only item voided (the numbers above are untouched)
+  perform pg_temp.act(v_dev);
+  v_order := place_counter_order(v_t2, 'dine_in', 1, v_items, gen_random_uuid());
+  v_item := (select id from order_items where order_id = v_order);
+  v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) or (select voided_at from order_items where id = v_item) is null then
+    raise exception 'FAIL D: voiding the extra item: %', v_res;
+  end if;
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item, 'percent', 'Regular', v_sup, '2222'),
+    'A voided item cannot be discounted', 'D voided item');
 -- @E
   raise notice 'VERIFY OK';
 end $$;
