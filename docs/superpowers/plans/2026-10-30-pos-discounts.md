@@ -33,7 +33,7 @@
 | `supabase/migration-2026-10-30-pos-discounts-verify.sql` | new: sections A–E |
 | `src/features/pos/sqlSafeUpdate.test.ts` | new RPCs never use `auth.uid()` |
 | `src/features/pos/print/receipt.ts` (+ test) | item discount rows, bill discount line |
-| `src/features/pos/print/zreport.ts` (+ test) | Before discounts / Discounts lines, DISCOUNTS section |
+| `src/features/pos/print/zreport.ts` (+ test) | Gross before discounts / Discounts lines, DISCOUNTS section |
 | `src/features/pos/checkout/discounts.ts` (+ test) | parse, validate, labels, rows |
 | `src/features/pos/checkout/DiscountRows.tsx` | grey rows under a line |
 | `src/features/pos/checkout/DiscountDialog.tsx` (+ test) | Amount / Percent step |
@@ -1271,7 +1271,7 @@ Append to `src/features/pos/print/zreport.test.ts` (it already has `shiftOne` an
 
 ```ts
 describe('Z report discounts', () => {
-  it('shows Before discounts and Discounts above Gross sales, and a DISCOUNTS section', () => {
+  it('shows Gross before discounts and Discounts above Gross sales, and a DISCOUNTS section', () => {
     const report: ZReport = {
       ...shiftOne,
       sales: { ...shiftOne.sales, beforeDiscountsSen: shiftOne.sales.grossSen + 3650, discountSen: 3650 },
@@ -1279,10 +1279,10 @@ describe('Z report discounts', () => {
     }
     const lines = renderZReportLines(payload(report), 48)
     const gross = lines.findIndex((l) => l.startsWith('Gross sales'))
-    expect(lines[gross - 2].startsWith('Before discounts')).toBe(true)
+    expect(lines[gross - 2].startsWith('Gross before discounts')).toBe(true)
     expect(lines[gross - 1]).toMatch(/^Discounts\s+-36\.50$/)
     expect(lines).toContain('DISCOUNTS')
-    expect(lines.some((l) => /^Catalog discounts \(1 bill\)\s+-21\.50$/.test(l))).toBe(true)
+    expect(lines.some((l) => /^Staff Meal \(1 bill\)\s+-21\.50$/.test(l))).toBe(true)
     expect(lines.some((l) => /^Item discounts \(1\)\s+-5\.00$/.test(l))).toBe(true)
     expect(lines.some((l) => /^Bill discounts \(1 bill\)\s+-10\.00$/.test(l))).toBe(true)
   })
@@ -1374,7 +1374,7 @@ function discountLines(d: ZReportDiscounts, cols: number): string[] {
   if (d.catalogSen + d.itemSen + d.billSen === 0) return ['No discounts']
   const bills = (n: number) => `${n} bill${n === 1 ? '' : 's'}`
   return [
-    ...lr(`Catalog discounts (${bills(d.catalogBills)})`, money(-d.catalogSen), cols),
+    ...lr(`Staff Meal (${bills(d.catalogBills)})`, money(-d.catalogSen), cols),
     ...lr(`Item discounts (${d.itemCount})`, money(-d.itemSen), cols),
     ...lr(`Bill discounts (${bills(d.billCount)})`, money(-d.billSen), cols),
   ]
@@ -1385,7 +1385,7 @@ Replace the `...section('SALES SUMMARY', [` block's first line `...lr('Gross sal
 
 ```ts
       ...(r.sales.discountSen
-        ? [...lr('Before discounts', money(r.sales.beforeDiscountsSen ?? 0), cols), ...lr('Discounts', money(-r.sales.discountSen), cols)]
+        ? [...lr('Gross before discounts', money(r.sales.beforeDiscountsSen ?? 0), cols), ...lr('Discounts', money(-r.sales.discountSen), cols)]
         : []),
       ...lr('Gross sales', money(r.sales.grossSen), cols),
 ```

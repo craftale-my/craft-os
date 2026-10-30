@@ -173,7 +173,7 @@ describe('the print hosts know the Z report', () => {
 })
 
 describe('Z report discounts', () => {
-  it('shows Before discounts and Discounts above Gross sales, and a DISCOUNTS section', () => {
+  it('shows Gross before discounts and Discounts above Gross sales, and a DISCOUNTS section', () => {
     const report: ZReport = {
       ...shiftOne,
       sales: { ...shiftOne.sales, beforeDiscountsSen: shiftOne.sales.grossSen + 3650, discountSen: 3650 },
@@ -181,10 +181,10 @@ describe('Z report discounts', () => {
     }
     const lines = renderZReportLines(payload(report), 48)
     const gross = lines.findIndex((l) => l.startsWith('Gross sales'))
-    expect(lines[gross - 2].startsWith('Before discounts')).toBe(true)
+    expect(lines[gross - 2].startsWith('Gross before discounts')).toBe(true)
     expect(lines[gross - 1]).toMatch(/^Discounts\s+-36\.50$/)
     expect(lines).toContain('DISCOUNTS')
-    expect(lines.some((l) => /^Catalog discounts \(1 bill\)\s+-21\.50$/.test(l))).toBe(true)
+    expect(lines.some((l) => /^Staff Meal \(1 bill\)\s+-21\.50$/.test(l))).toBe(true)
     expect(lines.some((l) => /^Item discounts \(1\)\s+-5\.00$/.test(l))).toBe(true)
     expect(lines.some((l) => /^Bill discounts \(1 bill\)\s+-10\.00$/.test(l))).toBe(true)
   })

@@ -66,7 +66,7 @@ function discountLines(d: ZReportDiscounts, cols: number): string[] {
   if (d.catalogSen + d.itemSen + d.billSen === 0) return ['No discounts']
   const bills = (n: number) => `${n} bill${n === 1 ? '' : 's'}`
   return [
-    ...lr(`Catalog discounts (${bills(d.catalogBills)})`, money(-d.catalogSen), cols),
+    ...lr(`Staff Meal (${bills(d.catalogBills)})`, money(-d.catalogSen), cols),
     ...lr(`Item discounts (${d.itemCount})`, money(-d.itemSen), cols),
     ...lr(`Bill discounts (${bills(d.billCount)})`, money(-d.billSen), cols),
   ]
@@ -162,7 +162,7 @@ export function renderZReportLines(input: ZReportPayload, cols: number): string[
     ]),
     ...section('SALES SUMMARY', [
       ...(r.sales.discountSen
-        ? [...lr('Before discounts', money(r.sales.beforeDiscountsSen ?? 0), cols), ...lr('Discounts', money(-r.sales.discountSen), cols)]
+        ? [...lr('Gross before discounts', money(r.sales.beforeDiscountsSen ?? 0), cols), ...lr('Discounts', money(-r.sales.discountSen), cols)]
         : []),
       ...lr('Gross sales', money(r.sales.grossSen), cols),
       ...lr('Takeaway fee', money(r.sales.takeawayFeeSen), cols),
