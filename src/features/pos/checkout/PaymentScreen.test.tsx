@@ -25,7 +25,7 @@ const totals = {
   subtotalSen: 10066, serviceChargeSen: 0, sstSen: 604, takeawayFeeSen: 0, beforeRoundingSen: 10670,
   roundingSen: 0, totalSen: 10670, sstGroups: [], serviceChargeGroups: [],
 }
-const bill = { id: 'b1', bill_no: '261026-001', table_id: 't3', order_type: 'dine_in' as const, pax: 2, opened_at: '2026-10-26T02:00:00Z' }
+const bill = { id: 'b1', bill_no: '261026-001', table_id: 't3', order_type: 'dine_in' as const, pax: 2, opened_at: '2026-10-26T02:00:00Z', discount_kind: null, discount_value: null, discount_reason: null }
 const flush = () => act(async () => { for (let i = 0; i < 5; i++) await Promise.resolve() })
 const press = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
 

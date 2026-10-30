@@ -4,7 +4,7 @@ import {
   noCatalogMessage, selectableCatalogs, settingsToSave, toggleAdditional, type BranchCatalogRow, type CatalogRow,
 } from './catalogs'
 
-const cat = (id: string, name: string, sort_order: number, is_active = true): CatalogRow => ({ id, name, sort_order, is_active })
+const cat = (id: string, name: string, sort_order: number, is_active = true): CatalogRow => ({ id, name, sort_order, is_active, discount_bp: 0 })
 const catalogs = [
   cat('c-cafe', 'Craft Cafe', 0), cat('c-take', 'Takeaway Menu', 1), cat('c-staff', 'Staff Meal', 3),
   cat('c-grab', 'Grab Food', 2), cat('c-old', 'Old Promo', 4, false),

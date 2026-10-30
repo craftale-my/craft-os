@@ -4,7 +4,7 @@ import type { OpenBillRow, TableRow } from './posApi'
 
 const t = (id: string): TableRow => ({ id, label: id.toUpperCase(), area: null, sort_order: 0, qr_token: 'x', qr_paused: false, is_active: true })
 const bill = (id: string, table_id: string | null): OpenBillRow =>
-  ({ id, bill_no: `B-${id}`, table_id, order_type: table_id ? 'dine_in' : 'takeaway', pax: null, opened_at: '2026-10-26T02:00:00Z' })
+  ({ id, bill_no: `B-${id}`, table_id, order_type: table_id ? 'dine_in' : 'takeaway', pax: null, opened_at: '2026-10-26T02:00:00Z', discount_kind: null, discount_value: null, discount_reason: null })
 const tables = [t('t1'), t('t2'), t('t3')]
 const bills = [bill('b1', 't1'), bill('b3', 't3'), bill('bt', null)]
 const summaries = new Map([['b3', { billId: 'b3', totalSen: 10670, itemCount: 3 }]])

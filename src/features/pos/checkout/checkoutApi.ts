@@ -2,7 +2,8 @@
 // approvals, voids, move/merge, refunds and the checkout sections of /pos/settings.
 import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
-import type { BillOrderType, BillTotals, CashRounding, ServiceChargeRuleInput } from './bill'
+import type { BillOrderType, BillTotals, CashRounding, DiscountInput, DiscountKind, ServiceChargeRuleInput } from './bill'
+import { storedDiscount, type StoredDiscount } from './discounts'
 import type { PaymentKind } from './tender'
 import type { ReasonAction, ReasonTemplate } from './reasons'
 import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
@@ -217,6 +218,34 @@ export async function voidBill(billId: string, a: Approval): Promise<void> {
   unwrapAction(data)
 }
 
+export async function setItemDiscount(itemId: string, d: DiscountInput, a: Approval): Promise<void> {
+  const { data, error } = await supabase.rpc('set_item_discount', {
+    p_item_id: itemId, p_kind: d.kind, p_value: d.value, p_reason: a.reason, p_approver_id: a.approverId, p_pin: a.pin,
+  })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function clearItemDiscount(itemId: string): Promise<void> {
+  const { data, error } = await supabase.rpc('clear_item_discount', { p_item_id: itemId })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function setBillDiscount(billId: string, d: DiscountInput, a: Approval): Promise<void> {
+  const { data, error } = await supabase.rpc('set_bill_discount', {
+    p_bill_id: billId, p_kind: d.kind, p_value: d.value, p_reason: a.reason, p_approver_id: a.approverId, p_pin: a.pin,
+  })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function clearBillDiscount(billId: string): Promise<void> {
+  const { data, error } = await supabase.rpc('clear_bill_discount', { p_bill_id: billId })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
 export async function moveBill(billId: string, tableId: string): Promise<void> {
   const { error } = await supabase.rpc('move_bill', { p_bill_id: billId, p_table_id: tableId })
   if (error) fail(error)
@@ -294,11 +323,11 @@ export interface RefundRow { id: string; method_name: string; amount_sen: number
 /** What the Transaction screen shows of a closed bill besides its items: the totals stored at
  *  checkout (bills.totals, null on a voided or merged bill), the bill it was merged into, its
  *  payments and its refunds. */
-export interface ClosedBillDetail { totals: BillTotals | null; mergedIntoBillNo: string | null; payments: PaymentRow[]; refunds: RefundRow[] }
+export interface ClosedBillDetail { totals: BillTotals | null; billDiscount: StoredDiscount | null; mergedIntoBillNo: string | null; payments: PaymentRow[]; refunds: RefundRow[] }
 
 export async function fetchClosedBillDetail(billId: string): Promise<ClosedBillDetail> {
   const [b, p, r] = await Promise.all([
-    supabase.from('bills').select('totals, merged_into').eq('id', billId).maybeSingle(),
+    supabase.from('bills').select('totals, merged_into, discount_kind, discount_value, discount_reason').eq('id', billId).maybeSingle(),
     supabase.from('payments').select('id, method_name, kind, amount_sen, tendered_sen, change_sen, reference, line_no, taken_at')
       .eq('bill_id', billId).order('taken_at').order('line_no'),
     supabase.from('refunds').select('id, method_name, amount_sen, reason, created_at').eq('bill_id', billId).order('created_at'),
@@ -306,14 +335,17 @@ export async function fetchClosedBillDetail(billId: string): Promise<ClosedBillD
   if (b.error) fail(b.error)
   if (p.error) fail(p.error)
   if (r.error) fail(r.error)
-  const row = b.data as { totals: BillTotals | null; merged_into: string | null } | null
+  const row = b.data as {
+    totals: BillTotals | null; merged_into: string | null
+    discount_kind: DiscountKind | null; discount_value: number | null; discount_reason: string | null
+  } | null
   let mergedIntoBillNo: string | null = null
   if (row?.merged_into) {
     const m = await supabase.from('bills').select('bill_no').eq('id', row.merged_into).maybeSingle()
     if (m.error) fail(m.error)
     mergedIntoBillNo = (m.data as { bill_no: string } | null)?.bill_no ?? null
   }
-  return { totals: row?.totals ?? null, mergedIntoBillNo, payments: (p.data ?? []) as PaymentRow[], refunds: (r.data ?? []) as RefundRow[] }
+  return { totals: row?.totals ?? null, billDiscount: row ? storedDiscount(row) : null, mergedIntoBillNo, payments: (p.data ?? []) as PaymentRow[], refunds: (r.data ?? []) as RefundRow[] }
 }
 
 // ── /pos/settings ───────────────────────────────────────────────────────────

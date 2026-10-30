@@ -1,6 +1,7 @@
 // src/features/pos/order/posApi.ts
 import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
+import type { DiscountKind } from '../checkout/bill'
 import type { PrintJob } from '../print/printHost'
 import type { PrintRoute } from '../print/adapter'
 import { counterOrderArgs, toSendResult, type QueuedOrder, type SendResult, type OrderType } from '../offline/orderQueue'
@@ -22,7 +23,10 @@ export interface TableRow {
   /** the floor area for the home screen's tabs (null = only under All) */
   area: string | null
 }
-export interface OpenBillRow { id: string; bill_no: string; table_id: string | null; order_type: OrderType; pax: number | null; opened_at: string }
+export interface OpenBillRow {
+  id: string; bill_no: string; table_id: string | null; order_type: OrderType; pax: number | null; opened_at: string
+  discount_kind: DiscountKind | null; discount_value: number | null; discount_reason: string | null   // the bill discount
+}
 export interface BillItemRow {
   id: string
   order_id: string
@@ -36,6 +40,11 @@ export interface BillItemRow {
   note: string | null
   modifiers_snapshot: { name: string }[]
   voided_at: string | null
+  catalog_discount_bp: number           // its catalog's discount when ordered (Staff Meal 5000)
+  catalog_discount_name: string | null
+  discount_kind: DiscountKind | null    // its item discount
+  discount_value: number | null
+  discount_reason: string | null
   orders: { order_no: string; source: 'counter' | 'qr'; placed_at: string }
 }
 export interface PrintJobRow extends PrintJob {
@@ -76,7 +85,7 @@ export async function fetchMenuWindows(catalogId: string): Promise<MenuWindows> 
 /** Every catalog (for names) and this branch's assignments. */
 export async function fetchBranchCatalogs(branchId: string): Promise<BranchCatalogs> {
   const [c, a] = await Promise.all([
-    supabase.from('menu_catalogs').select('id, name, is_active, sort_order').order('sort_order').order('name'),
+    supabase.from('menu_catalogs').select('id, name, is_active, sort_order, discount_bp').order('sort_order').order('name'),
     supabase.from('branch_catalogs').select('role, catalog_id').eq('branch_id', branchId),
   ])
   if (c.error) fail(c.error)
@@ -132,7 +141,7 @@ export async function fetchPadProductInfo(): Promise<Map<string, PadProductInfo>
 
 export async function fetchOpenBills(branchId: string): Promise<OpenBillRow[]> {
   const { data, error } = await supabase.from('bills')
-    .select('id, bill_no, table_id, order_type, pax, opened_at')
+    .select('id, bill_no, table_id, order_type, pax, opened_at, discount_kind, discount_value, discount_reason')
     .eq('branch_id', branchId).eq('status', 'open').order('opened_at')
   if (error) fail(error)
   return (data ?? []) as OpenBillRow[]
@@ -141,6 +150,7 @@ export async function fetchOpenBills(branchId: string): Promise<OpenBillRow[]> {
 export async function fetchBillItems(billId: string): Promise<BillItemRow[]> {
   const { data, error } = await supabase.from('order_items')
     .select('id, order_id, product_id, name_snapshot, unit_price_sen, sst_rate_bp, takeaway_fee_sen, order_type, qty, note, modifiers_snapshot, voided_at, ' +
+            'catalog_discount_bp, catalog_discount_name, discount_kind, discount_value, discount_reason, ' +
             'orders!inner(order_no, source, placed_at)')
     .eq('bill_id', billId)
   if (error) fail(error)

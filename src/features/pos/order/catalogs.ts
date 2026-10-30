@@ -7,7 +7,7 @@ import type { OrderType } from '../offline/orderQueue'
 
 export type CatalogRole = 'dine_in' | 'takeaway' | 'qr' | 'additional'
 export type DefaultRole = Exclude<CatalogRole, 'additional'>
-export interface CatalogRow { id: string; name: string; is_active: boolean; sort_order: number }
+export interface CatalogRow { id: string; name: string; is_active: boolean; sort_order: number; discount_bp: number }
 export interface BranchCatalogRow { role: CatalogRole; catalog_id: string }
 export interface BranchCatalogs { catalogs: CatalogRow[]; assignments: BranchCatalogRow[] }
 /** One entry of the order pad's catalog list. `offered` is false only for the catalog

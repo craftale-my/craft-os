@@ -273,6 +273,7 @@ function ReasonsSection({ branchId, run, onError, outcome }: { branchId: string 
     void_item: { text: '', compulsory: true, allowOther: true },
     void_bill: { text: '', compulsory: true, allowOther: true },
     refund: { text: '', compulsory: true, allowOther: true },
+    discount: { text: '', compulsory: true, allowOther: true },
   })
   useEffect(() => {
     fetchReasonTemplates(branchId).then((rows) => setDrafts((d) => {

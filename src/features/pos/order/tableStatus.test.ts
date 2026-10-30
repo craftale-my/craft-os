@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { tableCards, takeawayBills } from './tableStatus'
 
 const t = (id: string, label: string, paused = false) => ({ id, label, qr_token: 'x', qr_paused: paused, is_active: true, sort_order: 0, area: null })
-const b = (id: string, table_id: string | null) => ({ id, bill_no: '261023-001', table_id, order_type: table_id ? 'dine_in' as const : 'takeaway' as const, pax: null, opened_at: '2026-10-23T02:00:00Z' })
+const b = (id: string, table_id: string | null) => ({ id, bill_no: '261023-001', table_id, order_type: table_id ? 'dine_in' as const : 'takeaway' as const, pax: null, opened_at: '2026-10-23T02:00:00Z', discount_kind: null, discount_value: null, discount_reason: null })
 
 describe('tableCards', () => {
   it('marks tables empty, open or new and keeps the bill', () => {

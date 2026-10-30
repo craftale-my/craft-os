@@ -7,7 +7,7 @@ import type { OpenBillRow, TableRow } from './posApi'
 import type { BillSummary } from './billSummaries'
 
 const bill = (id: string, table_id: string | null): OpenBillRow =>
-  ({ id, bill_no: `261026-${id}`, table_id, order_type: table_id ? 'dine_in' : 'takeaway', pax: null, opened_at: '2026-10-26T02:00:00Z' })
+  ({ id, bill_no: `261026-${id}`, table_id, order_type: table_id ? 'dine_in' : 'takeaway', pax: null, opened_at: '2026-10-26T02:00:00Z', discount_kind: null, discount_value: null, discount_reason: null })
 const line = { productId: 'p1', variantId: 'v1', qty: 2, note: null, optionIds: [] }
 const onT1: Screen = { kind: 'order', session: 4, target: { kind: 'table', tableId: 't1', pax: null }, lines: [line], catalogId: 'c1' }
 

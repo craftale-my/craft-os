@@ -1,7 +1,7 @@
-/** Reason templates for voids and refunds (Feedme's "Reason template").
+/** Reason templates for voids, refunds and discounts (Feedme's "Reason template").
  *  Same rule as pos_check_reason in SQL, with the same words. */
 
-export type ReasonAction = 'void_item' | 'void_bill' | 'refund'
+export type ReasonAction = 'void_item' | 'void_bill' | 'refund' | 'discount'
 
 export interface ReasonTemplate {
   reasons: string[]
@@ -24,4 +24,5 @@ export const ACTION_TITLES: Record<ReasonAction, string> = {
   void_item: 'Void item',
   void_bill: 'Void bill',
   refund: 'Refund',
+  discount: 'Discount',
 }

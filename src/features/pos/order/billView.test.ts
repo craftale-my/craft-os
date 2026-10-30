@@ -13,10 +13,12 @@ const menu: PosMenu = { categories: [{ name: 'FOOD', products: [{
   groups: [{ id: 'g1', name: 'Add-on', min: 0, max: 2, options: [{ id: 'o1', name: 'Egg', priceDeltaSen: 200, isDefault: false, available: true }] }],
 }] }] }
 const info = new Map<string, PadProductInfo>([['p1', { sstRateBp: 600, takeawayFeeSen: 100, imageUrl: null }]])
-const item = (id: string, voided = false): BillItemRow => ({
+const item = (id: string, voided = false, extra: Partial<BillItemRow> = {}): BillItemRow => ({
   id, order_id: 'o-1', product_id: 'p1', name_snapshot: 'Nasi Lemak', unit_price_sen: 1000, sst_rate_bp: 600, takeaway_fee_sen: 0,
   order_type: 'dine_in', qty: 2, note: 'less spicy', modifiers_snapshot: [{ name: 'Egg' }], voided_at: voided ? '2026-10-26T03:00:00Z' : null,
+  catalog_discount_bp: 0, catalog_discount_name: null, discount_kind: null, discount_value: null, discount_reason: null,
   orders: { order_no: '1', source: 'counter', placed_at: '2026-10-26T02:00:00Z' },
+  ...extra,
 })
 const draft = { productId: 'p1', variantId: 'v1', qty: 1, note: null, optionIds: ['o1'] }
 
@@ -83,5 +85,32 @@ describe('words', () => {
     expect(discardQuestion(2)).toBe('Discard 2 unsent items?')
     expect(draftsDiscarded(1)).toBe('1 unsent item will be discarded.')
     expect(draftsDiscarded(2)).toBe('2 unsent items will be discarded.')
+  })
+})
+
+describe('billView discounts', () => {
+  const staff = { catalog_discount_bp: 5000, catalog_discount_name: 'Staff Meal' }
+  it('rows under each discounted line, the subtotal a bill discount applies to, and the catalog tag', () => {
+    const v = billView({
+      orderType: 'dine_in', tableId: 't1', lines: [], menu, info, billing,
+      items: [item('i1', false, staff), item('i2', false, { discount_kind: 'amount', discount_value: 300, discount_reason: 'Regular' })],
+      billDiscount: { kind: 'percent', value: 1000, reason: 'Late food' },
+    })
+    expect(v.sent[0].discountRows).toEqual([{ label: 'Staff Meal 50%', amountSen: 1000 }])
+    expect(v.sent[0].afterCatalogSen).toBe(1000)
+    expect(v.sent[1].discountRows).toEqual([{ label: 'Discount (Regular)', amountSen: 300 }])
+    expect(v.sentSubtotalSen).toBe(2700)                       // 10.00 + 17.00
+    expect(v.billDiscount).toEqual({ label: 'Discount 10% (Late food)', amountSen: 270 })
+    expect(v.catalogTag).toBe('Staff Meal 50%')
+    expect(v.totals?.billDiscountSen).toBe(270)
+  })
+  it('a draft ordered from a discounted catalog is previewed at its discount', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [], lines: [draft], menu, info, billing, draftCatalogDiscountBp: 5000 })
+    expect(v.totals?.catalogDiscountSen).toBe(350)              // 7.00 at 50%
+  })
+  it('a voided line counts for nothing', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1', true, staff)], lines: [], menu, info, billing })
+    expect(v.sentSubtotalSen).toBe(0)
+    expect(v.catalogTag).toBeNull()
   })
 })

@@ -6,7 +6,7 @@ import type { BillView } from './billView'
 
 afterEach(cleanup)
 
-const view: BillView = { sent: [], drafts: [], liveSentCount: 0, draftCount: 0, totals: null, totalsIncludeDrafts: true }
+const view: BillView = { sent: [], drafts: [], liveSentCount: 0, draftCount: 0, totals: null, totalsIncludeDrafts: true, sentSubtotalSen: 0, billDiscount: null, catalogTag: null }
 const props = {
   title: 'Table T3', billNo: null, pax: null, onPax: null, catalogIsExtra: false, view,
   loading: false, loadError: null, notice: null, onSentTap: () => {}, onDraftTap: () => {}, onActions: () => {},

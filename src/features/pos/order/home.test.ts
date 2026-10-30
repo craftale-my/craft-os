@@ -5,7 +5,7 @@ import type { OpenBillRow, TableRow } from './posApi'
 const t = (id: string, label: string, area: string | null, sort_order: number): TableRow =>
   ({ id, label, area, sort_order, qr_token: 'x', qr_paused: false, is_active: true })
 const bill = (id: string, table_id: string | null): OpenBillRow =>
-  ({ id, bill_no: `261026-${id}`, table_id, order_type: table_id ? 'dine_in' : 'takeaway', pax: 2, opened_at: '2026-10-26T02:00:00Z' })
+  ({ id, bill_no: `261026-${id}`, table_id, order_type: table_id ? 'dine_in' : 'takeaway', pax: 2, opened_at: '2026-10-26T02:00:00Z', discount_kind: null, discount_value: null, discount_reason: null })
 
 const tables = [
   t('a1', 'A1', 'Indoor', 1), t('a2', 'A2', 'Indoor', 2), t('b1', 'B1', 'Patio', 3),

@@ -3,7 +3,7 @@ import { billTitle, shownPax, takesNewItems, targetBill, targetKey, targetOrderT
 import type { OpenBillRow } from './posApi'
 
 const bill = (id: string, table_id: string | null, pax: number | null = null): OpenBillRow =>
-  ({ id, bill_no: `261026-${id}`, table_id, order_type: table_id ? 'dine_in' : 'takeaway', pax, opened_at: '2026-10-26T02:00:00Z' })
+  ({ id, bill_no: `261026-${id}`, table_id, order_type: table_id ? 'dine_in' : 'takeaway', pax, opened_at: '2026-10-26T02:00:00Z', discount_kind: null, discount_value: null, discount_reason: null })
 const bills = [bill('001', 't1', 4), bill('002', null)]
 const tables = [{ id: 't1', label: 'T1' }, { id: 't2', label: 'T2' }]
 
