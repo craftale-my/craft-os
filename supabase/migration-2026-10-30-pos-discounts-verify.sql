@@ -72,7 +72,34 @@ $vectors$;
   v_items jsonb; v_order uuid; v_order2 uuid; v_bill uuid; v_bill2 uuid; v_item uuid; v_item2 uuid; v_shift uuid;
   v_res jsonb; v_tot jsonb; r record;
 begin
--- @A
+  -- ── A. schema and grants ──────────────────────────────────────────────────
+  for r in select t, c from (values
+      ('menu_catalogs', 'discount_bp'), ('order_items', 'catalog_discount_bp'), ('order_items', 'catalog_discount_name'),
+      ('order_items', 'discount_kind'), ('order_items', 'discount_value'), ('order_items', 'discount_reason'),
+      ('order_items', 'discount_approved_by'), ('order_items', 'discount_by'), ('order_items', 'discount_at'),
+      ('bills', 'discount_kind'), ('bills', 'discount_value'), ('bills', 'discount_reason'),
+      ('bills', 'discount_approved_by'), ('bills', 'discount_by'), ('bills', 'discount_at')) as x(t, c) loop
+    if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = r.t and column_name = r.c) then
+      raise exception 'FAIL schema: %.% is missing', r.t, r.c;
+    end if;
+  end loop;
+  if not exists (select 1 from pg_constraint where conname = 'menu_catalogs_discount_bp_check')
+     or not exists (select 1 from pg_constraint where conname = 'order_items_discount_check')
+     or not exists (select 1 from pg_constraint where conname = 'bills_discount_check')
+     or not exists (select 1 from pg_trigger where tgname = 'order_items_catalog_discount' and tgrelid = 'order_items'::regclass) then
+    raise exception 'FAIL schema: a discount check or the catalog-discount trigger is missing';
+  end if;
+  if not (select relrowsecurity from pg_class where relname = 'pos_discount_log' and relnamespace = 'public'::regnamespace)
+     or has_table_privilege('authenticated', 'pos_discount_log', 'insert') then
+    raise exception 'FAIL rls: pos_discount_log must have RLS on and no client writes';
+  end if;
+  if has_function_privilege('authenticated', 'pos_check_discount(text,integer)', 'execute') then
+    raise exception 'FAIL grants: pos_check_discount is internal';
+  end if;
+  begin
+    insert into reason_templates(branch_id, action) values ((select id from branches limit 1), 'discount');
+  exception when unique_violation then null;   -- the branch already has one: the action is allowed
+  end;
 
   -- ── B. totals: the shared vectors ─────────────────────────────────────────
   if jsonb_array_length(v_vectors) <> 32 then raise exception 'FAIL vectors: expected 32, got %', jsonb_array_length(v_vectors); end if;
@@ -82,8 +109,82 @@ begin
     end if;
   end loop;
 
--- @FIXTURE
--- @C
+  -- ── fixture: outlet VERIFY D, two tables, a 43.00 plate, a card method, a cashier and a supervisor
+  --    with PINs, one tablet with the cashier signed in and a shift open ──
+  update system_role_permissions set permissions = permissions - 'pos_login' - 'all_branches' - 'access_settings' - 'pos_supervise'
+   where true;                                                                         -- code defaults
+  insert into branches(name, address) values ('VERIFY D', 'd') returning id into v_a;
+  insert into dining_tables(branch_id, label, sort_order) values (v_a, 'D1', 1) returning id into v_t1;
+  insert into dining_tables(branch_id, label, sort_order) values (v_a, 'D2', 2) returning id into v_t2;
+  insert into print_routes(branch_id, name, kind, address) values (v_a, 'Bar', 'agent', '127.0.0.1:9100');
+  insert into branch_pos_settings(branch_id, receipt_route) values (v_a, 'Bar');
+  insert into service_charge_rules(branch_id, rate_bp, order_types, sort_order) values (v_a, 1000, array['dine_in'], 1);
+  insert into menu_categories(name, sort_order) values ('VERIFY D FOOD', 900) returning id into v_cat;
+  insert into menu_products(name, category_id, sst_rate_bp) values ('Verify D Plate', v_cat, 600) returning id into v_plate;
+  insert into menu_variants(product_id, feedme_variant_key, name, price_sen) values (v_plate, '', 'Regular', 4300) returning id into v_plate_v;
+  insert into menu_catalogs(name, sort_order) values ('VERIFY D STAFF MEAL', 900) returning id into v_catalog;
+  insert into catalog_products(catalog_id, product_id, availability) values (v_catalog, v_plate, 'all');
+  insert into catalog_variant_prices(catalog_id, variant_id, price_sen) values (v_catalog, v_plate_v, 4300);
+  insert into branch_catalogs(branch_id, role, catalog_id) values (v_a, 'dine_in', v_catalog), (v_a, 'takeaway', v_catalog), (v_a, 'qr', v_catalog);
+  insert into payment_methods(branch_id, name, kind, sort_order) values (v_a, 'D Card', 'card', 1) returning id into v_card;
+  v_items := jsonb_build_array(jsonb_build_object('productId', v_plate, 'variantId', v_plate_v));
+  update staff set branch_id = v_a where id = v_owner;
+  perform pg_temp.act(v_owner);
+  insert into auth.users (id) values (v_cash), (v_sup), (v_dev);
+  insert into staff (id, name, rank, onboarding_completed, joined_at, system_role, branch_id) values
+    (v_cash, 'Verify D Cashier',    'trainee', true, current_date, 'staff', v_a),
+    (v_sup,  'Verify D Supervisor', 'trainee', true, current_date, 'staff', v_a);
+  update staff set system_role = 'supervisor' where id = v_sup;
+  for r in select * from (values (v_cash, '1111'), (v_sup, '2222')) as x(id, pin) loop
+    perform pg_temp.act(r.id);
+    if not coalesce((set_my_pos_pin(r.pin, null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: PIN of %', r.id; end if;
+  end loop;
+  insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by) values (v_dev, v_a, 'pos', 'D Counter', 'ipad', true, v_owner);
+  perform pg_temp.act(v_dev);
+  v_res := pos_start_session(v_cash, '1111');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL fixture: cashier sign-in: %', v_res; end if;
+  v_res := open_shift(10000);
+  v_shift := (v_res->'shift'->>'id')::uuid;
+  -- ── C. the catalog discount is copied onto each item when it is ordered ───
+  perform pg_temp.act(v_owner);
+  perform pg_temp.expect_error(format('select menu_set_catalog_discount(%L, 5050)', v_catalog),
+    'Enter a whole percent from 0 to 100', 'C a percent with a fraction');
+  perform menu_set_catalog_discount(v_catalog, 5000);
+  perform pg_temp.act(v_dev);
+  v_order := place_counter_order(v_t1, 'dine_in', 2, v_items, gen_random_uuid());
+  v_bill := (select bill_id from orders where id = v_order);
+  v_item := (select id from order_items where order_id = v_order);
+  if (select catalog_discount_bp from order_items where id = v_item) is distinct from 5000
+     or (select catalog_discount_name from order_items where id = v_item) is distinct from 'VERIFY D STAFF MEAL' then
+    raise exception 'FAIL C: the catalog discount was not copied onto the item';
+  end if;
+  perform pg_temp.act(v_owner);
+  perform menu_set_catalog_discount(v_catalog, 0);
+  perform pg_temp.act(v_dev);
+  v_order2 := place_counter_order(v_t1, 'dine_in', null, v_items, gen_random_uuid());
+  v_item2 := (select id from order_items where order_id = v_order2);
+  if (select bill_id from orders where id = v_order2) is distinct from v_bill
+     or (select catalog_discount_bp from order_items where id = v_item) is distinct from 5000
+     or (select catalog_discount_bp from order_items where id = v_item2) is distinct from 0
+     or (select catalog_discount_name from order_items where id = v_item2) is not null then
+    raise exception 'FAIL C: a later catalog change touched an ordered item, or a 0%% catalog left a name';
+  end if;
+  -- 43.00 at 50% + 43.00 = 64.50; service charge 10% 6.45; SST 6% 3.87; 74.82 → 74.80
+  v_tot := pos_bill_totals(v_bill);
+  if (v_tot->>'grossSen')::int is distinct from 8600 or (v_tot->>'catalogDiscountSen')::int is distinct from 2150
+     or (v_tot->>'subtotalSen')::int is distinct from 6450 or (v_tot->>'totalSen')::int is distinct from 7480
+     or jsonb_array_length(v_tot->'lines') <> 2
+     or not exists (select 1 from jsonb_array_elements(v_tot->'lines') l where l->>'id' = v_item::text and (l->>'netSen')::int = 2150) then
+    raise exception 'FAIL C totals: %', v_tot;
+  end if;
+  -- a catalog percent rounds half up: 10.01 at 50% takes 5.01 off (500.5 → 501), leaving 5.00
+  v_tot := pos_compute_bill(jsonb_build_object('orderType', 'dine_in', 'tableId', null, 'sstRegistered', true,
+    'cashRounding', 'nearest_5_sen', 'rules', '[]'::jsonb,
+    'lines', jsonb_build_array(jsonb_build_object('productId', null, 'unitPriceSen', 1001, 'qty', 1,
+      'sstRateBp', 0, 'takeawayFeeSen', 0, 'voided', false, 'catalogDiscountBp', 5000))));
+  if (v_tot->>'catalogDiscountSen')::int is distinct from 501 or (v_tot->>'subtotalSen')::int is distinct from 500 then
+    raise exception 'FAIL C half-sen: %', v_tot;
+  end if;
 -- @D
 -- @E
   raise notice 'VERIFY OK';
