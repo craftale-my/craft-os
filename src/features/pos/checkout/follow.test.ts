@@ -5,6 +5,7 @@ import { BILL_CHANGED, billChangedAtPay, PAID_ELSEWHERE, VOIDED_ELSEWHERE, follo
 const totals = (totalSen: number): BillTotals => ({
   subtotalSen: totalSen, serviceChargeSen: 0, sstSen: 0, takeawayFeeSen: 0, beforeRoundingSen: totalSen,
   roundingSen: 0, totalSen, sstGroups: [], serviceChargeGroups: [],
+  grossSen: totalSen, catalogDiscountSen: 0, itemDiscountSen: 0, billDiscountSen: 0, lines: [],
 })
 const result = { billId: 'b-1', billNo: '261025-001', totalSen: 7600, changeSen: 400, receiptQueued: true }
 const state = (s: Partial<CheckoutState>): CheckoutState => ({
