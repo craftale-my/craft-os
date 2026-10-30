@@ -250,7 +250,7 @@ export default function OrderScreen({
     busyRef.current = true; setBusy(true)
     try {
       try { await fn() } catch (e) { setDialog(null); setError(msg(e)); return }
-      setDialog(null); setLocalKey((k) => k + 1)
+      setDialog(null); setError(null); setLocalKey((k) => k + 1)   // a done action clears an earlier refusal
       await onChanged()
       then?.()
     } finally { busyRef.current = false; setBusy(false) }
