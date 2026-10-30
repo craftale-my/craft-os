@@ -185,7 +185,68 @@ begin
   if (v_tot->>'catalogDiscountSen')::int is distinct from 501 or (v_tot->>'subtotalSen')::int is distinct from 500 then
     raise exception 'FAIL C half-sen: %', v_tot;
   end if;
--- @D
+  -- ── D. item and bill discounts: value, reason, PIN, open bills only, logged; merge rule ──
+  perform pg_temp.act(v_dev);
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 150, %L, %L, %L)', v_item2, 'percent', 'Regular', v_sup, '2222'),
+    'Enter a whole percent from 1 to 100', 'D percent with a fraction');
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 0, %L, %L, %L)', v_item2, 'amount', 'Regular', v_sup, '2222'),
+    'Enter an amount above RM 0.00', 'D zero amount');
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item2, 'percent', '', v_sup, '2222'),
+    'Choose a reason', 'D no reason');
+  v_res := set_item_discount(v_item2, 'percent', 1000, 'Regular', v_sup, '9999');
+  if coalesce((v_res->>'ok')::boolean, true) then raise exception 'FAIL D: a wrong PIN was accepted: %', v_res; end if;
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item2, 'percent', 'Regular', v_cash, '1111'),
+    'This person cannot approve voids or refunds', 'D a cashier without pos_supervise as approver');
+  perform pg_temp.expect_error(format('select menu_set_catalog_discount(%L, 1000)', v_catalog),
+    'Not allowed to edit the menu', 'D a non-editor setting the catalog discount');
+  v_res := set_item_discount(v_item2, 'percent', 1000, 'Regular', v_sup, '2222');
+  if not coalesce((v_res->>'ok')::boolean, false)
+     or (select discount_kind || ':' || discount_value || ':' || discount_reason from order_items where id = v_item2) is distinct from 'percent:1000:Regular'
+     or (select discount_approved_by from order_items where id = v_item2) is distinct from v_sup
+     or (select discount_by from order_items where id = v_item2) is distinct from v_cash then
+    raise exception 'FAIL D: the item discount: %', v_res;
+  end if;
+  v_res := set_item_discount(v_item2, 'amount', 500, 'Regular', v_sup, '2222');   -- set again: replaces
+  if (select discount_kind || ':' || discount_value from order_items where id = v_item2) is distinct from 'amount:500' then
+    raise exception 'FAIL D: setting again did not replace the item discount';
+  end if;
+  -- 21.50 + (43.00 − 5.00) = 59.50; a 10% bill discount = 5.95
+  v_res := set_bill_discount(v_bill, 'percent', 1000, 'Regular', v_sup, '2222');
+  v_tot := pos_bill_totals(v_bill);
+  if not coalesce((v_res->>'ok')::boolean, false) or (v_tot->>'itemDiscountSen')::int is distinct from 500
+     or (v_tot->>'subtotalSen')::int is distinct from 5950 or (v_tot->>'billDiscountSen')::int is distinct from 595 then
+    raise exception 'FAIL D: the bill discount: % %', v_res, v_tot;
+  end if;
+  v_order := place_counter_order(v_t2, 'dine_in', 1, v_items, gen_random_uuid());
+  v_bill2 := (select bill_id from orders where id = v_order);
+  perform pg_temp.expect_error(format('select merge_bills(%L, %L)', v_bill, v_bill2),
+    'Remove the bill discount before merging', 'D merge with a bill discount');
+  v_res := clear_bill_discount(v_bill);                                               -- no PIN
+  if not coalesce((v_res->>'ok')::boolean, false) or (select discount_kind from bills where id = v_bill) is not null then
+    raise exception 'FAIL D: clearing the bill discount: %', v_res;
+  end if;
+  v_res := clear_bill_discount(v_bill);                                               -- a retry
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL D: clearing twice: %', v_res; end if;
+  if (select count(*) from pos_discount_log where bill_id = v_bill) <> 4                -- item set ×2, bill set, bill clear
+     or (select count(*) from pos_discount_log where bill_id = v_bill and action = 'clear' and actor = v_cash and approved_by is null) <> 1 then
+    raise exception 'FAIL D: the discount log';
+  end if;
+  perform merge_bills(v_bill, v_bill2);                                               -- the item discount travels
+  if (select bill_id from order_items where id = v_item2) is distinct from v_bill2
+     or (select discount_kind from order_items where id = v_item2) is distinct from 'amount' then
+    raise exception 'FAIL D: the item discount did not travel with its item';
+  end if;
+  -- 21.50 + 38.00 + 43.00 = 102.50; RM 10.00 off shared 2.09 / 3.70 / 4.21 (the 2 leftover sen to 43.00);
+  -- 92.50 + service charge 9.25 + SST 5.55 = 107.30
+  v_res := set_bill_discount(v_bill2, 'amount', 1000, 'Regular', v_sup, '2222');
+  v_tot := pos_bill_totals(v_bill2);
+  if (v_tot->>'totalSen')::int is distinct from 10730 then raise exception 'FAIL D: totals after the merge: %', v_tot; end if;
+  v_res := checkout_bill(v_bill2, jsonb_build_array(jsonb_build_object('methodId', v_card, 'amountSen', 10730)), gen_random_uuid());
+  if (v_res->>'billId')::uuid is distinct from v_bill2 then raise exception 'FAIL D checkout: %', v_res; end if;
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item2, 'percent', 'Regular', v_sup, '2222'),
+    'Only an open bill can be discounted', 'D paid bill');
+  perform pg_temp.expect_error(format('select clear_bill_discount(%L)', v_bill2),
+    'Discounts can only change on an open bill', 'D paid bill clear');
 -- @E
   raise notice 'VERIFY OK';
 end $$;

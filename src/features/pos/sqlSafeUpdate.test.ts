@@ -259,3 +259,18 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
 })
+
+describe('the discount RPCs act as the POS session, never auth.uid()', () => {
+  it('migration-2026-10-30-pos-discounts.sql', () => {
+    const sql = readFileSync(new URL('migration-2026-10-30-pos-discounts.sql', SUPABASE), 'utf8')
+    const bodies = functionBodies(sql)
+    expect(bodies.map((b) => b.name)).toEqual(expect.arrayContaining([
+      'set_item_discount', 'clear_item_discount', 'set_bill_discount', 'clear_bill_discount', 'merge_bills',
+    ]))
+    for (const { name, body } of bodies) {
+      if (/(set_item_discount|clear_item_discount|set_bill_discount|clear_bill_discount|merge_bills)$/i.test(name)) {
+        expect(body, name).not.toMatch(/auth\.uid\(\)/)
+      }
+    }
+  })
+})

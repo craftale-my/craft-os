@@ -111,6 +111,8 @@ grant select on pos_discount_log to authenticated;
 drop policy if exists pos_read on pos_discount_log;
 create policy pos_read on pos_discount_log for select to authenticated
   using (branch_id in (select pos_readable_branches()));
+create index if not exists pos_discount_log_bill_idx on pos_discount_log(bill_id);
+create index if not exists pos_discount_log_branch_created_idx on pos_discount_log(branch_id, created_at);
 
 alter table reason_templates drop constraint if exists reason_templates_action_check;
 alter table reason_templates add constraint reason_templates_action_check
@@ -307,3 +309,154 @@ language sql stable security invoker set search_path = public, pg_temp as $$
 $$;
 revoke all on function pos_bill_totals(uuid) from public, anon;
 grant execute on function pos_bill_totals(uuid) to authenticated;
+
+-- ── D3. Discounts on an open bill ───────────────────────────────────────────
+-- Like void_order_item: the bill row locked, the item read again under the lock, the reason
+-- and the supervisor's PIN checked, the change logged, bills.updated_at bumped so the other
+-- tablets hear of it at once. Setting again replaces; it never stacks.
+create or replace function set_item_discount(p_item_id uuid, p_kind text, p_value integer, p_reason text,
+                                             p_approver_id uuid, p_pin text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_item   order_items;
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+begin
+  perform pos_check_discount(p_kind, p_value);
+  select * into v_item from order_items where id = p_item_id;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_bill from bills where id = v_item.bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_item from order_items where id = p_item_id;            -- again, under the bill lock
+  if v_item.bill_id <> v_bill.id then raise exception 'The bill just changed — please try again'; end if;
+  if v_bill.status <> 'open' then raise exception 'Only an open bill can be discounted'; end if;
+  if v_item.voided_at is not null then raise exception 'A voided item cannot be discounted'; end if;
+  v_reason := pos_check_reason(v_branch, 'discount', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  update order_items
+     set discount_kind = p_kind, discount_value = p_value, discount_reason = v_reason,
+         discount_approved_by = p_approver_id, discount_by = pos_actor(), discount_at = now()
+   where id = p_item_id;
+  insert into pos_discount_log(branch_id, bill_id, order_item_id, action, kind, value, reason, approved_by, actor)
+  values (v_branch, v_bill.id, p_item_id, 'set', p_kind, p_value, v_reason, p_approver_id, pos_actor());
+  update bills set updated_at = now() where id = v_bill.id;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function set_item_discount(uuid, text, integer, text, uuid, text) from public, anon;
+grant execute on function set_item_discount(uuid, text, integer, text, uuid, text) to authenticated;
+
+-- No PIN: removing a discount only raises the price. Logged with who removed it.
+create or replace function clear_item_discount(p_item_id uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_item   order_items;
+  v_bill   bills;
+begin
+  select * into v_item from order_items where id = p_item_id;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_bill from bills where id = v_item.bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_item from order_items where id = p_item_id;            -- again, under the bill lock
+  if v_item.bill_id <> v_bill.id then raise exception 'The bill just changed — please try again'; end if;
+  if v_bill.status <> 'open' then raise exception 'Discounts can only change on an open bill'; end if;
+  if v_item.discount_kind is null then return jsonb_build_object('ok', true); end if;   -- a retry
+  update order_items
+     set discount_kind = null, discount_value = null, discount_reason = null,
+         discount_approved_by = null, discount_by = null, discount_at = null
+   where id = p_item_id;
+  insert into pos_discount_log(branch_id, bill_id, order_item_id, action, kind, value, reason, actor)
+  values (v_branch, v_bill.id, p_item_id, 'clear', v_item.discount_kind, v_item.discount_value, v_item.discount_reason, pos_actor());
+  update bills set updated_at = now() where id = v_bill.id;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function clear_item_discount(uuid) from public, anon;
+grant execute on function clear_item_discount(uuid) to authenticated;
+
+create or replace function set_bill_discount(p_bill_id uuid, p_kind text, p_value integer, p_reason text,
+                                             p_approver_id uuid, p_pin text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+begin
+  perform pos_check_discount(p_kind, p_value);
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.status <> 'open' then raise exception 'Only an open bill can be discounted'; end if;
+  v_reason := pos_check_reason(v_branch, 'discount', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  update bills
+     set discount_kind = p_kind, discount_value = p_value, discount_reason = v_reason,
+         discount_approved_by = p_approver_id, discount_by = pos_actor(), discount_at = now(), updated_at = now()
+   where id = p_bill_id;
+  insert into pos_discount_log(branch_id, bill_id, action, kind, value, reason, approved_by, actor)
+  values (v_branch, p_bill_id, 'set', p_kind, p_value, v_reason, p_approver_id, pos_actor());
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function set_bill_discount(uuid, text, integer, text, uuid, text) from public, anon;
+grant execute on function set_bill_discount(uuid, text, integer, text, uuid, text) to authenticated;
+
+create or replace function clear_bill_discount(p_bill_id uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+begin
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.status <> 'open' then raise exception 'Discounts can only change on an open bill'; end if;
+  if v_bill.discount_kind is null then return jsonb_build_object('ok', true); end if;   -- a retry
+  update bills
+     set discount_kind = null, discount_value = null, discount_reason = null,
+         discount_approved_by = null, discount_by = null, discount_at = null, updated_at = now()
+   where id = p_bill_id;
+  insert into pos_discount_log(branch_id, bill_id, action, kind, value, reason, actor)
+  values (v_branch, p_bill_id, 'clear', v_bill.discount_kind, v_bill.discount_value, v_bill.discount_reason, pos_actor());
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function clear_bill_discount(uuid) from public, anon;
+grant execute on function clear_bill_discount(uuid) to authenticated;
+
+-- merge_bills: the live text of migration-2026-10-29-pos-device-till.sql with the line marked D
+-- added — a bill discount does not move with its items, so the source bill must drop it first.
+CREATE OR REPLACE FUNCTION merge_bills(p_from_bill uuid, p_into_bill uuid)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_from   bills;
+  v_into   bills;
+begin
+  if p_from_bill is null or p_into_bill is null or p_from_bill = p_into_bill then
+    raise exception 'Choose two different bills';
+  end if;
+  -- lock both in one fixed order, so two iPads merging the same pair cannot deadlock
+  perform 1 from bills where id in (p_from_bill, p_into_bill) order by id for update;
+  select * into v_from from bills where id = p_from_bill and branch_id = v_branch;
+  select * into v_into from bills where id = p_into_bill and branch_id = v_branch;
+  if v_from.id is null or v_into.id is null then raise exception 'Bill not found'; end if;
+  if v_from.status <> 'open' or v_into.status <> 'open' then raise exception 'Only open bills can be merged'; end if;
+  if v_from.discount_kind is not null then raise exception 'Remove the bill discount before merging'; end if;   -- D
+  if v_from.order_type = 'dine_in' and v_into.order_type = 'takeaway' then
+    raise exception 'Merge the takeaway bill into the table''s bill, not the other way round';
+  end if;
+  update orders set bill_id = v_into.id where bill_id = v_from.id;
+  update order_items set bill_id = v_into.id where bill_id = v_from.id;
+  update bills
+     set pax = case when v_into.pax is null and v_from.pax is null then null
+                    else least(99, coalesce(v_into.pax, 0) + coalesce(v_from.pax, 0)) end
+   where id = v_into.id;
+  update bills
+     set status = 'merged', merged_into = v_into.id, closed_at = now(), closed_by = pos_actor(), closed_device_id = pos_current_device()
+   where id = v_from.id;
+end $function$;
