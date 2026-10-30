@@ -152,6 +152,13 @@ export const duplicateCatalog = (sourceId: string, name: string) =>
   call<string>('menu_duplicate_catalog', { p_source_id: sourceId, p_name: name })
 export const reorderCatalogs = (ids: string[]) => call<null>('menu_reorder_catalogs', { p_ids: ids })
 export const setCatalogActive = (id: string, active: boolean) => call<null>('menu_set_catalog_active', { p_id: id, p_active: active })
+/** Each catalog's discount in basis points (Staff Meal 5000); read apart from menu_editor_lookups. */
+export async function fetchCatalogDiscounts(): Promise<Map<string, number>> {
+  const { data, error } = await supabase.from('menu_catalogs').select('id, discount_bp')
+  if (error) throw new Error(error.message)
+  return new Map(((data ?? []) as { id: string; discount_bp: number }[]).map((r) => [r.id, r.discount_bp]))
+}
+export const setCatalogDiscount = (id: string, bp: number) => call<null>('menu_set_catalog_discount', { p_id: id, p_bp: bp })
 export const fetchCatalogGrid = (id: string) => call<CatalogGrid>('menu_catalog_grid', { p_catalog_id: id })
 export const saveCatalogRow = (p: CatalogRowPayload) => call<null>('menu_save_catalog_row', { p })
 export const saveCategory = (id: string | null, name: string) => call<string>('menu_save_category', { p_id: id, p_name: name })

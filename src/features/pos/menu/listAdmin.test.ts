@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { catalogUseText, copyName, listNameProblem, reorderedIds } from './listAdmin'
+import { catalogDiscountBp, catalogUseText, copyName, listNameProblem, reorderedIds } from './listAdmin'
 
 const rows = [{ id: 'c', name: 'Craft Cafe' }, { id: 'g', name: 'Grab Food' }, { id: 's', name: 'Staff Meal' }]
 
@@ -36,5 +36,16 @@ describe('catalogUseText', () => {
       { branch: 'Cheras', role: 'dine_in' }, { branch: 'Cheras', role: 'takeaway' },
     ])).toBe('Cheras: dine-in, takeaway, QR · Puchong: additional')
     expect(catalogUseText([])).toBe('Not used by any branch')
+  })
+})
+
+describe('catalogDiscountBp', () => {
+  it('a whole percent 0–100 as basis points; anything else is null', () => {
+    expect(catalogDiscountBp('50')).toBe(5000)
+    expect(catalogDiscountBp(' 0 ')).toBe(0)
+    expect(catalogDiscountBp('100')).toBe(10000)
+    expect(catalogDiscountBp('101')).toBeNull()
+    expect(catalogDiscountBp('12.5')).toBeNull()
+    expect(catalogDiscountBp('')).toBeNull()
   })
 })

@@ -13,7 +13,7 @@ import type { PaymentKind } from './tender'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const KINDS: PaymentKind[] = ['cash', 'card', 'duitnow', 'ewallet', 'other']
-const ACTIONS: ReasonAction[] = ['void_item', 'void_bill', 'refund']
+const ACTIONS: ReasonAction[] = ['void_item', 'void_bill', 'refund', 'discount']
 const ORDER_TYPES: { key: BillOrderType; label: string }[] = [{ key: 'dine_in', label: 'Dine-in' }, { key: 'takeaway', label: 'Takeaway' }]
 const box = 'rounded-xl border border-border bg-card p-4'
 const input = 'rounded border border-border p-1'
@@ -290,8 +290,8 @@ function ReasonsSection({ branchId, run, onError, outcome }: { branchId: string 
   }, `${ACTION_TITLES[a]} reasons saved`)
   return (
     <section className={box}>
-      <h2 className="font-semibold">Reasons for voids and refunds</h2>
-      <div className="mt-2 grid grid-cols-3 gap-3 text-sm">
+      <h2 className="font-semibold">Reasons for voids, refunds and discounts</h2>
+      <div className="mt-2 grid grid-cols-4 gap-3 text-sm">
         {ACTIONS.map((a) => (
           <div key={a}>
             <div className="font-medium">{ACTION_TITLES[a]}</div>

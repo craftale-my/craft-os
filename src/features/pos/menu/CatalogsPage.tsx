@@ -2,13 +2,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  duplicateCatalog, fetchLookups, reorderCatalogs, saveCatalog, setCatalogActive, type LookupCatalog,
+  duplicateCatalog, fetchCatalogDiscounts, fetchLookups, reorderCatalogs, saveCatalog, setCatalogActive, setCatalogDiscount,
+  type LookupCatalog,
 } from './menuEditorApi'
-import { catalogUseText, copyName, listNameProblem, reorderedIds } from './listAdmin'
+import { catalogDiscountBp, catalogUseText, copyName, listNameProblem, reorderedIds } from './listAdmin'
 import { cleanName } from './menuForms'
 import { OutcomeLine, PageHeader, btnCls, errorText, inputCls, linkBtnCls, type Outcome } from './editorUi'
 
-type Editing = { id: string; mode: 'rename' | 'duplicate'; name: string } | null
+type Editing = { id: string; mode: 'rename' | 'duplicate' | 'discount'; name: string } | null
 
 /** /menu/catalogs — create, rename, duplicate, reorder and switch catalogs on or off.
  *  Each action shows its outcome on its own row; one action runs at a time. */
@@ -17,6 +18,7 @@ export default function CatalogsPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [editing, setEditing] = useState<Editing>(null)
+  const [discounts, setDiscounts] = useState<Map<string, number>>(new Map())
   const [busy, setBusy] = useState(false)
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({})          // by catalog id; 'new' for the create form
 
@@ -25,7 +27,9 @@ export default function CatalogsPage() {
     const seq = ++loadSeq.current
     let l: Awaited<ReturnType<typeof fetchLookups>>
     try {
-      l = await fetchLookups()
+      const [lookups, d] = await Promise.all([fetchLookups(), fetchCatalogDiscounts()])
+      l = lookups
+      if (seq === loadSeq.current) setDiscounts(d)
     } catch (e) {
       if (seq === loadSeq.current) throw e                                 // an older failing load says nothing
       return
@@ -76,6 +80,12 @@ export default function CatalogsPage() {
   }
   const confirmEdit = (c: LookupCatalog) => {
     if (!editing) return
+    if (editing.mode === 'discount') {
+      const bp = catalogDiscountBp(editing.name)
+      if (bp === null) return fail(c.id, 'Enter a whole percent from 0 to 100')
+      void run(c.id, () => setCatalogDiscount(c.id, bp), bp === 0 ? 'No discount' : `Sells at ${bp / 100}% off`)
+      return
+    }
     const problem = listNameProblem('Catalog', editing.name, catalogs ?? [], editing.mode === 'rename' ? c.id : null)
     if (problem) return fail(c.id, problem)
     if (editing.mode === 'rename') void run(c.id, () => saveCatalog(c.id, cleanName(editing.name)), 'Renamed')
@@ -92,7 +102,7 @@ export default function CatalogsPage() {
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
       <PageHeader title="Catalogs" count={catalogs?.length}
-        hint="A catalog picks products from the menu and sells them at its own prices. Which catalog a branch uses for each kind of order is set in POS settings." />
+        hint="A catalog picks products from the menu and sells them at its own prices. Which catalog a branch uses for each kind of order is set in POS settings. A catalog with a discount (e.g. Staff Meal 50%) takes it off every item ordered from it." />
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
@@ -116,7 +126,7 @@ export default function CatalogsPage() {
                 <Link to={`/menu/catalogs/${c.id}`} className="font-medium hover:underline">{c.name}</Link>
                 {!c.isActive && <span className="ml-2 text-xs">(off)</span>}
                 <div className="text-xs text-brown-muted">
-                  {c.productCount} products · {catalogUseText(c.uses)}{c.feedmeName ? ` · Feedme: ${c.feedmeName}` : ''}
+                  {c.productCount} products · {catalogUseText(c.uses)}{c.feedmeName ? ` · Feedme: ${c.feedmeName}` : ''}{(discounts.get(c.id) ?? 0) > 0 ? ` · ${(discounts.get(c.id) ?? 0) / 100}% off` : ''}
                 </div>
                 {c.unpricedCount > 0 && (
                   <Link to={`/menu/catalogs/${c.id}`} className="text-xs text-red-700 underline">
@@ -128,18 +138,21 @@ export default function CatalogsPage() {
               <button className={linkBtnCls} disabled={locked} onClick={() => setEditing({ id: c.id, mode: 'rename', name: c.name })}>Rename</button>
               <button className={linkBtnCls} disabled={locked}
                 onClick={() => setEditing({ id: c.id, mode: 'duplicate', name: copyName(c.name, catalogs) })}>Duplicate</button>
+              <button className={linkBtnCls} disabled={locked}
+                onClick={() => setEditing({ id: c.id, mode: 'discount', name: String((discounts.get(c.id) ?? 0) / 100) })}>Discount %</button>
               <button className={linkBtnCls} disabled={locked || i === 0} aria-label="Move up" onClick={() => move(i, -1)}>↑</button>
               <button className={linkBtnCls} disabled={locked || i === catalogs.length - 1} aria-label="Move down" onClick={() => move(i, 1)}>↓</button>
               <button className={linkBtnCls} disabled={locked} onClick={() => toggle(c)}>{c.isActive ? 'Switch off' : 'Switch on'}</button>
             </div>
             {editing?.id === c.id && (
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm">{editing.mode === 'rename' ? 'New name' : 'Name of the copy'}</span>
+                <span className="text-sm">{editing.mode === 'rename' ? 'New name' : editing.mode === 'duplicate' ? 'Name of the copy' : 'Discount % on every item (0 = none)'}</span>
                 <input className={`${inputCls} w-64`} value={editing.name} autoFocus readOnly={locked}
+                  inputMode={editing.mode === 'discount' ? 'numeric' : undefined}
                   onChange={(e) => setEditing({ ...editing, name: e.target.value })}
                   onKeyDown={(e) => e.key === 'Enter' && confirmEdit(c)} />
                 <button className={btnCls} disabled={locked} onClick={() => confirmEdit(c)}>
-                  {editing.mode === 'rename' ? 'Save name' : 'Duplicate with products and prices'}
+                  {editing.mode === 'rename' ? 'Save name' : editing.mode === 'duplicate' ? 'Duplicate with products and prices' : 'Save discount'}
                 </button>
                 <button className="text-sm underline" onClick={() => setEditing(null)}>Cancel</button>
               </div>

@@ -43,3 +43,11 @@ export function catalogUseText(uses: { branch: string; role: CatalogRole }[]): s
     .map(([branch, roles]) => `${branch}: ${[...roles].sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b)).map((r) => ROLE_WORDS[r]).join(', ')}`)
     .join(' · ')
 }
+
+/** Catalogs → Discount %: a whole percent 0–100 as basis points; null = not valid
+ *  (menu_set_catalog_discount: "Enter a whole percent from 0 to 100"). */
+export function catalogDiscountBp(text: string): number | null {
+  const t = text.trim()
+  if (!/^\d{1,3}$/.test(t) || Number(t) > 100) return null
+  return Number(t) * 100
+}
