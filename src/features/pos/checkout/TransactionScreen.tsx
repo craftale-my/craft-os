@@ -9,6 +9,8 @@ import {
 } from './checkoutApi'
 import ApprovalDialog from './ApprovalDialog'
 import CheckoutTotals from './CheckoutTotals'
+import DiscountRows from './DiscountRows'
+import { catalogTag, discountLabel, lineDiscountRows, linesById } from './discounts'
 import { mytDayStartIso, refundChoices, refundDoneNote, refundableSen, type RefundChoice } from './todayBills'
 import { filterTransactions, mytDateLabel, TX_FILTERS, txStatusLabel, txWhere, type TxFilter } from './transactions'
 import { parseRinggit } from './tender'
@@ -99,6 +101,8 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
 
   const shown = bills ? filterTransactions(bills, filter, search) : []
   const selected = bills?.find((b) => b.id === selectedId) ?? null
+  const detailLines = linesById(detail?.d.totals)
+  const detailTag = detail ? catalogTag(detail.items) : null
   return (
     <div className="flex min-h-0 flex-1">
       <section aria-label="Bills" className="flex w-[440px] shrink-0 flex-col border-r border-border bg-card">
@@ -163,6 +167,7 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
               {detail && (
                 <div className="space-y-3">
                   {detail.d.mergedIntoBillNo && <p className="text-brown-muted">Merged into bill {detail.d.mergedIntoBillNo}.</p>}
+                  {detailTag && <span className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">{detailTag}</span>}
                   <div className="space-y-1">
                     {detail.items.map((i) => (
                       <div key={i.id} className={`flex justify-between gap-2 ${i.voided_at ? 'line-through opacity-50' : ''}`}>
@@ -170,13 +175,14 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
                           {i.qty} × {i.name_snapshot}
                           {i.modifiers_snapshot.map((m, k) => <span key={k} className="block pl-4 text-xs text-brown-muted">+ {m.name}</span>)}
                           {i.note && <span className="block pl-4 text-xs italic text-brown-muted">* {i.note}</span>}
+                          {!i.voided_at && <DiscountRows rows={lineDiscountRows(i, detailLines.get(i.id))} />}
                         </span>
                         <span className="tabular-nums">{formatSen(i.unit_price_sen * i.qty)}</span>
                       </div>
                     ))}
                     {detail.items.length === 0 && <p className="text-brown-muted">No items on this bill.</p>}
                   </div>
-                  {detail.d.totals && <div className="border-t border-border pt-3"><CheckoutTotals totals={detail.d.totals} /></div>}
+                  {detail.d.totals && <div className="border-t border-border pt-3"><CheckoutTotals totals={detail.d.totals} billDiscountLabel={detail.d.billDiscount ? discountLabel(detail.d.billDiscount, true) : undefined} /></div>}
                   {detail.d.payments.length > 0 && (
                     <div className="border-t border-border pt-3">
                       <div className="mb-1 text-xs font-semibold uppercase text-brown-muted">Payments</div>

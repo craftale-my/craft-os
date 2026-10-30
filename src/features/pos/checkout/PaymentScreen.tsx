@@ -5,6 +5,8 @@ import { fetchBillItems, type BillItemRow, type OpenBillRow } from '../order/pos
 import type { BillTotals } from './bill'
 import { checkoutBill, fetchCheckoutState, fetchPaymentMethods, type CheckoutResult } from './checkoutApi'
 import CheckoutTotals from './CheckoutTotals'
+import DiscountRows from './DiscountRows'
+import { catalogTag, discountLabel, lineDiscountRows, linesById, storedDiscount } from './discounts'
 import { billChangedAtPay, followBill, type FollowAction } from './follow'
 import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
 import { looksOffline } from './rpcResult'
@@ -237,11 +239,17 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   const change = !split && method?.kind === 'cash' ? liveChangeSen(total, entry) : null
   const quick = method?.kind === 'cash' ? quickTenders(split ? parseRinggit(entry) ?? left : total) : []
   const key = 'flex h-14 items-center justify-center rounded-xl border border-border-mid bg-card text-xl font-semibold text-brown-dark disabled:opacity-40'
+  const lineTotals = linesById(totals)
+  const billDisc = storedDiscount(bill)
+  const tag = catalogTag(items ?? [])
   return (
     <div className="flex min-h-0 flex-1 bg-cream">
       <section aria-label="Bill" className="flex w-[40%] shrink-0 flex-col border-r border-border bg-card p-4 text-sm">
         <div className="text-lg font-semibold text-brown-dark">{title}</div>
-        <div className="text-xs text-brown-muted">Bill {bill.bill_no} · {itemCount} item{itemCount === 1 ? '' : 's'}</div>
+        <div className="text-xs text-brown-muted">
+          Bill {bill.bill_no} · {itemCount} item{itemCount === 1 ? '' : 's'}
+          {tag && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800">{tag}</span>}
+        </div>
         <div className="mt-3 flex-1 space-y-1 overflow-y-auto">
           {items === null && <p className="text-brown-muted">Loading…</p>}
           {live.map((i) => (
@@ -249,12 +257,13 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
               <span>
                 {i.qty} × {i.name_snapshot}
                 {i.modifiers_snapshot.map((m, k) => <span key={k} className="block pl-4 text-xs text-brown-muted">+ {m.name}</span>)}
+                <DiscountRows rows={lineDiscountRows(i, lineTotals.get(i.id))} />
               </span>
               <span className="tabular-nums">{formatSen(i.unit_price_sen * i.qty)}</span>
             </div>
           ))}
         </div>
-        <div className="mt-3 border-t border-border pt-3"><CheckoutTotals totals={totals} /></div>
+        <div className="mt-3 border-t border-border pt-3"><CheckoutTotals totals={totals} billDiscountLabel={billDisc ? discountLabel(billDisc, true) : undefined} /></div>
         {changeNote && <p role="status" className="mt-2 rounded bg-amber-50 p-2 text-amber-800">{changeNote}</p>}
         <button type="button" onClick={onClose} disabled={busy}
           className="mt-3 min-h-14 rounded-xl border border-border-mid font-medium text-brown-dark disabled:opacity-40">

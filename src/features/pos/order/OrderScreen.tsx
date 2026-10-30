@@ -14,15 +14,22 @@ import ProductTiles from './ProductTiles'
 import ModifierSheet from './ModifierSheet'
 import BillColumn from './BillColumn'
 import BillActionsOverlay from './BillActionsOverlay'
+import ItemActionsOverlay from './ItemActionsOverlay'
 import MoveToGrid from './MoveToGrid'
-import { billActions, type BillAction } from './billActions'
+import { billActions, itemActions, type BillAction, type ItemAction } from './billActions'
 import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
 import { moveTargets, type MoveTarget } from './moveTargets'
 import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
 import { withPhotos, type PadProductInfo } from './padInfo'
 import type { BillSummary } from './billSummaries'
-import { mergeBills, moveBill, openTable, setBillPax, voidBill, voidItem, type BillingConfig } from '../checkout/checkoutApi'
+import {
+  clearBillDiscount, clearItemDiscount, mergeBills, moveBill, openTable, setBillDiscount, setBillPax, setItemDiscount, voidBill, voidItem,
+  type BillingConfig,
+} from '../checkout/checkoutApi'
 import ApprovalDialog from '../checkout/ApprovalDialog'
+import DiscountDialog from '../checkout/DiscountDialog'
+import { discountOffSen, type DiscountInput } from '../checkout/bill'
+import { discountLabel, storedDiscount } from '../checkout/discounts'
 import PickerSheet from '../checkout/BillPickers'
 import ConfirmDialog, { type ConfirmRequest } from '../shell/ConfirmDialog'
 import PaxDialog from '../shell/PaxDialog'
@@ -33,6 +40,11 @@ const BILL_GONE = 'This bill is no longer open.'
 type Dialog =
   | { kind: 'void_item'; row: SentRow }
   | { kind: 'void_bill' }
+  | { kind: 'item_actions'; row: SentRow }
+  | { kind: 'discount_item'; row: SentRow }
+  | { kind: 'approve_item_discount'; row: SentRow; discount: DiscountInput }
+  | { kind: 'discount_bill' }
+  | { kind: 'approve_bill_discount'; discount: DiscountInput }
   | { kind: 'actions' }
   | { kind: 'move' }
   | { kind: 'pax'; purpose: 'set' | 'open_qr' }
@@ -44,7 +56,8 @@ type Dialog =
  *  or an additional one; switching clears the cart, an edited order no longer offered carries what
  *  the new catalog sells), sold-out mode, time-slot greying and the pre-send slot check, the queue
  *  (enqueue then send; a rejection keeps the cart) — and every bill action BillPanel had: void item
- *  and void bill with approval, close an empty bill, move, merge, pause QR, open for QR. */
+ *  and void bill with approval, close an empty bill, move, merge, pause QR, open for QR — plus item and
+ *  bill discounts (docs/superpowers/specs/2026-10-30-pos-discounts-design.md "Screens"). */
 export default function OrderScreen({
   branchId, target, tables, bills, summaries, refreshKey, billing, shiftOpen, locked = false, lastCatalogs, initialLines, initialCatalogId,
   submit, onCatalogs, onTarget, onBack, onSent, onPay, onSendAndPay, onChanged, onDraftCount, onSending,
@@ -214,10 +227,13 @@ export default function OrderScreen({
   }, [bill?.id, refreshKey, localKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const loaded = !bill || (items !== null && !itemsError)            // only then is it known whether the bill is empty
 
+  const billDisc = bill ? storedDiscount(bill) : null
   const view = billView({
     orderType: bill?.order_type ?? orderType,
     tableId: bill ? bill.table_id : target.kind === 'table' ? target.tableId : null,
     items: bill ? items ?? [] : [], lines, menu, info, billing,
+    billDiscount: billDisc,
+    draftCatalogDiscountBp: fresh?.catalogs.find((c) => c.id === catalogId)?.discount_bp ?? 0,
   })
   useEffect(() => { onDraftCount(view.draftCount) }, [view.draftCount]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -307,19 +323,31 @@ export default function OrderScreen({
   // ── bill actions ──
   const actions = billActions({
     isTable: target.kind === 'table', hasBill: !!bill, loaded, liveSentCount: view.liveSentCount, draftCount: view.draftCount,
-    qrPaused: paused, qrRequiresOpenBill: billing?.settings.qrRequiresOpenBill ?? false,
+    qrPaused: paused, qrRequiresOpenBill: billing?.settings.qrRequiresOpenBill ?? false, billDiscount: billDisc !== null,
   })
   const pickAction = (a: BillAction) => {
     setDialog(null)
     if (a === 'send') void send()
     else if (a === 'move') setDialog({ kind: 'move' })
     else if (a === 'void_bill') setDialog({ kind: 'void_bill' })
+    else if (a === 'discount_bill' || a === 'edit_bill_discount') setDialog({ kind: 'discount_bill' })
+    else if (a === 'remove_bill_discount' && bill) {
+      setConfirm({ title: 'Remove this discount?', confirmLabel: 'Remove discount', onConfirm: () => void run(() => clearBillDiscount(bill.id)) })
+    }
     else if (a === 'close_empty' && bill) {
       setConfirm({ title: `Close bill ${bill.bill_no}?`, message: 'It has nothing on it.', confirmLabel: 'Close bill', danger: true,
         onConfirm: () => void run(() => voidBill(bill.id, { reason: '', approverId: null, pin: null }), () => { if (lines.length === 0) onBack() }) })
     } else if (a === 'pax') setDialog({ kind: 'pax', purpose: 'set' })
     else if (a === 'open_qr') setDialog({ kind: 'pax', purpose: 'open_qr' })
     else if (a === 'pause_qr' || a === 'resume_qr') void togglePause()
+  }
+  const pickItemAction = (row: SentRow, a: ItemAction) => {
+    if (a === 'void_item') setDialog({ kind: 'void_item', row })
+    else if (a === 'discount_item' || a === 'edit_item_discount') setDialog({ kind: 'discount_item', row })
+    else {
+      setDialog(null)
+      setConfirm({ title: 'Remove this discount?', confirmLabel: 'Remove discount', onConfirm: () => void run(() => clearItemDiscount(row.item.id)) })
+    }
   }
   const pickPax = (n: number) => {
     const purpose = dialog?.kind === 'pax' ? dialog.purpose : 'set'
@@ -423,7 +451,7 @@ export default function OrderScreen({
         loading={!!bill && items === null && !itemsError}
         loadError={itemsError}
         notice={tileNotice}
-        onSentTap={(row) => setDialog({ kind: 'void_item', row })}
+        onSentTap={(row) => setDialog({ kind: 'item_actions', row })}
         onDraftTap={tapDraft}
         onActions={() => setDialog({ kind: 'actions' })}
         onSend={() => void send()}
@@ -456,6 +484,33 @@ export default function OrderScreen({
           options={(catalogs ?? []).map((c) => ({ id: c.id, label: c.name, detail: c.isDefault ? 'Default' : c.offered ? 'Additional' : 'No longer offered' }))}
           empty="No catalog is set for this branch." onClose={() => setDialog(null)}
           onPick={(id) => { setDialog(null); switchCatalog(id) }} />
+      )}
+      {bill && dialog?.kind === 'item_actions' && (
+        <ItemActionsOverlay title={`${dialog.row.qty} × ${dialog.row.name}`}
+          actions={itemActions({ discounted: storedDiscount(dialog.row.item) !== null })}
+          disabled={busy || sending} onPick={(a) => pickItemAction(dialog.row, a)} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'discount_item' && (
+        <DiscountDialog title="Discount item" summary={`${dialog.row.qty} × ${dialog.row.name} · ${formatSen(dialog.row.afterCatalogSen)}`}
+          baseSen={dialog.row.afterCatalogSen} initial={storedDiscount(dialog.row.item)}
+          onNext={(d) => setDialog({ kind: 'approve_item_discount', row: dialog.row, discount: d })} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'approve_item_discount' && (
+        <ApprovalDialog branchId={branchId} action="discount" title="Discount item"
+          summary={`${discountLabel({ ...dialog.discount, reason: null }, false)} on ${dialog.row.qty} × ${dialog.row.name} · −${formatSen(discountOffSen(dialog.discount, dialog.row.afterCatalogSen))}`}
+          onApprove={(a) => setItemDiscount(dialog.row.item.id, dialog.discount, a)} onClose={() => setDialog(null)}
+          onDone={() => { setDialog(null); setLocalKey((k) => k + 1); void onChanged() }} />
+      )}
+      {bill && dialog?.kind === 'discount_bill' && (
+        <DiscountDialog title="Discount bill" summary={`Bill ${bill.bill_no} · ${formatSen(view.sentSubtotalSen)}`}
+          baseSen={view.sentSubtotalSen} initial={billDisc}
+          onNext={(d) => setDialog({ kind: 'approve_bill_discount', discount: d })} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'approve_bill_discount' && (
+        <ApprovalDialog branchId={branchId} action="discount" title="Discount bill"
+          summary={`${discountLabel({ ...dialog.discount, reason: null }, false)} on bill ${bill.bill_no} · −${formatSen(discountOffSen(dialog.discount, view.sentSubtotalSen))}`}
+          onApprove={(a) => setBillDiscount(bill.id, dialog.discount, a)} onClose={() => setDialog(null)}
+          onDone={() => { setDialog(null); setLocalKey((k) => k + 1); void onChanged() }} />
       )}
       {bill && dialog?.kind === 'void_item' && (
         <ApprovalDialog branchId={branchId} action="void_item" title="Void item"

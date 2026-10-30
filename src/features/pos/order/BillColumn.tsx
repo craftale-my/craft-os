@@ -3,6 +3,7 @@ import { LayoutGrid, Users } from 'lucide-react'
 import { formatSen } from './cart'
 import { formatRate, type BillTotals } from '../checkout/bill'
 import { itemsWord, type BillView, type DraftRow, type SentRow } from './billView'
+import DiscountRows from '../checkout/DiscountRows'
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kuala_Lumpur' })
 
@@ -46,7 +47,10 @@ export default function BillColumn(p: {
           )}
         </div>
         <div className="mt-1 flex items-center justify-between gap-2 text-xs text-brown-muted">
-          <span>{p.billNo ? `Bill ${p.billNo}` : 'No bill yet'}</span>
+          <span>
+            {p.billNo ? `Bill ${p.billNo}` : 'No bill yet'}
+            {view.catalogTag && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800">{view.catalogTag}</span>}
+          </span>
           {p.catalogName && (p.onCatalog ? (
             <button type="button" onClick={p.onCatalog}
               className={`min-h-11 rounded-lg border px-3 text-sm ${p.catalogIsExtra ? 'border-amber-500 bg-amber-50 text-amber-800' : 'border-border-mid text-brown-dark'}`}>
@@ -69,7 +73,10 @@ export default function BillColumn(p: {
             {view.sent.filter((s) => s.item.order_id === orderId).map((s) => (
               <button key={s.item.id} type="button" disabled={s.voided} onClick={() => p.onSentTap(s)}
                 className={`flex min-h-11 w-full justify-between gap-2 py-1.5 text-left ${s.voided ? 'line-through opacity-50' : ''}`}>
-                <LineText qty={s.qty} name={s.name} mods={s.mods} note={s.note} />
+                <span>
+                  <LineText qty={s.qty} name={s.name} mods={s.mods} note={s.note} />
+                  <DiscountRows rows={s.discountRows} />
+                </span>
                 <span className="tabular-nums">{formatSen(s.amountSen)}</span>
               </button>
             ))}
@@ -90,7 +97,7 @@ export default function BillColumn(p: {
         {!p.loading && view.sent.length === 0 && view.drafts.length === 0 && <p className="text-brown-muted">Tap items to add them.</p>}
       </div>
       <footer className="border-t border-border p-3 text-sm">
-        {view.totals && <Totals t={view.totals} />}
+        {view.totals && <Totals t={view.totals} billDiscountLabel={view.billDiscount?.label} />}
         {view.drafts.length > 0 && (
           <p className="mt-1 text-xs text-amber-800">{view.totalsIncludeDrafts ? 'Totals include the unsent items.' : 'Unsent items are not in the totals yet.'}</p>
         )}
@@ -118,10 +125,13 @@ function LineText({ qty, name, mods, note }: { qty: number; name: string; mods: 
   )
 }
 
-function Totals({ t }: { t: BillTotals }) {
+function Totals({ t, billDiscountLabel }: { t: BillTotals; billDiscountLabel?: string }) {
   return (
     <div className="space-y-0.5">
       <div className="flex justify-between"><span>Subtotal</span><span className="tabular-nums">{formatSen(t.subtotalSen)}</span></div>
+      {t.billDiscountSen > 0 && (
+        <div className="flex justify-between text-brown-muted"><span>{billDiscountLabel ?? 'Discount'}</span><span className="tabular-nums">−{formatSen(t.billDiscountSen)}</span></div>
+      )}
       {t.serviceChargeGroups.map((g) => (
         <div key={`sc${g.rateBp}`} className="flex justify-between text-brown-muted"><span>Service charge ({formatRate(g.rateBp)})</span><span className="tabular-nums">{formatSen(g.amountSen)}</span></div>
       ))}
