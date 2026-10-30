@@ -54,8 +54,10 @@ then testing and cut-over. Check items off as they land.
 
 - [ ] **W1 POS app, Part C** — separate `craft-pos` app, tablets sign in as devices, staff name + PIN, the RPC
       swap to `pos_ctx`, scoped read policies (plan to write; Parts A and B are live on dev).
-- [ ] **W2 Bill discount** — spec from the paused design (D4), server totals, PIN approval, receipt and Z report
-      lines, discount report; Staff Meal catalog at 50% off the normal price.
+- [x] **W2 Bill discount** — spec from the paused design (D4), server totals, PIN approval, receipt and Z report
+      lines, discount report; Staff Meal catalog at 50% off the normal price. Built on dev 2026-10-30 (plan
+      docs/superpowers/plans/2026-10-30-pos-discounts.md); prod runs with the POS chain (step 4). The full
+      discount report (every discount, approver, reason) moves to W3.
 - [ ] **WG Grab integration (cut-over gate, D1)** — owner applies for Grab API access now (long lead); then a
       spec: menu sync from our catalogs, order webhook into a Grab bill with tickets, accept/reject and
       ready status, Grab payment type, sold-out sync. Built as soon as access is granted, in parallel with W3–W6.
