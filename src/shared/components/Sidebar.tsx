@@ -5,7 +5,7 @@ import {
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network,
   ShoppingBasket, Truck, Package, ShoppingCart, PackageCheck, Boxes, Trash2, ArrowLeftRight,
-  ChefHat, Headset, ExternalLink, MessageSquare,
+  ChefHat, Headset, ExternalLink, MessageSquare, FileSpreadsheet,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -47,6 +47,7 @@ const ICONS: Record<string, LucideIcon> = {
   'proc-wastage': Trash2,
   'proc-recipes': ChefHat,
   'proc-inventory': Boxes,
+  'claim-desk': FileSpreadsheet,
   settings: Settings,
   feedback: MessageSquare,
 }

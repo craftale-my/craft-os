@@ -68,6 +68,7 @@ export const NAV: NavEntry[] = [
       { id: 'proc-inventory', label: 'Stock on Hand', to: '/procurement/inventory', cap: 'use_procurement' },
     ],
   },
+  { id: 'claim-desk', label: 'Claim Desk', to: '/accounts/claim-desk', cap: 'manage_accounts' },
   { id: 'settings', label: 'Settings', to: '/settings', cap: 'access_settings' },
   { id: 'feedback', label: 'Feedback', to: '/feedback' },
 ]

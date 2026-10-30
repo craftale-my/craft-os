@@ -5,10 +5,15 @@ import type { Claim, ClaimType } from '../../shared/types'
 import { CLAIM_TYPE_LABELS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { Avatar } from '../../shared/components/Avatar'
+import { Sparkles, FileText } from 'lucide-react'
+import { ScanCapture, EMPTY_SCAN, scanIsEmpty, scanToPdf, scanForAi, type ScanValue } from '../accounts/ScanCapture'
+import { aiRead, loadAccounts, uploadFile } from '../accounts/api'
+import { isIsoDate, numOf } from '../accounts/claimDesk'
+import { TaobaoClaimModal } from './TaobaoClaimModal'
 
 const inputCls = 'w-full px-3 py-2 rounded-lg border border-[#D4C5B0] bg-white text-sm text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
 const labelCls = 'block text-xs font-semibold text-brown-medium mb-1'
-const CLAIM_TYPES: ClaimType[] = ['transport', 'parking', 'meal', 'medical', 'phone', 'uniform', 'other']
+const CLAIM_TYPES: ClaimType[] = ['transport', 'parking', 'meal', 'medical', 'phone', 'uniform', 'supplies', 'other']
 
 function money(n: number): string {
   return `RM ${n.toFixed(2)}`
@@ -24,6 +29,29 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
+const isPdf = (c: Claim) => !!c.pdf_path || /\.pdf($|\?)/i.test(c.receipt_url ?? '')
+
+/** Foreign-currency and document details shown under a claim line. */
+function ClaimExtras({ c }: { c: Claim }) {
+  if (!c.receipt_url && c.source !== 'taobao') return null
+  return (
+    <div className="flex flex-wrap items-center gap-2 mt-1">
+      {c.source === 'taobao' && c.foreign_amount != null && (
+        <span className="text-[11px] text-brown-muted">Taobao · CNY {Number(c.foreign_amount).toFixed(2)} @ {c.exchange_rate}</span>
+      )}
+      {c.self_billed_status === 'pending' && (
+        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[#FBEEDC] text-[#A8651F]">Self-billed e-Invoice pending</span>
+      )}
+      {c.receipt_url && isPdf(c) && (
+        <a href={c.receipt_url} target="_blank" rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#A86C2C] hover:underline">
+          <FileText size={12} /> {c.source === 'taobao' ? 'English claim PDF' : 'Receipt PDF'}
+        </a>
+      )}
+    </div>
+  )
+}
+
 // ─── Submit claim modal ─────────────────────────────────────────────────────────
 
 function SubmitClaimModal({ staffId, onClose, onSubmitted }: {
@@ -32,12 +60,36 @@ function SubmitClaimModal({ staffId, onClose, onSubmitted }: {
   onSubmitted: () => void
 }) {
   const [form, setForm] = useState({ claim_type: 'transport' as ClaimType, amount: '', claim_date: new Date().toISOString().split('T')[0], description: '' })
-  const [file, setFile] = useState<File | null>(null)
+  const [scan, setScan] = useState<ScanValue>(EMPTY_SCAN)
+  const [supplier, setSupplier] = useState('')
   const [saving, setSaving] = useState(false)
+  const [reading, setReading] = useState(false)
+  const [aiMsg, setAiMsg] = useState('')
   const [error, setError] = useState('')
 
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }))
+
+  async function readReceipt() {
+    setReading(true); setAiMsg(''); setError('')
+    const accounts = await loadAccounts()
+    const r = await aiRead<Record<string, unknown>>('receipt', await scanForAi(scan), accounts.map(a => a.name))
+    setReading(false)
+    if (!r.ok) { setAiMsg(r.error); return }
+    const d = r.data ?? {}
+    const total = numOf(d.total)
+    const currency = String(d.currency || 'MYR').toUpperCase()
+    setForm(f => ({
+      ...f,
+      amount: total != null && currency === 'MYR' ? total.toFixed(2) : f.amount,
+      claim_date: isIsoDate(d.docDate) ? d.docDate : f.claim_date,
+      description: f.description || [d.supplier, d.description].filter(Boolean).join(' — '),
+    }))
+    if (d.supplier) setSupplier(String(d.supplier))
+    setAiMsg(currency !== 'MYR' && total != null
+      ? `The receipt is in ${currency} ${total}. Enter the amount you paid in RM.`
+      : 'Filled in from the receipt — please check.')
+  }
 
   async function handleSubmit() {
     if (!form.amount || Number(form.amount) <= 0 || !form.description.trim() || !form.claim_date) {
@@ -47,11 +99,18 @@ function SubmitClaimModal({ staffId, onClose, onSubmitted }: {
     setSaving(true)
     setError('')
     let receipt_url: string | null = null
-    if (file) {
-      const ext = file.name.split('.').pop() ?? 'jpg'
-      const filePath = `${staffId}/${Date.now()}.${ext}`
-      const { error: uploadErr } = await supabase.storage.from('claim-receipts').upload(filePath, file, { contentType: file.type })
-      if (!uploadErr) receipt_url = supabase.storage.from('claim-receipts').getPublicUrl(filePath).data.publicUrl
+    let pdf_path: string | null = null
+    const pdfName = `Receipt_${form.claim_date}.pdf`
+    if (!scanIsEmpty(scan)) {
+      const blob = await scanToPdf(scan)
+      const up = blob ? await uploadFile('claim-receipts', staffId, new File([blob], pdfName, { type: 'application/pdf' }), pdfName) : null
+      if (!up?.ok) {
+        setSaving(false)
+        setError(`Receipt upload failed${up && !up.ok ? `: ${up.error}` : ''}. Try again.`)
+        return
+      }
+      pdf_path = up.data.path!
+      receipt_url = supabase.storage.from('claim-receipts').getPublicUrl(pdf_path).data.publicUrl
     }
     const { error: err } = await supabase.from('claims').insert({
       staff_id: staffId,
@@ -60,6 +119,7 @@ function SubmitClaimModal({ staffId, onClose, onSubmitted }: {
       description: form.description.trim(),
       claim_date: form.claim_date,
       receipt_url,
+      ...(pdf_path ? { source: 'scan', pdf_path, details: { supplier: supplier.trim() || null, pdf_name: pdfName } } : {}),
     })
     setSaving(false)
     if (err) { setError(err.message); return }
@@ -69,7 +129,7 @@ function SubmitClaimModal({ staffId, onClose, onSubmitted }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md">
+      <div className="bg-cream-light rounded-2xl shadow-xl w-full max-w-md max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-[#E8DDD0]">
           <h2 className="font-bold text-brown-dark text-lg">Submit Claim</h2>
           <button onClick={onClose} className="text-brown-faint hover:text-brown-dark text-xl leading-none">✕</button>
@@ -96,9 +156,16 @@ function SubmitClaimModal({ staffId, onClose, onSubmitted }: {
             <label className={labelCls}>Description</label>
             <textarea rows={2} className={`${inputCls} resize-none`} value={form.description} onChange={set('description')} />
           </div>
-          <div>
-            <label className={labelCls}>Receipt Photo</label>
-            <input type="file" accept="image/*" onChange={e => setFile(e.target.files?.[0] ?? null)} className="text-xs" />
+          <div className="space-y-2">
+            <label className={labelCls}>Receipt</label>
+            <ScanCapture value={scan} onChange={setScan} />
+            {!scanIsEmpty(scan) && (
+              <button type="button" onClick={readReceipt} disabled={reading}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#A86C2C] disabled:opacity-50">
+                <Sparkles size={14} /> {reading ? 'Reading the receipt…' : 'Fill in from the receipt (AI)'}
+              </button>
+            )}
+            {aiMsg && <p className="text-xs text-brown-muted">{aiMsg}</p>}
           </div>
           <div className="flex gap-3 pt-1">
             <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-[#D4C5B0] text-sm text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors">Cancel</button>
@@ -158,9 +225,10 @@ function RejectClaimModal({ claim, reviewerId, onClose, onDone }: {
 
 // ─── Staff view ─────────────────────────────────────────────────────────────────
 
-function MyClaimsView({ staffId }: { staffId: string }) {
+function MyClaimsView({ staffId, staffName }: { staffId: string; staffName: string }) {
   const [claims, setClaims] = useState<Claim[]>([])
   const [showSubmit, setShowSubmit] = useState(false)
+  const [showTaobao, setShowTaobao] = useState(false)
 
   async function load() {
     const { data } = await supabase.from('claims').select('*').eq('staff_id', staffId).order('created_at', { ascending: false })
@@ -188,7 +256,10 @@ function MyClaimsView({ staffId }: { staffId: string }) {
         </div>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2 flex-wrap">
+        <button onClick={() => setShowTaobao(true)} className="px-4 py-2 rounded-xl border border-[#D4C5B0] bg-white text-brown-brand text-sm font-semibold hover:bg-[#F5EDE0] transition-colors">
+          + Taobao Purchase
+        </button>
         <button onClick={() => setShowSubmit(true)} className="px-4 py-2 rounded-xl bg-[#C4813A] text-white text-sm font-semibold hover:bg-[#A86C2C] transition-colors">
           + Submit Claim
         </button>
@@ -204,6 +275,7 @@ function MyClaimsView({ staffId }: { staffId: string }) {
                 <p className="text-sm font-medium text-brown-dark">{CLAIM_TYPE_LABELS[c.claim_type]} · {money(c.amount)}</p>
                 <p className="text-xs text-brown-faint">{c.claim_date} · {c.description}</p>
                 {c.status === 'rejected' && c.rejection_reason && <p className="text-xs text-[#9E4A30] italic mt-0.5">"{c.rejection_reason}"</p>}
+                <ClaimExtras c={c} />
               </div>
               <StatusBadge status={c.status} />
             </div>
@@ -212,6 +284,7 @@ function MyClaimsView({ staffId }: { staffId: string }) {
       </div>
 
       {showSubmit && <SubmitClaimModal staffId={staffId} onClose={() => setShowSubmit(false)} onSubmitted={load} />}
+      {showTaobao && <TaobaoClaimModal staffId={staffId} staffName={staffName} onClose={() => setShowTaobao(false)} onSubmitted={load} />}
     </div>
   )
 }
@@ -277,8 +350,9 @@ function ManagerClaimsView({ managerId }: { managerId: string | undefined }) {
                   <p className="text-sm font-semibold text-brown-dark">{c.staff?.name ?? 'Unknown'} · {money(c.amount)}</p>
                   <p className="text-xs text-brown-faint">{CLAIM_TYPE_LABELS[c.claim_type]} · {c.claim_date}</p>
                   <p className="text-xs text-brown-muted">{c.description}</p>
+                  <ClaimExtras c={c} />
                 </div>
-                {c.receipt_url && (
+                {c.receipt_url && !isPdf(c) && (
                   <img
                     src={c.receipt_url}
                     alt="receipt"
@@ -366,7 +440,7 @@ export default function HrClaimsPage() {
           <p className="text-sm text-brown-faint mt-0.5">Submit and track expense claims.</p>
         </div>
 
-        <MyClaimsView staffId={staff.id} />
+        <MyClaimsView staffId={staff.id} staffName={staff.name} />
 
         {isManager && (
           <section>

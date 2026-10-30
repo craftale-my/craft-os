@@ -1,0 +1,938 @@
+<title>Claim Desk</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: ledger desk — sticky top bar with tabs, one working panel, a right-hand drawer for a single record.
+   Palette follows Craft OS (cream / canvas / brown), light only by design. */
+:root{
+  --bg:#F5F0E8; --canvas:#FDFAF6; --panel:#FFFFFF; --fg:#3D2B1F; --muted:#8B7355; --line:#EDE5D8; --line-mid:#D4C5B0;
+  --accent:#6B4C35; --accent-hover:#5A3D28; --accent-ink:#FDFAF6; --accent-soft:#F7EFE4; --brand:#8B6344; --xp:#C4813A;
+  --warn:#A8651F; --warn-soft:#FBEEDC; --bad:#A8432E; --bad-soft:#F8E4DD; --ok:#3F7D4E; --ok-soft:#E4F0E6; --info:#3A76A0; --info-soft:#E2EDF5;
+  --shadow:0 1px 4px rgba(61,43,31,.08),0 0 0 1px rgba(61,43,31,.04);
+  --display:"Playfair Display",Georgia,"Songti SC",serif;
+  --sans:"DM Sans","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --r:10px;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.5}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--canvas)}
+.wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));max-width:1180px;margin:0 auto}
+header.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--canvas);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;padding-block:12px 4px}
+.brand h1{font-family:var(--display);font-size:24px;margin:0;font-weight:700;color:var(--fg)}
+.brand .co{color:var(--brand);font-size:13px;font-weight:600;letter-spacing:.04em}
+nav.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
+nav.tabs button{border:0;background:none;color:var(--muted);font:inherit;font-weight:600;padding:10px 12px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+nav.tabs button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--xp)}
+main{padding-block:20px 60px}
+section[role=tabpanel]{display:grid;gap:16px}
+h2{font-family:var(--display);font-size:22px;margin:0;text-wrap:balance}
+h3{font-size:14px;margin:0;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+p{margin:0}
+.lead{color:var(--muted);max-width:68ch}
+.card{background:var(--panel);border:0;box-shadow:var(--shadow);border-radius:var(--r);padding:16px;display:grid;gap:12px;min-width:0}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+label.f{display:grid;gap:4px;font-size:12px;color:var(--muted);font-weight:600;min-width:0}
+input,select,textarea{font:inherit;color:var(--fg);background:var(--canvas);border:1px solid var(--line-mid);border-radius:8px;padding:7px 9px;min-width:0;width:100%}
+textarea{min-height:60px;resize:vertical}
+input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btn{font:inherit;font-weight:600;border:1px solid var(--line-mid);background:var(--panel);color:var(--fg);border-radius:8px;padding:8px 14px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.btn.small{padding:4px 9px;font-size:12px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.mono{font-family:var(--mono);font-size:12px}
+.muted{color:var(--muted)}
+.pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;white-space:nowrap;letter-spacing:.02em}
+.s-need{background:var(--warn-soft);color:var(--warn)} .s-draft{background:var(--accent-soft);color:var(--muted)}
+.s-rev{background:var(--info-soft);color:var(--info)} .s-post{background:var(--ok-soft);color:var(--ok)} .s-cancel{background:var(--bad-soft);color:var(--bad)}
+.src{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.tablebox{overflow-x:auto;border:0;box-shadow:var(--shadow);border-radius:var(--r);background:var(--panel)}
+table{border-collapse:collapse;width:100%;min-width:760px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600;background:var(--canvas)}
+tbody tr{cursor:pointer} tbody tr:hover{background:var(--accent-soft)}
+.stats{display:flex;gap:8px;flex-wrap:wrap}
+.stat{border:1px solid var(--line);box-shadow:var(--shadow);background:var(--panel);border-radius:var(--r);padding:8px 12px;display:grid;gap:2px;min-width:120px;cursor:pointer;font:inherit;color:inherit;text-align:left}
+.stat[aria-pressed="true"]{border-color:var(--xp);box-shadow:inset 0 0 0 1px var(--xp)}
+.stat b{font-size:18px;font-family:var(--mono)}
+.stat span{font-size:12px;color:var(--muted)}
+.empty{padding:28px;text-align:center;color:var(--muted)}
+.thumbs{display:flex;gap:10px;flex-wrap:wrap}
+.thumb{border:1px solid var(--line);border-radius:4px;padding:6px;display:grid;gap:6px;width:150px;background:var(--bg)}
+.thumb canvas{width:100%;height:auto;background:#fff;border-radius:2px}
+.thumb .row{gap:4px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.seg button{border:0;background:var(--panel);color:var(--muted);font:inherit;font-size:12px;padding:5px 10px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+.banner{border-radius:var(--r);padding:10px 14px;background:var(--warn-soft);color:var(--warn);font-weight:500}
+.banner.info{background:var(--info-soft);color:var(--info)}
+.log{font-family:var(--mono);font-size:12px;max-height:220px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:8px;white-space:pre-wrap}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,100%);background:var(--panel);border-left:1px solid var(--line);z-index:20;display:grid;grid-template-rows:auto 1fr auto;box-shadow:-12px 0 30px rgba(0,0,0,.12);
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);padding-right:env(safe-area-inset-right,0px)}
+.drawer header,.drawer footer{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.drawer footer{border-bottom:0;border-top:1px solid var(--line)}
+.drawer .body{overflow:auto;padding:16px 18px;display:grid;gap:12px;align-content:start}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:19}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:4px;z-index:30;max-width:calc(100% - 32px);font-weight:500}
+.guide table{min-width:640px} .guide td,.guide th{font-size:13px} .guide tbody tr{cursor:default} .guide tbody tr:hover{background:none}
+.check{display:grid;gap:6px;padding-left:18px;margin:0}
+.items td input{padding:4px 6px}
+.items table{min-width:680px}
+.items tbody tr{cursor:default} .items tbody tr:hover{background:none}
+a{color:var(--accent)}
+@media (max-width:560px){.drawer{width:100%}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand"><h1>Claim Desk</h1><span class="co" id="coName">单据 → 分类 → AutoCount</span></div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="register" aria-selected="true">账簿 Register</button>
+      <button role="tab" data-tab="scan" aria-selected="false">扫描纸本单据</button>
+      <button role="tab" data-tab="taobao" aria-selected="false">淘宝报销 Claim</button>
+      <button role="tab" data-tab="einv" aria-selected="false">e-Invoice 收件箱</button>
+      <button role="tab" data-tab="guide" aria-selected="false">分类指南 & 设置</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banner" hidden></div>
+
+  <!-- REGISTER -->
+  <section role="tabpanel" id="tab-register">
+    <div class="row" style="justify-content:space-between">
+      <div class="row">
+        <label class="f">会计期 Period<input type="month" id="period"></label>
+        <label class="f">来源 Source<select id="srcFilter"><option value="all">全部</option><option value="paper">纸本</option><option value="taobao">淘宝</option><option value="einvoice">e-Invoice</option></select></label>
+      </div>
+      <div class="row">
+        <button class="btn" id="aiAccounts">AI 建议科目（本月未分类）</button>
+        <button class="btn primary" id="exportCsv">导出 AutoCount CSV</button>
+      </div>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="tablebox"><table>
+      <thead><tr><th>日期</th><th>来源</th><th>供应商 Supplier</th><th>单号 Ref</th><th class="num">金额 MYR</th><th>科目 Account</th><th>状态</th><th>Voucher</th></tr></thead>
+      <tbody id="regBody"><tr><td colspan="8" class="empty">正在载入…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <!-- SCAN -->
+  <section role="tabpanel" id="tab-scan" hidden>
+    <div><h2>纸本发票 / 收据 → 清晰 PDF</h2><p class="lead">用手机拍照或选图片 / PDF。系统去阴影、加强对比，合成一份 A4 PDF，再让 AI 读出供应商、单号、日期、金额，存进账簿。</p></div>
+    <div class="card">
+      <div class="row">
+        <label class="btn primary" for="camIn">拍照</label><input id="camIn" type="file" accept="image/*" capture="environment" hidden>
+        <label class="btn" for="fileIn">选择图片 / PDF</label><input id="fileIn" type="file" accept="image/*,application/pdf" multiple hidden>
+        <span class="muted" id="pageCount">还没有页面</span>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+      <div class="row">
+        <label class="f">同一份单据的类型<select id="scanKind"><option value="">让 AI 判断</option></select></label>
+        <label class="f">付款<select id="scanPay"></select></label>
+        <label class="f">经手人 / Claimant<input id="scanWho" placeholder="可留空"></label>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="scanSave" disabled>生成 PDF + AI 识别并存档</button>
+        <button class="btn" id="scanPdfOnly" disabled>只下载 PDF</button>
+        <button class="btn" id="scanClear" disabled>清空</button>
+      </div>
+      <div id="scanMsg" class="muted"></div>
+    </div>
+  </section>
+
+  <!-- TAOBAO -->
+  <section role="tabpanel" id="tab-taobao" hidden>
+    <div><h2>淘宝订单 → 英文 Staff Expense Claim</h2><p class="lead">员工上传淘宝订单截图（订单详情页最好）。AI 读出订单并翻成英文，生成给 LHDN / 审计看的英文报销单 PDF，原截图附在后面。</p></div>
+    <div class="card">
+      <div class="grid2">
+        <label class="f">报销人 Claimant<input id="tbWho" placeholder="员工姓名"></label>
+        <label class="f">汇率 1 CNY = ? MYR<input id="tbRate" inputmode="decimal" placeholder="例如 0.62"></label>
+        <label class="f">汇率来源<input id="tbRateSrc" value="Bank Negara Malaysia rate on payment date"></label>
+        <label class="f">付款方式<input id="tbPayMethod" placeholder="AI 会尝试读出，例如 Alipay"></label>
+      </div>
+      <p class="muted" style="font-size:12px">汇率可查 <a href="https://www.bnm.gov.my/exchange-rates" target="_blank" rel="noopener">BNM Exchange Rates</a>，用付款当天的 rate。</p>
+      <div class="row">
+        <label class="btn" for="tbIn">选择订单截图</label><input id="tbIn" type="file" accept="image/*" multiple hidden>
+        <span class="muted" id="tbCount">还没有截图</span>
+        <button class="btn primary" id="tbRead" disabled>AI 识别并翻译</button>
+      </div>
+      <div class="thumbs" id="tbThumbs"></div>
+    </div>
+    <div class="card" id="tbResult" hidden>
+      <h3>核对翻译（可直接修改）</h3>
+      <div class="tablebox items"><table>
+        <thead><tr><th>Order No</th><th>Date</th><th>Description (English)</th><th class="num">Qty</th><th class="num">Unit CNY</th><th class="num">Amount CNY</th></tr></thead>
+        <tbody id="tbItems"></tbody>
+      </table></div>
+      <div class="grid2">
+        <label class="f">卖家 Seller (English)<input id="tbSeller"></label>
+        <label class="f">运费 Shipping CNY<input id="tbShip" inputmode="decimal"></label>
+        <label class="f">折扣 Discount CNY<input id="tbDisc" inputmode="decimal"></label>
+        <label class="f">实付 Total paid CNY<input id="tbTotal" inputmode="decimal"></label>
+        <label class="f">科目 Account<select id="tbAcct"></select></label>
+        <label class="f">MYR 金额<input id="tbMyr" readonly></label>
+      </div>
+      <label class="f">备注 Notes<textarea id="tbNotes"></textarea></label>
+      <div class="row">
+        <button class="btn primary" id="tbSave">生成英文报销单 PDF 并存档</button>
+        <button class="btn" id="tbPdf">只下载 PDF</button>
+      </div>
+      <div id="tbMsg" class="muted"></div>
+    </div>
+  </section>
+
+  <!-- E-INVOICE -->
+  <section role="tabpanel" id="tab-einv" hidden>
+    <div><h2>e-Invoice 收件箱（Shopee 及所有供应商）</h2><p class="lead">供应商开 e-Invoice 给公司 TIN 后，LHDN MyInvois 会发通知到公司 Gmail（发件人 noreply@myinvois.hasil.gov.my）。这里把通知读进账簿：供应商、UUID、e-Invoice 号码、日期自动填好，再由会计补金额。</p></div>
+    <div class="banner info">在 Shopee 下单后，记得在订单页按 <b>Request e-Invoice</b> 填公司 TIN，不然卖家只会开 consolidated e-Invoice，这里收不到。</div>
+    <div class="card">
+      <div class="row">
+        <label class="f">从这天起<input type="date" id="einvSince"></label>
+        <label class="f">最多几封<select id="einvMax"><option>50</option><option selected>150</option><option>400</option></select></label>
+        <button class="btn primary" id="einvSync">从 Gmail 同步</button>
+        <button class="btn" id="einvStop" disabled>停止</button>
+      </div>
+      <div class="log" id="einvLog">还没有同步。</div>
+    </div>
+  </section>
+
+  <!-- GUIDE -->
+  <section role="tabpanel" id="tab-guide" class="guide" hidden>
+    <div><h2>单据分类指南（马来西亚审计用词）</h2><p class="lead">每张单都是一份 Source Document（原始凭证），要能对上 AutoCount 里的一张 Voucher，这就是 Audit Trail。</p></div>
+    <div class="tablebox"><table>
+      <thead><tr><th>来源</th><th>审计上的单据名称</th><th>AutoCount 入账</th><th>e-Invoice（LHDN MyInvois）</th></tr></thead>
+      <tbody>
+        <tr><td><b>纸本发票</b><br><span class="muted">本地供应商</span></td><td>Supplier Invoice；有 SST 的叫 Tax Invoice。小额的是 Cash Bill / Receipt</td><td>赊账：Purchase Invoice（Creditor）<br>已付：Cash Book → Payment Voucher</td><td>供应商应开 e-Invoice；纸本是 Supporting Document</td></tr>
+        <tr><td><b>淘宝</b><br><span class="muted">员工先付</span></td><td>Foreign Supplier Purchase（Importation of goods / Low Value Goods）→ <b>Staff Expense Claim</b>。佐证：Order Confirmation + Proof of Payment + English Translation</td><td>Expense Claim → Payment Voucher 付给员工；外币 CNY 要记汇率</td><td>外国卖家不开马来西亚 e-Invoice → 公司开 <b>Self-billed e-Invoice</b></td></tr>
+        <tr><td><b>Shopee</b></td><td>Validated e-Invoice（有 UUID 和 QR）</td><td>Purchase Invoice 或 Cash Purchase</td><td>下单后 Request e-Invoice 填公司 TIN</td></tr>
+      </tbody>
+    </table></div>
+    <div class="grid2">
+      <div class="card"><h3>每张单的 4 个分类</h3><ol class="check">
+        <li><b>Document Type</b>：Supplier Invoice / Receipt / e-Invoice / Expense Claim / Credit Note</li>
+        <li><b>Account</b>：Purchases（Cost of Sales）/ Operating Expenses / Fixed Asset（PPE）</li>
+        <li><b>Tax Treatment</b>：Allowable（s33 ITA 1967）/ Capital Allowance（单件 ≤ RM2,000 为 Small Value Asset）/ Non-allowable</li>
+        <li><b>Payment</b>：Unpaid（Accounts Payable）/ Paid by company / Staff-paid（Reimbursement）</li>
+      </ol></div>
+      <div class="card"><h3>审计 checklist</h3><ol class="check">
+        <li>Occurrence：原始单据 + 付款证明</li>
+        <li>Accuracy：金额、币别、汇率</li>
+        <li>Cut-off：日期入对会计期</li>
+        <li>Classification：科目正确</li>
+        <li>语言：英文或马来文（淘宝要附英文翻译）</li>
+        <li>保存 7 年（ITA 1967 s82）</li>
+      </ol></div>
+    </div>
+    <p class="muted" style="font-size:12px">Self-billed e-Invoice 的开立期限和公司适用的 e-Invoice 阶段，请和 tax agent 确认。</p>
+
+    <div class="card">
+      <h3>设置</h3>
+      <label class="f">公司名称（印在报销单上）<input id="setCompany" placeholder="例如 ABC SDN. BHD."></label>
+      <div><b>会计科目</b> <span class="muted">— 填上 AutoCount 里的 Account Code，导出 CSV 时会带上</span></div>
+      <div class="tablebox items"><table style="min-width:420px">
+        <thead><tr><th>科目名称</th><th>AutoCount Account Code</th><th></th></tr></thead>
+        <tbody id="acctRows"></tbody>
+      </table></div>
+      <div class="row"><button class="btn" id="acctAdd">加一个科目</button><button class="btn primary" id="setSave">保存设置</button></div>
+    </div>
+  </section>
+</main>
+
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="单据详情"></aside>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const round2 = n => Math.round((+n + Number.EPSILON) * 100) / 100;
+const money = n => (n == null || n === '' || isNaN(n)) ? '—' : Number(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const numOf = v => { const x = parseFloat(String(v ?? '').replace(/,/g, '')); return isFinite(x) ? x : null; };
+const todayISO = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // MYT
+const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+const DOC_TYPES = ['Supplier Invoice', 'Tax Invoice (SST)', 'Cash Bill / Receipt', 'Validated e-Invoice', 'Foreign Purchase – Staff Expense Claim', 'Credit Note', 'Other Supporting Document'];
+const ACCOUNTS_DEFAULT = ['Purchases (Cost of Sales)', 'Freight Inwards / Carriage Inwards', 'Packaging Materials', 'Office Supplies & Stationery', 'Repair & Maintenance', 'Upkeep of Premises', 'Transport & Delivery (Carriage Outwards)', 'Advertising & Promotion', 'Software & Subscriptions', 'Telephone & Internet', 'Bank Charges', 'Payment Gateway / Merchant Fees', 'Marketplace Commission & Fees (Shopee / Lazada)', 'Small Value Asset (≤ RM2,000)', 'Fixed Asset – Equipment (PPE)', 'Staff Welfare', 'Entertainment', 'Sundry Expenses'].map(name => ({ name, code: '' }));
+const TAX = ['Allowable expense (s33 ITA 1967)', 'Capital allowance (Schedule 3)', 'Partly allowable (e.g. entertainment 50%)', 'Non-allowable / private', 'To be decided by tax agent'];
+const PAYMENT = ['Unpaid (Accounts Payable)', 'Paid by company', 'Staff-paid (Reimbursement)'];
+const STATUS = ['Needs info', 'Draft', 'Reviewed', 'Posted to AutoCount', 'Cancelled'];
+const STATUS_CLS = { 'Needs info': 's-need', 'Draft': 's-draft', 'Reviewed': 's-rev', 'Posted to AutoCount': 's-post', 'Cancelled': 's-cancel' };
+const STATUS_ZH = { 'Needs info': '待补资料', 'Draft': '待审核', 'Reviewed': '已审核', 'Posted to AutoCount': '已入 AutoCount', 'Cancelled': '已取消' };
+const SELF_BILLED = ['Not required', 'Required – pending', 'Issued'];
+const PLATFORM = ['', 'Shopee', 'Taobao', 'Lazada', 'Walk-in / Direct', 'Other'];
+const SRC_ZH = { paper: '纸本', taobao: '淘宝', einvoice: 'e-Invoice' };
+
+const state = {
+  period: todayISO().slice(0, 7), filter: 'all', statusFilter: null, docs: [], loaded: false,
+  config: { company: '', accounts: ACCOUNTS_DEFAULT }, suppliers: {}, uid: null, openId: null,
+  scanPages: [], tbFiles: [], tb: null, stopSync: false,
+};
+const cap = {};
+let unsubDocs = null;
+
+/* ---------- small UI helpers ---------- */
+let toastTimer;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, 3800); }
+function banner(msg, info) { const b = $('#banner'); if (!msg) { b.hidden = true; return; } b.className = 'banner' + (info ? ' info' : ''); b.textContent = msg; b.hidden = false; }
+const opts = (list, sel) => list.map(v => `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(v || '—')}</option>`).join('');
+const acctNames = () => state.config.accounts.map(a => a.name);
+const acctCode = name => (state.config.accounts.find(a => a.name === name) || {}).code || '';
+const supKey = s => String(s || '').toLowerCase().replace(/[^a-z0-9一-鿿]+/g, ' ').trim();
+
+function sampleErr(e) {
+  return ({ not_granted: '你没有允许这个页面使用 Claude，AI 功能已关闭。', sampling_disabled: '这个账户不能使用 Claude。', rate_limited: 'Claude 用量到上限了，请稍后再试。', image_rejected: '图片格式或大小不被接受，换一张试试。', images_unavailable: '这个视图不能把图片发给 Claude。', invalid_json: 'AI 回复格式不对，请再按一次。', refused: 'Claude 不处理这份内容。', session_expired: '请重新登录 claude.ai。', prompt_too_large: '内容太多，请分开几次处理。' }[e?.code]) || `AI 识别失败（${e?.code || 'unknown'}），请再按一次。`;
+}
+function mcpErr(e) {
+  return ({ needs_reauth: 'Gmail 连接过期了：到 claude.ai Settings → Connectors 重新连接 Gmail。', server_not_connected: '还没连接 Gmail：到 claude.ai Settings → Connectors 添加 Gmail。', not_in_manifest: '你没有允许这个页面读取 Gmail。可在页面的 Permissions 里打开。', approval_required: '需要你同意读取 Gmail，再按一次同步。', selection_required: '你连接了多个 Gmail，请先在提示里选一个。', blocked_by_policy: '你的组织政策不允许这个页面读取 Gmail。', server_unavailable: 'Gmail 暂时连不上，稍后再试。' }[e?.code]) || `读取 Gmail 失败（${e?.code || 'unknown'}）。`;
+}
+
+async function saveFile(filename, data) {
+  if (!cap.downloads) { toast('这个视图不能下载文件，请在 claude.ai 打开。'); return; }
+  try { await cap.downloads.save({ filename, data }); toast('已下载 ' + filename); }
+  catch (e) { if (e?.code !== 'declined') toast('下载失败（' + (e?.code || 'unknown') + '）'); }
+}
+async function uploadAsset(blob, type) {
+  if (!cap.assets) return null;
+  try { const r = await cap.assets.upload(blob, { type }); return r.id; }
+  catch (e) { toast('附件上传失败（' + (e?.code || 'unknown') + '），记录仍会保存。'); return null; }
+}
+async function imagesFor(blobs) {
+  if (!cap.sample) return null;
+  const lim = await cap.sample.limits().catch(() => null);
+  if (!lim?.images) return null;
+  return blobs.slice(0, lim.images.maxCount);
+}
+
+/* ---------- tabs ---------- */
+function showTab(name) {
+  $$('nav.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+  $$('section[role=tabpanel]').forEach(s => s.hidden = s.id !== 'tab-' + name);
+  try { history.replaceState(null, '', '#' + name); } catch {}
+}
+$$('nav.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+if (['register', 'scan', 'taobao', 'einv', 'guide'].includes(location.hash.slice(1))) showTab(location.hash.slice(1));
+
+/* ---------- data layer ---------- */
+const docsCol = () => cap.db.collection('docs');
+async function createDoc(data, id) {
+  if (!cap.db) throw { code: 'no_db' };
+  const ref = id ? docsCol().doc(id) : docsCol().doc();
+  const docDate = data.docDate || todayISO();
+  await ref.set({ ...data, docDate, period: docDate.slice(0, 7), createdAt: new Date().toISOString(), createdBy: state.uid || null });
+  return ref.id;
+}
+function subscribeDocs() {
+  if (!cap.db) return;
+  unsubDocs?.();
+  state.loaded = false; renderRegister();
+  unsubDocs = docsCol().where('period', '==', state.period).onSnapshot(snap => {
+    state.docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    state.loaded = true; renderRegister();
+    if (state.openId && !$('#drawer').hidden && !state.dirty) renderDrawer(state.openId);
+  }, e => banner('账簿读取中断（' + e.code + '），请重新整理页面。'));
+}
+function applySupplierMemory(data) {
+  const m = state.suppliers[supKey(data.supplier)];
+  if (!m) return data;
+  return { ...data, glAccount: data.glAccount || m.account || '', taxTreatment: data.taxTreatment || m.tax || '', platform: data.platform || m.platform || '' };
+}
+
+/* ---------- register ---------- */
+$('#period').value = state.period;
+$('#period').onchange = e => { if (!e.target.value) return; state.period = e.target.value; state.statusFilter = null; subscribeDocs(); };
+$('#srcFilter').onchange = e => { state.filter = e.target.value; renderRegister(); };
+
+function filteredDocs() {
+  return state.docs
+    .filter(d => state.filter === 'all' || d.source === state.filter)
+    .filter(d => !state.statusFilter || d.status === state.statusFilter)
+    .sort((a, b) => (b.docDate || '').localeCompare(a.docDate || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
+}
+function renderRegister() {
+  const body = $('#regBody');
+  if (!cap.db) { body.innerHTML = `<tr><td colspan="8" class="empty">需要在 claude.ai 里打开这个页面才能读取和保存账簿。</td></tr>`; return; }
+  if (!state.loaded) { body.innerHTML = `<tr><td colspan="8" class="empty">正在载入 ${esc(state.period)}…</td></tr>`; return; }
+  const base = state.docs.filter(d => state.filter === 'all' || d.source === state.filter);
+  $('#stats').innerHTML = STATUS.map(s => {
+    const list = base.filter(d => d.status === s); if (!list.length && s === 'Cancelled') return '';
+    const sum = list.reduce((t, d) => t + (+d.amountMYR || 0), 0);
+    return `<button class="stat" data-status="${esc(s)}" aria-pressed="${state.statusFilter === s}"><span><span class="pill ${STATUS_CLS[s]}">${STATUS_ZH[s]}</span></span><b>${list.length}</b><span class="mono">RM ${money(sum)}</span></button>`;
+  }).join('');
+  $$('#stats .stat').forEach(b => b.onclick = () => { state.statusFilter = state.statusFilter === b.dataset.status ? null : b.dataset.status; renderRegister(); });
+  const rows = filteredDocs();
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="8" class="empty">${esc(state.period)} 还没有单据。<br>从「扫描纸本单据」「淘宝报销」或「e-Invoice 收件箱」加第一张。</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map(d => `<tr data-id="${esc(d.id)}">
+    <td class="mono">${esc(d.docDate || '')}</td>
+    <td><span class="src">${esc(SRC_ZH[d.source] || d.source)}</span>${d.platform ? `<div class="muted" style="font-size:12px">${esc(d.platform)}</div>` : ''}</td>
+    <td style="min-width:180px">${esc(d.supplier || '—')}<div class="muted" style="font-size:12px">${esc(d.docType || '')}</div></td>
+    <td class="mono">${esc(d.supplierRef || '')}</td>
+    <td class="num">${money(d.amountMYR)}${d.currency && d.currency !== 'MYR' && d.amount != null ? `<div class="muted" style="font-size:11px">${esc(d.currency)} ${money(d.amount)}</div>` : ''}</td>
+    <td style="min-width:150px">${esc(d.glAccount || '') || '<span class="muted">未分类</span>'}</td>
+    <td><span class="pill ${STATUS_CLS[d.status] || 's-draft'}">${esc(STATUS_ZH[d.status] || d.status || '')}</span>${d.selfBilled === 'Required – pending' ? '<div style="font-size:11px;color:var(--warn)">要开 Self-billed</div>' : ''}</td>
+    <td class="mono">${esc(d.voucherNo || '')}</td></tr>`).join('');
+  $$('#regBody tr[data-id]').forEach(tr => tr.onclick = () => openDrawer(tr.dataset.id));
+}
+
+/* ---------- drawer (one record) ---------- */
+function openDrawer(id) { state.openId = id; state.dirty = false; renderDrawer(id); $('#drawer').hidden = false; $('#scrim').hidden = false; }
+function closeDrawer() { state.openId = null; $('#drawer').hidden = true; $('#scrim').hidden = true; }
+$('#scrim').onclick = closeDrawer;
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#drawer').hidden) closeDrawer(); });
+
+function suggestVoucher(d) {
+  const prefix = d.docType === 'Credit Note' ? 'CN' : d.payment === 'Staff-paid (Reimbursement)' ? 'EC' : d.payment === 'Paid by company' ? 'PV' : 'PI';
+  const yymm = (d.docDate || todayISO()).slice(2, 7).replace('-', '');
+  const head = `${prefix}-${yymm}-`;
+  const max = state.docs.map(x => x.voucherNo || '').filter(v => v.startsWith(head)).map(v => parseInt(v.slice(head.length), 10) || 0).reduce((a, b) => Math.max(a, b), 0);
+  return head + String(max + 1).padStart(3, '0');
+}
+
+function renderDrawer(id) {
+  const d = state.docs.find(x => x.id === id);
+  const el = $('#drawer');
+  if (!d) { el.innerHTML = `<header><b>找不到这张单</b><button class="btn small" id="dClose">关闭</button></header><div class="body"><p class="muted">它可能被移到别的会计期或被删除了。</p></div><footer></footer>`; $('#dClose').onclick = closeDrawer; return; }
+  const link = d.einvoice?.uuid ? `https://myinvois.hasil.gov.my/documents/${encodeURIComponent(d.einvoice.uuid)}` : '';
+  const files = d.files || [];
+  el.innerHTML = `
+  <header><div><span class="src">${esc(SRC_ZH[d.source] || '')}</span><div style="font-weight:700">${esc(d.supplier || '未命名单据')}</div></div><button class="btn small" id="dClose">关闭</button></header>
+  <div class="body">
+    ${d.einvoice?.uuid ? `<div class="banner info" style="font-size:13px">e-Invoice UUID <span class="mono">${esc(d.einvoice.uuid)}</span>${d.einvoice.number ? ` · No. <span class="mono">${esc(d.einvoice.number)}</span>` : ''}<br><a href="${link}" target="_blank" rel="noopener">在 MyInvois 打开</a>（需登录），金额可从那里看，或上传 e-Invoice PDF 让 AI 读。</div>` : ''}
+    <div class="grid2">
+      <label class="f">单据类型 Document Type<select id="f-docType">${opts(DOC_TYPES, d.docType)}</select></label>
+      <label class="f">平台 Platform<select id="f-platform">${opts(PLATFORM, d.platform || '')}</select></label>
+      <label class="f">供应商 Supplier / Creditor<input id="f-supplier" value="${esc(d.supplier || '')}"></label>
+      <label class="f">供应商单号 Ref<input id="f-supplierRef" value="${esc(d.supplierRef || '')}"></label>
+      <label class="f">单据日期<input type="date" id="f-docDate" value="${esc(d.docDate || '')}"></label>
+      <label class="f">币别<select id="f-currency">${opts(['MYR', 'CNY', 'USD', 'SGD'], d.currency || 'MYR')}</select></label>
+      <label class="f">金额（原币）<input id="f-amount" inputmode="decimal" value="${d.amount ?? ''}"></label>
+      <label class="f">汇率 → MYR<input id="f-rate" inputmode="decimal" value="${d.rate ?? ''}"></label>
+      <label class="f">金额 MYR<input id="f-amountMYR" inputmode="decimal" value="${d.amountMYR ?? ''}"></label>
+      <label class="f">SST / Tax（MYR）<input id="f-sst" inputmode="decimal" value="${d.sst ?? ''}"></label>
+    </div>
+    <label class="f">内容 Description（英文）<input id="f-description" value="${esc(d.description || '')}"></label>
+    <div class="grid2">
+      <label class="f">科目 Account<select id="f-glAccount">${opts(['', ...acctNames()], d.glAccount || '')}</select></label>
+      <label class="f">税务处理 Tax Treatment<select id="f-taxTreatment">${opts(['', ...TAX], d.taxTreatment || '')}</select></label>
+      <label class="f">付款 Payment<select id="f-payment">${opts(['', ...PAYMENT], d.payment || '')}</select></label>
+      <label class="f">经手人 / Claimant<input id="f-claimant" value="${esc(d.claimant || '')}"></label>
+      <label class="f">Self-billed e-Invoice<select id="f-selfBilled">${opts(SELF_BILLED, d.selfBilled || 'Not required')}</select></label>
+      <label class="f">Self-billed UUID<input id="f-selfBilledUuid" class="mono" value="${esc(d.selfBilledUuid || '')}"></label>
+      <label class="f">Voucher No.<span class="row" style="flex-wrap:nowrap"><input id="f-voucherNo" class="mono" value="${esc(d.voucherNo || '')}"><button class="btn small" id="dVoucher" type="button">建议</button></span></label>
+      <label class="f">状态 Status<select id="f-status">${opts(STATUS, d.status || 'Draft')}</select></label>
+    </div>
+    <label class="f">备注 Notes<textarea id="f-notes">${esc(d.notes || '')}</textarea></label>
+    ${d.items?.length ? `<details><summary class="muted">明细 ${d.items.length} 项</summary><ul style="margin:6px 0 0;padding-left:18px">${d.items.map(i => `<li>${esc(i.descEn || i.desc || '')} × ${esc(i.qty ?? '')} — ${esc(d.currency || '')} ${money(i.amountCny ?? i.amount)}</li>`).join('')}</ul></details>` : ''}
+    <div class="card" style="padding:12px">
+      <h3>附件 Attachments</h3>
+      ${files.length ? files.map(f => `<div class="row" style="justify-content:space-between;align-items:center"><span>${esc(f.name)}</span><span class="row"><a class="btn small" href="/_blob/${esc(f.id)}" target="_blank" rel="noopener">打开</a><button class="btn small" data-dl="${esc(f.id)}" data-name="${esc(f.name)}" type="button">下载</button></span></div>`).join('') : '<p class="muted">没有附件</p>'}
+      <div class="row"><label class="btn small" for="dUpload">上传单据（PDF / 图片），AI 读金额</label><input id="dUpload" type="file" accept="image/*,application/pdf" hidden><span class="muted" id="dUpMsg"></span></div>
+    </div>
+  </div>
+  <footer>
+    <button class="btn danger" id="dDelete" type="button">删除这条记录</button>
+    <span class="row"><button class="btn" id="dCancel" type="button">取消</button><button class="btn primary" id="dSave" type="button">保存</button></span>
+  </footer>`;
+  $('#dClose').onclick = closeDrawer; $('#dCancel').onclick = closeDrawer;
+  el.querySelectorAll('input,select,textarea').forEach(i => i.addEventListener('input', () => state.dirty = true));
+  const recalc = () => {
+    const cur = $('#f-currency').value, amt = numOf($('#f-amount').value), rate = numOf($('#f-rate').value);
+    if (cur === 'MYR' && amt != null) $('#f-amountMYR').value = amt.toFixed(2);
+    else if (amt != null && rate) $('#f-amountMYR').value = round2(amt * rate).toFixed(2);
+  };
+  ['f-currency', 'f-amount', 'f-rate'].forEach(k => $('#' + k).addEventListener('input', recalc));
+  $('#dVoucher').onclick = () => { $('#f-voucherNo').value = suggestVoucher({ docType: $('#f-docType').value, payment: $('#f-payment').value, docDate: $('#f-docDate').value }); state.dirty = true; };
+  el.querySelectorAll('[data-dl]').forEach(b => b.onclick = () => downloadAsset(b.dataset.dl, b.dataset.name));
+  $('#dSave').onclick = () => saveDrawer(d);
+  let armed = false;
+  $('#dDelete').onclick = async () => {
+    if (!armed) { armed = true; $('#dDelete').textContent = '再按一次确认删除'; setTimeout(() => { armed = false; const b = $('#dDelete'); if (b) b.textContent = '删除这条记录'; }, 4000); return; }
+    try { await docsCol().doc(d.id).delete(); toast('已删除记录（附件文件保留）'); closeDrawer(); } catch (e) { toast('删除失败（' + e.code + '）'); }
+  };
+  $('#dUpload').onchange = e => drawerUpload(d, e.target.files[0]);
+}
+
+async function downloadAsset(id, name) {
+  try { const r = await fetch('/_blob/' + id); if (!r.ok) throw 0; await saveFile(name, await r.blob()); }
+  catch { toast('无法下载，请用「打开」。'); }
+}
+
+async function saveDrawer(d) {
+  const v = k => $('#f-' + k).value.trim();
+  const docDate = v('docDate') || d.docDate || todayISO();
+  const patch = {
+    docType: v('docType'), platform: v('platform'), supplier: v('supplier'), supplierRef: v('supplierRef'), docDate, period: docDate.slice(0, 7),
+    currency: v('currency'), amount: numOf(v('amount')), rate: numOf(v('rate')), amountMYR: numOf(v('amountMYR')), sst: numOf(v('sst')),
+    description: v('description'), glAccount: v('glAccount'), taxTreatment: v('taxTreatment'), payment: v('payment'), claimant: v('claimant'),
+    selfBilled: v('selfBilled'), selfBilledUuid: v('selfBilledUuid'), voucherNo: v('voucherNo'), status: v('status'), notes: v('notes'),
+    updatedAt: new Date().toISOString(), updatedBy: state.uid || null,
+  };
+  if (patch.status === 'Needs info' && patch.amountMYR != null && patch.supplier) patch.status = 'Draft';
+  try {
+    await docsCol().doc(d.id).update(patch);
+    state.dirty = false;
+    if (patch.supplier && patch.glAccount) await rememberSupplier(patch.supplier, { account: patch.glAccount, tax: patch.taxTreatment, platform: patch.platform });
+    toast(patch.period !== state.period ? `已保存，移到 ${patch.period}` : '已保存');
+    closeDrawer();
+  } catch (e) { toast('保存失败（' + (e.code || 'unknown') + '）'); }
+}
+async function rememberSupplier(name, m) {
+  const k = supKey(name); const cur = state.suppliers[k];
+  if (cur && cur.account === m.account && cur.tax === m.tax && cur.platform === m.platform) return;
+  const map = { ...state.suppliers, [k]: m };
+  try { await cap.db.doc('config/suppliers').set({ map }); } catch {}
+}
+
+async function drawerUpload(d, file) {
+  if (!file) return;
+  const msg = $('#dUpMsg'); msg.textContent = '处理中…';
+  try {
+    const imgs = file.type === 'application/pdf' ? await pdfToBlobs(file, 2) : [file];
+    const id = await uploadAsset(file, file.type === 'application/pdf' ? 'application/pdf' : (file.type || 'image/jpeg'));
+    const files = [...(d.files || [])]; if (id) files.push({ id, name: file.name || 'document', type: file.type });
+    if (id) await docsCol().doc(d.id).update({ files });
+    const send = await imagesFor(imgs);
+    if (!send) { msg.textContent = id ? '已存为附件（AI 读图不可用）' : ''; return; }
+    msg.textContent = 'AI 正在读金额…';
+    const r = await cap.sample.json(`You help a Malaysian company's accountant. The image is a supplier e-Invoice or invoice. Reply with only JSON: {"supplier":"","docNo":"","docDate":"YYYY-MM-DD","currency":"MYR","total":number,"sst":number,"description":"one-line English summary of what was bought","einvoiceUuid":""}. Use null when a value is not visible.`, { images: send });
+    const set = (k, val) => { if (val != null && val !== '') { $('#f-' + k).value = val; state.dirty = true; } };
+    if (!$('#f-supplier').value) set('supplier', r.supplier);
+    if (!$('#f-supplierRef').value) set('supplierRef', r.docNo);
+    set('docDate', /^\d{4}-\d{2}-\d{2}$/.test(r.docDate || '') ? r.docDate : null);
+    set('currency', r.currency === 'MYR' || !r.currency ? 'MYR' : r.currency);
+    set('amount', numOf(r.total)); set('sst', numOf(r.sst)); if (!$('#f-description').value) set('description', r.description);
+    $('#f-amount').dispatchEvent(new Event('input'));
+    msg.textContent = '已填入，请核对后按「保存」。';
+  } catch (e) { msg.textContent = e?.code ? sampleErr(e) : '读取文件失败。'; }
+}
+
+/* ---------- export ---------- */
+$('#exportCsv').onclick = () => {
+  const rows = filteredDocs().filter(d => d.status !== 'Cancelled');
+  if (!rows.length) { toast('这个月没有可导出的单据'); return; }
+  const head = ['Voucher No', 'Doc Type', 'Doc Date', 'Creditor / Supplier', 'Supplier Ref', 'Description', 'Account Code', 'Account Name', 'Currency', 'Amount (Foreign)', 'Currency Rate', 'Amount (MYR)', 'SST (MYR)', 'Tax Treatment', 'Payment', 'Claimant', 'Platform', 'e-Invoice UUID', 'Self-billed e-Invoice', 'Self-billed UUID', 'Status', 'Attachments'];
+  const q = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const lines = rows.map(d => [d.voucherNo, d.docType, d.docDate, d.supplier, d.supplierRef, d.description, acctCode(d.glAccount), d.glAccount, d.currency || 'MYR', d.amount, d.rate, d.amountMYR, d.sst, d.taxTreatment, d.payment, d.claimant, d.platform, d.einvoice?.uuid, d.selfBilled, d.selfBilledUuid, d.status, (d.files || []).map(f => f.name).join('; ')].map(q).join(','));
+  const missing = rows.filter(d => !d.glAccount || d.amountMYR == null).length;
+  saveFile(`AutoCount_${state.period}.csv`, '﻿' + [head.join(','), ...lines].join('\r\n'));
+  if (missing) toast(`${missing} 张单还缺科目或金额，CSV 里是空的`);
+};
+
+/* ---------- AI account suggestion ---------- */
+$('#aiAccounts').onclick = async () => {
+  const todo = state.docs.filter(d => !d.glAccount && d.supplier && d.status !== 'Cancelled');
+  if (!todo.length) { toast('本月的单都已经有科目了'); return; }
+  if (!cap.sample) { toast('AI 功能需要在 claude.ai 打开'); return; }
+  const names = [...new Set(todo.map(d => d.supplier))].slice(0, 80);
+  const btn = $('#aiAccounts'); btn.disabled = true; btn.textContent = 'AI 思考中…';
+  try {
+    const res = await cap.sample.json(`You help a Malaysian SME's accountant classify purchases. For each supplier name below, pick the most likely account from this exact list: ${JSON.stringify(acctNames())}. Also guess the platform from: ["Shopee","Lazada","Walk-in / Direct","Other"]. Reply with only a JSON array of {"supplier": string (exactly as given), "account": string, "platform": string}.\n\nSuppliers:\n${names.join('\n')}`, { modelTier: 'quick' });
+    const by = new Map((Array.isArray(res) ? res : []).map(r => [r.supplier, r]));
+    let n = 0;
+    for (const d of todo) {
+      const r = by.get(d.supplier); if (!r || !acctNames().includes(r.account)) continue;
+      await docsCol().doc(d.id).update({ glAccount: r.account, platform: d.platform || (PLATFORM.includes(r.platform) ? r.platform : ''), notes: ((d.notes || '') + ' [AI suggested account]').trim() });
+      n++;
+    }
+    toast(`已为 ${n} 张单填上 AI 建议科目，请会计核对`);
+  } catch (e) { toast(sampleErr(e)); }
+  btn.disabled = false; btn.textContent = 'AI 建议科目（本月未分类）';
+};
+
+/* ---------- image processing (scan) ---------- */
+function loadImage(blob) {
+  return new Promise((res, rej) => { const u = URL.createObjectURL(blob); const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = u; });
+}
+let pdfjsReady;
+function loadPdfjs() {
+  if (pdfjsReady) return pdfjsReady;
+  const add = src => new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+  pdfjsReady = add('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js')
+    .then(() => add('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'))
+    .then(() => window.pdfjsLib);
+  return pdfjsReady;
+}
+async function pdfToCanvases(file, maxPages = 10) {
+  const lib = await loadPdfjs();
+  const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const out = [];
+  for (let p = 1; p <= Math.min(pdf.numPages, maxPages); p++) {
+    const page = await pdf.getPage(p); const vp = page.getViewport({ scale: 2 });
+    const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+    await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise; out.push(c);
+  }
+  return out;
+}
+async function pdfToBlobs(file, maxPages) {
+  const cs = await pdfToCanvases(file, maxPages);
+  return Promise.all(cs.map(c => new Promise(r => c.toBlob(r, 'image/jpeg', 0.85))));
+}
+
+function processPage(p) {
+  const src = p.img; const max = 2000;
+  let w = src.naturalWidth || src.width, h = src.naturalHeight || src.height;
+  const s = Math.min(1, max / Math.max(w, h)); w = Math.round(w * s); h = Math.round(h * s);
+  const swap = p.rot % 180 !== 0;
+  const c = document.createElement('canvas'); c.width = swap ? h : w; c.height = swap ? w : h;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+  g.translate(c.width / 2, c.height / 2); g.rotate(p.rot * Math.PI / 180); g.drawImage(src, -w / 2, -h / 2, w, h); g.setTransform(1, 0, 0, 1, 0, 0);
+  if (p.mode === 'color') return c;
+  // estimate the paper background (removes phone shadows), then stretch contrast
+  const sw = Math.max(8, Math.round(c.width / 28)), sh = Math.max(8, Math.round(c.height / 28));
+  const t = document.createElement('canvas'); t.width = sw; t.height = sh; const tg = t.getContext('2d'); tg.imageSmoothingQuality = 'high'; tg.drawImage(c, 0, 0, sw, sh);
+  const b = document.createElement('canvas'); b.width = c.width; b.height = c.height; const bgc = b.getContext('2d', { willReadFrequently: true }); bgc.imageSmoothingQuality = 'high'; bgc.drawImage(t, 0, 0, c.width, c.height);
+  const bg = bgc.getImageData(0, 0, c.width, c.height).data;
+  const img = g.getImageData(0, 0, c.width, c.height), a = img.data, n = a.length / 4;
+  const lum = new Float32Array(n); const hist = new Uint32Array(256);
+  for (let i = 0, j = 0; j < n; i += 4, j++) {
+    const y = 0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2];
+    const by = Math.max(24, 0.299 * bg[i] + 0.587 * bg[i + 1] + 0.114 * bg[i + 2]);
+    const v = Math.min(255, (y / by) * 235); lum[j] = v; hist[v | 0]++;
+  }
+  const pct = q => { let acc = 0, lim = n * q; for (let k = 0; k < 256; k++) { acc += hist[k]; if (acc >= lim) return k; } return 255; };
+  const lo = pct(0.01), hi = Math.max(lo + 20, pct(0.6));
+  for (let i = 0, j = 0; j < n; i += 4, j++) {
+    let v = (lum[j] - lo) / (hi - lo); v = v < 0 ? 0 : v > 1 ? 1 : v;
+    v = p.mode === 'bw' ? (v > 0.62 ? 1 : 0) : v * v * (3 - 2 * v);
+    a[i] = a[i + 1] = a[i + 2] = v * 255;
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+function canvasesToPdf(canvases) {
+  const { jsPDF } = window.jspdf; const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
+  canvases.forEach((c, i) => {
+    if (i) pdf.addPage();
+    const m = 6, W = 210 - 2 * m, H = 297 - 2 * m, r = Math.min(W / c.width, H / c.height), w = c.width * r, h = c.height * r;
+    pdf.addImage(c.toDataURL('image/jpeg', 0.82), 'JPEG', (210 - w) / 2, (297 - h) / 2, w, h);
+  });
+  return pdf;
+}
+
+/* ---------- scan tab ---------- */
+$('#scanKind').innerHTML = `<option value="">让 AI 判断</option>` + opts(DOC_TYPES.filter(t => !t.startsWith('Foreign')), '');
+$('#scanPay').innerHTML = opts(PAYMENT, 'Paid by company');
+async function addScanFiles(files) {
+  for (const f of files) {
+    try {
+      if (f.type === 'application/pdf') { for (const c of await pdfToCanvases(f)) state.scanPages.push({ img: c, rot: 0, mode: 'color' }); }
+      else state.scanPages.push({ img: await loadImage(f), rot: 0, mode: 'doc' });
+    } catch { toast('读不了文件 ' + f.name); }
+  }
+  renderThumbs();
+}
+$('#camIn').onchange = e => { addScanFiles([...e.target.files]); e.target.value = ''; };
+$('#fileIn').onchange = e => { addScanFiles([...e.target.files]); e.target.value = ''; };
+function renderThumbs() {
+  const n = state.scanPages.length;
+  $('#pageCount').textContent = n ? `${n} 页` : '还没有页面';
+  ['scanSave', 'scanPdfOnly', 'scanClear'].forEach(id => $('#' + id).disabled = !n);
+  const box = $('#thumbs'); box.innerHTML = '';
+  state.scanPages.forEach((p, i) => {
+    const d = document.createElement('div'); d.className = 'thumb';
+    const c = processPage(p); p.out = c;
+    const prev = document.createElement('canvas'); const r = 300 / Math.max(c.width, c.height); prev.width = c.width * r; prev.height = c.height * r; prev.getContext('2d').drawImage(c, 0, 0, prev.width, prev.height);
+    d.append(prev);
+    d.insertAdjacentHTML('beforeend', `<div class="seg">${[['doc', '文件'], ['bw', '黑白'], ['color', '原色']].map(([m, l]) => `<button type="button" data-m="${m}" aria-pressed="${p.mode === m}">${l}</button>`).join('')}</div>
+      <div class="row"><button class="btn small" type="button" data-a="rot">旋转</button><button class="btn small" type="button" data-a="up"${i ? '' : ' disabled'}>前移</button><button class="btn small danger" type="button" data-a="del">删</button></div>`);
+    d.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { p.mode = b.dataset.m; renderThumbs(); });
+    d.querySelector('[data-a=rot]').onclick = () => { p.rot = (p.rot + 90) % 360; renderThumbs(); };
+    d.querySelector('[data-a=up]').onclick = () => { [state.scanPages[i - 1], state.scanPages[i]] = [state.scanPages[i], state.scanPages[i - 1]]; renderThumbs(); };
+    d.querySelector('[data-a=del]').onclick = () => { state.scanPages.splice(i, 1); renderThumbs(); };
+    box.append(d);
+  });
+}
+const scanName = () => `Scan_${todayISO()}_${Date.now().toString(36).slice(-4)}.pdf`;
+$('#scanClear').onclick = () => { state.scanPages = []; renderThumbs(); $('#scanMsg').textContent = ''; };
+$('#scanPdfOnly').onclick = () => saveFile(scanName(), canvasesToPdf(state.scanPages.map(p => p.out)).output('blob'));
+$('#scanSave').onclick = async () => {
+  if (!cap.db) { toast('需要在 claude.ai 打开才能存档'); return; }
+  const btn = $('#scanSave'), msg = $('#scanMsg'); btn.disabled = true;
+  try {
+    const canv = state.scanPages.map(p => p.out);
+    msg.textContent = '正在生成 PDF…';
+    const name = scanName();
+    const pdfBlob = canvasesToPdf(canv).output('blob');
+    const assetId = await uploadAsset(pdfBlob, 'application/pdf');
+    let ai = null;
+    const blobs = await Promise.all(canv.map(c => new Promise(r => c.toBlob(r, 'image/jpeg', 0.85))));
+    const send = await imagesFor(blobs);
+    if (send) {
+      msg.textContent = 'AI 正在读单据（约 10–60 秒）…';
+      try {
+        ai = await cap.sample.json(`You help a Malaysian company's accountant digitise a paper source document (the images are pages of ONE document). Reply with only JSON:
+{"docKind":one of ${JSON.stringify(DOC_TYPES.filter(t => !t.startsWith('Foreign')))},"supplier":"","supplierRegNo":"","supplierTin":"","docNo":"","docDate":"YYYY-MM-DD","currency":"MYR","total":number,"sst":number,"description":"one-line English summary of what was bought","paid":true|false|null,"einvoiceUuid":"","suggestedAccount":one of ${JSON.stringify(acctNames())},"suggestedTax":one of ${JSON.stringify(TAX)},"notes":"what is unclear or missing, in English"}
+Translate anything not in English or Malay into English. Use null for values that are not visible. Do not guess document numbers.`, { images: send });
+      } catch (e) { toast(sampleErr(e)); }
+    }
+    const kind = $('#scanKind').value || (DOC_TYPES.includes(ai?.docKind) ? ai.docKind : 'Supplier Invoice');
+    const total = numOf(ai?.total);
+    let data = {
+      source: 'paper', docType: kind, platform: 'Walk-in / Direct', supplier: ai?.supplier || '', supplierRef: ai?.docNo || '',
+      docDate: /^\d{4}-\d{2}-\d{2}$/.test(ai?.docDate || '') ? ai.docDate : todayISO(), currency: ai?.currency || 'MYR',
+      amount: total, rate: null, amountMYR: (ai?.currency || 'MYR') === 'MYR' ? total : null, sst: numOf(ai?.sst),
+      description: ai?.description || '', glAccount: acctNames().includes(ai?.suggestedAccount) ? ai.suggestedAccount : '',
+      taxTreatment: TAX.includes(ai?.suggestedTax) ? ai.suggestedTax : '', payment: $('#scanPay').value, claimant: $('#scanWho').value.trim(),
+      selfBilled: 'Not required', status: ai && total != null && ai.supplier ? 'Draft' : 'Needs info',
+      einvoice: ai?.einvoiceUuid ? { uuid: ai.einvoiceUuid } : null,
+      notes: [ai?.supplierTin ? 'Supplier TIN: ' + ai.supplierTin : '', ai?.supplierRegNo ? 'Reg No: ' + ai.supplierRegNo : '', ai?.notes || ''].filter(Boolean).join(' · '),
+      files: assetId ? [{ id: assetId, name, type: 'application/pdf' }] : [],
+    };
+    data = applySupplierMemory(data);
+    const id = await createDoc(data);
+    msg.textContent = '已存进账簿。';
+    state.scanPages = []; renderThumbs();
+    goToRecord(id, data.docDate);
+  } catch (e) { msg.textContent = '存档失败（' + (e?.code || 'unknown') + '）'; }
+  btn.disabled = !state.scanPages.length;
+};
+function goToRecord(id, docDate) {
+  const p = (docDate || todayISO()).slice(0, 7);
+  showTab('register');
+  if (p !== state.period) { state.period = p; $('#period').value = p; subscribeDocs(); }
+  const tryOpen = (n = 0) => { if (state.docs.some(d => d.id === id)) openDrawer(id); else if (n < 20) setTimeout(() => tryOpen(n + 1), 250); };
+  tryOpen();
+}
+
+/* ---------- taobao tab ---------- */
+$('#tbWho').value = store.get('tbWho', ''); $('#tbRate').value = store.get('tbRate', '');
+$('#tbWho').onchange = e => store.set('tbWho', e.target.value); $('#tbRate').onchange = e => { store.set('tbRate', e.target.value); tbRecalc(); };
+$('#tbAcct').innerHTML = opts(acctNames(), 'Purchases (Cost of Sales)');
+$('#tbIn').onchange = async e => {
+  state.tbFiles = [...e.target.files]; e.target.value = '';
+  $('#tbCount').textContent = state.tbFiles.length ? `${state.tbFiles.length} 张截图` : '还没有截图';
+  $('#tbRead').disabled = !state.tbFiles.length;
+  const box = $('#tbThumbs'); box.innerHTML = '';
+  for (const f of state.tbFiles) { const i = await loadImage(f); const c = document.createElement('canvas'); const r = 300 / Math.max(i.width, i.height); c.width = i.width * r; c.height = i.height * r; c.getContext('2d').drawImage(i, 0, 0, c.width, c.height); const d = document.createElement('div'); d.className = 'thumb'; d.append(c); box.append(d); }
+};
+$('#tbRead').onclick = async () => {
+  const send = await imagesFor(state.tbFiles);
+  if (!send) { toast(cap.sample ? '这个视图不能把图片发给 Claude' : 'AI 功能需要在 claude.ai 打开'); return; }
+  if (state.tbFiles.length > send.length) toast(`一次最多读 ${send.length} 张，其余请分开报销`);
+  const btn = $('#tbRead'); btn.disabled = true; btn.textContent = 'AI 识别中（约 10–60 秒）…';
+  try {
+    const r = await cap.sample.json(`You help a Malaysian company's accountant. The images are screenshots of one or more Taobao (China) order pages in Chinese, paid personally by a staff member who will claim reimbursement. Extract every order and every item and translate into clear business English for Malaysian tax (LHDN) and audit records. Reply with only JSON:
+{"orders":[{"orderNo":"string","orderDate":"YYYY-MM-DD","sellerZh":"shop name as shown","sellerEn":"English translation of the shop name","items":[{"descZh":"original item title, shortened","descEn":"concise English description including spec / colour / size","qty":number,"unitPriceCny":number,"amountCny":number}],"shippingCny":number,"discountCny":number,"totalPaidCny":number}],"paymentMethod":"e.g. Alipay, in English, or empty","suggestedAccount":one of ${JSON.stringify(acctNames())},"notes":"anything unclear, in English, or empty"}
+Numbers only, no currency symbols. Use null when a value is not visible. Never invent an order number.`, { images: send });
+    state.tb = r; renderTb();
+  } catch (e) { toast(sampleErr(e)); }
+  btn.disabled = false; btn.textContent = 'AI 识别并翻译';
+};
+function renderTb() {
+  const r = state.tb; if (!r) return;
+  const orders = Array.isArray(r.orders) ? r.orders : [];
+  const rows = orders.flatMap((o, oi) => (o.items || []).map((it, ii) => ({ oi, ii, o, it })));
+  $('#tbItems').innerHTML = rows.map(({ oi, ii, o, it }) => `<tr data-oi="${oi}" data-ii="${ii}">
+    <td class="mono">${esc(o.orderNo || '')}</td><td class="mono">${esc(o.orderDate || '')}</td>
+    <td style="min-width:240px"><input data-k="descEn" value="${esc(it.descEn || '')}"><div class="muted" style="font-size:11px">${esc(it.descZh || '')}</div></td>
+    <td><input data-k="qty" class="num" style="width:60px" value="${esc(it.qty ?? '')}"></td>
+    <td><input data-k="unitPriceCny" class="num" style="width:90px" value="${esc(it.unitPriceCny ?? '')}"></td>
+    <td><input data-k="amountCny" class="num" style="width:90px" value="${esc(it.amountCny ?? '')}"></td></tr>`).join('') || `<tr><td colspan="6" class="empty">AI 没有在截图里找到订单明细，换一张订单详情页截图试试。</td></tr>`;
+  $$('#tbItems input').forEach(inp => inp.oninput = () => {
+    const tr = inp.closest('tr'); const it = orders[tr.dataset.oi].items[tr.dataset.ii];
+    it[inp.dataset.k] = inp.dataset.k === 'descEn' ? inp.value : numOf(inp.value);
+  });
+  const sum = k => orders.reduce((t, o) => t + (numOf(o[k]) || 0), 0);
+  $('#tbSeller').value = [...new Set(orders.map(o => o.sellerEn).filter(Boolean))].join('; ');
+  $('#tbShip').value = sum('shippingCny') || ''; $('#tbDisc').value = sum('discountCny') || '';
+  const itemsTotal = orders.reduce((t, o) => t + (o.items || []).reduce((s, i) => s + (numOf(i.amountCny) || 0), 0), 0);
+  $('#tbTotal').value = round2(sum('totalPaidCny') || itemsTotal + sum('shippingCny') - sum('discountCny')) || '';
+  if (r.paymentMethod && !$('#tbPayMethod').value) $('#tbPayMethod').value = r.paymentMethod;
+  if (acctNames().includes(r.suggestedAccount)) $('#tbAcct').value = r.suggestedAccount;
+  $('#tbNotes').value = r.notes || '';
+  $('#tbResult').hidden = false; tbRecalc();
+}
+function tbRecalc() { const t = numOf($('#tbTotal').value), rate = numOf($('#tbRate').value); $('#tbMyr').value = t != null && rate ? round2(t * rate).toFixed(2) : ''; }
+$('#tbTotal').oninput = tbRecalc; $('#tbRate').oninput = tbRecalc;
+
+const A = s => String(s ?? '').normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/[–—]/g, '-').replace(/×/g, 'x').replace(/≤/g, '<=').replace(/[^\x20-\x7E\n]/g, '');
+function claimData() {
+  const orders = (state.tb?.orders || []);
+  const total = numOf($('#tbTotal').value), rate = numOf($('#tbRate').value);
+  const dates = orders.map(o => o.orderDate).filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x || '')).sort();
+  return {
+    claimant: $('#tbWho').value.trim(), rate, rateSrc: $('#tbRateSrc').value.trim(), payMethod: $('#tbPayMethod').value.trim(),
+    seller: $('#tbSeller').value.trim(), ship: numOf($('#tbShip').value) || 0, disc: numOf($('#tbDisc').value) || 0, total,
+    myr: total != null && rate ? round2(total * rate) : null, account: $('#tbAcct').value, notes: $('#tbNotes').value.trim(),
+    orders, orderNos: orders.map(o => o.orderNo).filter(Boolean), docDate: dates[dates.length - 1] || todayISO(),
+  };
+}
+async function buildClaimPdf(c, voucher) {
+  const { jsPDF } = window.jspdf; const pdf = new jsPDF({ unit: 'mm', format: 'a4' }); const L = 14; let y = 16;
+  const green = [107, 76, 53];
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(14); pdf.text(A(state.config.company || 'Company name (set in Claim Desk settings)'), L, y); y += 7;
+  pdf.setFontSize(12); pdf.text('STAFF EXPENSE CLAIM - FOREIGN ONLINE PURCHASE', L, y); y += 5;
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(90); pdf.text("Supplier platform: Taobao (Alibaba Group), People's Republic of China. Currency: CNY.", L, y); pdf.setTextColor(0); y += 4;
+  pdf.autoTable({ startY: y, theme: 'plain', styles: { fontSize: 9, cellPadding: 1.2 }, columnStyles: { 0: { fontStyle: 'bold', cellWidth: 42 } },
+    body: [['Claim No.', A(voucher || '(assigned by accounts)')], ['Claim date', todayISO()], ['Claimant', A(c.claimant || '-')], ['Payment method', A(c.payMethod || '-')],
+      ['Seller', A(c.seller || '-')], ['Order No.', A(c.orderNos.join(', ') || '-')], ['Order date', A([...new Set(c.orders.map(o => o.orderDate).filter(Boolean))].join(', ') || '-')],
+      ['Exchange rate', c.rate ? `1 CNY = ${c.rate} MYR (${A(c.rateSrc || 'BNM')})` : '-']] });
+  y = pdf.lastAutoTable.finalY + 4;
+  const items = c.orders.flatMap(o => (o.items || []).map(i => [A(o.orderNo || ''), A(i.descEn || ''), i.qty ?? '', money(i.unitPriceCny), money(i.amountCny)]));
+  pdf.autoTable({ startY: y, head: [['Order No.', 'Description (English translation)', 'Qty', 'Unit (CNY)', 'Amount (CNY)']], body: items.map((r, i) => r),
+    styles: { fontSize: 8.5, cellPadding: 1.6 }, headStyles: { fillColor: green }, columnStyles: { 0: { cellWidth: 34 }, 2: { halign: 'right', cellWidth: 12 }, 3: { halign: 'right', cellWidth: 24 }, 4: { halign: 'right', cellWidth: 26 } } });
+  y = pdf.lastAutoTable.finalY + 2;
+  pdf.autoTable({ startY: y, theme: 'plain', margin: { left: 110 }, styles: { fontSize: 9, cellPadding: 1.2 }, columnStyles: { 1: { halign: 'right' } },
+    body: [['Shipping (CNY)', money(c.ship)], ['Discount (CNY)', c.disc ? '-' + money(c.disc) : money(0)], ['Total paid (CNY)', money(c.total)],
+      [{ content: 'Total claim (MYR)', styles: { fontStyle: 'bold' } }, { content: c.myr != null ? money(c.myr) : '-', styles: { fontStyle: 'bold' } }]] });
+  y = pdf.lastAutoTable.finalY + 4;
+  pdf.autoTable({ startY: y, theme: 'grid', styles: { fontSize: 8.5, cellPadding: 1.6 }, headStyles: { fillColor: green }, head: [['Accounting classification', '']], columnStyles: { 0: { fontStyle: 'bold', cellWidth: 52 } },
+    body: [['Document type', 'Staff Expense Claim (reimbursement) - foreign supplier purchase'], ['Account', A(c.account)], ['Payment', 'Staff-paid; to be reimbursed by Payment Voucher'],
+      ['e-Invoice', 'Foreign supplier does not issue a Malaysian e-Invoice. Company to issue a self-billed e-Invoice in MyInvois.'], ...(c.notes ? [['Notes', A(c.notes)]] : [])] });
+  y = pdf.lastAutoTable.finalY + 6;
+  pdf.setFontSize(8.5); pdf.text(pdf.splitTextToSize('Declaration: I declare that the above purchase was made wholly and exclusively for the business of the company, that it has not been claimed before, and that the attached order records are true copies.', 182), L, y); y += 12;
+  const box = (x, label) => { pdf.line(x, y + 14, x + 52, y + 14); pdf.text(label, x, y + 18); pdf.text('Date:', x, y + 23); };
+  box(L, 'Claimed by'); box(L + 64, 'Approved by'); box(L + 128, 'Verified by (Accounts)');
+  pdf.setFontSize(7.5); pdf.setTextColor(110);
+  pdf.text(pdf.splitTextToSize('English translation prepared with AI assistance from the original Chinese order records and checked by the claimant. Original screenshots are attached as Appendix A.', 182), L, 287);
+  pdf.setTextColor(0);
+  const canv = [];
+  for (const f of state.tbFiles) { const img = await loadImage(f); const cc = document.createElement('canvas'); const s = Math.min(1, 1800 / Math.max(img.width, img.height)); cc.width = img.width * s; cc.height = img.height * s; cc.getContext('2d').drawImage(img, 0, 0, cc.width, cc.height); canv.push(cc); }
+  canv.forEach((cc, i) => {
+    pdf.addPage(); pdf.setFontSize(9); pdf.text(`Appendix A${canv.length > 1 ? '.' + (i + 1) : ''} - original order record (Chinese)`, L, 10);
+    const W = 182, H = 272, r = Math.min(W / cc.width, H / cc.height), w = cc.width * r, h = cc.height * r;
+    pdf.addImage(cc.toDataURL('image/jpeg', 0.82), 'JPEG', (210 - w) / 2, 14, w, h);
+  });
+  return pdf.output('blob');
+}
+const claimFile = c => `Claim_Taobao_${A(c.claimant || 'staff').replace(/\W+/g, '')}_${c.docDate}.pdf`;
+$('#tbPdf').onclick = async () => { const c = claimData(); saveFile(claimFile(c), await buildClaimPdf(c, '')); };
+$('#tbSave').onclick = async () => {
+  const c = claimData(), msg = $('#tbMsg');
+  if (!c.claimant) { msg.textContent = '请填报销人姓名。'; return; }
+  if (!c.rate) { msg.textContent = '请填汇率（1 CNY = ? MYR）。'; return; }
+  if (c.total == null) { msg.textContent = '请填实付总额。'; return; }
+  if (!cap.db) { toast('需要在 claude.ai 打开才能存档'); return; }
+  const btn = $('#tbSave'); btn.disabled = true; msg.textContent = '正在生成英文报销单…';
+  try {
+    const voucher = suggestVoucher({ payment: 'Staff-paid (Reimbursement)', docDate: c.docDate });
+    const name = claimFile(c);
+    const pdfBlob = await buildClaimPdf(c, voucher);
+    const assetId = await uploadAsset(pdfBlob, 'application/pdf');
+    const data = {
+      source: 'taobao', docType: 'Foreign Purchase – Staff Expense Claim', platform: 'Taobao', supplier: 'Taobao seller: ' + (c.seller || 'unknown'),
+      supplierRef: c.orderNos.join(', '), docDate: c.docDate, currency: 'CNY', amount: c.total, rate: c.rate, amountMYR: c.myr, sst: null,
+      description: c.orders.flatMap(o => (o.items || []).map(i => i.descEn)).filter(Boolean).join('; ').slice(0, 300),
+      glAccount: c.account, taxTreatment: 'Allowable expense (s33 ITA 1967)', payment: 'Staff-paid (Reimbursement)', claimant: c.claimant,
+      selfBilled: 'Required – pending', voucherNo: voucher, status: 'Draft', notes: c.notes,
+      items: c.orders.flatMap(o => (o.items || []).map(i => ({ orderNo: o.orderNo || '', descEn: i.descEn || '', descZh: i.descZh || '', qty: numOf(i.qty), unitPriceCny: numOf(i.unitPriceCny), amountCny: numOf(i.amountCny) }))),
+      files: assetId ? [{ id: assetId, name, type: 'application/pdf' }] : [],
+    };
+    const id = await createDoc(data);
+    msg.textContent = '已存进账簿。'; state.tb = null; state.tbFiles = []; $('#tbResult').hidden = true; $('#tbThumbs').innerHTML = ''; $('#tbCount').textContent = '还没有截图'; $('#tbRead').disabled = true;
+    goToRecord(id, data.docDate);
+  } catch (e) { msg.textContent = '存档失败（' + (e?.code || 'unknown') + '）'; }
+  btn.disabled = false;
+};
+
+/* ---------- e-invoice (Gmail → MyInvois notices) ---------- */
+{ const d = new Date(Date.now() + 8 * 3600e3); d.setUTCDate(1); $('#einvSince').value = d.toISOString().slice(0, 10); }
+const logLine = s => { const l = $('#einvLog'); if (l.dataset.fresh !== '1') { l.textContent = ''; l.dataset.fresh = '1'; } l.textContent += s + '\n'; l.scrollTop = l.scrollHeight; };
+function parseNotice(body, snippet) {
+  const txt = String(body || '').replace(/&emsp;|&nbsp;|&#8195;/g, ' ').replace(/&amp;/g, '&');
+  const grab = labels => { for (const L of labels) { const m = txt.match(new RegExp(L.replace(/[/.]/g, '\\$&') + "[^:]{0,240}:\\s*([^<\\n]+)", 'i')); if (m) return m[1].trim(); } return ''; };
+  const sup = (txt.match(/(?:daripada|from)\s+([^<\n]+?)\.?\s*(?:<|\n|$)/i) || String(snippet || '').match(/(?:daripada|from)\s+(.+?)\.?\s*$/i) || [])[1] || '';
+  const dmy = s => { const m = String(s).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : ''; };
+  return {
+    supplier: sup.trim(), docTypeVersion: grab(['Jenis dan Versi Dokumen', 'Document Type and Version']),
+    number: grab(['Kod/Nombor e-Invois', 'e-Invoice Code/Number']),
+    issued: dmy(grab(['Tarikh dan Masa Dikeluarkan', 'Date and Time Issued'])), received: dmy(grab(['Tarikh dan Masa Diterima', 'Date and Time Received'])),
+  };
+}
+$('#einvStop').onclick = () => { state.stopSync = true; };
+$('#einvSync').onclick = async () => {
+  if (!cap.mcp) { logLine('这个视图不能连接 Gmail，请在 claude.ai 打开。'); return; }
+  if (!cap.db) { logLine('这个视图不能保存，请在 claude.ai 打开。'); return; }
+  const since = $('#einvSince').value; const max = +$('#einvMax').value;
+  if (!since) { toast('请选开始日期'); return; }
+  state.stopSync = false; $('#einvSync').disabled = true; $('#einvStop').disabled = false; $('#einvLog').dataset.fresh = '0';
+  const q = `from:noreply@myinvois.hasil.gov.my after:${since.replace(/-/g, '/')}`;
+  logLine(`搜索 Gmail：${q}`);
+  let token = null, seen = 0, created = 0, existed = 0, cancelled = 0, other = 0, touched = new Set();
+  try {
+    do {
+      const res = await cap.mcp.callTool('Gmail', 'search_threads', { query: q, pageSize: 50, ...(token ? { pageToken: token } : {}) });
+      const p = res.payload || {}; const threads = p.threads || [];
+      for (const t of threads) for (const m of (t.messages || [])) {
+        if (state.stopSync || seen >= max) break;
+        seen++;
+        const subj = m.subject || ''; const uuid = (subj.match(/UUID\s*:?\s*([A-Z0-9]{16,40})/i) || [])[1];
+        const kind = /Penerimaan|Received/i.test(subj) ? 'received' : /Pembatalan|Cancel/i.test(subj) ? 'cancelled' : 'other';
+        if (!uuid || kind === 'other') { other++; continue; }
+        const ref = docsCol().doc('einv-' + uuid);
+        const snap = await ref.get();
+        if (kind === 'cancelled') {
+          if (snap.exists && snap.data().status !== 'Cancelled') { await ref.update({ status: 'Cancelled', notes: ((snap.data().notes || '') + ' [Cancelled by supplier in MyInvois]').trim() }); cancelled++; logLine(`已取消  ${uuid}`); }
+          continue;
+        }
+        if (snap.exists) { existed++; continue; }
+        const msg = await cap.mcp.callTool('Gmail', 'get_message', { messageId: m.id, messageFormat: 'PLAIN_TEXT' });
+        const mp = msg.payload || {};
+        const n = parseNotice(mp.plaintextBody || mp.htmlBody || '', mp.snippet || '');
+        const docDate = n.issued || n.received || (mp.date ? new Date(new Date(mp.date).getTime() + 8 * 3600e3).toISOString().slice(0, 10) : todayISO());
+        const isCN = /credit/i.test(n.docTypeVersion), isSB = /self/i.test(n.docTypeVersion);
+        let data = {
+          source: 'einvoice', docType: isCN ? 'Credit Note' : 'Validated e-Invoice', platform: '', supplier: n.supplier, supplierRef: n.number,
+          docDate, currency: 'MYR', amount: null, rate: null, amountMYR: null, sst: null, description: '', glAccount: '', taxTreatment: '',
+          payment: '', claimant: '', selfBilled: isSB ? 'Issued' : 'Not required', voucherNo: '', status: 'Needs info', notes: n.docTypeVersion ? 'MyInvois: ' + n.docTypeVersion : '',
+          einvoice: { uuid, number: n.number, typeVersion: n.docTypeVersion, issued: n.issued, received: n.received, gmailId: m.id }, files: [],
+        };
+        data = applySupplierMemory(data);
+        await createDoc(data, 'einv-' + uuid);
+        created++; touched.add(docDate.slice(0, 7));
+        logLine(`新增  ${docDate}  ${n.supplier || '(供应商未知)'}  ${n.number || uuid}`);
+      }
+      token = p.nextPageToken || p.next_page_token || null;
+    } while (token && !state.stopSync && seen < max);
+    logLine(`完成：看了 ${seen} 封，新增 ${created}，已存在 ${existed}，取消 ${cancelled}，其他通知 ${other}。${state.stopSync ? '（已停止）' : ''}${seen >= max && token ? ' 还有更多，提高「最多几封」或改开始日期再同步。' : ''}`);
+    if (touched.size) logLine(`新单在会计期：${[...touched].sort().join(', ')}。到「账簿」补金额。`);
+  } catch (e) { logLine(mcpErr(e)); }
+  $('#einvSync').disabled = false; $('#einvStop').disabled = true;
+};
+
+/* ---------- settings ---------- */
+function renderSettings() {
+  $('#setCompany').value = state.config.company || '';
+  $('#coName').textContent = state.config.company || '单据 → 分类 → AutoCount';
+  $('#acctRows').innerHTML = state.config.accounts.map((a, i) => `<tr><td><input data-i="${i}" data-k="name" value="${esc(a.name)}"></td><td><input data-i="${i}" data-k="code" class="mono" value="${esc(a.code)}" placeholder="例如 610-000"></td><td><button class="btn small danger" data-del="${i}" type="button">删</button></td></tr>`).join('');
+  $$('#acctRows input').forEach(inp => inp.oninput = () => { state.config.accounts[inp.dataset.i][inp.dataset.k] = inp.value; });
+  $$('#acctRows [data-del]').forEach(b => b.onclick = () => { state.config.accounts.splice(+b.dataset.del, 1); renderSettings(); });
+  const cur = $('#tbAcct').value; $('#tbAcct').innerHTML = opts(acctNames(), cur || 'Purchases (Cost of Sales)');
+}
+$('#acctAdd').onclick = () => { state.config.accounts.push({ name: '', code: '' }); renderSettings(); };
+$('#setSave').onclick = async () => {
+  if (!cap.db) { toast('需要在 claude.ai 打开才能保存'); return; }
+  const cfg = { company: $('#setCompany').value.trim(), accounts: state.config.accounts.map(a => ({ name: a.name.trim(), code: a.code.trim() })).filter(a => a.name) };
+  try { await cap.db.doc('config/main').set(cfg); toast('设置已保存'); } catch (e) { toast('保存失败（' + e.code + '）'); }
+};
+
+/* ---------- boot ---------- */
+renderSettings(); renderRegister();
+(async () => {
+  if (!window.claude?.use) { banner('请在 claude.ai 打开这个页面：保存账簿、AI 识别和 Gmail 同步都需要它。扫描生成 PDF 仍可使用。'); $('#regBody').innerHTML = `<tr><td colspan="8" class="empty">需要在 claude.ai 里打开。</td></tr>`; return; }
+  const names = ['db', 'user', 'sample', 'assets', 'downloads', 'mcp'];
+  const got = await Promise.all(names.map(n => window.claude.use(n).catch(() => null)));
+  names.forEach((n, i) => cap[n] = got[i]);
+  if (cap.user) { try { state.uid = await cap.user.id(); } catch {} }
+  if (!cap.db) { banner('这个视图不能读写账簿（可能没有登录，或只有查看权限）。'); renderRegister(); return; }
+  if (cap.user && (await cap.user.can?.('data.write')) === false) banner('你只有查看权限：可以看账簿，但不能新增或修改。', true);
+  cap.db.doc('config/main').onSnapshot(s => { if (s.exists) { const d = s.data(); state.config = { company: d.company || '', accounts: (d.accounts && d.accounts.length ? d.accounts : ACCOUNTS_DEFAULT).map(a => ({ ...a })) }; renderSettings(); } }, () => {});
+  cap.db.doc('config/suppliers').onSnapshot(s => { state.suppliers = s.exists ? (s.data().map || {}) : {}; }, () => {});
+  subscribeDocs();
+})();
+</script>

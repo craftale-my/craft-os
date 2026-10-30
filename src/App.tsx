@@ -45,6 +45,7 @@ import RecipeDetailPage from './features/procurement/RecipeDetail'
 import ProducePage from './features/procurement/Produce'
 import InventoryPage from './features/procurement/Inventory'
 import InventoryDetailPage from './features/procurement/InventoryDetail'
+import ClaimDeskPage from './features/accounts/ClaimDeskPage'
 
 function AppLayout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation()
@@ -424,6 +425,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><ProducePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/accounts/claim-desk"
+        element={
+          <ProtectedRoute requireCap="manage_accounts">
+            <AppLayout><ClaimDeskPage /></AppLayout>
           </ProtectedRoute>
         }
       />

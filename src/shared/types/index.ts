@@ -55,6 +55,7 @@ export type Capability =
   | 'manage_projects'  // create/edit/delete Projects; edit the Tasks tag vocabulary
   | 'manage_procurement'  // supplier & item master data
   | 'use_procurement'     // raise POs, receive goods, view inventory
+  | 'manage_accounts'     // Claim Desk: the accounting Register, e-Invoice inbox, AutoCount export
 
 export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'view_team',           label: 'View Team' },
@@ -70,6 +71,7 @@ export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'manage_system_roles', label: 'Manage System Roles' },
   { key: 'manage_procurement',  label: 'Manage Procurement' },
   { key: 'use_procurement',     label: 'Use Procurement' },
+  { key: 'manage_accounts',     label: 'Accounts (Claim Desk)' },
 ]
 
 type CapMap = Partial<Record<Capability, boolean>>
@@ -80,38 +82,38 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: true, manage_projects: true,
-    manage_procurement: true, use_procurement: true,
+    manage_procurement: true, use_procurement: true, manage_accounts: true,
   },
   admin: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: false, manage_projects: true,
-    manage_procurement: true, use_procurement: true,
+    manage_procurement: true, use_procurement: true, manage_accounts: true,
   },
   hr: {
     view_team: true, manage_staff: true, manage_schedule: false, conduct_reviews: false,
     manage_missions: false, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: false, manage_system_roles: false, manage_projects: true,
-    manage_procurement: false, use_procurement: false,
+    manage_procurement: false, use_procurement: false, manage_accounts: false,
   },
   manager: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: false, manage_projects: true,
-    manage_procurement: true, use_procurement: true,
+    manage_procurement: true, use_procurement: true, manage_accounts: false,
   },
   supervisor: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: false, view_salary: false, manage_hr: true, all_branches: false,
     access_settings: false, manage_system_roles: false, manage_projects: true,
     // Supervisors raise POs and receive goods, but don't own the master data.
-    manage_procurement: false, use_procurement: true,
+    manage_procurement: false, use_procurement: true, manage_accounts: false,
   },
   staff: {
     view_team: false, manage_staff: false, manage_schedule: false, conduct_reviews: false,
     manage_missions: false, view_salary: false, manage_hr: false, all_branches: false,
     access_settings: false, manage_system_roles: false, manage_projects: false,
-    manage_procurement: false, use_procurement: false,
+    manage_procurement: false, use_procurement: false, manage_accounts: false,
   },
 }
 
@@ -736,7 +738,7 @@ export interface PhReplacement {
   created_at: string
 }
 
-export type ClaimType = 'transport' | 'parking' | 'meal' | 'medical' | 'phone' | 'uniform' | 'other'
+export type ClaimType = 'transport' | 'parking' | 'meal' | 'medical' | 'phone' | 'uniform' | 'supplies' | 'other'
 
 export const CLAIM_TYPE_LABELS: Record<ClaimType, string> = {
   transport: 'Transport',
@@ -745,6 +747,7 @@ export const CLAIM_TYPE_LABELS: Record<ClaimType, string> = {
   medical: 'Medical',
   phone: 'Phone',
   uniform: 'Uniform',
+  supplies: 'Supplies / Online Purchase',
   other: 'Other',
 }
 
@@ -762,6 +765,16 @@ export interface Claim {
   rejection_reason: string | null
   paid_at: string | null
   created_at: string
+  /** Added by migration-2026-10-30-claim-desk.sql; absent on older rows in tests. */
+  source?: 'manual' | 'scan' | 'taobao'
+  currency?: string
+  foreign_amount?: number | null
+  exchange_rate?: number | null
+  rate_source?: string | null
+  gl_account?: string | null
+  self_billed_status?: 'not_required' | 'pending' | 'issued'
+  details?: Record<string, unknown>
+  pdf_path?: string | null
   staff?: Staff
 }
 

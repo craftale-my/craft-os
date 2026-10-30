@@ -37,3 +37,4 @@ backups/
 
 # Subagent-driven-development scratch state
 .superpowers/
+supabase/.temp/
