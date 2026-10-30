@@ -171,3 +171,26 @@ describe('the print hosts know the Z report', () => {
     expect(jobLabel(payload(shiftOne, true))).toBe('Z report 24/10/2026 22:31 · REPRINT')
   })
 })
+
+describe('Z report discounts', () => {
+  it('shows Before discounts and Discounts above Gross sales, and a DISCOUNTS section', () => {
+    const report: ZReport = {
+      ...shiftOne,
+      sales: { ...shiftOne.sales, beforeDiscountsSen: shiftOne.sales.grossSen + 3650, discountSen: 3650 },
+      discounts: { catalogSen: 2150, catalogBills: 1, itemSen: 500, itemCount: 1, billSen: 1000, billCount: 1 },
+    }
+    const lines = renderZReportLines(payload(report), 48)
+    const gross = lines.findIndex((l) => l.startsWith('Gross sales'))
+    expect(lines[gross - 2].startsWith('Before discounts')).toBe(true)
+    expect(lines[gross - 1]).toMatch(/^Discounts\s+-36\.50$/)
+    expect(lines).toContain('DISCOUNTS')
+    expect(lines.some((l) => /^Catalog discounts \(1 bill\)\s+-21\.50$/.test(l))).toBe(true)
+    expect(lines.some((l) => /^Item discounts \(1\)\s+-5\.00$/.test(l))).toBe(true)
+    expect(lines.some((l) => /^Bill discounts \(1 bill\)\s+-10\.00$/.test(l))).toBe(true)
+  })
+  it('a shift with none says so; a report frozen before discounts has no section', () => {
+    const none = { ...shiftOne, discounts: { catalogSen: 0, catalogBills: 0, itemSen: 0, itemCount: 0, billSen: 0, billCount: 0 } }
+    expect(renderZReportLines(payload(none), 48)).toContain('No discounts')
+    expect(renderZReportLines(payload(shiftOne), 48)).not.toContain('DISCOUNTS')
+  })
+})

@@ -286,7 +286,24 @@ begin
   end if;
   perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item, 'percent', 'Regular', v_sup, '2222'),
     'A voided item cannot be discounted', 'D voided item');
--- @E
+  -- ── E. receipt and Z report ───────────────────────────────────────────────
+  v_res := pos_receipt_payload(v_bill2, false);
+  if (v_res->>'billDiscountSen')::int is distinct from 1000
+     or (select count(*) from jsonb_array_elements(v_res->'items') i, jsonb_array_elements(i->'discounts') d) <> 2
+     or not exists (select 1 from jsonb_array_elements(v_res->'items') i, jsonb_array_elements(i->'discounts') d
+                     where d->>'label' = 'VERIFY D STAFF MEAL 50%' and (d->>'amountSen')::int = 2150)
+     or not exists (select 1 from jsonb_array_elements(v_res->'items') i, jsonb_array_elements(i->'discounts') d
+                     where d->>'label' = 'Discount' and (d->>'amountSen')::int = 500) then
+    raise exception 'FAIL E receipt: %', v_res;
+  end if;
+  v_res := pos_shift_report(v_shift);
+  if v_res->'discounts' is distinct from
+       '{"catalogSen": 2150, "catalogBills": 1, "itemSen": 500, "itemCount": 1, "billSen": 1000, "billCount": 1}'::jsonb
+     or (v_res->'sales'->>'beforeDiscountsSen')::int is distinct from 12900
+     or (v_res->'sales'->>'discountSen')::int is distinct from 3650
+     or (v_res->'sales'->>'grossSen')::int is distinct from 9250 then
+    raise exception 'FAIL E Z report: % %', v_res->'discounts', v_res->'sales';
+  end if;
   raise notice 'VERIFY OK';
 end $$;
 

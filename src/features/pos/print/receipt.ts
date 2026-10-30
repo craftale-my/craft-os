@@ -20,6 +20,12 @@ export interface ReceiptItem {
   unitSen: number
   amountSen: number
   mods: string[]
+  discounts?: ReceiptDiscount[] // its catalog and item discounts (absent on receipts queued before discounts)
+}
+
+export interface ReceiptDiscount {
+  label: string // "Staff Meal 50%", "Discount 10%", "Discount"
+  amountSen: number
 }
 
 export interface ReceiptCharge {
@@ -49,6 +55,7 @@ export interface ReceiptPayload {
   items: ReceiptItem[]
   itemCount: number
   subtotalSen: number
+  billDiscountSen?: number // absent on receipts queued before discounts
   sstGroups: ReceiptCharge[]
   serviceChargeGroups: ReceiptCharge[]
   takeawayFeeSen: number
@@ -125,6 +132,7 @@ function itemLines(it: ReceiptItem, cols: number): string[] {
     `${parts[0].padEnd(width)} ${amount}`,
     ...parts.slice(1),
     ...it.mods.flatMap((m) => wrap(`+ ${m}`, cols - 3, '  ').map((s) => `   ${s}`)),
+    ...(it.discounts ?? []).flatMap((d) => lr(`   ${d.label}`, money(-d.amountSen), cols)),
   ]
 }
 
@@ -156,6 +164,7 @@ export function renderReceiptLines(input: ReceiptPayload, cols: number): string[
   const totals = [
     ...lr('Item count', String(r.itemCount), cols),
     ...lr('Subtotal', money(r.subtotalSen), cols),
+    ...((r.billDiscountSen ?? 0) > 0 ? lr('Discount', money(-(r.billDiscountSen ?? 0)), cols) : []),
     ...r.sstGroups.flatMap((g) => lr(`SST (${pct(g.rateBp)})`, money(g.amountSen), cols)),
     ...r.serviceChargeGroups.flatMap((g) => lr(`SERVICE CHARGE (${pct(g.rateBp)})`, money(g.amountSen), cols)),
     ...(r.takeawayFeeSen > 0 ? lr('Takeaway packaging', money(r.takeawayFeeSen), cols) : []),

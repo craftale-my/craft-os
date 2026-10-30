@@ -2,7 +2,7 @@
 import { formatMyt, wrap } from './ticket.ts'
 import { asciiDeep, center, lr, money } from './receipt.ts'
 
-/** The Z report of one shift (Feedme's "Close up" without discount, delivery and
+/** The Z report of one shift (Feedme's "Close up" without delivery and
  *  member sections). pos_shift_report (supabase/migration-2026-10-24-pos-shifts-fn.sql)
  *  builds exactly this shape once, at close; it is frozen in pos_shifts.report.
  *  Money is integer sen; times are ISO, UTC. */
@@ -53,6 +53,25 @@ export interface ZReportRefund {
   approvedBy: string | null
 }
 
+export interface ZReportDiscounts {
+  catalogSen: number // catalog discounts (Staff Meal)
+  catalogBills: number
+  itemSen: number
+  itemCount: number
+  billSen: number
+  billCount: number
+}
+
+function discountLines(d: ZReportDiscounts, cols: number): string[] {
+  if (d.catalogSen + d.itemSen + d.billSen === 0) return ['No discounts']
+  const bills = (n: number) => `${n} bill${n === 1 ? '' : 's'}`
+  return [
+    ...lr(`Catalog discounts (${bills(d.catalogBills)})`, money(-d.catalogSen), cols),
+    ...lr(`Item discounts (${d.itemCount})`, money(-d.itemSen), cols),
+    ...lr(`Bill discounts (${bills(d.billCount)})`, money(-d.billSen), cols),
+  ]
+}
+
 export interface ZReport {
   branch: string
   openedAt: string
@@ -69,7 +88,12 @@ export interface ZReport {
     voidSen: number
     refundSen: number
   }
-  sales: { grossSen: number; takeawayFeeSen: number; serviceChargeSen: number; sstSen: number; roundingSen: number; nettSen: number }
+  sales: {
+    grossSen: number; takeawayFeeSen: number; serviceChargeSen: number; sstSen: number; roundingSen: number; nettSen: number
+    beforeDiscountsSen?: number // absent on reports frozen before discounts
+    discountSen?: number
+  }
+  discounts?: ZReportDiscounts
   payments: ZReportPayment[]
   orderTypes: { orderType: 'dine_in' | 'takeaway'; bills: number; nettSen: number }[]
   sources: { source: 'counter' | 'qr'; orders: number; itemSen: number }[]
@@ -137,6 +161,9 @@ export function renderZReportLines(input: ZReportPayload, cols: number): string[
       ...lr('Total refund', money(s.refundSen), cols),
     ]),
     ...section('SALES SUMMARY', [
+      ...(r.sales.discountSen
+        ? [...lr('Before discounts', money(r.sales.beforeDiscountsSen ?? 0), cols), ...lr('Discounts', money(-r.sales.discountSen), cols)]
+        : []),
       ...lr('Gross sales', money(r.sales.grossSen), cols),
       ...lr('Takeaway fee', money(r.sales.takeawayFeeSen), cols),
       ...lr('Service charge', money(r.sales.serviceChargeSen), cols),
@@ -144,6 +171,7 @@ export function renderZReportLines(input: ZReportPayload, cols: number): string[
       ...lr('Rounding', money(r.sales.roundingSen), cols),
       ...lr('Nett sales', money(r.sales.nettSen), cols),
     ]),
+    ...(r.discounts ? section('DISCOUNTS', discountLines(r.discounts, cols)) : []),
     ...section('PAYMENTS', r.payments.length === 0 ? ['No payments'] : r.payments.flatMap((p) => [
       ...lr(`${p.name} (${p.count})`, money(p.amountSen), cols),
       ...(p.refundCount > 0 ? lr(`  Refunds (${p.refundCount})`, money(-p.refundSen), cols) : []),

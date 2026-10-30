@@ -153,3 +153,31 @@ describe('renderRefundSlipLines', () => {
     ])
   })
 })
+
+describe('receipt discounts', () => {
+  const base: ReceiptPayload = {
+    kind: 'receipt', route: 'Bar', reprint: false,
+    header: { title: 'Craft Cafe', legalName: null, registrationNo: null, sstNo: null, address: null, phone: null, email: null },
+    billNo: 'B0001', closedAt: '2026-10-30T04:00:00.000Z', cashier: 'Ali', tableLabel: 'T1', pax: 2,
+    items: [{ qty: 1, name: 'Baked Salmon Steak', unitSen: 4300, amountSen: 4300, mods: [],
+              discounts: [{ label: 'Staff Meal 50%', amountSen: 2150 }, { label: 'Discount 10%', amountSen: 215 }] }],
+    itemCount: 1, subtotalSen: 1935, billDiscountSen: 500, sstGroups: [], serviceChargeGroups: [],
+    takeawayFeeSen: 0, roundingSen: 0, totalSen: 1435, payments: [], changeSen: 0, footer: 'Thank you',
+  }
+  it('prints each discount under its item and the bill discount under the subtotal', () => {
+    const lines = renderReceiptLines(base, 32)
+    const staff = lines.findIndex((l) => /^ {3}Staff Meal 50% +-21\.50$/.test(l))
+    const own = lines.findIndex((l) => /^ {3}Discount 10% +-2\.15$/.test(l))
+    const sub = lines.findIndex((l) => /^Subtotal +19\.35$/.test(l))
+    expect(staff).toBeGreaterThan(lines.findIndex((l) => l.startsWith('1 Baked Salmon')))   // under its item (the name may wrap)
+    expect(own).toBe(staff + 1)
+    expect(sub).toBeGreaterThan(own)
+    expect(lines[sub + 1]).toMatch(/^Discount +-5\.00$/)
+    expect(lines.every((l) => l.length <= 32)).toBe(true)
+  })
+  it('a receipt queued before discounts existed prints as before', () => {
+    const { billDiscountSen: _b, ...old } = base
+    const lines = renderReceiptLines({ ...old, items: [{ ...base.items[0], discounts: undefined }] } as ReceiptPayload, 32)
+    expect(lines.some((l) => l.includes('Discount'))).toBe(false)
+  })
+})
