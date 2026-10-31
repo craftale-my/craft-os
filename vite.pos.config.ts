@@ -41,6 +41,8 @@ export default defineConfig({
   root: resolve(root, 'pos'),
   envDir: root,
   publicDir: resolve(root, 'pos/public'),
+  // its own dep cache, so running next to Craft OS's dev server doesn't invalidate both
+  cacheDir: resolve(root, 'node_modules/.vite-pos'),
   define: { __POS_BUILD__: JSON.stringify(BUILD) },
   plugins: [react(), posClient(), versionFile(), ...(process.env.HTTPS === '1' ? [basicSsl()] : [])],
   server: { port: Number(process.env.PORT) || 5179, fs: { allow: [root] } },
