@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { moveTargets, TAKEAWAY_NEEDS_OCCUPIED } from './moveTargets'
+import { MERGE_NEEDS_NO_BILL_DISCOUNT, moveTargets, TAKEAWAY_NEEDS_OCCUPIED } from './moveTargets'
 import type { OpenBillRow, TableRow } from './posApi'
 
 const t = (id: string): TableRow => ({ id, label: id.toUpperCase(), area: null, sort_order: 0, qr_token: 'x', qr_paused: false, is_active: true })
@@ -36,5 +36,21 @@ describe('moveTargets', () => {
     const two = [...bills, bill('bt2', null)]
     expect(moveTargets(two[0], tables, two, summaries).every((x) => x.tableId !== null)).toBe(true)
     expect(moveTargets(two[0], tables, two, summaries)).toHaveLength(2)
+  })
+  it('a source bill with a bill discount: occupied tables are refused with the server words, empty ones still move', () => {
+    expect(MERGE_NEEDS_NO_BILL_DISCOUNT).toBe('Remove the bill discount before merging')
+    expect(moveTargets(bills[0], tables, bills, summaries, true)).toEqual([
+      { tableId: 't2', label: 'T2', kind: 'move' },
+      { tableId: 't3', label: 'T3', kind: 'refused', reason: 'Remove the bill discount before merging' },
+    ])
+  })
+  it('a takeaway source with a bill discount: tables with a bill and other takeaway bills are refused', () => {
+    const two = [...bills, bill('bt2', null)]
+    expect(moveTargets(two[2], tables, two, summaries, true)).toEqual([
+      { tableId: 't1', label: 'T1', kind: 'refused', reason: MERGE_NEEDS_NO_BILL_DISCOUNT },
+      { tableId: 't2', label: 'T2', kind: 'refused', reason: TAKEAWAY_NEEDS_OCCUPIED },
+      { tableId: 't3', label: 'T3', kind: 'refused', reason: MERGE_NEEDS_NO_BILL_DISCOUNT },
+      { tableId: null, label: 'Takeaway B-bt2', kind: 'refused', reason: MERGE_NEEDS_NO_BILL_DISCOUNT },
+    ])
   })
 })

@@ -473,7 +473,7 @@ export default function OrderScreen({
         <BillActionsOverlay title={title} actions={actions} disabled={busy || sending} onPick={pickAction} onClose={() => setDialog(null)} />
       )}
       {bill && dialog?.kind === 'move' && (
-        <MoveToGrid billNo={bill.bill_no} targets={moveTargets(bill, tables, bills, summaries)} busy={busy}
+        <MoveToGrid billNo={bill.bill_no} targets={moveTargets(bill, tables, bills, summaries, billDisc !== null)} busy={busy}
           onPick={pickMove} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'pax' && (

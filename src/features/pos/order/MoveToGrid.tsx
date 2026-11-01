@@ -1,6 +1,6 @@
 // src/features/pos/order/MoveToGrid.tsx
 import { formatSen } from './cart'
-import type { MoveTarget } from './moveTargets'
+import { TAKEAWAY_NEEDS_OCCUPIED, type MoveTarget } from './moveTargets'
 
 /** Move to (spec §3): every other table with its current total, Feedme style. An empty table moves
  *  the bill there, an occupied one merges it in (OrderScreen asks first), a refused one says why. */
@@ -22,12 +22,12 @@ export default function MoveToGrid({ billNo, targets, busy, onPick, onClose }: {
         <div className="mt-4 grid flex-1 grid-cols-5 content-start gap-3 overflow-y-auto">
           {targets.map((t) => (
             // a takeaway merge target has tableId null, so key by the bill it merges into
-            <button key={t.kind === 'merge' ? t.intoBillId : t.tableId} type="button" disabled={busy || t.kind === 'refused'} onClick={() => onPick(t)}
+            <button key={t.kind === 'merge' ? t.intoBillId : (t.tableId ?? t.label)} type="button" disabled={busy || t.kind === 'refused'} onClick={() => onPick(t)}
               title={t.kind === 'refused' ? t.reason : undefined}
               className={`h-24 rounded-xl border-2 p-2 text-left disabled:opacity-40 ${t.kind === 'merge' ? 'border-brown-btn bg-brown-btn text-white' : 'border-border bg-canvas text-brown-dark'}`}>
               <div className="text-xl font-semibold">{t.label}</div>
               <div className="text-xs">
-                {t.kind === 'merge' ? (t.totalSen === null ? `Bill ${t.intoBillNo}` : formatSen(t.totalSen)) : t.kind === 'move' ? 'Empty' : 'Empty · merge only'}
+                {t.kind === 'merge' ? (t.totalSen === null ? `Bill ${t.intoBillNo}` : formatSen(t.totalSen)) : t.kind === 'move' ? 'Empty' : t.reason === TAKEAWAY_NEEDS_OCCUPIED ? 'Empty · merge only' : 'Remove the bill discount first'}
               </div>
             </button>
           ))}
