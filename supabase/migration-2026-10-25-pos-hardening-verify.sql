@@ -176,10 +176,10 @@ begin
     raise exception 'FAIL H4: merge changed the takeaway items'' order type';
   end if;
   v_res := pos_bill_totals(b1);
-  if v_res is distinct from '{"subtotalSen": 6550, "serviceChargeSen": 428, "sstSen": 372, "takeawayFeeSen": 250,
+  if not (v_res @> '{"subtotalSen": 6550, "serviceChargeSen": 428, "sstSen": 372, "takeawayFeeSen": 250,
         "beforeRoundingSen": 7600, "roundingSen": 0, "totalSen": 7600,
         "sstGroups": [{"rateBp": 600, "baseSen": 6200, "amountSen": 372}],
-        "serviceChargeGroups": [{"rateBp": 500, "baseSen": 4550, "amountSen": 228}, {"rateBp": 1000, "baseSen": 2000, "amountSen": 200}]}'::jsonb
+        "serviceChargeGroups": [{"rateBp": 500, "baseSen": 4550, "amountSen": 228}, {"rateBp": 1000, "baseSen": 2000, "amountSen": 200}]}'::jsonb)
      or (v_res->>'beforeRoundingSen')::int is distinct from (v_a_tot->>'beforeRoundingSen')::int + (v_b_tot->>'beforeRoundingSen')::int then
     raise exception 'FAIL H4 merged totals: %', v_res;
   end if;

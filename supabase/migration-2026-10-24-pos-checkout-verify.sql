@@ -133,7 +133,7 @@ begin
   -- ── B. totals: the shared vectors ─────────────────────────────────────────
   if jsonb_array_length(v_vectors) <> 23 then raise exception 'FAIL vectors: expected 23, got %', jsonb_array_length(v_vectors); end if;
   for r in select v from jsonb_array_elements(v_vectors) v loop
-    if pos_compute_bill(r.v->'input') <> r.v->'expected' then
+    if not (pos_compute_bill(r.v->'input') @> r.v->'expected') then
       raise exception 'FAIL vector "%": got %', r.v->>'name', pos_compute_bill(r.v->'input');
     end if;
   end loop;

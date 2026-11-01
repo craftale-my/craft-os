@@ -682,3 +682,36 @@ language sql stable security definer set search_path = public, pg_temp as $$
   from s, t
 $$;
 revoke all on function pos_shift_report(uuid) from public, anon, authenticated;
+
+-- ── Customer QR view: the subtotal is what will be charged before charges ─────
+-- The live text of migration-2026-10-23-pos-ordering-fn.sql with the lines marked D5 changed.
+-- subtotalSen was sum(unit_price_sen * qty); it now takes the server totals, so catalog, item and bill
+-- discounts are in it: pos_bill_totals subtotalSen (after catalog and item discounts) minus billDiscountSen.
+-- The customer never sees more than will be charged before service charge, SST and rounding.
+-- pos_bill_totals is security invoker; here it runs as this function's owner, so anon needs no grant on it.
+create or replace function qr_table_state(p_token text) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'tableLabel', t.label,
+    'billNo', b.bill_no,
+    'pax', b.pax,
+    'items', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'name', oi.name_snapshot, 'qty', oi.qty, 'unitPriceSen', oi.unit_price_sen,
+               'mods', (select coalesce(jsonb_agg(m->>'name' order by ord), '[]'::jsonb)
+                          from jsonb_array_elements(oi.modifiers_snapshot) with ordinality as x(m, ord)),
+               'note', oi.note, 'voided', oi.voided_at is not null, 'placedAt', o.placed_at)
+             order by o.placed_at, oi.name_snapshot)
+        from order_items oi join orders o on o.id = oi.order_id
+       where oi.bill_id = b.id), '[]'::jsonb),
+    'subtotalSen', coalesce((select (x.tot->>'subtotalSen')::integer - (x.tot->>'billDiscountSen')::integer   -- D5
+                               from (select pos_bill_totals(b.id) as tot) x), 0))                             -- D5
+  from dining_tables t
+  left join bills b on b.table_id = t.id and b.status = 'open'
+  where t.qr_token = p_token and t.is_active
+$$;
+revoke all on function qr_table_state(text) from public;
+grant execute on function qr_table_state(text) to anon, authenticated;
+
+notify pgrst, 'reload schema';
+select 'pos discounts applied' as result;
