@@ -84,6 +84,9 @@ then testing and cut-over. Check items off as they land.
 - [ ] Tables and areas per outlet (Cheras uses Ground Floor, Beside Floor, Upstairs, Staff, Grab).
 - [ ] Payment methods to match Feedme (cash, e-wallets, online banking, Maybank and Pine Labs terminals, Grab
       payment types — depends on D1).
+- [ ] Staff Meal catalog: confirm it holds the normal prices (not prices already halved), then set Back office →
+      Catalogs → Staff Meal → Discount % = 50 at a time with no Staff Meal bill open (items ordered before the
+      change keep 0%). Already 50% on dev.
 - [ ] Service-charge rules (by order type, table and product), reason templates, rounding (5 sen), receipt text.
 - [ ] Every cashier and supervisor has their own PIN; supervisors hold `pos_supervise`.
 - [ ] Printer IP per route per outlet (Cheras: Bar and Kitchen on one printer for now); tablets activated and one
@@ -92,7 +95,14 @@ then testing and cut-over. Check items off as they land.
 ## 4. Prod rollout
 
 - [ ] Run the whole POS SQL chain on prod in order (menu → catalogs → ordering → checkout → shifts → hardening →
-      front end → outlets → devices), each with its VERIFY, after the prod menu import.
+      front end → outlets → devices → device-till (`migration-2026-10-29-pos-device-till.sql`) → POS app
+      (`migration-2026-10-30-pos-app.sql`) → discounts (`migration-2026-10-30-pos-discounts.sql`)), each with its
+      `-verify.sql`, after the prod menu import.
+- [ ] In every environment the SQL runs before the app that needs it is deployed: the discounts build reads new
+      columns (`discount_*`, `catalog_discount_*`, `menu_catalogs.discount_bp`), and the home and order screens fail
+      without them.
+- [ ] The four discount RPCs (`set_item_discount`, `clear_item_discount`, `set_bill_discount`, `clear_bill_discount`)
+      and the re-defined `merge_bills` are front-of-house RPCs and belong in W1 Part C's switch to `pos_ctx`.
 - [ ] Deploy Edge Functions `pos-device-activation` (with `--no-verify-jwt`) and `einvoice`.
 - [ ] Create the `craft-pos` Vercel project; staff email logins lose front-of-house RPCs at the same time.
 - [ ] Revoke the access tokens that were pasted in chat (Supabase dashboard → Account → Access tokens).
