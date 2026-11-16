@@ -1,7 +1,8 @@
 -- Self-check for POS part payments (split equally / by amount, Part B). Run on craft-os-dev after
 -- migration-2026-11-17-pos-bill-parts.sql. Everything is rolled back. Success = a result row
 -- "VERIFY OK". Sections (one DO block each, ids in the temp table fixture): FIXTURE; B1 quote and
--- part payments; B2 the balance by checkout_bill and the guards; B3 receipts and screen reads.
+-- part payments; B1f fixes after the B1 review (rolled back inside the block); B2 the balance by
+-- checkout_bill and the guards; B3 receipts and screen reads.
 -- Numbers: no service charge, 0% SST, 5 sen rounding; Set A 70.35, Set B 70.40, Extra 3.00.
 begin;
 
@@ -118,7 +119,9 @@ begin
     end if;
   end loop;
   for r in select f from unnest(array['pos_bill_paid_parts(uuid)', 'pos_part_result(uuid)', 'pos_part_same_payments(uuid,jsonb)',
-                                      'pos_part_receipt_payload(uuid)', 'pos_queue_part_receipt(uuid)']) f loop
+                                      'pos_part_receipt_payload(uuid)', 'pos_queue_part_receipt(uuid)',
+                                      'pos_part_replay(bill_parts,uuid,uuid,integer,jsonb)',
+                                      'pos_insert_payments(uuid,uuid,uuid,jsonb,uuid)']) f loop
     if has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL B1 grants: % is internal', r.f; end if;
   end loop;
 
@@ -148,7 +151,9 @@ begin
      or (select taken_by from bill_parts where id = pg_temp.id('x1')) <> pg_temp.id('cashier') then
     raise exception 'FAIL B1 part 1 of X: %', v_res;
   end if;
-  -- a resend gets the first answer; other amounts or another bill are refused
+  -- a resend answers again: the part's own fields (partId, partNo, ways, amountSen, payments, changeSen,
+  -- receiptQueued) are the first answer, paidSen / balanceSen the bill's current values (unchanged
+  -- here); other amounts or another bill are refused
   if pay_bill_part(v_x, pg_temp.id('x1'), 2345, 3, v_cash) <> v_res or (select count(*) from bill_parts where bill_id = v_x) <> 1 then
     raise exception 'FAIL B1 replay';
   end if;
@@ -209,6 +214,58 @@ begin
   v_res := pos_shift_report(pg_temp.id('shift'));
   if (v_res->'cash'->>'cashSalesSen')::int <> 2345 or (v_res->'summary'->>'billCount')::int <> 0 then
     raise exception 'FAIL B1 Z report: % %', v_res->'cash', v_res->'summary';
+  end if;
+end $$;
+
+-- ── B1f. Fixes after the B1 review: a share is never 0, a part id taken on another bill at the
+--    same moment, a stale pos_insert_payments. Everything here is undone at the end of the block
+--    (SQLSTATE B1FRB), so B2 / B3 see the bills as B1 left them. ─
+do $$
+declare
+  v_b uuid; v_q jsonb; v_res jsonb; v_race uuid := gen_random_uuid();
+begin
+  begin
+    perform pg_temp.act(pg_temp.id('dev'));
+    -- P6: Set A 70.35; RM 70.25 by amount leaves 10 sen with 3 equal shares to go: a share of 5, not 0
+    v_b := pg_temp.order_on('t6', array['seta']);
+    v_b := (select bill_id from orders where id = v_b);
+    v_res := pay_bill_part(v_b, gen_random_uuid(), 7025, null, pg_temp.card(7025));
+    v_q := pos_part_quote(v_b, 3);
+    if (v_q->>'balanceSen')::int <> 10 or (v_q->>'shareSen')::int <> 5 then raise exception 'FAIL B1f share never 0: %', v_q; end if;
+    v_res := pay_bill_part(v_b, gen_random_uuid(), 5, 3, pg_temp.card(5));
+    if (v_res->>'partNo')::int <> 2 or (v_res->>'ways')::int <> 3 or (v_res->>'balanceSen')::int <> 5 then
+      raise exception 'FAIL B1f share of 5: %', v_res;
+    end if;
+
+    -- the same part id taken on bill Y while this payment waits (a trigger plays the other till)
+    execute format($f$
+      create function public.verify_b1f_race() returns trigger language plpgsql as $t$
+      begin
+        if new.id = %L and new.bill_id <> %L then
+          insert into bill_parts(id, bill_id, branch_id, part_no, ways, amount_sen, shift_id)
+          values (new.id, %L, new.branch_id, (select max(part_no) + 1 from bill_parts where bill_id = %L), null, 100, new.shift_id);
+        end if;
+        return new;
+      end $t$ $f$, v_race, pg_temp.id('bY'), pg_temp.id('bY'), pg_temp.id('bY'));
+    execute 'create trigger verify_b1f_race before insert on bill_parts for each row execute function public.verify_b1f_race()';
+    perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 1, null, %L)', v_b, v_race, pg_temp.card(1)),
+      'This part id belongs to another bill', 'B1f part id raced on another bill');
+
+    -- a pos_insert_payments that writes no part_id (11-16's text before B1f) makes pay_bill_part stop
+    execute $f$
+      create or replace function pos_insert_payments(p_bill_id uuid, p_branch uuid, p_shift uuid, p_payments jsonb,
+                                                     p_part_id uuid default null) returns void
+      language plpgsql set search_path = public, pg_temp as $t$ begin end $t$ $f$;
+    perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 1, null, %L)', v_b, gen_random_uuid(), pg_temp.card(1)),
+      'STOP: pos_insert_payments is stale — re-run migration-2026-11-17-pos-bill-parts.sql', 'B1f stale pos_insert_payments');
+
+    raise exception 'B1f rollback' using errcode = 'B1FRB';
+  exception when sqlstate 'B1FRB' then
+    null;
+  end;
+  if exists (select 1 from bill_parts bp join bills b on b.id = bp.bill_id where b.table_id = pg_temp.id('t6'))
+     or to_regprocedure('verify_b1f_race()') is not null then
+    raise exception 'FAIL B1f: not rolled back';
   end if;
 end $$;
 

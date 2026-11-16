@@ -13,7 +13,8 @@
 -- B3  The final receipt lists the parts' payments first, labelled; pos_checkout_state and
 --     pos_open_bill_summaries carry paidSen.
 -- Re-run hazards: re-running migration-2026-11-16-pos-split-bill.sql puts back the part-less
--- pos_insert_payments, checkout_bill, pos_split_check, pos_receipt_payload and pos_checkout_state;
+-- checkout_bill, pos_split_check, pos_receipt_payload and pos_checkout_state (its pos_insert_payments
+-- writes part_id since B1f; an older text that does not makes pay_bill_part stop with "STOP: ...");
 -- migration-2026-10-29-pos-device-till.sql the unguarded void_bill / void_order_item;
 -- migration-2026-10-30-pos-discounts.sql the unguarded discounts and merge_bills;
 -- migration-2026-10-26-pos-frontend.sql the old pos_open_bill_summaries (paid_sen gone) — re-run
@@ -60,8 +61,9 @@ language sql stable set search_path = public, pg_temp as $$
 $$;
 revoke all on function pos_bill_paid_parts(uuid) from public, anon, authenticated;
 
--- pos_insert_payments: the text of migration-2026-11-16-pos-split-bill.sql (S3) with the lines marked
--- B1 changed — p_part_id is written to payments.part_id. Internal.
+-- pos_insert_payments: the text of migration-2026-11-16-pos-split-bill.sql (S3) as it was before B1f,
+-- with the lines marked B1 changed — p_part_id is written to payments.part_id (11-16's B1f text does
+-- the same with an if, for a database without the column). Internal.
 create or replace function pos_insert_payments(p_bill_id uuid, p_branch uuid, p_shift uuid, p_payments jsonb,
                                                p_part_id uuid default null) returns void
 language plpgsql set search_path = public, pg_temp as $$
@@ -146,8 +148,9 @@ revoke all on function pos_part_replay(bill_parts, uuid, uuid, integer, jsonb) f
 -- ── B1. The quote (spec §4.6) ────────────────────────────────────────────────
 -- The caller branch's open bill: its total, what the parts paid, the balance, and for p_ways the
 -- equal share — the bill's earlier N when an equal share was paid (p_ways is then ignored), else
--- p_ways (2…20); floor(balance / shares left / 5) × 5, the last share the whole balance. p_ways
--- null: the by-amount view, ways and shareSen null. sharesPaid counts equal shares only.
+-- p_ways (2…20); floor(balance / shares left / 5) × 5, the last share the whole balance. A share
+-- is never 0: at least 5 sen, or the balance when it is under 5 (B1f). p_ways null: the by-amount
+-- view, ways and shareSen null. sharesPaid counts equal shares only.
 create or replace function pos_part_quote(p_bill_id uuid, p_ways integer) returns jsonb
 language plpgsql stable security definer set search_path = public, pg_temp as $$
 declare
@@ -176,7 +179,8 @@ begin
     v_ways := coalesce(v_fixed, p_ways);
     if v_ways < 2 or v_ways > 20 then raise exception 'Invalid split'; end if;
     v_share := case when v_ways - v_shares <= 1 then v_total - v_paid
-                    else (floor((v_total - v_paid)::numeric / (v_ways - v_shares) / 5) * 5)::integer end;
+                    else greatest((floor((v_total - v_paid)::numeric / (v_ways - v_shares) / 5) * 5)::integer,
+                                  least(5, v_total - v_paid)) end;                                 -- B1f: never 0
   end if;
   return jsonb_build_object('totalSen', v_total, 'paidSen', v_paid, 'balanceSen', v_total - v_paid,
                             'partsPaid', v_parts, 'sharesPaid', v_shares, 'ways', v_ways, 'shareSen', v_share);
@@ -277,6 +281,9 @@ end $$;
 revoke all on function pos_queue_part_receipt(uuid) from public, anon, authenticated;
 
 -- ── B1. Pay one part (spec §4.6) ─────────────────────────────────────────────
+-- A resend of the same part id (same bill, amount and payments) answers again: the part's own fields
+-- (partId, partNo, ways, amountSen, payments, changeSen, receiptQueued) are the first answer;
+-- paidSen and balanceSen are the bill's current values, not frozen at the first call.
 create or replace function pay_bill_part(p_bill_id uuid, p_part_id uuid, p_amount_sen integer, p_ways integer,
                                          p_payments jsonb) returns jsonb
 language plpgsql security definer set search_path = public, pg_temp as $$
@@ -289,9 +296,10 @@ declare
   v_paid   integer;
   v_fixed  integer;
   v_no     integer;
+  v_con    text;                                                                                -- B1f
 begin
   if p_part_id is null then raise exception 'Part id is missing'; end if;
-  -- 1. a resend of a part that went through gets the first answer
+  -- 1. a resend of a part that went through gets the part's first answer (paidSen / balanceSen current)
   select * into v_part from bill_parts where id = p_part_id;
   if found then return pos_part_replay(v_part, p_bill_id, v_branch, p_amount_sen, p_payments); end if;
   -- 2. the bill locked, the id once more (a resend that waited), the shift, an open bill with items
@@ -329,9 +337,21 @@ begin
   -- 6. the part, its payments (in this shift), a bills event, the part receipt
   select coalesce(max(part_no), 0) + 1 into v_no from bill_parts where bill_id = v_bill.id;
   if v_no > 20 then raise exception 'Too many parts on one bill'; end if;
-  insert into bill_parts(id, bill_id, branch_id, part_no, ways, amount_sen, shift_id, taken_by, device_id)
-  values (p_part_id, v_bill.id, v_branch, v_no, p_ways, p_amount_sen, v_shift, pos_actor(), pos_current_device());
+  begin                                                                                         -- B1f
+    insert into bill_parts(id, bill_id, branch_id, part_no, ways, amount_sen, shift_id, taken_by, device_id)
+    values (p_part_id, v_bill.id, v_branch, v_no, p_ways, p_amount_sen, v_shift, pos_actor(), pos_current_device());
+  exception when unique_violation then                                                          -- B1f
+    -- the same id taken at the same moment on another bill (this bill is locked, so not this one)
+    get stacked diagnostics v_con = constraint_name;                                            -- B1f
+    if v_con = 'bill_parts_pkey' then raise exception 'This part id belongs to another bill'; end if; -- B1f
+    raise;                                                                                      -- B1f
+  end;                                                                                          -- B1f
   perform pos_insert_payments(v_bill.id, v_branch, v_shift, p_payments, p_part_id);
+  -- a pos_insert_payments that does not write part_id (11-16's text before B1f) would leave the part
+  -- without its payments: stop instead of recording it
+  if (select count(*) from payments where part_id = p_part_id) <> jsonb_array_length(p_payments) then  -- B1f
+    raise exception 'STOP: pos_insert_payments is stale — re-run migration-2026-11-17-pos-bill-parts.sql'; -- B1f
+  end if;                                                                                       -- B1f
   update bills set updated_at = now() where id = v_bill.id;
   perform pos_queue_part_receipt(p_part_id);
   return pos_part_result(p_part_id);

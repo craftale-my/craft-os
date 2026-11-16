@@ -281,6 +281,9 @@ revoke all on function pos_check_payments(uuid, jsonb, integer) from public, ano
 
 -- The payment rows of one checked p_payments, line_no from 1 (checkout_bill's insert, unchanged).
 -- p_part_id: Part B (migration-2026-11-17-pos-bill-parts.sql) writes it to payments.part_id. Internal.
+-- B1f: re-run safe — with p_part_id null the insert names no part_id (a database without
+-- payments.part_id works: plpgsql plans a branch only when it runs); with a part id it writes it, so
+-- a re-run of this file after Part B does not leave a part's payments without their part.
 create or replace function pos_insert_payments(p_bill_id uuid, p_branch uuid, p_shift uuid, p_payments jsonb,
                                                p_part_id uuid default null) returns void
 language plpgsql set search_path = public, pg_temp as $$
@@ -297,12 +300,21 @@ begin
     v_amount   := (v_p->'amountSen')::numeric::integer;
     v_tendered := case when v_m.kind = 'cash' and jsonb_typeof(v_p->'tenderedSen') = 'number'
                        then (v_p->'tenderedSen')::numeric::integer end;
-    insert into payments(bill_id, branch_id, method_id, method_name, kind, amount_sen, tendered_sen,
-                         change_sen, reference, taken_by, line_no, shift_id)
-    values (p_bill_id, p_branch, v_m.id, v_m.name, v_m.kind, v_amount, v_tendered,
-            coalesce(v_tendered - v_amount, 0),
-            nullif(trim(left(case when jsonb_typeof(v_p->'reference') = 'string' then v_p->>'reference' end, 60)), ''),
-            pos_actor(), v_n, p_shift);
+    if p_part_id is null then                                                                -- B1f
+      insert into payments(bill_id, branch_id, method_id, method_name, kind, amount_sen, tendered_sen, -- B1f
+                           change_sen, reference, taken_by, line_no, shift_id)               -- B1f
+      values (p_bill_id, p_branch, v_m.id, v_m.name, v_m.kind, v_amount, v_tendered,         -- B1f
+              coalesce(v_tendered - v_amount, 0),                                            -- B1f
+              nullif(trim(left(case when jsonb_typeof(v_p->'reference') = 'string' then v_p->>'reference' end, 60)), ''), -- B1f
+              pos_actor(), v_n, p_shift);                                                    -- B1f
+    else                                                                                     -- B1f
+      insert into payments(bill_id, branch_id, method_id, method_name, kind, amount_sen, tendered_sen, -- B1f
+                           change_sen, reference, taken_by, line_no, shift_id, part_id)      -- B1f
+      values (p_bill_id, p_branch, v_m.id, v_m.name, v_m.kind, v_amount, v_tendered,         -- B1f
+              coalesce(v_tendered - v_amount, 0),                                            -- B1f
+              nullif(trim(left(case when jsonb_typeof(v_p->'reference') = 'string' then v_p->>'reference' end, 60)), ''), -- B1f
+              pos_actor(), v_n, p_shift, p_part_id);                                         -- B1f
+    end if;                                                                                  -- B1f
   end loop;
 end $$;
 revoke all on function pos_insert_payments(uuid, uuid, uuid, jsonb, uuid) from public, anon, authenticated;
