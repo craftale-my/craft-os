@@ -32,6 +32,8 @@ export default function BillColumn(p: {
   payDisabled: boolean
   payHint: string | null
   onPay: () => void
+  /** Goes well with (menu picks): the products usually ordered with the one just added; null = no row */
+  goesWell?: { products: { id: string; name: string }[]; onPick: (productId: string) => void } | null
 }) {
   const { view } = p
   const orders = [...new Map(view.sent.map((s) => [s.item.order_id, s.item.orders])).entries()]
@@ -91,6 +93,19 @@ export default function BillColumn(p: {
                 <LineText qty={d.qty} name={d.name} mods={d.mods} note={d.note} />
                 <span className="tabular-nums">{d.unitSen === null ? '—' : formatSen(d.unitSen * d.qty)}</span>
               </button>
+            ))}
+          </div>
+        )}
+        {p.goesWell && p.goesWell.products.length > 0 && (
+          <div role="group" aria-label="Goes well with"
+            className="mt-2 flex items-center gap-1 overflow-x-auto whitespace-nowrap text-xs text-brown-muted">
+            <span>Goes well with:</span>
+            {p.goesWell.products.map((g, k) => (
+              <span key={g.id} className="flex items-center gap-1">
+                {k > 0 && <span aria-hidden="true">·</span>}
+                <button type="button" onClick={() => p.goesWell?.onPick(g.id)}
+                  className="min-h-11 rounded-lg border border-border-mid px-3 text-sm font-medium text-brown-dark">{g.name}</button>
+              </span>
             ))}
           </div>
         )}

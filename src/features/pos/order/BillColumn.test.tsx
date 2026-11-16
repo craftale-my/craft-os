@@ -26,3 +26,19 @@ describe('BillColumn catalog control', () => {
     expect(screen.queryByRole('button', { name: 'Choose catalog' })).toBeNull()
   })
 })
+
+describe('BillColumn Goes well with', () => {
+  it('a chip row under the drafts; a tap hands back the product', () => {
+    const onPick = vi.fn()
+    render(<BillColumn {...props} catalogName={null} onCatalog={null}
+      goesWell={{ products: [{ id: 'c1', name: 'Butter Croissant' }, { id: 'c2', name: 'Basque Cheesecake' }], onPick }} />)
+    expect(screen.getByRole('group', { name: 'Goes well with' }).textContent).toContain('Goes well with:')
+    fireEvent.click(screen.getByRole('button', { name: 'Basque Cheesecake' }))
+    expect(onPick).toHaveBeenCalledWith('c2')
+  })
+
+  it('no row without products', () => {
+    render(<BillColumn {...props} catalogName={null} onCatalog={null} goesWell={null} />)
+    expect(screen.queryByRole('group', { name: 'Goes well with' })).toBeNull()
+  })
+})

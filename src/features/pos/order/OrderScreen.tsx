@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Search } from 'lucide-react'
 import {
-  fetchBillItems, fetchBranchCatalogs, fetchPadProductInfo, fetchPosMenu, setSoldOut, setTablePaused,
+  fetchBillItems, fetchBranchCatalogs, fetchMenuPicks, fetchPadProductInfo, fetchPosMenu, setSoldOut, setTablePaused,
   type BillItemRow, type OpenBillRow, type TableRow,
 } from './posApi'
 import { defaultLine, findProduct, formatSen, validateLine, type OrderLine, type PosMenu, type PosProduct } from './cart'
@@ -21,6 +21,8 @@ import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, send
 import { moveTargets, type MoveTarget } from './moveTargets'
 import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
 import { withPhotos, type PadProductInfo } from './padInfo'
+import { mostPickedFor, pairsFor, visiblePopular, type MenuPicks } from './picks'
+import { tileSlotLabel } from './padSlots'
 import type { BillSummary } from './billSummaries'
 import {
   clearBillDiscount, clearItemDiscount, mergeBills, moveBill, openTable, setBillDiscount, setBillPax, setItemDiscount, voidBill, voidItem,
@@ -136,6 +138,15 @@ export default function OrderScreen({
     fetchPadProductInfo().then((m) => { if (live) setInfo(m) }, () => undefined)   // without it: no photos, drafts left out of the totals
     return () => { live = false }
   }, [])
+  // menu picks (docs/superpowers/specs/2026-11-17-menu-picks-design.md §5): read once when the screen
+  // opens; hints only — a failed read hides them
+  const [picks, setPicks] = useState<MenuPicks | null>(null)
+  const [goesWellFor, setGoesWellFor] = useState<string | null>(null)   // the product just added: its chip row
+  useEffect(() => {
+    let live = true
+    fetchMenuPicks().then((p) => { if (live) setPicks(p) }, () => { if (live) setPicks(null) })
+    return () => { live = false }
+  }, [branchId])
 
   // Only the order type's default is ever picked for the cashier (OrderPad's rule).
   useEffect(() => {
@@ -168,7 +179,7 @@ export default function OrderScreen({
   const doSwitch = (id: string, carrying: boolean) => {
     setCarry(carrying ? { lines, to: id } : null)
     if (!carrying) setLines([])
-    setSheet(null); setMenu(null); setCategory(null); setNotice(null); setCatalogId(id)
+    setSheet(null); setMenu(null); setCategory(null); setNotice(null); setGoesWellFor(null); setCatalogId(id)
   }
   // One order = one catalog: switching starts the cart again (asked first, in the POS's own dialog).
   const switchCatalog = (id: string) => {
@@ -199,6 +210,9 @@ export default function OrderScreen({
     const q = search.trim().toLowerCase()
     return all.filter((p) => (q ? p.name.toLowerCase().includes(q) : !category || p.category === category))
   }, [shownMenu, category, search])
+  const popularIds = useMemo(() => new Set(shownMenu ? visiblePopular(shownMenu, picks).map((p) => p.id) : []), [shownMenu, picks])
+  /** A new draft line; its Goes well with chip row replaces the last one. */
+  const addDraft = (line: OrderLine) => { setLines((ls) => [...ls, line]); setGoesWellFor(line.productId) }
 
   const tap = async (p: PosProduct, outOfSlot: boolean) => {
     if (soldOutMode) {
@@ -207,7 +221,7 @@ export default function OrderScreen({
     }
     if (!takesNewItems(target)) { setError(TAKEAWAY_ONE_ORDER); return }
     if (p.soldOut || outOfSlot) return
-    if (p.variants.length === 1 && p.groups.length === 0) setLines((ls) => [...ls, defaultLine(p)])
+    if (p.variants.length === 1 && p.groups.length === 0) addDraft(defaultLine(p))
     else setSheet({ product: p, index: null })
   }
 
@@ -286,7 +300,7 @@ export default function OrderScreen({
         Date.now(), crypto.randomUUID(), catalogId))
       // the menu is read again first: a successful load clears the error, the rejection must stay
       if (res.rejectedReason) { await load(); setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); return null }
-      setLines([]); setError(null)
+      setLines([]); setError(null); setGoesWellFor(null)
       return res.clientOrderId
     } catch (e) {
       setError(`Order NOT saved on this iPad: ${msg(e)}`)
@@ -384,6 +398,12 @@ export default function OrderScreen({
       onConfirm: () => setLines((ls) => ls.filter((_, k) => k !== d.index)) })
   }
 
+  // Goes well with: the chip row for the product just added, while it is still among the drafts —
+  // what the menu offers now and inside its time slot; never in sold-out mode or when the bill takes no new items
+  const goesWell = goesWellFor && shownMenu && !soldOutMode && takesNewItems(target) && lines.some((l) => l.productId === goesWellFor)
+    ? pairsFor(shownMenu, picks, goesWellFor, lines).filter((p) => tileSlotLabel(slots.windows, p.id, slots.now) === null)
+    : []
+
   const title = targetTitle(target, bill, tables)
   const tileNotice = !takesNewItems(target) ? (bill ? TAKEAWAY_ONE_ORDER : BILL_GONE) : null
   return (
@@ -433,7 +453,7 @@ export default function OrderScreen({
               )}
               {!menu && !error && !noCatalog && !(catalogs === null && catalogsError) && <p className="col-span-4 text-brown-muted">Loading menu…</p>}
               <ProductTiles products={products} windows={slots.windows} now={slots.now} soldOutMode={soldOutMode}
-                onTap={(p, outOfSlot) => void tap(p, outOfSlot)} />
+                popular={popularIds} onTap={(p, outOfSlot) => void tap(p, outOfSlot)} />
             </div>
           </div>
         </div>
@@ -461,13 +481,22 @@ export default function OrderScreen({
         payDisabled={sending || gate === 'no_shift' || gate === 'empty' || (gate === 'ready' && !loaded)}
         payHint={gate === 'no_shift' ? NO_SHIFT_PAY : null}
         onPay={pay}
+        goesWell={goesWell.length > 0 ? {
+          products: goesWell.map((p) => ({ id: p.id, name: p.name })),
+          onPick: (id) => { const p = goesWell.find((g) => g.id === id); if (p) void tap(p, false) },   // as from its tile
+        } : null}
       />
 
       {sheet && (
         <ModifierSheet product={sheet.product} initial={sheet.index === null ? undefined : lines[sheet.index]}
+          mostPicked={mostPickedFor(picks, sheet.product.id)}
           onCancel={() => setSheet(null)}
           onRemove={sheet.index === null ? undefined : () => { const i = sheet.index; setLines((ls) => ls.filter((_, k) => k !== i)); setSheet(null) }}
-          onDone={(line) => { setLines((ls) => (sheet.index === null ? [...ls, line] : ls.map((x, k) => (k === sheet.index ? line : x)))); setSheet(null) }} />
+          onDone={(line) => {
+            if (sheet.index === null) addDraft(line)
+            else { const i = sheet.index; setLines((ls) => ls.map((x, k) => (k === i ? line : x))) }
+            setSheet(null)
+          }} />
       )}
       {dialog?.kind === 'actions' && (
         <BillActionsOverlay title={title} actions={actions} disabled={busy || sending} onPick={pickAction} onClose={() => setDialog(null)} />

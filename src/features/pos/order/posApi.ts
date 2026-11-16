@@ -11,6 +11,7 @@ import { menuWindows, type MenuWindows, type MenuWindowsJson } from './padSlots'
 import { parseBillSummaries, type BillSummary } from './billSummaries'
 import { padProductInfo, type PadProductInfo, type PadProductRow } from './padInfo'
 import { productThumbUrl } from '../menu/photoUpload'
+import { parsePicks, type MenuPicks } from './picks'
 
 const SEND_TIMEOUT_MS = 8000
 
@@ -72,6 +73,14 @@ export async function fetchPosMenu(catalogId: string): Promise<PosMenu> {
   if (error) fail(error)
   const rows = data as PosMenuRows
   return buildPosMenu(rows.products, rows.groups, rows.links, rows.soldOut, 'counter', rows.catalog)
+}
+
+/** The menu picks of the caller's outlet (pos_menu_picks), or null when there are none. Hints
+ *  only: the order screen hides them when this rejects (an older server has no such function). */
+export async function fetchMenuPicks(): Promise<MenuPicks | null> {
+  const { data, error } = await supabase.rpc('pos_menu_picks')
+  if (error) fail(error)
+  return parsePicks(data)
 }
 
 /** The time slots of one catalog's products, with the server's clock (pos_menu_windows):

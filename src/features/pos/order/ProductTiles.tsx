@@ -2,17 +2,20 @@
 import { formatSen, type PosProduct } from './cart'
 import { tileSlotLabel, type MenuWindows } from './padSlots'
 import { tileInitials } from './modifiers'
+import PickPill from './PickPill'
 
 /** The order screen's product tiles, Feedme style: photo on top (or the first three letters on a
  *  grey block), name and price below. A sold-out product, or one outside its time slots at `now`
  *  (the server's time, moved on every minute by usePadWindows), is greyed out and says why;
  *  tapping it only works in sold-out mode (the screen decides). */
-export default function ProductTiles({ products, windows, now, soldOutMode, onTap }: {
+export default function ProductTiles({ products, windows, now, soldOutMode, popular, onTap }: {
   products: PosProduct[]
   windows: MenuWindows
   now: Date
   /** in sold-out mode every tile can be tapped (to mark it sold out or back) */
   soldOutMode: boolean
+  /** ids of the products shown as Popular (menu picks); none when left out */
+  popular?: ReadonlySet<string>
   onTap: (p: PosProduct, outOfSlot: boolean) => void
 }) {
   return (
@@ -30,6 +33,7 @@ export default function ProductTiles({ products, windows, now, soldOutMode, onTa
                 ? <img src={p.imageUrl} alt="" loading="lazy" className="h-full w-full object-cover" />
                 : <div className="flex h-full items-center justify-center text-2xl font-semibold text-brown-muted">{tileInitials(p.name)}</div>}
               {p.soldOut && <span className="absolute left-1 top-1 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white">SOLD OUT</span>}
+              {popular?.has(p.id) && <span className="absolute right-1 top-1"><PickPill text="Popular" /></span>}
             </div>
             <div className={`flex flex-1 flex-col p-2 ${dim ? 'text-brown-faint' : 'text-brown-dark'}`}>
               <div className="line-clamp-2 text-sm font-medium">{p.name}</div>
