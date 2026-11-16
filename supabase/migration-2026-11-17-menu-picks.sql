@@ -33,20 +33,24 @@ create table if not exists menu_picks_cache (
   computed_at  timestamptz not null,
   payload      jsonb not null
 );
+create index if not exists bills_branch_paid_closed_idx on bills(branch_id, closed_at) where status = 'paid';
+
 -- RLS on, no policies: read and written only through the functions below
 alter table menu_picks_cache enable row level security;
 revoke all on menu_picks_cache from public, anon, authenticated;
 
 -- ── P2. The rules, in one place (spec §2) ───────────────────────────────────
+-- its result columns changed: a re-run drops the old shape first (nothing in the schema depends on it)
+drop function if exists pos_picks_rules();
 create or replace function pos_picks_rules(
   out popular_days integer, out popular_min_bills integer, out popular_top integer, out popular_min_units integer,
-  out popular_max integer,
+  out popular_max integer, out pair_fallback integer,
   out pair_days integer, out pair_min_shared integer, out pair_min_share numeric, out pair_top integer,
   out picked_days integer, out picked_min_units integer, out picked_min_share numeric,
   out cache_minutes integer)
 language sql immutable security definer set search_path = public, pg_temp as $$
-  select 30, 30, 6, 3, 8,      -- Popular here: 30 days; from sales only with >= 30 paid bills; top 6 sellers with >= 3 units; at most 8 in all
-         60, 3, 0.10, 3,       -- Goes well with: 60 days; another category, >= 3 shared orders and >= 10 % of the product's orders; top 3
+  select 30, 30, 6, 3, 12, 6,   -- Popular here: 30 days; from sales only with >= 30 paid bills; top 6 sellers with >= 3 units; at most 12 in all (the client shows 8 after dropping what its menu lacks); fallback pairs up to 6
+         60, 3, 0.10, 6,       -- Goes well with: 60 days; another category, >= 3 shared orders and >= 10 % of the product's orders; up to 6 (the client shows 3 after filtering)
          60, 10, 0.40,         -- Most picked: 60 days; >= 10 units with the group answered; top option >= 40 % and strictly ahead
          30                    -- the cache is computed again when older than 30 minutes
 $$;
@@ -70,7 +74,7 @@ begin
   -- ── Popular here: recommended products first, then (once sales are enough) the best sellers ──
   select count(*) into v_bills
     from bills b
-   where b.branch_id = p_branch and b.status = 'paid'
+   where b.branch_id = p_branch and b.status = 'paid' and coalesce(b.refunded_sen, 0) = 0
      and b.closed_at > now() - make_interval(days => k.popular_days);
   v_sales := v_bills >= k.popular_min_bills;
 
@@ -78,7 +82,7 @@ begin
     select oi.product_id, sum(oi.qty)::integer as units
       from order_items oi
       join bills b on b.id = oi.bill_id
-     where b.branch_id = p_branch and b.status = 'paid'
+     where b.branch_id = p_branch and b.status = 'paid' and coalesce(b.refunded_sen, 0) = 0
        and b.closed_at > now() - make_interval(days => k.popular_days)
        and oi.voided_at is null
      group by oi.product_id),
@@ -107,7 +111,7 @@ begin
       from order_items oi
       join bills b on b.id = oi.bill_id
       join menu_products p on p.id = oi.product_id and p.is_active and not p.is_addon
-     where b.branch_id = p_branch and b.status = 'paid'
+     where b.branch_id = p_branch and b.status = 'paid' and coalesce(b.refunded_sen, 0) = 0
        and b.closed_at > now() - make_interval(days => k.pair_days)
        and oi.voided_at is null),
   orders_of as (
@@ -138,7 +142,7 @@ begin
                 join menu_products q on q.id = pop.id::uuid
                where q.category_id is distinct from p.category_id
                order by pop.ord
-               limit k.pair_top) x) f
+               limit k.pair_fallback) x) f
    where p.is_active and not p.is_addon
      and not (v_pairs ? p.id::text)
      and f.ids is not null;
@@ -148,8 +152,8 @@ begin
     select oi.id, oi.product_id, oi.qty, oi.modifiers_snapshot
       from order_items oi
       join bills b on b.id = oi.bill_id
-      join menu_products p on p.id = oi.product_id and not p.is_addon
-     where b.branch_id = p_branch and b.status = 'paid'
+      join menu_products p on p.id = oi.product_id and p.is_active and not p.is_addon
+     where b.branch_id = p_branch and b.status = 'paid' and coalesce(b.refunded_sen, 0) = 0
        and b.closed_at > now() - make_interval(days => k.picked_days)
        and oi.voided_at is null),
   chosen as (                                         -- one row per item and option chosen; the group by the option's id
@@ -198,6 +202,14 @@ begin
      and c.computed_at > now() - make_interval(mins => (select r.cache_minutes from pos_picks_rules() r));
   if found then
     return v_payload;
+  end if;
+  -- stale or missing: one session recomputes; the others take the stale payload (or compute without caching)
+  if not pg_try_advisory_xact_lock(hashtext('menu_picks:' || p_branch::text)) then
+    select c.payload into v_payload from menu_picks_cache c where c.branch_id = p_branch;
+    if found then
+      return v_payload;
+    end if;
+    return pos_compute_picks(p_branch);
   end if;
   v_payload := pos_compute_picks(p_branch);
   insert into menu_picks_cache(branch_id, computed_at, payload) values (p_branch, now(), v_payload)

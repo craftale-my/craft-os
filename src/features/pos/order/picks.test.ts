@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_PAIRS, mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from './picks'
+import { MAX_PAIRS, MAX_POPULAR, mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from './picks'
 import type { OrderLine, PosMenu, PosProduct } from './cart'
 
 const product = (id: string, extra: Partial<PosProduct> = {}): PosProduct => ({
@@ -40,6 +40,14 @@ describe('visiblePopular', () => {
   it('keeps the server order and only what the menu offers now', () => {
     // gone: not on this menu (catalog or time slot) · brownie: sold out · tart: no price in this catalog
     expect(visiblePopular(menu, picks).map((p) => p.id)).toEqual(['cake', 'latte', 'croissant'])
+  })
+  it('cuts to MAX_POPULAR after filtering, so a dropped product lets the next one in', () => {
+    const many: PosMenu = { categories: [{ name: 'ALL', products: Array.from({ length: 10 }, (_, i) => product(`p${i}`)) }] }
+    const ids = many.categories[0].products.map((p) => p.id)
+    expect(MAX_POPULAR).toBe(8)
+    expect(visiblePopular(many, { ...picks, popular: ids }).map((p) => p.id)).toEqual(ids.slice(0, 8))
+    const withGone = ['p0', 'p1', 'gone', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9']
+    expect(visiblePopular(many, { ...picks, popular: withGone }).map((p) => p.id)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'])
   })
   it('no picks, no row', () => {
     expect(visiblePopular(menu, null)).toEqual([])

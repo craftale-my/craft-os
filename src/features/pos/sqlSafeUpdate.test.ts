@@ -264,7 +264,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'pos_picks_rules', 'pos_compute_picks', 'pos_menu_picks_for', 'qr_picks', 'pos_menu_picks',
       'set_product_recommended', 'menu_product_extras',
     ])
-    expect([...sql.matchAll(/grant execute on function (\w+)\([^)]*\) to anon/g)].map((m) => m[1])).toEqual(['qr_picks'])
+    expect([...sql.matchAll(/grant execute on function (\w+)\([^)]*\) to [^;]*\b(anon|public)\b/g)].map((m) => m[1])).toEqual(['qr_picks'])
     expect(sql).toMatch(/revoke all on function pos_picks_rules\(\) from public, anon, authenticated;/)
     expect(sql).toMatch(/revoke all on function pos_compute_picks\(uuid\) from public, anon, authenticated;/)
     expect(sql).toMatch(/revoke all on function pos_menu_picks_for\(uuid\) from public, anon, authenticated;/)

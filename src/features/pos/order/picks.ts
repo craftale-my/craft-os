@@ -5,15 +5,18 @@
 import { findProduct, type OrderLine, type PosMenu, type PosProduct } from './cart'
 
 export interface MenuPicks {
-  /** product ids: recommended first, then by units sold (at most 8) */
+  /** product ids: recommended first, then by units sold (the server sends up to 12) */
   popular: string[]
-  /** product id → the products usually ordered with it (at most 3 each) */
+  /** product id → the products usually ordered with it (the server sends up to 6 each) */
   pairs: Record<string, string[]>
   /** product id → add-on group id → the option most guests choose */
   mostPicked: Record<string, Record<string, string>>
   /** false = Popular is only the recommended products so far */
   fromSales: boolean
 }
+
+/** Popular here shows at most this many products (the server sends up to 12 so filtering still leaves 8). */
+export const MAX_POPULAR = 8
 
 /** Goes well with shows at most this many products. */
 export const MAX_PAIRS = 3
@@ -42,7 +45,7 @@ const orderable = (p: PosProduct | undefined): p is PosProduct => p !== undefine
 /** Popular here: the popular products the menu offers now, in the server's order. */
 export function visiblePopular(menu: PosMenu, picks: MenuPicks | null): PosProduct[] {
   if (!picks) return []
-  return picks.popular.map((id) => findProduct(menu, id)).filter(orderable)
+  return picks.popular.map((id) => findProduct(menu, id)).filter(orderable).slice(0, MAX_POPULAR)
 }
 
 /** Goes well with `productId`: its pairs the menu offers now, not in the cart, at most MAX_PAIRS. */

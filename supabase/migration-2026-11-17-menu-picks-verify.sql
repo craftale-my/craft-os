@@ -5,7 +5,7 @@
 --
 -- The seed: outlet VERIFY P (tables P1 open, P2 paused, P3 switched off), products coded by one letter:
 --   COFFEE  L Latte · M Mocha · A Americano · T Tea (recommended) · X Matcha (recommended, never sold)
---           H Shot (an add-on product)
+--           H Shot (an add-on product) · Z Retired (recommended, switched off, sold in outlet P2 only)
 --   CAKE    C Cheesecake · B Brownie
 --   BREAD   R Croissant · G Bagel (recommended) · S Scone
 --   groups  MILK (oat, dairy, soy) · SUGAR (less, normal) · TOPPING (berry, choco, plain, caramel)
@@ -13,19 +13,20 @@
 --
 -- Expected, worked by hand (paid bills of VERIFY P, items not voided, add-ons left out):
 --   units, last 30 days: L 40 · C 15 · M 12 · R 9 · A 7 · B 6 · T 4 · G 3 · S 3 · X 0
---   Popular: the recommended by units T G X, then the top 6 sellers L C M R A B, cut at 8
---            → T G X L C M R A   (S out by the top 6, B out by the 8)
+--   Popular: the recommended by units T G X, then the top 6 sellers L C M R A B, cut at 12
+--            → T G X L C M R A B   (S out by the top 6; 9 in all, under the 12)
 --   orders (one guest's basket), last 60 days: L 32 · C 15 · R 9 · M 8 · B 7 · A 5 · G 3 · S 3 · T 2
 --   pairs:  L → C R    (C 10, R 6; M is the same category; B 2 shared < 3; S 3/32 < 10 %)
---           A → C B G  (C 5, B 4, R 3, G 3: top 3, the tie goes by name — Bagel before Croissant)
---           C → L A G  · B → A G R · R → L A B · G → A B C · S → L (3/3 >= 10 %)
---           M, T, X → G C R (no pair of their own: Popular without COFFEE, first 3)
+--           A → C B G R  (C 5, B 4, G 3, R 3: up to 6, the tie goes by name — Bagel before Croissant)
+--           C → L A G R (R: 3 shared of 15 orders = 20 %) · B → A G R · R → L A B C (C 3 shared of 9 orders = 33 %) · G → A B C · S → L (3/3 >= 10 %)
+--           M, T, X → G C R B (no pair of their own: Popular without COFFEE, up to 6)
 --   Most picked, last 60 days: L MILK oat 18/40 = 45 %, ahead of dairy 14 → oat
 --           L SUGAR 6 units answered (< 10) → none · M MILK oat 6, dairy 6 (a tie) → none
 --           C TOPPING berry 5/15 = 33 % (< 40 %) → none
 --   Noise that must not count: a voided L*5:dairy and B*20, an add-on H*20, an open bill (C*20 C*20),
---   a voided bill (T*10), a merged bill (S*20), a paid bill 45 days ago (B*10 — in the 60-day windows
---   only), one 90 days ago (M*20:dairy C), and outlet VERIFY P2 (29 bills of R, 1 of S*2).
+--   a voided bill (T*10), a merged bill (S*20), a paid bill with a refund (S*5: it would make S 8 units, ahead of B,
+--   and the 30th paid bill), a paid bill 45 days ago (B*10 — in the 60-day windows
+--   only), one 90 days ago (M*20:dairy C), and outlet VERIFY P2 (29 bills of R, 1 of S*2, 4 of R with the switched-off Z*3:oat — Z must show nowhere).
 --   Orders of one bill must not pair: bills hold M with C orders (m1|c1 …) — a bill grain would give M → C.
 begin;
 
@@ -160,10 +161,10 @@ begin
 
   -- ── B. the rules (spec §2) ────────────────────────────────────────────────
   select * into k from pos_picks_rules();
-  if (k.popular_days, k.popular_min_bills, k.popular_top, k.popular_min_units, k.popular_max,
+  if (k.popular_days, k.popular_min_bills, k.popular_top, k.popular_min_units, k.popular_max, k.pair_fallback,
       k.pair_days, k.pair_min_shared, k.pair_min_share, k.pair_top,
       k.picked_days, k.picked_min_units, k.picked_min_share, k.cache_minutes)
-     is distinct from (30, 30, 6, 3, 8, 60, 3, 0.10, 3, 60, 10, 0.40, 30) then
+     is distinct from (30, 30, 6, 3, 12, 6, 60, 3, 0.10, 6, 60, 10, 0.40, 30) then
     raise exception 'FAIL rules: %', row_to_json(k);
   end if;
 
@@ -180,12 +181,13 @@ begin
   insert into menu_categories(name, sort_order) values ('VP BREAD', 903) returning id into v_bread;
   for r in select * from (values
       ('L', 'VP Latte', 'coffee', false), ('M', 'VP Mocha', 'coffee', false), ('A', 'VP Americano', 'coffee', false),
-      ('T', 'VP Tea', 'coffee', false), ('X', 'VP Matcha', 'coffee', false), ('H', 'VP Shot', 'coffee', true),
+      ('T', 'VP Tea', 'coffee', false), ('X', 'VP Matcha', 'coffee', false), ('H', 'VP Shot', 'coffee', true), ('Z', 'VP Retired', 'coffee', false),
       ('C', 'VP Cheesecake', 'cake', false), ('B', 'VP Brownie', 'cake', false),
       ('R', 'VP Croissant', 'bread', false), ('G', 'VP Bagel', 'bread', false), ('S', 'VP Scone', 'bread', false)
     ) as x(code, name, cat, addon) loop
-    insert into menu_products(name, category_id, is_addon)
-    values (r.name, case r.cat when 'coffee' then v_coffee when 'cake' then v_cake else v_bread end, r.addon)
+    insert into menu_products(name, category_id, is_addon, is_active, is_recommended)
+    values (r.name, case r.cat when 'coffee' then v_coffee when 'cake' then v_cake else v_bread end, r.addon,
+            r.code <> 'Z', r.code = 'Z')
     returning id into v_id;
     insert into vp_codes values (r.code, v_id);
   end loop;
@@ -239,8 +241,10 @@ begin
   perform pg_temp.sell(v_v, 'merged',  1, '[["S*20"]]');
   perform pg_temp.sell(v_v, 'paid',   45, '[["B*10"]]');
   perform pg_temp.sell(v_v, 'paid',   90, '[["M*20:dairy","C"]]');
+  update bills set refunded_sen = 500 where id = pg_temp.sell(v_v, 'paid', 1, '[["S*5"]]');   -- a refunded bill counts nowhere
   for i in 1..29 loop perform pg_temp.sell(v_p2, 'paid', 1, '[["R"]]'); end loop;
   perform pg_temp.sell(v_p2, 'paid', 1, '[["S*2"]]');
+  for i in 1..4 loop perform pg_temp.sell(v_p2, 'paid', 1, '[["R","Z*3:oat"]]'); end loop;   -- Z is switched off
   -- the five A bills
   perform pg_temp.sell(v_v, 'paid', 1, '[["A*2","C:berry","B","R","G"]]');
   perform pg_temp.sell(v_v, 'paid', 1, '[["A*2","C:berry","B","R","G"]]');
@@ -281,17 +285,17 @@ begin
   perform pg_temp.sell(v_v, 'paid', 1, '[["L:soy+less"]]');
   v := pos_compute_picks(v_v);
   if (v->'fromSales') is distinct from 'true'::jsonb then raise exception 'FAIL D: 30 paid bills are enough: %', v->'fromSales'; end if;
-  perform pg_temp.list('D popular', v->'popular', 'T G X L C M R A');
+  perform pg_temp.list('D popular', v->'popular', 'T G X L C M R A B');
   perform pg_temp.list('D pairs of L', (v->'pairs')->pg_temp.pid('L'), 'C R');
-  perform pg_temp.list('D pairs of A', (v->'pairs')->pg_temp.pid('A'), 'C B G');
-  perform pg_temp.list('D pairs of C', (v->'pairs')->pg_temp.pid('C'), 'L A G');
+  perform pg_temp.list('D pairs of A', (v->'pairs')->pg_temp.pid('A'), 'C B G R');
+  perform pg_temp.list('D pairs of C', (v->'pairs')->pg_temp.pid('C'), 'L A G R');
   perform pg_temp.list('D pairs of B', (v->'pairs')->pg_temp.pid('B'), 'A G R');
-  perform pg_temp.list('D pairs of R', (v->'pairs')->pg_temp.pid('R'), 'L A B');
+  perform pg_temp.list('D pairs of R', (v->'pairs')->pg_temp.pid('R'), 'L A B C');
   perform pg_temp.list('D pairs of G', (v->'pairs')->pg_temp.pid('G'), 'A B C');
   perform pg_temp.list('D pairs of S', (v->'pairs')->pg_temp.pid('S'), 'L');
-  perform pg_temp.list('D pairs of M (fallback)', (v->'pairs')->pg_temp.pid('M'), 'G C R');
-  perform pg_temp.list('D pairs of T (fallback)', (v->'pairs')->pg_temp.pid('T'), 'G C R');
-  perform pg_temp.list('D pairs of X (fallback)', (v->'pairs')->pg_temp.pid('X'), 'G C R');
+  perform pg_temp.list('D pairs of M (fallback)', (v->'pairs')->pg_temp.pid('M'), 'G C R B');
+  perform pg_temp.list('D pairs of T (fallback)', (v->'pairs')->pg_temp.pid('T'), 'G C R B');
+  perform pg_temp.list('D pairs of X (fallback)', (v->'pairs')->pg_temp.pid('X'), 'G C R B');
   if (v->'pairs') ? pg_temp.pid('H') then raise exception 'FAIL D: an add-on product gets no pairs'; end if;
   if (v->'mostPicked') is distinct from jsonb_build_object(pg_temp.pid('L'),
        jsonb_build_object(v_milk::text, (select option_id::text from vp_opts where code = 'oat'))) then
@@ -299,7 +303,12 @@ begin
   end if;
   v := pos_compute_picks(v_p2);
   if (v->'fromSales') is distinct from 'true'::jsonb then raise exception 'FAIL D: VERIFY P2 has 30 paid bills'; end if;
-  perform pg_temp.list('D popular of VERIFY P2 (S has 2 units < 3)', v->'popular', 'G X T R');
+  perform pg_temp.list('D popular of VERIFY P2 (S has 2 units < 3; Z is switched off)', v->'popular', 'G X T R');
+  perform pg_temp.list('D pairs of R in VERIFY P2 (fallback; Z is switched off)', (v->'pairs')->pg_temp.pid('R'), 'X T');
+  if (v->'pairs') ? pg_temp.pid('Z') or (v->'mostPicked') ? pg_temp.pid('Z') or (v->'popular') @> jsonb_build_array(pg_temp.pid('Z')) then
+    raise exception 'FAIL D: a switched-off product (Z) must not appear in popular, pairs, fallbacks or mostPicked: %', v;
+  end if;
+  if (v->'mostPicked') is distinct from '{}'::jsonb then raise exception 'FAIL D P2 mostPicked: %', v->'mostPicked'; end if;
 
   -- ── E. the cache and the three entry points ───────────────────────────────
   delete from menu_picks_cache where true;
@@ -325,7 +334,7 @@ begin
   update menu_picks_cache set payload = '{"marker": "cached"}' where branch_id = v_v;
   perform set_product_recommended(pg_temp.pid('S')::uuid, true);
   v := pos_menu_picks();
-  perform pg_temp.list('E popular after recommending S (recomputed)', v->'popular', 'T G S X L C M R');
+  perform pg_temp.list('E popular after recommending S (recomputed)', v->'popular', 'T G S X L C M R A B');
   if qr_picks('no-such-token') is not null then raise exception 'FAIL E: an unknown token gives null'; end if;
   if qr_picks(v_tok2) is not null then raise exception 'FAIL E: a paused table gives null'; end if;
   if qr_picks(v_tok3) is not null then raise exception 'FAIL E: a switched-off table gives null'; end if;
