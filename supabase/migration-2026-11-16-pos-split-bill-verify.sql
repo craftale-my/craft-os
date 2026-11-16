@@ -482,5 +482,75 @@ exception when sqlstate 'S2RB0' then
   null;   -- undo this block's writes; a FAIL (any other error) still stops the script
 end $$;
 
+-- ── A3. move_items (spec §4.4, §4.5; §8 tests 3 and 6) ──────────────────────
+do $$
+declare
+  v_b3 uuid := pg_temp.id('b3');
+  v_res jsonb; v_res2 jsonb; v_target bills; v_cut order_items; v_order uuid; v_b7 uuid; v_take uuid;
+  v_l7 uuid; v_l7t uuid; v_items jsonb;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- 2 of 3 lattes (item discount RM 1.00) to the free table S4: a new open bill there, pax 1;
+  -- the moved cut row carries 0.66, the line keeps 0.34
+  v_res := move_items(v_b3, jsonb_build_array(pg_temp.sel(pg_temp.id('L3'), 2)), pg_temp.id('t4'));
+  select * into v_target from bills where id = (v_res->>'targetBillId')::uuid;
+  select * into v_cut from order_items where split_from_item = pg_temp.id('L3');
+  if v_target.table_id <> pg_temp.id('t4') or v_target.status <> 'open' or v_target.pax <> 1 or v_target.order_type <> 'dine_in'
+     or v_res->>'targetBillNo' <> v_target.bill_no or (v_res->>'movedUnits')::int <> 2
+     or v_cut.bill_id <> v_target.id or v_cut.qty <> 2 or v_cut.discount_value <> 66
+     or (select qty from order_items where id = pg_temp.id('L3')) <> 1
+     or (select discount_value from order_items where id = pg_temp.id('L3')) <> 34
+     or exists (select 1 from payments where bill_id = v_target.id) then
+    raise exception 'FAIL A3 to a free table: % %', v_res, row_to_json(v_cut);
+  end if;
+  -- the whole cake line to S4, which now has a bill: the same row moves onto that bill
+  v_res2 := move_items(v_b3, jsonb_build_array(pg_temp.sel(pg_temp.id('C3'), 1)), pg_temp.id('t4'));
+  if (v_res2->>'targetBillId')::uuid <> v_target.id or (v_res2->>'movedUnits')::int <> 1
+     or (select bill_id from order_items where id = pg_temp.id('C3')) <> v_target.id
+     or exists (select 1 from order_items where split_from_item = pg_temp.id('C3')) then
+    raise exception 'FAIL A3 to a table with a bill: %', v_res2;
+  end if;
+  -- refusals
+  perform pg_temp.expect_error(format('select move_items(%L, %L, %L)', v_b3, jsonb_build_array(pg_temp.sel(pg_temp.id('L3'), 1)), pg_temp.id('t4')),
+    'Select fewer items, or pay the whole bill', 'A3 every unit');
+  perform pg_temp.expect_error(format('select move_items(%L, %L, %L)', v_target.id, jsonb_build_array(pg_temp.sel(pg_temp.id('C3'), 1)), pg_temp.id('t4')),
+    'Invalid table', 'A3 its own table');
+  perform pg_temp.expect_error(format('select move_items(%L, %L, %L)', v_target.id, jsonb_build_array(pg_temp.sel(pg_temp.id('C3'), 1)), gen_random_uuid()),
+    'Invalid table', 'A3 unknown table');
+  perform pg_temp.expect_error(format('select move_items(%L, %L, %L)', pg_temp.id('b6'), jsonb_build_array(pg_temp.sel(pg_temp.id('L6'), 1)), pg_temp.id('t8')),
+    'Remove the bill discount before moving items', 'A3 source with a bill discount');
+  perform pg_temp.expect_error(format('select move_items(%L, %L, %L)', v_target.id, jsonb_build_array(pg_temp.sel(pg_temp.id('L3'), 1)), pg_temp.id('t8')),
+    'The bill changed. Check the items again.', 'A3 an item of another bill');
+
+  -- a cut row keeps its catalog discount and order type: S7 gets 2 lattes at 50% (catalog), then
+  -- the catalog goes back to 0% and a takeaway of 2 lattes is merged in; one of each moves to S8
+  perform pg_temp.act(pg_temp.id('owner'));
+  perform menu_set_catalog_discount(pg_temp.id('catalog'), 5000);
+  perform pg_temp.act(pg_temp.id('dev'));
+  v_items := jsonb_build_array(jsonb_build_object('productId', pg_temp.id('latte'), 'variantId', pg_temp.id('latte_v'), 'qty', 2));
+  v_order := place_counter_order(pg_temp.id('t7'), 'dine_in', 2, v_items, gen_random_uuid());
+  v_b7 := (select bill_id from orders where id = v_order);
+  v_l7 := (select id from order_items where order_id = v_order);
+  perform pg_temp.act(pg_temp.id('owner'));
+  perform menu_set_catalog_discount(pg_temp.id('catalog'), 0);
+  perform pg_temp.act(pg_temp.id('dev'));
+  v_order := place_counter_order(null, 'takeaway', null, v_items, gen_random_uuid());
+  v_take := (select bill_id from orders where id = v_order);
+  v_l7t := (select id from order_items where order_id = v_order);
+  perform merge_bills(v_take, v_b7);
+  if (select catalog_discount_bp from order_items where id = v_l7) <> 5000
+     or (select order_type from order_items where id = v_l7t) <> 'takeaway' then
+    raise exception 'FAIL A3 setup of S7';
+  end if;
+  v_res := move_items(v_b7, jsonb_build_array(pg_temp.sel(v_l7, 1), pg_temp.sel(v_l7t, 1)), pg_temp.id('t8'));
+  if (select catalog_discount_bp || ':' || catalog_discount_name || ':' || order_type from order_items where split_from_item = v_l7)
+       <> '5000:VERIFY S MENU:dine_in'
+     or (select catalog_discount_bp || ':' || order_type from order_items where split_from_item = v_l7t) <> '0:takeaway'
+     or (select bill_id from order_items where split_from_item = v_l7t) <> (v_res->>'targetBillId')::uuid
+     or (select order_type from bills where id = (v_res->>'targetBillId')::uuid) <> 'dine_in' then
+    raise exception 'FAIL A3 cut rows keep catalog discount and order type: %', v_res;
+  end if;
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;

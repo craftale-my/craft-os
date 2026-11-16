@@ -552,5 +552,50 @@ end $$;
 revoke all on function pos_checkout_state(uuid, uuid[]) from public, anon;
 grant execute on function pos_checkout_state(uuid, uuid[]) to authenticated;
 
+-- ── S4. Move selected items to another table (spec §4.4) ──────────────────────
+-- No idempotency key: no money moves, the button is offline-disabled, and the client re-reads the
+-- bill instead of retrying; a resend that finds the items gone gets "The bill changed".
+create or replace function move_items(p_bill_id uuid, p_items jsonb, p_table_id uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+  v_target bills;
+  v_label  text;
+  v_units  integer;
+begin
+  select label into v_label from dining_tables where id = p_table_id and branch_id = v_branch and is_active;
+  if not found then raise exception 'Invalid table'; end if;
+  -- the source and the target table's open bill locked in one fixed order (as merge_bills)
+  perform 1 from bills
+   where (id = p_bill_id and branch_id = v_branch) or (table_id = p_table_id and status = 'open')
+   order by id for update;
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.status <> 'open' then
+    raise exception 'This bill is already %', case v_bill.status when 'paid' then 'paid'
+                                                                 when 'voided' then 'voided'
+                                                                 else 'merged into another bill' end;
+  end if;
+  if v_bill.table_id is not distinct from p_table_id then raise exception 'Invalid table'; end if;
+  if v_bill.discount_kind is not null then raise exception 'Remove the bill discount before moving items'; end if;
+  v_units := pos_split_check(v_bill, p_items);
+  select * into v_target from bills where table_id = p_table_id and status = 'open';
+  if not found then
+    begin
+      insert into bills(branch_id, bill_no, table_id, order_type, pax)
+      values (v_branch, pos_next_bill_no(v_branch), p_table_id, 'dine_in', 1)
+      returning * into v_target;
+    exception when unique_violation then
+      raise exception 'Table % just got a bill. Try again.', v_label;
+    end;
+  end if;
+  perform pos_move_units(p_items, v_target.id);
+  update bills set updated_at = now() where id in (v_bill.id, v_target.id);   -- both tables refresh on every tablet
+  return jsonb_build_object('targetBillId', v_target.id, 'targetBillNo', v_target.bill_no, 'movedUnits', v_units);
+end $$;
+revoke all on function move_items(uuid, jsonb, uuid) from public, anon;
+grant execute on function move_items(uuid, jsonb, uuid) to authenticated;
+
 notify pgrst, 'reload schema';
 select 'pos split bill applied' as result;
