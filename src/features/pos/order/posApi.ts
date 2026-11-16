@@ -12,6 +12,7 @@ import { parseBillSummaries, type BillSummary } from './billSummaries'
 import { padProductInfo, type PadProductInfo, type PadProductRow } from './padInfo'
 import { productThumbUrl } from '../menu/photoUpload'
 import { parsePicks, type MenuPicks } from './picks'
+import { parseMoveItemsResult, type MoveItemsResult, type SplitItem } from './splitSelection'
 
 const SEND_TIMEOUT_MS = 8000
 
@@ -240,4 +241,12 @@ export async function requeueJob(id: string): Promise<void> {
 export async function insertTestPrint(route: string, branchId?: string): Promise<void> {
   const { error } = await supabase.rpc('insert_test_print', { p_route: route, ...(branchId ? { p_branch_id: branchId } : {}) })
   if (error) fail(error)
+}
+
+/** Move selected units to another table (move_items, split spec §4.4): its open bill, or a new one.
+ *  No retry on a lost reply: the bill is read again instead (a resend would find the items gone). */
+export async function moveItems(billId: string, items: SplitItem[], tableId: string): Promise<MoveItemsResult> {
+  const { data, error } = await supabase.rpc('move_items', { p_bill_id: billId, p_items: items, p_table_id: tableId })
+  if (error) fail(error)
+  return parseMoveItemsResult(data)
 }

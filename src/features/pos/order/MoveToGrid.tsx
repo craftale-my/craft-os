@@ -4,10 +4,11 @@ import { TAKEAWAY_NEEDS_OCCUPIED, type MoveTarget } from './moveTargets'
 
 /** Move to (spec §3): every other table with its current total, Feedme style. An empty table moves
  *  the bill there, an occupied one merges it in (OrderScreen asks first), a refused one says why. */
-export default function MoveToGrid({ billNo, targets, busy, onPick, onClose }: {
+export default function MoveToGrid({ billNo, targets, busy, hint = 'an empty table moves it, a table with a bill merges it in', onPick, onClose }: {
   billNo: string
   targets: MoveTarget[]         // moveTargets(...)
   busy: boolean
+  hint?: string                 // the line under the title (default: the whole-bill rule)
   onPick: (t: MoveTarget) => void
   onClose: () => void
 }) {
@@ -17,7 +18,7 @@ export default function MoveToGrid({ billNo, targets, busy, onPick, onClose }: {
         className="flex max-h-[90vh] w-full max-w-4xl flex-col rounded-2xl bg-card p-5">
         <div className="flex items-baseline justify-between">
           <h2 className="text-lg font-semibold text-brown-dark">Move to</h2>
-          <span className="text-sm text-brown-muted">Bill {billNo} · an empty table moves it, a table with a bill merges it in</span>
+          <span className="text-sm text-brown-muted">Bill {billNo} · {hint}</span>
         </div>
         <div className="mt-4 grid flex-1 grid-cols-5 content-start gap-3 overflow-y-auto">
           {targets.map((t) => (

@@ -8,6 +8,7 @@ import type { PaymentKind } from './tender'
 import type { ReasonAction, ReasonTemplate } from './reasons'
 import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
 import { parseCheckoutState, type CheckoutState } from './follow'
+import type { SplitItem } from '../order/splitSelection'
 
 const CHECKOUT_TIMEOUT_MS = 10_000
 const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
@@ -170,6 +171,19 @@ export async function fetchCheckoutState(billId: string, checkoutIds: string[]):
     .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
   if (error) fail(error)
   return parseCheckoutState(data)
+}
+
+/** The selected part's totals (pos_split_totals, split spec §4.2): the picker's footer and the Payment
+ *  screen's split mode. Raises the server's words for a selection it refuses. */
+export async function splitTotals(billId: string, items: SplitItem[]): Promise<BillTotals> {
+  const { data, error } = await supabase
+    .rpc('pos_split_totals', { p_bill_id: billId, p_items: items })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  if (typeof data !== 'object' || data === null || typeof (data as { totalSen?: unknown }).totalSen !== 'number') {
+    throw new Error('Unexpected reply from the server')
+  }
+  return data as BillTotals
 }
 
 /** A timeout or dropped connection throws — the sheet then offers Pay again with the

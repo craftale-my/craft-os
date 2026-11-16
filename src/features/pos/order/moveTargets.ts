@@ -46,3 +46,20 @@ export function moveTargets(
       })
   return [...toTables, ...toTakeaways]
 }
+
+export const ITEM_MOVE_HINT = 'an empty table gets a new bill, a table with a bill takes the items'
+
+/** Move items (split spec §3.2, move_items): every active table but the bill's own. An empty table
+ *  gets a new bill there (`move`); a table with a bill takes the items onto it (shown as `merge`, with
+ *  its total). Takeaway bills are never a target. */
+export function itemMoveTargets(
+  from: Pick<OpenBillRow, 'table_id'>, tables: TableRow[], bills: OpenBillRow[], summaries: ReadonlyMap<string, BillSummary>,
+): MoveTarget[] {
+  const byTable = new Map(bills.flatMap((b) => (b.table_id ? [[b.table_id, b] as const] : [])))
+  return tables.filter((t) => t.id !== from.table_id).map((t): MoveTarget => {
+    const there = byTable.get(t.id)
+    return there
+      ? { tableId: t.id, label: t.label, kind: 'merge', intoBillId: there.id, intoBillNo: there.bill_no, totalSen: summaries.get(there.id)?.totalSen ?? null }
+      : { tableId: t.id, label: t.label, kind: 'move' }
+  })
+}

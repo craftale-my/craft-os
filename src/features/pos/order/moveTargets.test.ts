@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MERGE_NEEDS_NO_BILL_DISCOUNT, moveTargets, TAKEAWAY_NEEDS_OCCUPIED } from './moveTargets'
+import { itemMoveTargets, MERGE_NEEDS_NO_BILL_DISCOUNT, moveTargets, TAKEAWAY_NEEDS_OCCUPIED } from './moveTargets'
 import type { OpenBillRow, TableRow } from './posApi'
 
 const t = (id: string): TableRow => ({ id, label: id.toUpperCase(), area: null, sort_order: 0, qr_token: 'x', qr_paused: false, is_active: true })
@@ -52,5 +52,26 @@ describe('moveTargets', () => {
       { tableId: 't3', label: 'T3', kind: 'refused', reason: MERGE_NEEDS_NO_BILL_DISCOUNT },
       { tableId: null, label: 'Takeaway B-bt2', kind: 'refused', reason: MERGE_NEEDS_NO_BILL_DISCOUNT },
     ])
+  })
+})
+
+describe('itemMoveTargets (split spec §3.2)', () => {
+  const tbl = (id: string, label: string) => ({ id, label, qr_token: `q-${id}`, qr_paused: false, is_active: true, sort_order: 1, area: null })
+  const open = (id: string, tableId: string | null, billNo: string) => ({
+    id, bill_no: billNo, table_id: tableId, order_type: (tableId ? 'dine_in' : 'takeaway') as 'dine_in' | 'takeaway', pax: 2,
+    opened_at: '2026-11-16T04:00:00Z', discount_kind: null, discount_value: null, discount_reason: null,
+  })
+  it('every other table: an empty one gets a new bill, one with a bill takes the items; takeaways are not offered', () => {
+    const tables = [tbl('t5', 'T5'), tbl('t7', 'T7'), tbl('t8', 'T8')]
+    const bills = [open('b5', 't5', '261116-009'), open('b8', 't8', '261116-012'), open('bt', null, '261116-013')]
+    const summaries = new Map([['b8', { billId: 'b8', totalSen: 2500, itemCount: 1 }]])
+    expect(itemMoveTargets(bills[0], tables, bills, summaries)).toEqual([
+      { tableId: 't7', label: 'T7', kind: 'move' },
+      { tableId: 't8', label: 'T8', kind: 'merge', intoBillId: 'b8', intoBillNo: '261116-012', totalSen: 2500 },
+    ])
+  })
+  it('a takeaway bill may move items to any table', () => {
+    const tables = [tbl('t5', 'T5')]
+    expect(itemMoveTargets(open('bt', null, '261116-013'), tables, [], new Map())).toEqual([{ tableId: 't5', label: 'T5', kind: 'move' }])
   })
 })

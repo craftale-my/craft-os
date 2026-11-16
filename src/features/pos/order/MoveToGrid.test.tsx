@@ -31,4 +31,9 @@ describe('MoveToGrid', () => {
     fireEvent.click(screen.getByRole('button', { name: /Takeaway 261026-005\s*RM 25\.00/ }))
     expect(onPick).toHaveBeenCalledWith(takeaway)
   })
+  it('takes another hint for moving items', () => {
+    render(<MoveToGrid billNo="261116-009" targets={targets} busy={false} hint="an empty table gets a new bill, a table with a bill takes the items"
+      onPick={() => {}} onClose={() => {}} />)
+    expect(screen.getByText('Bill 261116-009 · an empty table gets a new bill, a table with a bill takes the items')).toBeTruthy()
+  })
 })
