@@ -2,13 +2,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatSen } from '../order/cart'
 import { fetchBillItems, type BillItemRow, type OpenBillRow } from '../order/posApi'
-import type { SplitItem } from '../order/splitSelection'
+import { SPLIT_OFFLINE, type SplitItem } from '../order/splitSelection'
 import type { BillTotals } from './bill'
-import { checkoutBill, checkoutItems, fetchCheckoutState, fetchPaymentMethods, splitTotals, type CheckoutResult } from './checkoutApi'
+import {
+  checkoutBill, checkoutItems, fetchCheckoutState, fetchPaymentMethods, partQuote, payBillPart, splitTotals, type CheckoutResult,
+} from './checkoutApi'
 import CheckoutTotals from './CheckoutTotals'
 import DiscountRows from './DiscountRows'
 import { catalogTag, discountLabel, lineDiscountRows, linesById, storedDiscount } from './discounts'
 import { billChangedAtPay, followBill, type CheckoutState, type FollowAction } from './follow'
+import {
+  BALANCE_DUE, MAX_WAYS, MIN_WAYS, PERCENT_CHIPS, SPLIT_MODE_LABEL, clampWays, fixedWays, paidPartLabel, partPaidNote, partProblem,
+  percentChipSen, shareLabel, splitIntoLabel, type BillPart, type PartDone, type PartMode, type PartQuote,
+} from './partSplit'
 import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
 import { looksOffline } from './rpcResult'
 import {
@@ -19,6 +25,7 @@ import { NUMPAD_KEYS, liveChangeSen, numpadPress, payTabs, singleLines, type Pay
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const money = (sen: number) => (Math.max(0, sen) / 100).toFixed(2)
+const SPLIT_MODES = ['item', 'equal', 'amount'] as const
 
 /** Full-screen Payment (spec §4), replacing the Checkout sheet. Its logic is the sheet's, unchanged:
  *  the server's totals (pos_checkout_state, re-read on every bills event and sweep), one checkout id
@@ -27,14 +34,21 @@ const money = (sen: number) => (Math.max(0, sen) / 100).toFixed(2)
  *  New is only the layout: the bill on the left; the amount, method tabs, quick tender and number
  *  pad on the right; Split payment for several payments. With `split` (split spec §3.3) only the picked
  *  units are paid: their totals are pos_split_totals', Pay is checkout_items, and the table bill stays
- *  open (the screen still follows it: paid, voided or merged elsewhere locks it). */
-export default function PaymentScreen({ branchId, bill, title, refreshKey, earlierIds, split: byItem, onSendIds, onClose, onPaid }: {
+ *  open (the screen still follows it: paid, voided or merged elsewhere locks it).
+ *  The Split row (split spec §3.5): By item opens the picker; Equally pays the server's share
+ *  (pos_part_quote) and By amount an amount below the balance, each as a part (pay_bill_part, the
+ *  attempt's id is the part's id); the last share, or an amount equal to the balance, is a normal
+ *  checkout_bill of the balance. The paid parts and the balance show above the totals. */
+export default function PaymentScreen({ branchId, bill, title, refreshKey, earlierIds, split: byItem, online = true, onSplitByItem,
+  onSendIds, onClose, onPaid }: {
   branchId: string
   bill: OpenBillRow
   title: string                 // "Table T3", "Takeaway 261024-004", "Table T3 · Split"
   refreshKey: number            // bumped on every bills event, order and 15 s sweep: re-read the bill
   earlierIds: string[]          // checkout ids an earlier Payment of this bill used on this iPad
   split?: { items: SplitItem[] }   // split by item: pay only these units, as their own bill
+  online?: boolean              // the server answers: the Split row needs it
+  onSplitByItem?: () => void    // Split → By item: the picker (PosTill)
   onSendIds: (ids: string[]) => void   // every id used so far, at each send: PosPage keeps them per bill
                                        // (split: [] once the part's result shows — those ids are spent)
   onClose: () => void           // Cancel payment: back to the bill (split: back to the picker)
@@ -57,18 +71,29 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   const [lockNote, setLockNote] = useState<string | null>(null)       // paid, voided or merged on another iPad
   const [result, setResult] = useState<CheckoutResult | null>(null)
   const [session, setSession] = useState<PaySession>(() => newPaySession(crypto.randomUUID(), earlierIds))
+  // part payments (split spec §3.5)
+  const [paidSen, setPaidSen] = useState(0)
+  const [parts, setParts] = useState<BillPart[]>([])
+  const [partMode, setPartMode] = useState<PartMode>('none')
+  const [ways, setWays] = useState(MIN_WAYS)
+  const [quote, setQuote] = useState<PartQuote | null>(null)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [amountText, setAmountText] = useState('')
+  const [partNote, setPartNote] = useState<string | null>(null)       // "Part 1 paid · RM 23.45 · Change RM 26.55"
   const sessionRef = useRef(session)
   const totalsRef = useRef<BillTotals | null>(null)
+  const paidRef = useRef(0)                                           // paidSen as last read: the balance follow compares
+  const sentPartRef = useRef<{ amountSen: number; ways: number | null } | null>(null)   // an unsure part: Try again resends exactly it
   const loadFailed = useRef(false)
   const [methodsKey, setMethodsKey] = useState(0)    // bumped by Retry after the payment methods failed to load
   const readSeq = useRef(0)
   const keySeq = useRef(0)
-  // The total the cashier is paying against with Split off: set by the first load, moved only by a
-  // Pay that found the bill changed. Pay never records a total the cashier has not seen (a card run
-  // or cash counted for the old total must not be booked as the new one).
+  const quoteSeq = useRef(0)
+  // The amount the cashier is paying against with Split off (the balance): set by the first load, moved
+  // only by a Pay that found the bill changed. Pay never records an amount the cashier has not seen.
   const payingForRef = useRef<number | null>(null)
 
-  // ── the Checkout sheet's follow logic, unchanged ──
+  // ── the Checkout sheet's follow logic ──
   const step = (e: PayEvent): PaySession => {
     const s = nextPay(sessionRef.current, e)
     sessionRef.current = s
@@ -81,20 +106,40 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     else if (a.kind === 'lock') { setLockNote(a.note); setMethod(null); setError(null); setChangeNote(null) }
     else if (a.kind === 'reload') {
       totalsRef.current = a.totals
-      if (payingForRef.current === null) payingForRef.current = a.totals.totalSen
+      if (payingForRef.current === null) payingForRef.current = a.totals.totalSen - paidRef.current
       setTotals(a.totals)
       if (a.note) setChangeNote(a.note)
     }
   }
+  /** Takes in what the parts paid, then the follow rules on the balance give the action. */
+  const absorb = (state: CheckoutState): FollowAction => {
+    const shown = totalsRef.current ? totalsRef.current.totalSen - paidRef.current : null
+    paidRef.current = state.paidSen ?? 0
+    setPaidSen(paidRef.current)
+    setParts(state.parts ?? [])
+    return followBill(state, shown)
+  }
+  /** A part sent with no reply that the bill now lists under this attempt's id went through: it is
+   *  shown paid (change unknown) and the next part gets a new id. Only while unsure / checking. */
+  const takeLanded = (state: CheckoutState): boolean => {
+    const id = sessionRef.current.checkoutId
+    const landed = sentPartRef.current ? (state.parts ?? []).find((p) => p.id === id) : undefined
+    if (!landed) return false
+    setParts(state.parts ?? [])
+    partDone({ partNo: landed.partNo, amountSen: landed.amountSen, changeSen: null, paidSen: state.paidSen ?? 0 })
+    apply(followBill(state, totalsRef.current ? totalsRef.current.totalSen - paidRef.current : null))   // the total moved too: shown
+    return true
+  }
   // The bill as this screen follows it. Split by item: an open table bill with no part paid under our
   // ids is weighed by the PART's totals (pos_split_totals), never the table bill's — in the follow and
-  // in Check bill alike, so neither can put the table's total on the Pay button. A selection the
-  // server refuses comes back as its words (the picked units changed: back to the picker).
+  // in Check bill alike, so neither can put the table's total on the Pay button (nor its paid parts:
+  // the picked units have none). A selection the server refuses comes back as its words (the picked
+  // units changed: back to the picker).
   const readState = async (): Promise<CheckoutState | { refused: string }> => {
     const state = await fetchCheckoutState(bill.id, checkoutIds(sessionRef.current))
     if (!byItem || state.status !== 'open' || state.result) return state
     try {
-      return { ...state, totals: await splitTotals(bill.id, byItem.items) }
+      return { ...state, totals: await splitTotals(bill.id, byItem.items), paidSen: undefined, parts: undefined }
     } catch (e) {
       if (looksOffline(msg(e))) throw e
       return { refused: msg(e) }
@@ -106,7 +151,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       const state = await readState()
       if (seq !== readSeq.current) return
       if ('refused' in state) { apply({ kind: 'lock', note: state.refused }); return }
-      apply(followBill(state, totalsRef.current?.totalSen ?? null))
+      if (!(sessionRef.current.phase === 'unsure' && takeLanded(state))) apply(absorb(state))
       if (loadFailed.current) { loadFailed.current = false; setError(null) }
     } catch (e) {
       if (seq === readSeq.current && !totalsRef.current) { loadFailed.current = true; setError(msg(e)) }
@@ -135,8 +180,26 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     fetchBillItems(bill.id).then((rows) => { if (live) setItems(rows) }, () => undefined)   // the list is for reading; the totals are the server's
     return () => { live = false }
   }, [bill.id, refreshKey])
+  // an equal split already started fixes N; the share is the server's, quoted again whenever the bill moves.
+  // The old quote goes at once: Pay waits for the new one, so a share for the old N or the old bill is never sent.
+  useEffect(() => { const f = fixedWays(parts); if (f !== null) setWays(f) }, [parts])
+  useEffect(() => {
+    ++quoteSeq.current
+    setQuote(null); setQuoteError(null)
+    if (partMode !== 'equal') return
+    const seq = quoteSeq.current
+    partQuote(bill.id, ways).then(
+      (q) => { if (seq === quoteSeq.current) setQuote(q) },
+      (e) => { if (seq === quoteSeq.current) { setQuote(null); setQuoteError(msg(e)) } },
+    )
+  }, [bill.id, partMode, ways, paidSen, totals?.totalSen])
 
-  const total = totals?.totalSen ?? 0
+  const billTotal = totals?.totalSen ?? 0
+  const balance = billTotal - paidSen
+  const partDue = partMode === 'equal' ? quote?.shareSen ?? null : partMode === 'amount' ? parseRinggit(amountText) : null
+  const total = partMode === 'none' ? balance : partDue ?? 0          // what this Pay records
+  const isPart = partMode !== 'none' && partDue !== null && partDue > 0 && partDue < balance
+  const fixed = fixedWays(parts)
   const left = remainingSen(total, lines)
   const locked = linesLocked(session) || lockNote !== null
   const busy = session.phase === 'paying' || session.phase === 'checking'
@@ -160,6 +223,13 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     const next = !split
     setSplit(next); setLines([]); setError(null); setReference(''); setTenderedText('')
     setEntry(next ? money(total) : ''); setEntryFresh(next)
+  }
+  // The Split row: By item opens the picker; Equally / By amount toggle a part payment
+  const chooseMode = (m: (typeof SPLIT_MODES)[number]) => {
+    if (locked || busy || !online) return
+    if (m === 'item') { onSplitByItem?.(); return }
+    setPartMode((cur) => (cur === m ? 'none' : m))
+    setLines([]); setEntry(''); setEntryFresh(false); setTenderedText(''); setReference(''); setError(null); setPartNote(null)
   }
   const pressKey = (k: string) => {
     setEntry((t) => numpadPress(entryFresh && k !== '⌫' ? '' : t, k)); setEntryFresh(false)
@@ -186,7 +256,18 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     setEntry(money(remainingSen(total, next))); setEntryFresh(true)
   }
 
-  // Pay (editing) and Try again (unsure): Try again resends the SAME lines under the session's id
+  /** A part went through: a fresh attempt id for the next one, the screen stays on the bill. */
+  const partDone = (r: PartDone) => {
+    const fresh = newPaySession(crypto.randomUUID(), checkoutIds(sessionRef.current))
+    sessionRef.current = fresh; setSession(fresh)
+    sentPartRef.current = null
+    paidRef.current = r.paidSen; setPaidSen(r.paidSen)
+    payingForRef.current = (totalsRef.current?.totalSen ?? 0) - r.paidSen
+    setPartNote(partPaidNote(r)); setError(null)
+    setLines([]); setMethod(null); setEntry(''); setEntryFresh(false); setTenderedText(''); setReference(''); setAmountText(''); setSplit(false)
+  }
+
+  // Pay (editing) and Try again (unsure): Try again resends the SAME lines (and the same part) under the session's id
   const send = async (toSend: TenderLine[]) => {
     const s = sessionRef.current
     if (!totals || lockNote || (s.phase !== 'editing' && s.phase !== 'unsure')) return
@@ -195,9 +276,17 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       const problem = payProblem(total, sending)
       if (problem) { setError(problem); return }
       setLines(sending)
+      sentPartRef.current = isPart ? { amountSen: total, ways: partMode === 'equal' ? quote?.ways ?? ways : null } : null
     }
-    step({ type: 'send' }); setError(null); setChangeNote(null)
+    const part = sentPartRef.current
+    step({ type: 'send' }); setError(null); setChangeNote(null); setPartNote(null)
     try {
+      if (part) {
+        const r = await payBillPart(bill.id, s.checkoutId, part.amountSen, part.ways, toPayments(sending))
+        partDone({ partNo: r.partNo, amountSen: r.amountSen, changeSen: r.changeSen, paidSen: r.paidSen })
+        void follow()
+        return
+      }
       setResult(byItem
         ? await checkoutItems(bill.id, byItem.items, toPayments(sending), s.checkoutId)
         : await checkoutBill(bill.id, toPayments(sending), s.checkoutId))
@@ -207,15 +296,21 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       else {
         step({ type: 'refused' }); setError(m)
         if (!split) setLines([])                         // a refused one-go payment does not linger
+        sentPartRef.current = null                       // a refused part recorded nothing: the next Pay sends what is on screen
         void follow()
       }
     }
   }
   const pay = () => {
-    if (session.phase === 'unsure' || split) { void send(lines); return }
-    if (payingForRef.current !== null && payingForRef.current !== total) {
+    if (session.phase === 'unsure') { void send(lines); return }
+    if (partMode !== 'none') {
+      const problem = partProblem(partMode, partDue, balance)
+      if (problem) { setError(problem); return }
+    }
+    if (split) { void send(lines); return }
+    if (payingForRef.current !== null && payingForRef.current !== balance) {
       // the bill changed since the cashier started: show it, and take a second, deliberate Pay
-      payingForRef.current = total
+      payingForRef.current = balance
       setError(billChangedAtPay(method)); setReference(''); setEntry('')
       return
     }
@@ -226,7 +321,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     void send(r.lines.map((l) => ({ ...l, key: String(++keySeq.current) })))
   }
 
-  // Check bill: paid by this screen → its result; open → unlock with a new id; else lock
+  // Check bill: paid by this screen → its result; a part of this screen landed → it is paid; open → unlock with a new id; else lock
   const checkBill = async () => {
     if (sessionRef.current.phase !== 'unsure') return
     step({ type: 'check' }); setError(null)
@@ -234,13 +329,16 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     try {
       const state = await readState()
       if ('refused' in state) { step({ type: 'checkEnded' }); apply({ kind: 'lock', note: state.refused }); return }
-      const a = followBill(state, totalsRef.current?.totalSen ?? null)
-      apply(a)
-      if (a.kind === 'keep' || a.kind === 'reload') {
-        step({ type: 'checkedOpen', newCheckoutId: crypto.randomUUID() }); setError(CHECKED_OPEN)
-        if (!split) setLines([])                         // the one-go payment is rebuilt by the next Pay
+      if (!takeLanded(state)) {
+        const a = absorb(state)
+        apply(a)
+        if (a.kind === 'keep' || a.kind === 'reload') {
+          step({ type: 'checkedOpen', newCheckoutId: crypto.randomUUID() }); setError(CHECKED_OPEN)
+          sentPartRef.current = null                     // the part was not recorded: the next Pay sends what is on screen
+          if (!split) setLines([])                       // the one-go payment is rebuilt by the next Pay
+        }
+        else step({ type: 'checkEnded' })
       }
-      else step({ type: 'checkEnded' })
     } catch (e) {
       step({ type: 'checkEnded' }); setError(`Could not check the bill: ${msg(e)}`)
     }
@@ -275,6 +373,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   const lineTotals = linesById(totals)
   const billDisc = storedDiscount(bill)
   const tag = catalogTag(items ?? [])
+  const partsOff = locked || busy || !online
   return (
     <div className="flex min-h-0 flex-1 bg-cream">
       <section aria-label="Bill" className="flex w-[40%] shrink-0 flex-col border-r border-border bg-card p-4 text-sm">
@@ -297,6 +396,14 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
           ))}
         </div>
         <div className="mt-3 border-t border-border pt-3"><CheckoutTotals totals={totals} billDiscountLabel={billDisc ? discountLabel(billDisc, true) : undefined} /></div>
+        {parts.length > 0 && (
+          <div aria-label="Paid parts" className="mt-2 space-y-1 border-t border-border pt-2">
+            {parts.map((p) => <div key={p.id} className="text-brown-muted">{paidPartLabel(p, parts)}</div>)}
+            <div className="flex justify-between text-base font-semibold text-brown-dark">
+              <span>{BALANCE_DUE}</span><span className="tabular-nums">{formatSen(balance)}</span>
+            </div>
+          </div>
+        )}
         {changeNote && <p role="status" className="mt-2 rounded bg-amber-50 p-2 text-amber-800">{changeNote}</p>}
         <button type="button" onClick={onClose} disabled={busy}
           className="mt-3 min-h-14 rounded-xl border border-border-mid font-medium text-brown-dark disabled:opacity-40">
@@ -305,15 +412,58 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       </section>
 
       <section aria-label="Payment" className="flex min-w-0 flex-1 flex-col p-4">
-        <div className="flex justify-end">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {!byItem && (
+            <div role="group" aria-label="Split bill" className="mr-auto flex flex-wrap items-center gap-2">
+              <span className="text-sm text-brown-muted">Split</span>
+              {SPLIT_MODES.map((m) => (
+                <button key={m} type="button" onClick={() => chooseMode(m)} aria-pressed={m !== 'item' && partMode === m}
+                  disabled={partsOff || (m === 'item' && (!onSplitByItem || paidSen > 0 || itemCount < 2))}
+                  className={`min-h-11 rounded-xl px-3 text-sm font-medium disabled:opacity-40 ${m !== 'item' && partMode === m ? 'bg-brown-dark text-cream' : 'border border-border-mid text-brown-dark'}`}>
+                  {SPLIT_MODE_LABEL[m]}
+                </button>
+              ))}
+              {!online && <span className="text-xs text-amber-800">{SPLIT_OFFLINE}</span>}
+            </div>
+          )}
           <button type="button" onClick={toggleSplit} disabled={locked} aria-pressed={split}
             className={`min-h-11 rounded-xl px-4 text-sm font-medium disabled:opacity-40 ${split ? 'bg-brown-dark text-cream' : 'border border-border-mid text-brown-dark'}`}>
             Split payment
           </button>
         </div>
+        {partMode === 'equal' && (
+          <div className="mt-2 flex items-center justify-center gap-3">
+            <button type="button" aria-label="Fewer ways" disabled={partsOff || fixed !== null || ways <= MIN_WAYS}
+              onClick={() => setWays((w) => clampWays(w - 1))} className={`${key} w-14`}>−</button>
+            <span className="min-w-32 text-center font-medium text-brown-dark">{splitIntoLabel(fixed ?? ways)}</span>
+            <button type="button" aria-label="More ways" disabled={partsOff || fixed !== null || ways >= MAX_WAYS}
+              onClick={() => setWays((w) => clampWays(w + 1))} className={`${key} w-14`}>+</button>
+          </div>
+        )}
+        {partMode === 'amount' && (
+          <div className="mx-auto mt-2 flex w-full max-w-md items-end gap-2">
+            <label className="flex-1 text-sm">Amount (RM)
+              <input inputMode="decimal" disabled={partsOff} className="mt-1 h-12 w-full rounded-xl border border-border-mid px-3 text-base"
+                value={amountText} onChange={(e) => { setAmountText(e.target.value); setLines([]); setError(null) }} />
+            </label>
+            {PERCENT_CHIPS.map((pct) => {
+              const sen = percentChipSen(billTotal, pct, balance)
+              return (
+                <button key={pct} type="button" disabled={partsOff || sen === null}
+                  onClick={() => { if (sen !== null) { setAmountText((sen / 100).toFixed(2)); setLines([]); setError(null) } }}
+                  className="h-12 rounded-xl border border-border-mid px-3 text-sm font-medium text-brown-dark disabled:opacity-40">{pct}%</button>
+              )
+            })}
+          </div>
+        )}
         {lockNote && <p role="alert" className="mt-3 rounded bg-red-50 p-3 font-semibold text-red-700">{lockNote}</p>}
         <div className="mt-2 text-center">
-          <div className="text-sm uppercase tracking-wide text-brown-muted">{split ? 'Left to pay' : 'Amount due'}</div>
+          {partMode === 'equal' && quote && quote.ways !== null && quote.shareSen !== null && (
+            <div className="text-sm font-medium text-brown-dark">{shareLabel(quote.sharesPaid + 1, quote.ways, quote.shareSen)}</div>
+          )}
+          <div className="text-sm uppercase tracking-wide text-brown-muted">
+            {split ? 'Left to pay' : paidSen > 0 && partMode === 'none' ? BALANCE_DUE : 'Amount due'}
+          </div>
           <div className="text-5xl font-semibold text-brown-dark tabular-nums">{totals ? formatSen(due) : '…'}</div>
           {!split && method?.kind === 'cash' && (
             <div className="mt-1 text-sm text-brown-muted">
@@ -386,6 +536,8 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
             <div className="flex justify-between px-2"><span>Change</span><b className="tabular-nums">{formatSen(changeSen(lines))}</b></div>
           </div>
         )}
+        {partNote && <p role="status" className="mt-3 rounded bg-green-50 p-2 text-sm text-green-800">{partNote}</p>}
+        {quoteError && <p role="alert" className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{quoteError}</p>}
         {error && <p role="alert" className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
         {lockNote ? (
           <button type="button" onClick={onClose} disabled={busy} className="mt-3 min-h-16 rounded-xl bg-brown-btn text-lg font-semibold text-white">Close</button>
@@ -397,7 +549,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
             </button>
           </div>
         ) : (
-          <button type="button" onClick={pay} disabled={busy || !totals || (split ? left !== 0 : !method && total !== 0)}
+          <button type="button" onClick={pay} disabled={busy || !totals || (split ? left !== 0 : !method && total !== 0) || (partMode === 'equal' && !quote)}
             className="mt-3 min-h-16 rounded-xl bg-brown-btn text-lg font-semibold text-white hover:bg-brown-btn-hover disabled:opacity-40">
             {busy ? 'Paying…' : `Pay ${formatSen(total)}`}
           </button>

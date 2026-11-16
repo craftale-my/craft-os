@@ -337,6 +337,8 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
         <PaymentScreen key={`${screen.bill.id}:${screen.split ? 'split' : 'whole'}`} branchId={branchId} bill={screen.bill} refreshKey={refreshKey}
           title={screen.split ? splitTitle(billTitle(screen.bill.table_id, screen.bill.bill_no, tables)) : billTitle(screen.bill.table_id, screen.bill.bill_no, tables)}
           split={screen.split ? { items: screen.split.items } : undefined}
+          online={online}
+          onSplitByItem={screen.split ? undefined : () => setScreen({ kind: 'split', bill: screen.bill, back: screen.back })}
           earlierIds={checkoutIdsByBill.current.get(payIdsKey(screen)) ?? []}
           onSendIds={(ids) => {
             // split: [] once the part shows paid (its ids are spent) — drop the key, not only on Done

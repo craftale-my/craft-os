@@ -9,6 +9,7 @@ import type { ReasonAction, ReasonTemplate } from './reasons'
 import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
 import { parseCheckoutState, type CheckoutState } from './follow'
 import type { SplitItem } from '../order/splitSelection'
+import { parsePartQuote, parsePartResult, type PartQuote, type PartResult } from './partSplit'
 
 const CHECKOUT_TIMEOUT_MS = 10_000
 const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
@@ -205,6 +206,26 @@ export async function checkoutItems(billId: string, items: SplitItem[], payments
     .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
   if (error) fail(error)
   return parseCheckoutResult(data)
+}
+
+/** The equal share (pos_part_quote, split spec §4.6); ways null = the by-amount view (no share). */
+export async function partQuote(billId: string, ways: number | null): Promise<PartQuote> {
+  const { data, error } = await supabase
+    .rpc('pos_part_quote', { p_bill_id: billId, p_ways: ways })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  return parsePartQuote(data)
+}
+
+/** One part payment on the open bill (pay_bill_part). partId is the attempt's id: a lost reply is
+ *  resent with the SAME id and gets the first answer (never charged twice). */
+export async function payBillPart(billId: string, partId: string, amountSen: number, ways: number | null,
+                                  payments: PaymentInput[]): Promise<PartResult> {
+  const { data, error } = await supabase
+    .rpc('pay_bill_part', { p_bill_id: billId, p_part_id: partId, p_amount_sen: amountSen, p_ways: ways, p_payments: payments })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  return parsePartResult(data)
 }
 
 export async function reprintReceipt(billId: string): Promise<void> {

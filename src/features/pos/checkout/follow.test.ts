@@ -37,6 +37,10 @@ describe('followBill — the checkout sheet follows its bill', () => {
   it('split by item: the table bill stays open, and a part paid under this screen\'s id is shown as paid here', () => {
     expect(followBill(state({ status: 'open', totals: totals(3015), result }), 3250)).toEqual({ kind: 'paidHere', result })
   })
+  it('with parts paid it follows the balance: a part paid on another iPad reloads with the note', () => {
+    expect(followBill(state({ totals: totals(7035), paidSen: 2345 }), 4690)).toEqual({ kind: 'keep' })
+    expect(followBill(state({ totals: totals(7035), paidSen: 4690 }), 4690)).toEqual({ kind: 'reload', totals: totals(7035), note: BILL_CHANGED })
+  })
 })
 
 describe('parseCheckoutState', () => {
@@ -45,6 +49,13 @@ describe('parseCheckoutState', () => {
     expect(parseCheckoutState(raw)).toEqual(raw)
     const open = { status: 'open', billNo: '261025-002', mergedIntoBillNo: null, totals: totals(550), result: null }
     expect(parseCheckoutState(open)).toEqual(open)
+  })
+  it('reads what the parts paid', () => {
+    const open = { status: 'open', billNo: '261117-001', mergedIntoBillNo: null, totals: totals(7035), result: null,
+      paidSen: 2345, parts: [{ id: 'x1', partNo: 1, ways: 3, amountSen: 2345, methods: ['Cash'] }] }
+    expect(parseCheckoutState(open)).toEqual(open)
+    expect(() => parseCheckoutState({ ...open, parts: [{ id: 'x1' }] })).toThrow('Unexpected reply from the server')
+    expect(() => parseCheckoutState({ ...open, paidSen: '2345' })).toThrow('Unexpected reply from the server')   // never read as 0
   })
   it('refuses anything else', () => {
     for (const bad of [null, [], { status: 'gone', billNo: 'x', mergedIntoBillNo: null, totals: null, result: null },

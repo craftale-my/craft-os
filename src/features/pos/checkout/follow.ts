@@ -1,6 +1,7 @@
 /** The checkout sheet follows its bill (pre-pilot hardening §1): what the sheet does with
  *  pos_checkout_state, re-read on every bills event and every 15 s sweep. Pure. */
 import type { BillTotals } from './bill'
+import { parseBillParts, type BillPart } from './partSplit'
 import { parseCheckoutResult, type CheckoutResult } from './rpcResult'
 
 export type BillStatus = 'open' | 'paid' | 'voided' | 'merged'
@@ -12,6 +13,8 @@ export interface CheckoutState {
   mergedIntoBillNo: string | null
   totals: BillTotals | null       // open bills only
   result: CheckoutResult | null   // when one of THIS sheet's checkout ids paid the bill
+  paidSen?: number                // what the parts of an open bill paid (split spec §4.6); absent = 0
+  parts?: BillPart[]              // those parts, oldest first
 }
 
 export type FollowAction =
@@ -34,8 +37,8 @@ export function billChangedAtPay(method: { kind: string; needsReference: boolean
   return `The bill changed on another iPad — check the new total, ${again}.`
 }
 
-/** shownTotalSen: the total on screen now (null before the first load). */
-export function followBill(state: CheckoutState, shownTotalSen: number | null): FollowAction {
+/** shownDueSen: the balance on screen now — total minus parts (null before the first load). */
+export function followBill(state: CheckoutState, shownDueSen: number | null): FollowAction {
   switch (state.status) {
     case 'paid':
       return state.result ? { kind: 'paidHere', result: state.result } : { kind: 'lock', note: PAID_ELSEWHERE }
@@ -43,12 +46,14 @@ export function followBill(state: CheckoutState, shownTotalSen: number | null): 
       return { kind: 'lock', note: VOIDED_ELSEWHERE }
     case 'merged':
       return { kind: 'lock', note: mergedElsewhere(state.mergedIntoBillNo) }
-    case 'open':
+    case 'open': {
       if (state.result) return { kind: 'paidHere', result: state.result }   // split: a part this screen paid (the table bill stays open)
       if (!state.totals) return { kind: 'keep' }
-      if (shownTotalSen === null) return { kind: 'reload', totals: state.totals, note: null }
-      if (state.totals.totalSen !== shownTotalSen) return { kind: 'reload', totals: state.totals, note: BILL_CHANGED }
+      const due = state.totals.totalSen - (state.paidSen ?? 0)
+      if (shownDueSen === null) return { kind: 'reload', totals: state.totals, note: null }
+      if (due !== shownDueSen) return { kind: 'reload', totals: state.totals, note: BILL_CHANGED }
       return { kind: 'keep' }
+    }
   }
 }
 
@@ -59,7 +64,8 @@ const STATUSES: readonly string[] = ['open', 'paid', 'voided', 'merged']
 export function parseCheckoutState(data: unknown): CheckoutState {
   if (!isObj(data) || typeof data.status !== 'string' || !STATUSES.includes(data.status) || typeof data.billNo !== 'string'
       || (data.mergedIntoBillNo !== null && typeof data.mergedIntoBillNo !== 'string')
-      || (data.totals !== null && !(isObj(data.totals) && typeof data.totals.totalSen === 'number'))) {
+      || (data.totals !== null && !(isObj(data.totals) && typeof data.totals.totalSen === 'number'))
+      || (data.paidSen !== undefined && data.paidSen !== null && typeof data.paidSen !== 'number')) {   // a bad paidSen is never read as 0
     throw new Error('Unexpected reply from the server')
   }
   return {
@@ -68,5 +74,7 @@ export function parseCheckoutState(data: unknown): CheckoutState {
     mergedIntoBillNo: data.mergedIntoBillNo as string | null,
     totals: data.totals as BillTotals | null,
     result: data.result === null ? null : parseCheckoutResult(data.result),
+    paidSen: typeof data.paidSen === 'number' ? data.paidSen : undefined,
+    parts: data.parts === undefined || data.parts === null ? undefined : parseBillParts(data.parts),
   }
 }
