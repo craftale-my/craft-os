@@ -5,7 +5,9 @@ import {
   cartKey, cartSubtotalSen, findProduct, formatSen, lineLabel, linePriceSen, posMenuFromQr,
   type OrderLine, type PosMenu, type PosProduct, type QrMenuJson,
 } from '../features/pos/order/cart'
+import { mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from '../features/pos/order/picks'
 import LineSheet from '../features/pos/order/LineSheet'
+import PickPill from '../features/pos/order/PickPill'
 
 interface TableState {
   tableLabel: string
@@ -19,6 +21,12 @@ type Screen = { kind: 'loading' } | { kind: 'invalid' } | { kind: 'error' } | { 
 /** M3: a photo path in the public menu-images bucket → its URL (no request is made). */
 const photoUrl = (path: string) => qrClient.storage.from('menu-images').getPublicUrl(path).data.publicUrl
 const REFRESH_MS = 60_000
+/** picks: read with the menu, then again with the minute refresh at most this often */
+const PICKS_REFRESH_MS = 10 * 60_000
+
+/** "RM 9.00", or "from RM 9.00" when the product has several sizes. */
+const priceText = (p: PosProduct) =>
+  p.variants.length > 1 ? `from ${formatSen(Math.min(...p.variants.map((v) => v.priceSen)))}` : formatSen(p.variants[0].priceSen)
 
 export default function QrApp() {
   const token = tokenFromLocation(window.location.pathname, window.location.search)
@@ -40,10 +48,24 @@ export default function QrApp() {
   const menuRef = useRef<PosMenu | null>(null)
   useEffect(() => { menuRef.current = screen.kind === 'ready' ? screen.menu : null }, [screen])
   const refreshSeq = useRef(0)                                       // a slow reply never lands after a newer one
+  // picks (docs/superpowers/specs/2026-11-17-menu-picks-design.md §4): hints only. A failed first read
+  // leaves them hidden, a failed re-read keeps the last ones; ordering never waits on them.
+  const [picks, setPicks] = useState<MenuPicks | null>(null)
+  const picksAt = useRef(0)
+  const [goesWellFor, setGoesWellFor] = useState<string | null>(null)   // the product the Goes well with panel is about
+  const pairsShown = useRef(new Set<string>())                           // Goes well with: once per product per visit
 
   const loadState = async () => {
     const { data } = await qrClient.rpc('qr_table_state', { p_token: token })
     if (data) setState(data as TableState)
+  }
+  const loadPicks = () => {
+    if (!token) return
+    picksAt.current = Date.now()
+    qrClient.rpc('qr_picks', { p_token: token }).then(
+      ({ data, error }) => { if (!error) setPicks(parsePicks(data)) },
+      () => { /* offline for a moment: the last picks stay */ },
+    )
   }
   const loadMenu = () => {
     if (!token) { setScreen({ kind: 'invalid' }); return }
@@ -55,6 +77,7 @@ export default function QrApp() {
       setScreen({ kind: 'ready', info, menu: posMenuFromQr(info, photoUrl) })
       setCategory(info.categories[0]?.name ?? null)
       void loadState()
+      loadPicks()
     }, () => setScreen({ kind: 'error' }))
   }
   useEffect(() => { loadMenu() }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -63,7 +86,8 @@ export default function QrApp() {
   // view, quietly: products whose time slot ends leave the menu (and the cart, with a notice; an
   // open product sheet for one closes; a sheet editing another line follows that line), products
   // whose slot starts appear. A failed read keeps the menu on screen; nothing changes while an
-  // order is being sent; the server refuses anything out of its slot anyway.
+  // order is being sent; the server refuses anything out of its slot anyway. The picks are read
+  // again with it at most every PICKS_REFRESH_MS.
   const ready = screen.kind === 'ready'
   useEffect(() => {
     if (!ready || !token) return
@@ -89,12 +113,13 @@ export default function QrApp() {
           setLines(pruneAfterRefresh(cart, menu, null).lines)
           setNotice(leftTheMenuNotice(gone))
         }
+        if (Date.now() - picksAt.current >= PICKS_REFRESH_MS) loadPicks()
       }, () => { /* offline for a moment: try again next minute */ })
     }
     const timer = setInterval(refresh, REFRESH_MS)
     document.addEventListener('visibilitychange', refresh)
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', refresh) }
-  }, [ready, token])
+  }, [ready, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (screen.kind === 'loading') return <Shell><p className="p-6 text-center text-brown-muted">Loading menu…</p></Shell>
   if (screen.kind === 'error') {
@@ -113,6 +138,12 @@ export default function QrApp() {
 
   const needsPax = info.needsPax && !state?.pax
   const subtotal = cartSubtotalSen(menu, lines)
+  // picks, filtered to what this menu offers now
+  const popular = visiblePopular(menu, picks)
+  const popularIds = new Set(popular.map((p) => p.id))
+  const goesWell = goesWellFor ? pairsFor(menu, picks, goesWellFor, lines) : []
+  const goesWellName = goesWellFor ? findProduct(menu, goesWellFor)?.name ?? null : null
+  const showGoesWell = goesWell.length > 0 && goesWellName !== null
 
   const place = async () => {
     if (lines.length === 0 || sending || sendingRef.current) return
@@ -125,7 +156,7 @@ export default function QrApp() {
       const { error } = await qrClient.rpc('place_table_order', { p_token: token, p_pax: paxNum, p_items: lines, p_client_order_id: pending.current.id })
       if (error) throw new Error(error.message)
       pending.current = null
-      setLines([]); setPlaced(true); setNotice(null)
+      setLines([]); setPlaced(true); setNotice(null); setGoesWellFor(null)
       await loadState()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -133,6 +164,18 @@ export default function QrApp() {
         ? 'Not sent: no connection — tap Place order to try again.'
         : `Not sent: ${msg} — tap Place order to try again.`)
     } finally { sendingRef.current = false; setSending(false) }
+  }
+
+  /** The sheet's Add / Done: a new line may open Goes well with (once per product per visit). */
+  const done = (line: OrderLine) => {
+    if (!sheet) return
+    const next = sheet.index === null ? addLine(lines, line) : replaceLine(lines, sheet.index, line)
+    setLines(next); setSheet(null); setPlaced(false); setNotice(null)
+    if (sheet.index === null) {
+      const offer = offerPairs(menu, picks, line.productId, next, pairsShown.current)
+      if (offer) pairsShown.current.add(line.productId)
+      setGoesWellFor(offer ? line.productId : null)
+    }
   }
 
   const products = menu.categories.find((c) => c.name === category)?.products ?? []
@@ -154,27 +197,50 @@ export default function QrApp() {
           ))}
         </details>
       )}
+      {popular.length > 0 && (
+        <section aria-label="Popular here" className="px-3 pt-2">
+          <h2 className="text-sm font-semibold text-brown-dark">Popular here</h2>
+          <div className="mt-1 flex gap-2 overflow-x-auto pb-1">
+            {popular.map((p) => <PickCard key={p.id} product={p} onOpen={() => setSheet({ product: p, index: null })} />)}
+          </div>
+        </section>
+      )}
       <div className="flex gap-1 overflow-x-auto px-3 py-2">
         {menu.categories.map((c) => (
           <button key={c.name} onClick={() => setCategory(c.name)}
             className={`whitespace-nowrap rounded-full px-3 py-1 text-sm ${category === c.name ? 'bg-brown-btn text-white' : 'border border-border bg-card'}`}>{c.name}</button>
         ))}
       </div>
-      <div className={`space-y-2 px-3 ${lines.length > 0 ? 'pb-[50vh]' : notice ? 'pb-48' : 'pb-24'}`}>
+      <div className={`space-y-2 px-3 ${lines.length > 0 ? (showGoesWell ? 'pb-[75vh]' : 'pb-[50vh]') : notice ? 'pb-48' : 'pb-24'}`}>
         {products.filter((p) => p.variants.length > 0).map((p) => (
           <button key={p.id} disabled={p.soldOut} onClick={() => setSheet({ product: p, index: null })}
             className="flex w-full items-start gap-3 rounded-xl border border-border bg-card p-3 text-left disabled:opacity-50">
             {p.imageUrl && <img src={p.imageUrl} alt="" loading="lazy" className="h-16 w-16 shrink-0 rounded-lg object-cover" />}
             <div className="flex-1">
-              <div className="font-medium">{p.name}{p.soldOut && <span className="ml-2 text-xs text-red-700">Sold out</span>}</div>
+              <div className="font-medium">
+                {p.name}
+                {popularIds.has(p.id) && <PickPill text="Popular" />}
+                {p.soldOut && <span className="ml-2 text-xs text-red-700">Sold out</span>}
+              </div>
               {p.description && <div className="text-xs text-brown-muted">{p.description}</div>}
             </div>
-            <div className="text-sm">{p.variants.length > 1 ? `from ${formatSen(Math.min(...p.variants.map((v) => v.priceSen)))}` : formatSen(p.variants[0].priceSen)}</div>
+            <div className="text-sm">{priceText(p)}</div>
           </button>
         ))}
       </div>
 
       <div className="fixed inset-x-0 bottom-0 border-t border-border bg-card p-3 text-sm shadow-lg">
+        {showGoesWell && (
+          <section aria-label="Goes well with" className="mb-2 rounded-xl border border-border bg-cream p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-brown-dark">Goes well with your {goesWellName}</span>
+              <button type="button" aria-label="Close" className="h-8 w-8 shrink-0" onClick={() => setGoesWellFor(null)}>✕</button>
+            </div>
+            <div className="mt-1 flex gap-2 overflow-x-auto">
+              {goesWell.map((p) => <PickCard key={p.id} product={p} onOpen={() => setSheet({ product: p, index: null })} />)}
+            </div>
+          </section>
+        )}
         <div className="max-h-[40vh] overflow-y-auto">
         {lines.map((l, i) => {
           const p = findProduct(menu, l.productId)
@@ -203,10 +269,27 @@ export default function QrApp() {
 
       {sheet && (
         <LineSheet product={sheet.product} initial={sheet.index === null ? undefined : lines[sheet.index]}
+          mostPicked={mostPickedFor(picks, sheet.product.id)}
           onCancel={() => setSheet(null)}
-          onDone={(line) => { setLines(sheet.index === null ? addLine(lines, line) : replaceLine(lines, sheet.index, line)); setSheet(null); setPlaced(false); setNotice(null) }} />
+          onDone={done} />
       )}
     </Shell>
+  )
+}
+
+/** A card of Popular here and Goes well with: photo, name, price; a tap opens the item sheet. */
+function PickCard({ product, onOpen }: { product: PosProduct; onOpen: () => void }) {
+  return (
+    <button type="button" onClick={onOpen}
+      className="flex w-28 shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card text-left">
+      {product.imageUrl
+        ? <img src={product.imageUrl} alt="" loading="lazy" className="h-20 w-full object-cover" />
+        : <div className="h-20 w-full bg-border" />}
+      <div className="p-2">
+        <div className="line-clamp-2 text-xs font-medium">{product.name}</div>
+        <div className="mt-0.5 text-xs text-brown-muted">{priceText(product)}</div>
+      </div>
+    </button>
   )
 }
 
