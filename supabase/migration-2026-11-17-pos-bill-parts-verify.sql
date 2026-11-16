@@ -4,7 +4,8 @@
 -- part payments; B1f fixes after the B1 review (rolled back inside the block); B2 the balance by
 -- checkout_bill and the guards; B2p pay_bill_part's p_paid_sen (rolled back inside the block); B2f
 -- the guards after the status checks, move_bill and the paid parts (rolled back inside the block); B3
--- receipts and screen reads.
+-- receipts and screen reads; B4g settings that change a total wait for the part-paid bills (rolled
+-- back inside the block).
 -- Numbers: no service charge, 0% SST, 5 sen rounding; Set A 70.35, Set B 70.40, Extra 3.00.
 begin;
 
@@ -422,6 +423,8 @@ begin
       v_msg, 'B2f bill discount');
     perform pg_temp.expect_error(format('select merge_bills(%L, %L)', v_w, v_n), v_msg, 'B2f merge it away');
 
+    -- W finished first: a service-charge rule cannot change while a part-paid bill is open (B4g)
+    perform checkout_bill(v_w, pg_temp.card((pos_bill_totals(v_w)->>'totalSen')::int - pos_bill_paid_parts(v_w)), gen_random_uuid());
     -- a 10% service charge on P1 and P3 only
     insert into service_charge_rules(branch_id, rate_bp, order_types, table_ids)
     values (pg_temp.id('branch'), 1000, array['dine_in'], array[pg_temp.id('t1'), pg_temp.id('t3')]);
@@ -539,6 +542,90 @@ begin
         jsonb_build_object('name', 'P Cash', 'kind', 'cash', 'amountSen', 7040, 'tenderedSen', 10000, 'reference', null, 'part', null))
      or (v_res->>'changeSen')::int <> 2960 then
     raise exception 'FAIL B3 receipt of a bill with no part: %', v_res;
+  end if;
+end $$;
+
+-- ── B4g. Settings that change a total (service-charge rules; SST registration and cash rounding in
+--    branch_pos_settings) are refused while the branch has an open bill with part payments; other
+--    columns, inactive rules and other branches pass. Undone at the end (SQLSTATE B4GRB). ─
+do $$
+declare
+  v_a     uuid := pg_temp.id('branch');
+  v_w     uuid := pg_temp.id('bW');                                 -- open on P6, RM 10.00 paid as a part
+  v_msg   text := 'Finish the part-paid bills first (P6), then change this setting.';
+  v_r     uuid; v_other uuid; v_t uuid; v_no text;
+begin
+  begin
+    perform pg_temp.act(pg_temp.id('dev'));
+    if (select count(*) from bills b where b.branch_id = v_a and b.status = 'open'
+          and exists (select 1 from bill_parts p where p.bill_id = b.id)) <> 1
+       or (select table_id from bills where id = v_w) <> pg_temp.id('t6') then
+      raise exception 'FAIL B4g fixture: W should be the only open part-paid bill, on P6';
+    end if;
+    -- refused: an active rule added, a rule turned on, edited, moved in or removed; SST; cash rounding
+    insert into service_charge_rules(branch_id, rate_bp, order_types, is_active)
+    values (v_a, 1000, array['dine_in'], false) returning id into v_r;              -- an inactive rule passes
+    perform pg_temp.expect_error(format('insert into service_charge_rules(branch_id, rate_bp, order_types) values (%L, 1000, %L)',
+      v_a, array['dine_in']), v_msg, 'B4g add a rule');
+    perform pg_temp.expect_error(format('update service_charge_rules set is_active = true where id = %L', v_r), v_msg, 'B4g turn a rule on');
+    perform pg_temp.expect_error(format('update branch_pos_settings set sst_registered = false where branch_id = %L', v_a),
+      v_msg, 'B4g SST registration');
+    perform pg_temp.expect_error(format('update branch_pos_settings set cash_rounding = %L where branch_id = %L', 'none', v_a),
+      v_msg, 'B4g cash rounding');
+    -- allowed: other columns, the same values again, an inactive rule's edit
+    update branch_pos_settings set receipt_footer = 'Verify B4g footer', idle_lock_minutes = 5,
+           sst_registered = true, cash_rounding = 'nearest_5_sen', updated_at = now()
+     where branch_id = v_a;
+    update service_charge_rules set rate_bp = 600, table_ids = array[pg_temp.id('t6')] where id = v_r;
+    if (select receipt_footer from branch_pos_settings where branch_id = v_a) <> 'Verify B4g footer'
+       or (select rate_bp from service_charge_rules where id = v_r) <> 600 then
+      raise exception 'FAIL B4g other columns not saved';
+    end if;
+    -- another branch with no part-paid bill: its own settings and rules change freely
+    insert into branches(name, address) values ('VERIFY P OTHER', 'p') returning id into v_other;
+    insert into branch_pos_settings(branch_id, sst_registered, cash_rounding) values (v_other, false, 'none');
+    insert into service_charge_rules(branch_id, rate_bp, order_types) values (v_other, 1000, array['dine_in']);
+    update branch_pos_settings set sst_registered = true where branch_id = v_other;
+    update service_charge_rules set rate_bp = 500 where branch_id = v_other;
+    -- ... but an active rule moved into this branch is refused
+    perform pg_temp.expect_error(format('update service_charge_rules set branch_id = %L where branch_id = %L', v_a, v_other),
+      v_msg, 'B4g move a rule in');
+    -- a takeaway bill with a part is named by its bill number, after P6 (opened later)
+    v_t := place_counter_order(null, 'takeaway', null,
+             jsonb_build_array(jsonb_build_object('productId', pg_temp.id('seta'), 'variantId', pg_temp.id('seta_v'))), gen_random_uuid());
+    v_t := (select bill_id from orders where id = v_t);
+    perform pay_bill_part(v_t, gen_random_uuid(), 1000, null, pg_temp.card(1000), 0);
+    v_no := (select bill_no from bills where id = v_t);
+    perform pg_temp.expect_error(format('update branch_pos_settings set sst_registered = false where branch_id = %L', v_a),
+      format('Finish the part-paid bills first (P6, %s), then change this setting.', v_no), 'B4g two bills named');
+    -- both finished: every change goes through
+    perform checkout_bill(v_t, pg_temp.card((pos_bill_totals(v_t)->>'totalSen')::int - pos_bill_paid_parts(v_t)), gen_random_uuid());
+    perform checkout_bill(v_w, pg_temp.card((pos_bill_totals(v_w)->>'totalSen')::int - pos_bill_paid_parts(v_w)), gen_random_uuid());
+    update branch_pos_settings set sst_registered = false, cash_rounding = 'none' where branch_id = v_a;
+    update service_charge_rules set is_active = true where id = v_r;
+    update service_charge_rules set branch_id = v_a where branch_id = v_other;
+    delete from service_charge_rules where id = v_r;
+    if (select sst_registered from branch_pos_settings where branch_id = v_a)
+       or (select count(*) from service_charge_rules where branch_id = v_a) <> 1 then
+      raise exception 'FAIL B4g changes after the bills were finished';
+    end if;
+    -- a new part-paid bill: removing the active rule is refused
+    v_t := place_counter_order(null, 'takeaway', null,
+             jsonb_build_array(jsonb_build_object('productId', pg_temp.id('seta'), 'variantId', pg_temp.id('seta_v'))), gen_random_uuid());
+    v_t := (select bill_id from orders where id = v_t);
+    perform pay_bill_part(v_t, gen_random_uuid(), 1000, null, pg_temp.card(1000), 0);
+    perform pg_temp.expect_error(format('delete from service_charge_rules where branch_id = %L', v_a),
+      format('Finish the part-paid bills first (%s), then change this setting.', (select bill_no from bills where id = v_t)),
+      'B4g remove a rule');
+    raise exception 'B4g rollback' using errcode = 'B4GRB';
+  exception when sqlstate 'B4GRB' then
+    null;
+  end;
+  if (select status from bills where id = v_w) <> 'open'
+     or exists (select 1 from service_charge_rules where branch_id = v_a)
+     or not (select sst_registered from branch_pos_settings where branch_id = v_a)
+     or (select receipt_footer from branch_pos_settings where branch_id = v_a) = 'Verify B4g footer' then
+    raise exception 'FAIL B4g: not rolled back';
   end if;
 end $$;
 

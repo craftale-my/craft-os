@@ -16,6 +16,10 @@
 -- B2f After the B2 review: the guards of void item / bill, item / bill discount and merge run after
 --     the bill's status checks (a paid, voided or merged bill gets its usual message); move_bill
 --     refuses a bill whose total at the new table (its service charge) is less than its parts paid.
+-- B4g Settings that change a bill's total wait for the part-paid bills: a service_charge_rules change
+--     that counts (an active rule added, removed, edited, moved or turned on / off) and a
+--     branch_pos_settings change of sst_registered or cash_rounding (what pos_bill_input reads) are
+--     refused while the branch has an open bill with part payments. Other columns pass.
 -- Re-run hazards: re-running migration-2026-11-16-pos-split-bill.sql puts back the part-less
 -- checkout_bill, pos_split_check, pos_receipt_payload and pos_checkout_state (its pos_insert_payments
 -- writes part_id since B1f; an older text that does not makes pay_bill_part stop with "STOP: ...");
@@ -1048,6 +1052,100 @@ begin
 end $$;
 revoke all on function move_bill(uuid, uuid) from public, anon;
 grant execute on function move_bill(uuid, uuid) to authenticated;
+
+-- ── B4g. Settings that change a total wait for the part-paid bills (spec §4.6) ─────────────────
+-- A part-paid bill's total must stay at or above its parts: a lower total would leave checkout_bill a
+-- negative balance and void_bill refused (pos_no_parts), so the table stays blocked. The settings are
+-- guarded, not the money: pos_bill_input reads service_charge_rules (active rules of the bill's
+-- branch) and branch_pos_settings.sst_registered / cash_rounding (a missing row = true /
+-- 'nearest_5_sen'); a change to any of them waits until the branch has no open part-paid bill.
+
+-- Raises when the branch has an open bill with part payments, naming each (table label, else bill
+-- number). Internal; security definer so the check sees every bill whoever edits the settings. The
+-- branch's open bills are locked for share first (pay_bill_part locks its bill for update): a part
+-- being paid right now commits before the check reads, and a part paid after this change waits for
+-- it and then reads the new settings. Volatile, so the read after the lock sees that commit.
+create or replace function pos_no_part_paid_bills(p_branch_id uuid) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_names text;
+begin
+  if p_branch_id is null then return; end if;
+  perform 1 from bills where branch_id = p_branch_id and status = 'open' order by id for share;
+  select string_agg(coalesce(t.label, b.bill_no), ', ' order by b.opened_at, b.bill_no) into v_names
+    from bills b
+    left join dining_tables t on t.id = b.table_id
+   where b.branch_id = p_branch_id and b.status = 'open'
+     and exists (select 1 from bill_parts p where p.bill_id = b.id);
+  if v_names is not null then
+    raise exception 'Finish the part-paid bills first (%), then change this setting.', v_names;
+  end if;
+end $$;
+revoke all on function pos_no_part_paid_bills(uuid) from public, anon, authenticated;
+
+-- service_charge_rules: an active rule counts. Insert / delete of an active rule, and an update that
+-- touches an active row (before or after) in a column pos_bill_input reads or orders by.
+create or replace function service_charge_rules_part_guard() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if tg_op = 'INSERT' then
+    if new.is_active then perform pos_no_part_paid_bills(new.branch_id); end if;
+    return new;
+  elsif tg_op = 'DELETE' then
+    if old.is_active then perform pos_no_part_paid_bills(old.branch_id); end if;
+    return old;
+  end if;
+  if (old.is_active or new.is_active)
+     and (old.branch_id, old.rate_bp, old.order_types, old.table_ids, old.product_ids, old.sort_order,
+          old.is_active, old.created_at, old.id)
+         is distinct from
+         (new.branch_id, new.rate_bp, new.order_types, new.table_ids, new.product_ids, new.sort_order,
+          new.is_active, new.created_at, new.id) then
+    if old.is_active then perform pos_no_part_paid_bills(old.branch_id); end if;
+    if new.is_active and (not old.is_active or new.branch_id is distinct from old.branch_id) then
+      perform pos_no_part_paid_bills(new.branch_id);
+    end if;
+  end if;
+  return new;
+end $$;
+revoke all on function service_charge_rules_part_guard() from public, anon, authenticated;
+drop trigger if exists service_charge_rules_part_guard on service_charge_rules;
+create trigger service_charge_rules_part_guard before insert or update or delete on service_charge_rules
+  for each row execute function service_charge_rules_part_guard();
+
+-- branch_pos_settings: only sst_registered and cash_rounding change a total (a missing row means the
+-- defaults, so an insert or delete counts only when its values differ from them).
+create or replace function branch_pos_settings_part_guard() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if tg_op = 'INSERT' then
+    if (new.sst_registered, new.cash_rounding) is distinct from (true, 'nearest_5_sen'::text) then
+      perform pos_no_part_paid_bills(new.branch_id);
+    end if;
+    return new;
+  elsif tg_op = 'DELETE' then
+    if (old.sst_registered, old.cash_rounding) is distinct from (true, 'nearest_5_sen'::text) then
+      perform pos_no_part_paid_bills(old.branch_id);
+    end if;
+    return old;
+  elsif new.branch_id is not distinct from old.branch_id then
+    if (old.sst_registered, old.cash_rounding) is distinct from (new.sst_registered, new.cash_rounding) then
+      perform pos_no_part_paid_bills(new.branch_id);
+    end if;
+  else                                                     -- the row moves: old branch to the defaults, new from them
+    if (old.sst_registered, old.cash_rounding) is distinct from (true, 'nearest_5_sen'::text) then
+      perform pos_no_part_paid_bills(old.branch_id);
+    end if;
+    if (new.sst_registered, new.cash_rounding) is distinct from (true, 'nearest_5_sen'::text) then
+      perform pos_no_part_paid_bills(new.branch_id);
+    end if;
+  end if;
+  return new;
+end $$;
+revoke all on function branch_pos_settings_part_guard() from public, anon, authenticated;
+drop trigger if exists branch_pos_settings_part_guard on branch_pos_settings;
+create trigger branch_pos_settings_part_guard before insert or update or delete on branch_pos_settings
+  for each row execute function branch_pos_settings_part_guard();
 
 notify pgrst, 'reload schema';
 select 'pos bill parts applied' as result;

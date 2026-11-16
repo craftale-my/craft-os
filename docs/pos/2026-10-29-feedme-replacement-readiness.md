@@ -108,6 +108,7 @@ then testing and cut-over. Check items off as they land.
 - [ ] The four discount RPCs (`set_item_discount`, `clear_item_discount`, `set_bill_discount`, `clear_bill_discount`)
       and the re-defined `merge_bills` are front-of-house RPCs and belong in W1 Part C's switch to `pos_ctx`.
 - [ ] Deploy Edge Functions `pos-device-activation` (with `--no-verify-jwt`) and `einvoice`.
+- [ ] Redeploy tools/print-agent together with the POS build (new 'part' receipt kind).
 - [ ] Create the `craft-pos` Vercel project; staff email logins lose front-of-house RPCs at the same time.
 - [ ] Revoke the access tokens that were pasted in chat (Supabase dashboard → Account → Access tokens).
 

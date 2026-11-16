@@ -275,8 +275,16 @@ RLS: read for `authenticated` like the other POS tables; written only by the fun
   bill would make it less than what was already paid.` when its total at the new table (service-charge
   rules can be set by table) would be less than its paid parts; the move is undone. A bill with no parts
   behaves exactly as today.
-- Note: changing service-charge rules or SST registration while a bill has part payments can leave its
-  total below what was paid; do it with no part-paid bills open.
+- **Settings guard (B4g):** a change that can move a part-paid bill's total is refused while the branch
+  has an open bill with part payments, with `Finish the part-paid bills first (<table labels or bill
+  numbers>), then change this setting.` (a bill on a table is named by its label, a takeaway by its bill
+  number). Triggers on `service_charge_rules` (an active rule added, removed, edited, moved to or from the
+  branch, or turned on or off) and on `branch_pos_settings` (`sst_registered` or `cash_rounding` changed;
+  an inserted or deleted row counts only when its values differ from the defaults true /
+  `nearest_5_sen`, which a missing row means). Other columns (receipt route and footer, idle lock, cash
+  variance limit, QR setting) and inactive rules change freely. The check locks the branch's open bills
+  for share, so a part paid at the same moment is seen. Without it a lower total would leave
+  checkout_bill a negative balance and void_bill refused (the bill has parts), so the table stays blocked.
 - `pos_checkout_state` adds `paidSen` and `parts: [{ partNo, ways, amountSen, methods }]` for an open
   bill; `pos_open_bill_summaries` adds `paidSen` for the home tile.
 - Z report: a part's payments carry the shift they were taken in (cash counted in that drawer); the bill
