@@ -222,5 +222,265 @@ begin
     'Bill not found', 'A1 unknown bill');
 end $$;
 
+-- ── A2. checkout_items (spec §4.3; §8 tests 1–4) ──────────────────────────────
+do $$
+declare
+  v_b1  uuid := pg_temp.id('b1');
+  v_sel jsonb := jsonb_build_array(pg_temp.sel(pg_temp.id('L1'), 1), pg_temp.sel(pg_temp.id('C1'), 1));
+  v_cid uuid := gen_random_uuid();
+  v_res jsonb; v_res2 jsonb; v_part bills; v_cut order_items; v_tot jsonb;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- payments are checked against the part's total, with checkout_bill's words
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', v_b1, v_sel, pg_temp.card(3000), gen_random_uuid()),
+    'Payments (RM 30.00) do not match the total (RM 32.50)', 'A2 wrong amount');
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, null)', v_b1, v_sel, pg_temp.card(3250)),
+    'Checkout id is missing', 'A2 no checkout id');
+  -- 1. 1 of 3 lattes + the cake: their own paid bill of RM 32.50
+  v_res := checkout_items(v_b1, v_sel, pg_temp.card(3250), v_cid);
+  select * into v_part from bills where id = (v_res->>'billId')::uuid;
+  if v_part.id is null or v_part.id = v_b1 or v_part.split_from is distinct from v_b1 or v_part.status <> 'paid'
+     or v_part.pax is not null or v_part.table_id is distinct from pg_temp.id('t1') or v_part.order_type <> 'dine_in'
+     or v_part.total_sen <> 3250 or v_part.checkout_id <> v_cid or v_part.shift_id is distinct from pg_temp.id('shift')
+     or v_part.closed_by is distinct from pg_temp.id('cashier') or v_part.closed_device_id is distinct from pg_temp.id('dev')
+     or (v_res->>'totalSen')::int <> 3250 or not (v_res->>'receiptQueued')::boolean
+     or v_part.bill_no = (select bill_no from bills where id = v_b1) then
+    raise exception 'FAIL A2 paid part: % %', v_res, row_to_json(v_part);
+  end if;
+  -- the table bill keeps 2 lattes on the same row and stays open; the part has the cut latte and the cake
+  select * into v_cut from order_items where split_from_item = pg_temp.id('L1');
+  if (select qty from order_items where id = pg_temp.id('L1')) <> 2
+     or (select bill_id from order_items where id = pg_temp.id('L1')) <> v_b1
+     or v_cut.id is null or v_cut.bill_id <> v_part.id or v_cut.qty <> 1
+     or v_cut.order_id <> (select order_id from order_items where id = pg_temp.id('L1'))
+     or (select bill_id from order_items where id = pg_temp.id('C1')) <> v_part.id
+     or (select status from bills where id = v_b1) <> 'open'
+     or (select count(*) from order_items where bill_id = v_part.id) <> 2 then
+    raise exception 'FAIL A2 units';
+  end if;
+  if (select count(*) from payments where bill_id = v_part.id and amount_sen = 3250 and line_no = 1) <> 1
+     or exists (select 1 from payments where bill_id = v_b1) then
+    raise exception 'FAIL A2 payments';
+  end if;
+  -- what is left: Latte ×2 = 26.00 + SC 2.60 + SST 1.56 = 30.16 → 30.15
+  v_tot := pos_bill_totals(v_b1);
+  if (v_tot->>'totalSen')::int <> 3015 then raise exception 'FAIL A2 rest: %', v_tot; end if;
+  -- the frozen lines carry the cut row's new id (the receipt reads line discounts by id)
+  if not exists (select 1 from jsonb_array_elements(v_part.totals->'lines') l where l->>'id' = v_cut.id::text) then
+    raise exception 'FAIL A2 frozen lines: %', v_part.totals;
+  end if;
+  if (select count(*) from print_jobs where payload->>'kind' = 'receipt' and payload->>'billNo' = v_part.bill_no) <> 1 then
+    raise exception 'FAIL A2 receipt job';
+  end if;
+  -- 2. a resend with the same id and payments gets the first answer (the selection is gone now)
+  v_res2 := checkout_items(v_b1, v_sel, pg_temp.card(3250), v_cid);
+  if v_res2 <> v_res then raise exception 'FAIL A2 replay: % vs %', v_res2, v_res; end if;
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', v_b1, v_sel, pg_temp.card(3000), v_cid),
+    'This payment was already recorded with other amounts — check Today''s bills', 'A2 replay other amounts');
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', pg_temp.id('b2'), v_sel, pg_temp.card(3250), v_cid),
+    'This checkout id belongs to another bill', 'A2 replay on another bill');
+  perform pg_temp.expect_error(format('select checkout_bill(%L, %L, %L)', v_b1, pg_temp.card(3250), v_cid),
+    'This checkout id belongs to another bill', 'A2 checkout_bill with a split id');
+  -- the Payment screen's follow: the table bill is open, and the result is the part paid under its id
+  v_res2 := pos_checkout_state(v_b1, array[v_cid]);
+  if v_res2->>'status' <> 'open' or (v_res2->'result'->>'billId')::uuid is distinct from v_part.id then
+    raise exception 'FAIL A2 checkout state: %', v_res2;
+  end if;
+  if pos_checkout_state(v_b1, array[gen_random_uuid()])->'result' <> 'null'::jsonb then
+    raise exception 'FAIL A2 checkout state with another id';
+  end if;
+  perform pg_temp.put('p1', v_part.id);
+  perform pg_temp.put('L1cut', v_cut.id);
+
+  -- 3. item amount RM 3.00 on 3 lattes, take 1: the cut row 1.00, the line keeps 2.00 (pays 13.90)
+  v_res := checkout_items(pg_temp.id('b2'), jsonb_build_array(pg_temp.sel(pg_temp.id('L2'), 1)), pg_temp.card(1390), gen_random_uuid());
+  select * into v_cut from order_items where split_from_item = pg_temp.id('L2');
+  if v_cut.bill_id <> (v_res->>'billId')::uuid or v_cut.discount_kind <> 'amount' or v_cut.discount_value <> 100
+     or v_cut.discount_reason <> 'Regular' or v_cut.discount_approved_by <> pg_temp.id('sup')
+     or (select discount_value from order_items where id = pg_temp.id('L2')) <> 200
+     or (select qty from order_items where id = pg_temp.id('L2')) <> 2
+     or (pos_bill_totals(pg_temp.id('b2'))->>'itemDiscountSen')::int <> 200 then
+    raise exception 'FAIL A2 item share: % %', v_res, row_to_json(v_cut);
+  end if;
+  perform pg_temp.put('p2', (v_res->>'billId')::uuid);
+
+  -- 4a. bill amount RM 10.00: the cake's part carries 2.78, the table bill keeps 7.22, both logged.
+  --     The rest: Latte ×3 = 39.00 − 7.22 = 31.78 + SC 3.18 + SST 1.91 = 36.87 → 36.85
+  v_res := checkout_items(pg_temp.id('b5'), jsonb_build_array(pg_temp.sel(pg_temp.id('C5'), 1)), pg_temp.card(1415), gen_random_uuid());
+  select * into v_part from bills where id = (v_res->>'billId')::uuid;
+  if v_part.discount_kind <> 'amount' or v_part.discount_value <> 278 or v_part.discount_reason <> 'Regular'
+     or v_part.discount_approved_by <> pg_temp.id('sup') or (v_part.totals->>'billDiscountSen')::int <> 278
+     or (select discount_value from bills where id = pg_temp.id('b5')) <> 722
+     or (pos_bill_totals(pg_temp.id('b5'))->>'totalSen')::int <> 3685 then
+    raise exception 'FAIL A2 bill amount share: %', row_to_json(v_part);
+  end if;
+  if (select count(*) from pos_discount_log where bill_id = v_part.id and action = 'split' and kind = 'amount' and value = 278
+         and reason = 'Regular' and approved_by = pg_temp.id('sup') and actor = pg_temp.id('cashier')) <> 1
+     or (select count(*) from pos_discount_log where bill_id = pg_temp.id('b5') and action = 'split' and kind = 'amount' and value = 722) <> 1 then
+    raise exception 'FAIL A2 discount log (amount)';
+  end if;
+  perform pg_temp.put('p5', v_part.id);
+  -- 4b. bill 10%: copied onto the part, kept by the table bill, one log row (the part's)
+  v_res := checkout_items(pg_temp.id('b6'), jsonb_build_array(pg_temp.sel(pg_temp.id('C6'), 1)), pg_temp.card(1565), gen_random_uuid());
+  select * into v_part from bills where id = (v_res->>'billId')::uuid;
+  if v_part.discount_kind <> 'percent' or v_part.discount_value <> 1000
+     or (select discount_kind || ':' || discount_value from bills where id = pg_temp.id('b6')) <> 'percent:1000'
+     or (select count(*) from pos_discount_log where bill_id = v_part.id and action = 'split') <> 1
+     or (select count(*) from pos_discount_log where bill_id = pg_temp.id('b6') and action = 'split') <> 0 then
+    raise exception 'FAIL A2 bill percent: %', row_to_json(v_part);
+  end if;
+  perform pg_temp.put('p6', v_part.id);
+
+  -- checkout_bill on the shared helpers, as before: Latte 13.00 + SC 1.30 + SST 0.78 = 15.08 → 15.10; cash 20.00
+  perform pg_temp.expect_error(format('select checkout_bill(%L, %L, %L)', pg_temp.id('b9'), pg_temp.card(1500), gen_random_uuid()),
+    'Payments (RM 15.00) do not match the total (RM 15.10)', 'A2 checkout_bill wrong amount');
+  v_res := checkout_bill(pg_temp.id('b9'), jsonb_build_array(jsonb_build_object('methodId', pg_temp.id('cash'), 'amountSen', 1510,
+                                                                                 'tenderedSen', 2000)), gen_random_uuid());
+  if (v_res->>'totalSen')::int <> 1510 or (v_res->>'changeSen')::int <> 490 or (select status from bills where id = pg_temp.id('b9')) <> 'paid'
+     or (select count(*) from payments where bill_id = pg_temp.id('b9') and tendered_sen = 2000 and change_sen = 490 and line_no = 1) <> 1 then
+    raise exception 'FAIL A2 checkout_bill: %', v_res;
+  end if;
+end $$;
+
+-- ── A2. More checks: grants; the cut row's catalog discount and order type (the S1 triggers);
+--    an item percent discount; a bill amount discount above what is left; the §4.2 refusals
+--    A1 left out. Everything this block writes is undone at its end (the S2RB0 exception), so
+--    the fixture A3 and A4 see is the one the block above leaves.
+do $$
+declare
+  v_far   uuid;
+  v_t10   uuid;
+  v_order uuid;
+  v_tb    uuid;   -- a takeaway bill
+  v_db    uuid;   -- table S10's bill
+  v_line  uuid;
+  v_cake  uuid;
+  v_res   jsonb;
+  v_tot   jsonb;
+  v_part  bills;
+  v_cut   order_items;
+  r       record;
+begin
+  -- grants: the RPC for signed-in users only, the helpers for nobody
+  if not has_function_privilege('authenticated', 'checkout_items(uuid,jsonb,jsonb,uuid)', 'execute')
+     or has_function_privilege('anon', 'checkout_items(uuid,jsonb,jsonb,uuid)', 'execute') then
+    raise exception 'FAIL A2 grants: checkout_items';
+  end if;
+  for r in select f from unnest(array['pos_check_payments(uuid,jsonb,integer)', 'pos_insert_payments(uuid,uuid,uuid,jsonb,uuid)',
+                                      'pos_pay_and_close(uuid,uuid,uuid,jsonb,jsonb,uuid)', 'pos_move_units(jsonb,uuid)']) as f loop
+    if has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL A2 grants: % is internal', r.f; end if;
+  end loop;
+
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- §4.2 refusals: another branch's bill, a paid bill, qty above 100, more than 100 entries, a string qty
+  insert into branches(name, address) values ('VERIFY S FAR', 'far') returning id into v_far;
+  insert into bills(branch_id, bill_no, order_type) values (v_far, 'VSFAR-1', 'takeaway') returning id into v_tb;
+  perform pg_temp.expect_error(format('select pos_split_totals(%L, %L)', v_tb, jsonb_build_array(pg_temp.sel(pg_temp.id('L1'), 1))),
+    'Bill not found', 'A2 preview of another branch''s bill');
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', v_tb, jsonb_build_array(pg_temp.sel(pg_temp.id('L1'), 1)),
+      pg_temp.card(100), gen_random_uuid()),
+    'Bill not found', 'A2 pay selected on another branch''s bill');
+  perform pg_temp.expect_error(format('select pos_split_totals(%L, %L)', pg_temp.id('b9'), jsonb_build_array(pg_temp.sel(pg_temp.id('L9'), 1))),
+    'This bill is already paid', 'A2 preview of a paid bill');
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', pg_temp.id('b9'), jsonb_build_array(pg_temp.sel(pg_temp.id('L9'), 1)),
+      pg_temp.card(100), gen_random_uuid()),
+    'This bill is already paid', 'A2 pay selected on a paid bill');
+  perform pg_temp.expect_error(format('select pos_split_totals(%L, %L)', pg_temp.id('b1'), jsonb_build_array(pg_temp.sel(pg_temp.id('L1'), 101))),
+    'Invalid selection', 'A2 qty 101');
+  perform pg_temp.expect_error(format('select pos_split_totals(%L, %L)', pg_temp.id('b1'),
+      (select jsonb_agg(pg_temp.sel(gen_random_uuid(), 1)) from generate_series(1, 101))),
+    'Invalid selection', 'A2 101 entries');
+  perform pg_temp.expect_error(format('select pos_split_totals(%L, %L)', pg_temp.id('b1'),
+      jsonb_build_array(jsonb_build_object('itemId', pg_temp.id('L1'), 'qty', '1'))),
+    'Invalid selection', 'A2 string qty');
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', pg_temp.id('b1'),
+      jsonb_build_array(jsonb_build_object('itemId', pg_temp.id('L1'), 'qty', '1')), pg_temp.card(1300), gen_random_uuid()),
+    'Invalid selection', 'A2 pay selected with a string qty');
+
+  -- a cut row keeps its line's catalog discount and order type (the S1 triggers return early):
+  -- a takeaway Latte ×3 ordered at 20% off is merged into table S10's bill, the catalog then goes
+  -- back to 0%, and one latte is paid on its own.
+  --   The part: 13.00 − 2.60 = 10.40, no service charge (takeaway), SST 0.62 = 11.02 → 11.00.
+  --   S10 keeps Latte ×2 (26.00 − 5.20 = 20.80, takeaway) + Cake 15.00 (dine-in, SC 1.50);
+  --   SST 6% of 35.80 = 2.15 → 39.45.
+  insert into dining_tables(branch_id, label, sort_order) values (pg_temp.id('branch'), 'S10', 10) returning id into v_t10;
+  v_order := place_counter_order(v_t10, 'dine_in', 2,
+    jsonb_build_array(jsonb_build_object('productId', pg_temp.id('cake'), 'variantId', pg_temp.id('cake_v'))), gen_random_uuid());
+  v_db := (select bill_id from orders where id = v_order);
+  update menu_catalogs set discount_bp = 2000 where id = pg_temp.id('catalog');
+  v_order := place_counter_order(null, 'takeaway', null,
+    jsonb_build_array(jsonb_build_object('productId', pg_temp.id('latte'), 'variantId', pg_temp.id('latte_v'), 'qty', 3)), gen_random_uuid());
+  v_tb := (select bill_id from orders where id = v_order);
+  v_line := (select id from order_items where order_id = v_order);
+  update menu_catalogs set discount_bp = 0 where id = pg_temp.id('catalog');
+  perform merge_bills(v_tb, v_db);
+  if (select catalog_discount_bp || ':' || order_type || ':' || bill_id from order_items where id = v_line)
+     <> '2000:takeaway:' || v_db then
+    raise exception 'FAIL A2 trigger fixture';
+  end if;
+  v_res := checkout_items(v_db, jsonb_build_array(pg_temp.sel(v_line, 1)), pg_temp.card(1100), gen_random_uuid());
+  select * into v_cut from order_items where split_from_item = v_line;
+  select * into v_part from bills where id = (v_res->>'billId')::uuid;
+  if v_cut.bill_id is distinct from v_part.id or v_cut.catalog_discount_bp <> 2000
+     or v_cut.catalog_discount_name is distinct from 'VERIFY S MENU' or v_cut.order_type <> 'takeaway'
+     or v_part.order_type <> 'dine_in' or v_part.total_sen <> 1100 or (v_part.totals->>'catalogDiscountSen')::int <> 260
+     or (select catalog_discount_bp || ':' || order_type || ':' || qty from order_items where id = v_line) <> '2000:takeaway:2'
+     or (pos_bill_totals(v_db)->>'totalSen')::int <> 3945 then
+    raise exception 'FAIL A2 cut row catalog discount / order type: % % %', v_res, row_to_json(v_cut), pos_bill_totals(v_db);
+  end if;
+
+  -- an item percent discount is carried as it is: takeaway Latte ×2 at 10% off, take 1:
+  -- 13.00 − 1.30 = 11.70 + SST 0.70 = 12.40, in the preview and on the cut row; the line keeps it
+  v_order := place_counter_order(null, 'takeaway', null,
+    jsonb_build_array(jsonb_build_object('productId', pg_temp.id('latte'), 'variantId', pg_temp.id('latte_v'), 'qty', 2)), gen_random_uuid());
+  v_tb := (select bill_id from orders where id = v_order);
+  v_line := (select id from order_items where order_id = v_order);
+  v_res := set_item_discount(v_line, 'percent', 1000, 'Regular', pg_temp.id('sup'), '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL A2 percent fixture: %', v_res; end if;
+  v_tot := pos_split_totals(v_tb, jsonb_build_array(pg_temp.sel(v_line, 1)));
+  if (v_tot->>'itemDiscountSen')::int is distinct from 130 or (v_tot->>'totalSen')::int is distinct from 1240
+     or (v_tot->'lines'->0->>'itemDiscountSen')::int is distinct from 130 then
+    raise exception 'FAIL A2 preview item percent: %', v_tot;
+  end if;
+  v_res := checkout_items(v_tb, jsonb_build_array(pg_temp.sel(v_line, 1)), pg_temp.card(1240), gen_random_uuid());
+  select * into v_cut from order_items where split_from_item = v_line;
+  if (v_res->>'totalSen')::int <> 1240 or v_cut.discount_kind <> 'percent' or v_cut.discount_value <> 1000
+     or v_cut.discount_reason <> 'Regular' or v_cut.discount_approved_by <> pg_temp.id('sup')
+     or (select discount_kind || ':' || discount_value || ':' || qty from order_items where id = v_line) <> 'percent:1000:1' then
+    raise exception 'FAIL A2 cut row item percent: % %', v_res, row_to_json(v_cut);
+  end if;
+
+  -- a bill amount discount above what is left (set, then items voided): the raw shares are kept,
+  -- so the two bills still add up to it, and pos_compute_bill caps what each applies.
+  --   Takeaway Latte ×3 + Cake ×3, RM 50.00 off; the lattes voided → 45.00 left. Take 1 cake:
+  --   round(5000 × 1500 / 4500) = 16.67 to the part (15.00 applied, pays 0.00), 33.33 stays
+  --   (30.00 applied on the 2 cakes left).
+  v_order := place_counter_order(null, 'takeaway', null,
+    jsonb_build_array(jsonb_build_object('productId', pg_temp.id('latte'), 'variantId', pg_temp.id('latte_v'), 'qty', 3),
+                      jsonb_build_object('productId', pg_temp.id('cake'), 'variantId', pg_temp.id('cake_v'), 'qty', 3)), gen_random_uuid());
+  v_tb := (select bill_id from orders where id = v_order);
+  v_line := (select id from order_items where order_id = v_order and product_id = pg_temp.id('latte'));
+  v_cake := (select id from order_items where order_id = v_order and product_id = pg_temp.id('cake'));
+  v_res := set_bill_discount(v_tb, 'amount', 5000, 'Regular', pg_temp.id('sup'), '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL A2 over-discount fixture: %', v_res; end if;
+  v_res := void_order_item(v_line, 'Wrong item keyed', pg_temp.id('sup'), '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL A2 over-discount void: %', v_res; end if;
+  v_res := checkout_items(v_tb, jsonb_build_array(pg_temp.sel(v_cake, 1)), '[]'::jsonb, gen_random_uuid());
+  select * into v_part from bills where id = (v_res->>'billId')::uuid;
+  v_tot := pos_bill_totals(v_tb);
+  if v_part.discount_kind <> 'amount' or v_part.discount_value <> 1667 or (v_part.totals->>'billDiscountSen')::int <> 1500
+     or v_part.total_sen <> 0 or (v_res->>'totalSen')::int <> 0
+     or (select discount_value from bills where id = v_tb) <> 3333
+     or (v_tot->>'billDiscountSen')::int <> 3000 or (v_tot->>'totalSen')::int <> 0
+     or (select count(*) from pos_discount_log where bill_id = v_part.id and action = 'split' and value = 1667) <> 1
+     or (select count(*) from pos_discount_log where bill_id = v_tb and action = 'split' and value = 3333) <> 1 then
+    raise exception 'FAIL A2 bill amount above what is left: % % %', v_res, row_to_json(v_part), v_tot;
+  end if;
+
+  raise exception 'A2 extra checks done' using errcode = 'S2RB0';
+exception when sqlstate 'S2RB0' then
+  null;   -- undo this block's writes; a FAIL (any other error) still stops the script
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;

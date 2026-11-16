@@ -105,7 +105,10 @@ begin
      or pg_get_functiondef('pos_pin_attempt(uuid,text)'::regprocedure) like '%update staff_pos_pins%'
      or pg_get_functiondef('set_my_pos_pin(text,text)'::regprocedure) like '%failed_attempts%'
      or pg_get_functiondef('pos_compute_bill(jsonb)'::regprocedure) not like '%orderType%ln.order_type%'
-     or pg_get_functiondef('pos_bill_totals(uuid)'::regprocedure) not like '%oi.order_type%' then
+     or (pg_get_functiondef('pos_bill_totals(uuid)'::regprocedure) not like '%oi.order_type%'          -- the lines' order type: in
+         and (pg_get_functiondef('pos_bill_totals(uuid)'::regprocedure) not like '%pos_bill_input%'    -- pos_bill_totals, or in the
+              or coalesce(pg_get_functiondef(to_regprocedure('pos_bill_input(uuid)')), '')               -- pos_bill_input it calls
+                   not like '%oi.order_type%')) then                                                     -- (split bill, S2)
     raise exception 'FAIL: an older body is back — re-run migration-2026-10-25-pos-hardening.sql';
   end if;
 
