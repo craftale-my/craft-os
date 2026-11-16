@@ -241,7 +241,8 @@ begin
   perform pg_temp.sell(v_v, 'merged',  1, '[["S*20"]]');
   perform pg_temp.sell(v_v, 'paid',   45, '[["B*10"]]');
   perform pg_temp.sell(v_v, 'paid',   90, '[["M*20:dairy","C"]]');
-  update bills set refunded_sen = 500 where id = pg_temp.sell(v_v, 'paid', 1, '[["S*5"]]');   -- a refunded bill counts nowhere
+  v_id := pg_temp.sell(v_v, 'paid', 1, '[["S*5"]]');                 -- a refunded bill counts nowhere
+  update bills set refunded_sen = 500 where id = v_id;               -- (sell is volatile: never call it inside the update)
   for i in 1..29 loop perform pg_temp.sell(v_p2, 'paid', 1, '[["R"]]'); end loop;
   perform pg_temp.sell(v_p2, 'paid', 1, '[["S*2"]]');
   for i in 1..4 loop perform pg_temp.sell(v_p2, 'paid', 1, '[["R","Z*3:oat"]]'); end loop;   -- Z is switched off
