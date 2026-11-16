@@ -33,6 +33,7 @@ import ApprovalDialog from '../checkout/ApprovalDialog'
 import DiscountDialog from '../checkout/DiscountDialog'
 import { discountOffSen, type DiscountInput } from '../checkout/bill'
 import { discountLabel, storedDiscount } from '../checkout/discounts'
+import { payLabelFor } from '../checkout/partSplit'
 import PickerSheet from '../checkout/BillPickers'
 import ConfirmDialog, { type ConfirmRequest } from '../shell/ConfirmDialog'
 import PaxDialog from '../shell/PaxDialog'
@@ -496,7 +497,7 @@ export default function OrderScreen({
         onSend={() => void send()}
         sendDisabled={sending || lines.length === 0}
         sending={sending}
-        payLabel={view.totals ? `Payment ${formatSen(view.totals.totalSen - partPaid)}` : 'Payment'}
+        payLabel={view.totals ? payLabelFor(view.totals.totalSen, partPaid) : 'Payment'}
         payDisabled={sending || gate === 'no_shift' || gate === 'empty' || (gate === 'ready' && !loaded)}
         payHint={gate === 'no_shift' ? NO_SHIFT_PAY : null}
         onPay={pay}

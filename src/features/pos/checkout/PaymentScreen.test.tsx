@@ -579,7 +579,7 @@ describe('PaymentScreen — a part payment that got no reply (the part id is the
     await flush()
     expect(api.payBillPart).toHaveBeenCalledTimes(2)
     expect(api.payBillPart.mock.calls[1]).toEqual(api.payBillPart.mock.calls[0])
-    expect(api.payBillPart.mock.calls[0].slice(2)).toEqual([2000, null, cashPayment(2000)])
+    expect(api.payBillPart.mock.calls[0].slice(2)).toEqual([2000, null, cashPayment(2000), 0])
     expect(api.checkoutBill).not.toHaveBeenCalled()
     expect(screen.getByText('Part 1 paid · RM 20.00 · Change RM 0.00')).toBeTruthy()
   })
@@ -603,7 +603,7 @@ describe('PaymentScreen — a part payment that got no reply (the part id is the
     await flush()
     expect(api.payBillPart).toHaveBeenCalledTimes(2)
     expect(sentId(1)).not.toBe(sentId(0))
-    expect(api.payBillPart.mock.calls[1].slice(2)).toEqual([1000, null, cashPayment(1000)])
+    expect(api.payBillPart.mock.calls[1].slice(2)).toEqual([1000, null, cashPayment(1000), 2000])   // the part that landed is in p_paid_sen
   })
 
   it('Check bill finds the part not recorded: unlocks with a NEW id for the same part', async () => {
@@ -620,7 +620,7 @@ describe('PaymentScreen — a part payment that got no reply (the part id is the
     await flush()
     expect(api.payBillPart).toHaveBeenCalledTimes(2)
     expect(sentId(1)).not.toBe(sentId(0))
-    expect(api.payBillPart.mock.calls[1].slice(2)).toEqual([2000, null, cashPayment(2000)])
+    expect(api.payBillPart.mock.calls[1].slice(2)).toEqual([2000, null, cashPayment(2000), 0])
   })
 
   it('the follow after no reply finds the part recorded: it shows paid without Try again', async () => {
@@ -643,6 +643,174 @@ describe('PaymentScreen — a part payment that got no reply (the part id is the
     press('Pay RM 70.35')
     await flush()
     expect(api.payBillPart).not.toHaveBeenCalled()
+    expect(api.checkoutBill.mock.calls[0][1]).toEqual(cashPayment(7035))
+  })
+})
+
+describe('PaymentScreen — split follow-up fixes (p_paid_sen, the last share, quotes, a balance of 0, offline)', () => {
+  const t7035 = { ...totals, subtotalSen: 7035, sstSen: 0, beforeRoundingSen: 7035, roundingSen: 0, totalSen: 7035 }
+  const openState = (paidSen: number, parts: unknown[]) =>
+    ({ status: 'open', billNo: bill.bill_no, mergedIntoBillNo: null, totals: t7035, result: null, paidSen, parts })
+  const part1 = { id: 'x1', partNo: 1, ways: null, amountSen: 1000, methods: ['Card'] }
+  const quote = (ways: number, sharesPaid: number, paidSen: number, shareSen: number) =>
+    ({ totalSen: 7035, paidSen, balanceSen: 7035 - paidSen, partsPaid: sharesPaid, sharesPaid, ways, shareSen })
+  const partReply = (partId: string, partNo: number, amountSen: number, paidSen: number) =>
+    ({ partId, partNo, ways: null, amountSen, paidSen, balanceSen: 7035 - paidSen, changeSen: 0, receiptQueued: true })
+  const el = (online = true) => (
+    <PaymentScreen branchId="br" bill={bill} title="Table T3" refreshKey={0} earlierIds={[]} online={online}
+      onSendIds={() => {}} onClose={() => {}} onPaid={() => {}} />
+  )
+  const payBtn = () => screen.getByRole('button', { name: /^Pay/ }) as HTMLButtonElement
+
+  it('a part sends the paid parts the screen showed (p_paid_sen); Try again resends that same value', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(1000, [part1]))
+    api.payBillPart.mockRejectedValueOnce(new Error('Failed to fetch'))
+    api.payBillPart.mockImplementationOnce(async (_b: string, id: string) => partReply(id, 2, 2000, 3000))
+    render(el())
+    await flush()
+    press('By amount')
+    fireEvent.change(screen.getByLabelText('Amount (RM)'), { target: { value: '20' } })
+    press('Cash')
+    // another iPad pays a part while this one waits for its reply: the follow shows the new paid parts
+    api.fetchCheckoutState.mockResolvedValue(openState(1500, [part1, { id: 'y1', partNo: 2, ways: null, amountSen: 500, methods: ['Cash'] }]))
+    press('Pay RM 20.00')
+    await flush()
+    expect(api.payBillPart.mock.calls[0].slice(2)).toEqual([2000, null, cashPayment(2000), 1000])
+    expect(screen.getByText('Paid part 2 · RM 5.00 (Cash)')).toBeTruthy()
+    press('Try again')
+    await flush()
+    expect(api.payBillPart).toHaveBeenCalledTimes(2)
+    expect(api.payBillPart.mock.calls[1]).toEqual(api.payBillPart.mock.calls[0])
+  })
+
+  it('"The bill changed. Check the split again." shows the server\'s words and follows the bill again', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(0, []))
+    api.payBillPart.mockRejectedValueOnce(new Error('The bill changed. Check the split again.'))
+    render(el())
+    await flush()
+    press('By amount')
+    fireEvent.change(screen.getByLabelText('Amount (RM)'), { target: { value: '20' } })
+    press('Cash')
+    api.fetchCheckoutState.mockResolvedValue(openState(1000, [part1]))
+    const reads = api.fetchCheckoutState.mock.calls.length
+    press('Pay RM 20.00')
+    await flush()
+    expect(api.payBillPart.mock.calls[0][5]).toBe(0)
+    expect(screen.getByText('The bill changed. Check the split again.')).toBeTruthy()
+    expect(api.fetchCheckoutState.mock.calls.length).toBeGreaterThan(reads)
+    expect(screen.getByText('Paid part 1 · RM 10.00 (Card)')).toBeTruthy()
+    expect(screen.getAllByText('RM 60.35').length).toBeGreaterThan(0)       // the new balance
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+  })
+
+  it('Equally: a share at or above the quote\'s balance is the last share — checkout_bill of the balance, not the share', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(4690, [
+      { id: 'x1', partNo: 1, ways: 3, amountSen: 2345, methods: ['Cash'] }, { id: 'x2', partNo: 2, ways: 3, amountSen: 2345, methods: ['Card'] }]))
+    api.partQuote.mockResolvedValue(quote(3, 2, 4690, 2350))
+    api.checkoutBill.mockResolvedValue({ billId: 'b1', billNo: bill.bill_no, totalSen: 7035, changeSen: 0, receiptQueued: true })
+    render(el())
+    await flush()
+    press('Equally')
+    await flush()
+    expect(screen.getByText('Share 3 of 3 · RM 23.45')).toBeTruthy()          // the balance, as Pay records it
+    press('Cash')
+    press('Pay RM 23.45')
+    await flush()
+    expect(api.payBillPart).not.toHaveBeenCalled()
+    expect(api.checkoutBill.mock.calls[0][1]).toEqual(cashPayment(2345))
+  })
+
+  it('Equally: the share is a part only while it is below the quote\'s balance', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(0, []))
+    api.partQuote.mockResolvedValue(quote(2, 0, 0, 3515))
+    api.payBillPart.mockImplementation(async (_b: string, id: string) => ({ ...partReply(id, 1, 3515, 3515), ways: 2 }))
+    render(el())
+    await flush()
+    press('Equally')
+    await flush()
+    press('Cash')
+    press('Pay RM 35.15')
+    await flush()
+    expect(api.checkoutBill).not.toHaveBeenCalled()
+    expect(api.payBillPart.mock.calls[0].slice(2)).toEqual([3515, 2, cashPayment(3515), 0])
+  })
+
+  it('a quote that failed offers a Retry that asks again', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(0, []))
+    api.partQuote.mockRejectedValueOnce(new Error('Failed to fetch'))
+    api.partQuote.mockResolvedValueOnce(quote(2, 0, 0, 3515))
+    render(el())
+    await flush()
+    press('Equally')
+    await flush()
+    expect(screen.getByText(/Failed to fetch/)).toBeTruthy()
+    press('Retry')
+    await flush()
+    expect(api.partQuote).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(/Failed to fetch/)).toBeNull()
+    expect(screen.getByText('Share 1 of 2 · RM 35.15')).toBeTruthy()
+  })
+
+  it('the parts paid it all (balance RM 0.00): Pay closes the bill with checkout_bill and no payment, in any mode', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(7035, [{ id: 'x1', partNo: 1, ways: null, amountSen: 7035, methods: ['Card'] }]))
+    api.partQuote.mockResolvedValue({ ...quote(2, 0, 7035, 0), balanceSen: 0 })
+    api.checkoutBill.mockResolvedValue({ billId: 'b1', billNo: bill.bill_no, totalSen: 7035, changeSen: 0, receiptQueued: true })
+    render(el())
+    await flush()
+    press('Equally')
+    await flush()
+    press('Pay RM 0.00')
+    await flush()
+    expect(api.payBillPart).not.toHaveBeenCalled()
+    expect(api.checkoutBill).toHaveBeenCalledTimes(1)
+    expect(api.checkoutBill.mock.calls[0][1]).toEqual([])
+    cleanup()
+    api.checkoutBill.mockClear()
+    render(el())
+    await flush()
+    press('By amount')
+    press('Pay RM 0.00')
+    await flush()
+    expect(api.checkoutBill.mock.calls[0][1]).toEqual([])
+  })
+
+  it('a share of RM 0.00 against a balance is shown as a problem and Pay is off', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(0, []))
+    api.partQuote.mockResolvedValue(quote(2, 0, 0, 0))
+    render(el())
+    await flush()
+    press('Equally')
+    await flush()
+    press('Cash')
+    expect(screen.getByText('The share came back as RM 0.00 — check the bill')).toBeTruthy()
+    expect(payBtn().disabled).toBe(true)
+    fireEvent.click(payBtn())
+    await flush()
+    expect(api.payBillPart).not.toHaveBeenCalled()
+    expect(api.checkoutBill).not.toHaveBeenCalled()
+  })
+
+  it('offline: Pay for a part is off; the whole bill still pays as before', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(0, []))
+    const { rerender } = render(el())
+    await flush()
+    press('By amount')
+    fireEvent.change(screen.getByLabelText('Amount (RM)'), { target: { value: '20' } })
+    press('Cash')
+    rerender(el(false))
+    await flush()
+    expect(payBtn().disabled).toBe(true)
+    fireEvent.click(payBtn())
+    await flush()
+    expect(api.payBillPart).not.toHaveBeenCalled()
+    cleanup()
+    api.checkoutBill.mockResolvedValue({ billId: 'b1', billNo: bill.bill_no, totalSen: 7035, changeSen: 0, receiptQueued: true })
+    render(el(false))
+    await flush()
+    press('Cash')
+    expect(payBtn().disabled).toBe(false)
+    press('Pay RM 70.35')
+    await flush()
     expect(api.checkoutBill.mock.calls[0][1]).toEqual(cashPayment(7035))
   })
 })

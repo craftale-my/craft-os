@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  AMOUNT_OVER_BALANCE, BALANCE_DUE, ENTER_AMOUNT, PERCENT_CHIPS, SHARE_LOADING, SPLIT_MODE_LABEL, clampWays, fixedWays, paidPartLabel,
-  parseBillParts, parsePartQuote, parsePartResult, partPaidNote, partPaidTag, partProblem, percentChipSen, shareLabel, splitIntoLabel,
-  type BillPart,
+  AMOUNT_OVER_BALANCE, BALANCE_DUE, ENTER_AMOUNT, PERCENT_CHIPS, SHARE_LOADING, SHARE_ZERO, SPLIT_MODE_LABEL, clampWays, equalPay, fixedWays,
+  paidPartLabel, parseBillParts, parsePartQuote, parsePartResult, partPaidNote, partPaidTag, partProblem, payLabelFor, percentChipSen,
+  shareLabel, splitIntoLabel, type BillPart, type PartQuote,
 } from './partSplit'
 
 const parts: BillPart[] = [
@@ -67,6 +67,38 @@ describe('partProblem: what Pay checks before a part goes out', () => {
     expect(partProblem('equal', null, 7035)).toBe(SHARE_LOADING)
     expect(partProblem('equal', 2345, 7035)).toBeNull()
     expect(partProblem('none', null, 7035)).toBeNull()
+  })
+})
+
+describe('equalPay: what Pay does in Equally, decided from the quote itself', () => {
+  const q = (shareSen: number | null, balanceSen: number): PartQuote =>
+    ({ totalSen: 7035, paidSen: 7035 - balanceSen, balanceSen, partsPaid: 0, sharesPaid: 0, ways: 3, shareSen })
+  it('no quote yet: Pay waits', () => {
+    expect(equalPay(null)).toEqual({ kind: 'problem', problem: SHARE_LOADING })
+  })
+  it('a share below the balance is a part', () => {
+    expect(equalPay(q(2345, 7035))).toEqual({ kind: 'part', shareSen: 2345 })
+    expect(equalPay(q(2345, 2350))).toEqual({ kind: 'part', shareSen: 2345 })
+  })
+  it('a share equal to or above the balance is the rest: checkout_bill of the balance', () => {
+    expect(equalPay(q(2345, 2345))).toEqual({ kind: 'rest' })
+    expect(equalPay(q(2350, 2345))).toEqual({ kind: 'rest' })
+    expect(equalPay(q(5, 3))).toEqual({ kind: 'rest' })
+  })
+  it('a balance of 0 is the rest (no payment); a share of 0 against a balance is a problem', () => {
+    expect(equalPay(q(0, 0))).toEqual({ kind: 'rest' })
+    expect(equalPay(q(0, 7035))).toEqual({ kind: 'problem', problem: SHARE_ZERO })
+    expect(equalPay(q(null, 7035))).toEqual({ kind: 'problem', problem: SHARE_ZERO })
+    expect(SHARE_ZERO).toBe('The share came back as RM 0.00 — check the bill')
+  })
+})
+
+describe('payLabelFor: the order screen\'s Payment button', () => {
+  it('shows the balance: the total less what the parts paid, never below 0', () => {
+    expect(payLabelFor(7035, 0)).toBe('Payment RM 70.35')
+    expect(payLabelFor(7035, 2345)).toBe('Payment RM 46.90')
+    expect(payLabelFor(7035, 7035)).toBe('Payment RM 0.00')
+    expect(payLabelFor(5000, 7035)).toBe('Payment RM 0.00')   // the bill shrank below its parts
   })
 })
 

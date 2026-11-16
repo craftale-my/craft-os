@@ -28,6 +28,7 @@ export const BALANCE_DUE = 'Balance due'
 export const AMOUNT_OVER_BALANCE = 'The amount is more than the balance'
 export const ENTER_AMOUNT = 'Enter the amount'
 export const SHARE_LOADING = 'Getting the share — try again in a moment'
+export const SHARE_ZERO = 'The share came back as RM 0.00 — check the bill'
 
 export const clampWays = (n: number): number => Math.max(MIN_WAYS, Math.min(MAX_WAYS, Math.trunc(n)))
 /** The N of the bill's equal split once a share was paid (it is then fixed); null before. */
@@ -70,6 +71,20 @@ export function partProblem(mode: PartMode, dueSen: number | null, balanceSen: n
   if (mode === 'equal' && dueSen === null) return SHARE_LOADING
   return null
 }
+
+/** Equally: what Pay does, decided from the quote itself (never from the screen's balance, which may lag it).
+ *  A share below the quote's balance is a part (pay_bill_part); otherwise Pay is the rest: checkout_bill of the
+ *  balance (a balance of 0 with no payment). A share of 0 against a balance is a problem: Pay is off. */
+export type EqualPay = { kind: 'part'; shareSen: number } | { kind: 'rest' } | { kind: 'problem'; problem: string }
+export function equalPay(q: PartQuote | null): EqualPay {
+  if (q === null) return { kind: 'problem', problem: SHARE_LOADING }
+  if (q.balanceSen === 0) return { kind: 'rest' }
+  if (q.shareSen === null || q.shareSen <= 0) return { kind: 'problem', problem: SHARE_ZERO }
+  return q.shareSen < q.balanceSen ? { kind: 'part', shareSen: q.shareSen } : { kind: 'rest' }
+}
+
+/** The order screen's Payment button: the balance (total less what the parts paid), never below 0. */
+export const payLabelFor = (totalSen: number, paidSen: number): string => `Payment ${formatSen(Math.max(0, totalSen - paidSen))}`
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 const isNum = (x: unknown): x is number => typeof x === 'number'

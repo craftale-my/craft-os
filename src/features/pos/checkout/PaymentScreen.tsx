@@ -12,7 +12,7 @@ import DiscountRows from './DiscountRows'
 import { catalogTag, discountLabel, lineDiscountRows, linesById, storedDiscount } from './discounts'
 import { billChangedAtPay, followBill, type CheckoutState, type FollowAction } from './follow'
 import {
-  BALANCE_DUE, MAX_WAYS, MIN_WAYS, PERCENT_CHIPS, SPLIT_MODE_LABEL, clampWays, fixedWays, paidPartLabel, partPaidNote, partProblem,
+  BALANCE_DUE, MAX_WAYS, MIN_WAYS, PERCENT_CHIPS, SPLIT_MODE_LABEL, clampWays, equalPay, fixedWays, paidPartLabel, partPaidNote, partProblem,
   percentChipSen, shareLabel, splitIntoLabel, type BillPart, type PartDone, type PartMode, type PartQuote,
 } from './partSplit'
 import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
@@ -37,8 +37,10 @@ const SPLIT_MODES = ['item', 'equal', 'amount'] as const
  *  open (the screen still follows it: paid, voided or merged elsewhere locks it).
  *  The Split row (split spec §3.5): By item opens the picker; Equally pays the server's share
  *  (pos_part_quote) and By amount an amount below the balance, each as a part (pay_bill_part, the
- *  attempt's id is the part's id); the last share, or an amount equal to the balance, is a normal
- *  checkout_bill of the balance. The paid parts and the balance show above the totals. */
+ *  attempt's id is the part's id, p_paid_sen the paid parts the screen showed); the last share (the
+ *  quote's share is not below its balance), or an amount equal to the balance, is a normal checkout_bill
+ *  of the balance, and a balance of RM 0.00 closes with no payment. Offline, Pay for a part is off.
+ *  The paid parts and the balance show above the totals. */
 export default function PaymentScreen({ branchId, bill, title, refreshKey, earlierIds, split: byItem, online = true, onSplitByItem,
   onSendIds, onClose, onPaid }: {
   branchId: string
@@ -83,9 +85,11 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   const sessionRef = useRef(session)
   const totalsRef = useRef<BillTotals | null>(null)
   const paidRef = useRef(0)                                           // paidSen as last read: the balance follow compares
-  const sentPartRef = useRef<{ amountSen: number; ways: number | null } | null>(null)   // an unsure part: Try again resends exactly it
+  // the part being sent, frozen with the paid parts the screen showed: Try again resends exactly it
+  const sentPartRef = useRef<{ amountSen: number; ways: number | null; paidSen: number } | null>(null)
   const loadFailed = useRef(false)
   const [methodsKey, setMethodsKey] = useState(0)    // bumped by Retry after the payment methods failed to load
+  const [quoteKey, setQuoteKey] = useState(0)        // bumped by Retry after the share failed to load
   const readSeq = useRef(0)
   const keySeq = useRef(0)
   const quoteSeq = useRef(0)
@@ -192,13 +196,22 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       (q) => { if (seq === quoteSeq.current) setQuote(q) },
       (e) => { if (seq === quoteSeq.current) { setQuote(null); setQuoteError(msg(e)) } },
     )
-  }, [bill.id, partMode, ways, paidSen, totals?.totalSen])
+  }, [bill.id, partMode, ways, paidSen, totals?.totalSen, quoteKey])
 
   const billTotal = totals?.totalSen ?? 0
   const balance = billTotal - paidSen
-  const partDue = partMode === 'equal' ? quote?.shareSen ?? null : partMode === 'amount' ? parseRinggit(amountText) : null
-  const total = partMode === 'none' ? balance : partDue ?? 0          // what this Pay records
-  const isPart = partMode !== 'none' && partDue !== null && partDue > 0 && partDue < balance
+  // nothing left to pay (the parts paid it all, or a RM 0.00 bill): checkout_bill with no payment, in any mode
+  const settled = totals !== null && balance === 0
+  // Equally: part or last share is the quote's call (its share against its balance), never the screen's
+  const equal = partMode === 'equal' && !settled ? equalPay(quote) : null
+  const partDue = settled ? null
+    : equal ? (equal.kind === 'part' ? equal.shareSen : null)
+    : partMode === 'amount' ? parseRinggit(amountText) : null
+  const payingRest = settled || partMode === 'none' || equal?.kind === 'rest'
+  const total = payingRest ? balance : partDue ?? 0                  // what this Pay records
+  const isPart = !payingRest && partDue !== null && partDue > 0 && partDue < balance
+  const shareProblem = equal?.kind === 'problem' && quote !== null ? equal.problem : null   // a quote came, but no share to pay
+  const partOffline = isPart && !online                                // a part needs the server; the whole bill pays as before
   const fixed = fixedWays(parts)
   const left = remainingSen(total, lines)
   const locked = linesLocked(session) || lockNote !== null
@@ -276,13 +289,13 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       const problem = payProblem(total, sending)
       if (problem) { setError(problem); return }
       setLines(sending)
-      sentPartRef.current = isPart ? { amountSen: total, ways: partMode === 'equal' ? quote?.ways ?? ways : null } : null
+      sentPartRef.current = isPart ? { amountSen: total, ways: partMode === 'equal' ? quote?.ways ?? ways : null, paidSen } : null   // the paid parts on screen
     }
     const part = sentPartRef.current
     step({ type: 'send' }); setError(null); setChangeNote(null); setPartNote(null)
     try {
       if (part) {
-        const r = await payBillPart(bill.id, s.checkoutId, part.amountSen, part.ways, toPayments(sending))
+        const r = await payBillPart(bill.id, s.checkoutId, part.amountSen, part.ways, toPayments(sending), part.paidSen)
         partDone({ partNo: r.partNo, amountSen: r.amountSen, changeSen: r.changeSen, paidSen: r.paidSen })
         void follow()
         return
@@ -297,16 +310,17 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
         step({ type: 'refused' }); setError(m)
         if (!split) setLines([])                         // a refused one-go payment does not linger
         sentPartRef.current = null                       // a refused part recorded nothing: the next Pay sends what is on screen
-        void follow()
+        void follow()                                    // e.g. "The bill changed. Check the split again.": the new parts and balance show
       }
     }
   }
   const pay = () => {
     if (session.phase === 'unsure') { void send(lines); return }
-    if (partMode !== 'none') {
-      const problem = partProblem(partMode, partDue, balance)
+    if (partMode !== 'none' && !settled) {
+      const problem = equal ? (equal.kind === 'problem' ? equal.problem : null) : partProblem(partMode, partDue, balance)
       if (problem) { setError(problem); return }
     }
+    if (partOffline) { setError(SPLIT_OFFLINE); return }
     if (split) { void send(lines); return }
     if (payingForRef.current !== null && payingForRef.current !== balance) {
       // the bill changed since the cashier started: show it, and take a second, deliberate Pay
@@ -459,7 +473,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
         {lockNote && <p role="alert" className="mt-3 rounded bg-red-50 p-3 font-semibold text-red-700">{lockNote}</p>}
         <div className="mt-2 text-center">
           {partMode === 'equal' && quote && quote.ways !== null && quote.shareSen !== null && (
-            <div className="text-sm font-medium text-brown-dark">{shareLabel(quote.sharesPaid + 1, quote.ways, quote.shareSen)}</div>
+            <div className="text-sm font-medium text-brown-dark">{shareLabel(quote.sharesPaid + 1, quote.ways, equal?.kind === 'rest' ? balance : quote.shareSen)}</div>
           )}
           <div className="text-sm uppercase tracking-wide text-brown-muted">
             {split ? 'Left to pay' : paidSen > 0 && partMode === 'none' ? BALANCE_DUE : 'Amount due'}
@@ -537,7 +551,12 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
           </div>
         )}
         {partNote && <p role="status" className="mt-3 rounded bg-green-50 p-2 text-sm text-green-800">{partNote}</p>}
-        {quoteError && <p role="alert" className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{quoteError}</p>}
+        {quoteError && (
+          <p role="alert" className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">
+            {quoteError} <button type="button" className="min-h-11 px-2 underline" onClick={() => setQuoteKey((k) => k + 1)}>Retry</button>
+          </p>
+        )}
+        {shareProblem && <p role="alert" className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{shareProblem}</p>}
         {error && <p role="alert" className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
         {lockNote ? (
           <button type="button" onClick={onClose} disabled={busy} className="mt-3 min-h-16 rounded-xl bg-brown-btn text-lg font-semibold text-white">Close</button>
@@ -549,7 +568,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
             </button>
           </div>
         ) : (
-          <button type="button" onClick={pay} disabled={busy || !totals || (split ? left !== 0 : !method && total !== 0) || (partMode === 'equal' && !quote)}
+          <button type="button" onClick={pay} disabled={busy || !totals || (split ? left !== 0 : !method && total !== 0) || equal?.kind === 'problem' || partOffline}
             className="mt-3 min-h-16 rounded-xl bg-brown-btn text-lg font-semibold text-white hover:bg-brown-btn-hover disabled:opacity-40">
             {busy ? 'Paying…' : `Pay ${formatSen(total)}`}
           </button>

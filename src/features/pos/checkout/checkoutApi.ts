@@ -218,11 +218,14 @@ export async function partQuote(billId: string, ways: number | null): Promise<Pa
 }
 
 /** One part payment on the open bill (pay_bill_part). partId is the attempt's id: a lost reply is
- *  resent with the SAME id and gets the first answer (never charged twice). */
+ *  resent with the SAME id and gets the first answer (never charged twice). paidSen is what the parts
+ *  had paid when the screen started this part: the server refuses ("The bill changed. Check the split
+ *  again.") when the bill's parts no longer sum to it. */
 export async function payBillPart(billId: string, partId: string, amountSen: number, ways: number | null,
-                                  payments: PaymentInput[]): Promise<PartResult> {
+                                  payments: PaymentInput[], paidSen: number): Promise<PartResult> {
   const { data, error } = await supabase
-    .rpc('pay_bill_part', { p_bill_id: billId, p_part_id: partId, p_amount_sen: amountSen, p_ways: ways, p_payments: payments })
+    .rpc('pay_bill_part', { p_bill_id: billId, p_part_id: partId, p_amount_sen: amountSen, p_ways: ways, p_payments: payments,
+                            p_paid_sen: paidSen })
     .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
   if (error) fail(error)
   return parsePartResult(data)
