@@ -10,6 +10,7 @@
 -- B2  checkout_bill takes the balance (total − parts); its replay, pos_checkout_same_payments and
 --     pos_checkout_result look at the final payments only. Guards: void item / bill, item / bill
 --     discount, merge as the source, and every split path (pos_split_check) refuse a bill with a part.
+--     pay_bill_part takes p_paid_sen, the paid parts the screen saw (a 6th argument, default null).
 -- B3  The final receipt lists the parts' payments first, labelled; pos_checkout_state and
 --     pos_open_bill_summaries carry paidSen.
 -- Re-run hazards: re-running migration-2026-11-16-pos-split-bill.sql puts back the part-less
@@ -284,8 +285,13 @@ revoke all on function pos_queue_part_receipt(uuid) from public, anon, authentic
 -- A resend of the same part id (same bill, amount and payments) answers again: the part's own fields
 -- (partId, partNo, ways, amountSen, payments, changeSen, receiptQueued) are the first answer;
 -- paidSen and balanceSen are the bill's current values, not frozen at the first call.
+-- B2: p_paid_sen, the paid parts the screen saw (null: not checked), must still be the bill's (under the
+-- lock). A part whose reply was lost and that commits late (Check bill had said "not recorded") then
+-- cannot let the same guest's next Pay — a new part id, the old paidSen — through: no paying twice.
+-- A 6th argument would be an overload: the 5-argument function is dropped first (same grants after).
+drop function if exists pay_bill_part(uuid, uuid, integer, integer, jsonb);                     -- B2
 create or replace function pay_bill_part(p_bill_id uuid, p_part_id uuid, p_amount_sen integer, p_ways integer,
-                                         p_payments jsonb) returns jsonb
+                                         p_payments jsonb, p_paid_sen integer default null) returns jsonb  -- B2
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_branch uuid := pos_my_branch();
@@ -320,6 +326,9 @@ begin
   -- 3. a part is less than the balance; the balance itself is paid with checkout_bill
   v_total := (pos_bill_totals(v_bill.id)->>'totalSen')::integer;
   v_paid  := pos_bill_paid_parts(v_bill.id);
+  if p_paid_sen is not null and p_paid_sen <> v_paid then                                       -- B2
+    raise exception 'The bill changed. Check the split again.';                                 -- B2
+  end if;                                                                                       -- B2
   if p_amount_sen is null or p_amount_sen < 1 then raise exception 'Invalid payment amount'; end if;
   if p_amount_sen = v_total - v_paid then raise exception 'Pay the rest with Pay, not as a part'; end if;
   if p_amount_sen > v_total - v_paid then raise exception 'The amount is more than the balance'; end if;
@@ -356,8 +365,336 @@ begin
   perform pos_queue_part_receipt(p_part_id);
   return pos_part_result(p_part_id);
 end $$;
-revoke all on function pay_bill_part(uuid, uuid, integer, integer, jsonb) from public, anon;
-grant execute on function pay_bill_part(uuid, uuid, integer, integer, jsonb) to authenticated;
+revoke all on function pay_bill_part(uuid, uuid, integer, integer, jsonb, integer) from public, anon;   -- B2
+grant execute on function pay_bill_part(uuid, uuid, integer, integer, jsonb, integer) to authenticated;   -- B2
+
+-- ── B2. The guard ───────────────────────────────────────────────────────────
+-- A paid part never exceeds the bill: nothing that lowers it, splits it or merges it away while it has parts. Internal.
+create or replace function pos_no_parts(p_bill_id uuid) returns void
+language plpgsql stable set search_path = public, pg_temp as $$
+begin
+  if exists (select 1 from bill_parts where bill_id = p_bill_id) then
+    raise exception 'This bill has a part payment. Pay the rest first.';
+  end if;
+end $$;
+revoke all on function pos_no_parts(uuid) from public, anon, authenticated;
+
+-- ── B2. checkout_bill: the text of migration-2026-11-16-pos-split-bill.sql (S3) with the lines marked
+--    B2 changed — the payments add up to the balance (total − parts). No parts: exactly as before. ─
+CREATE OR REPLACE FUNCTION checkout_bill(p_bill_id uuid, p_payments jsonb, p_checkout_id uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch    uuid := pos_my_branch();
+  v_bill      bills;
+  v_totals    jsonb;
+  v_shift     uuid;                                                -- 4a
+begin
+  if p_checkout_id is null then raise exception 'Checkout id is missing'; end if;
+  -- a resend of a checkout that already went through gets the first answer —
+  -- but only for the same bill of the caller's branch
+  select * into v_bill from bills where checkout_id = p_checkout_id;
+  if found then
+    if v_bill.id <> p_bill_id or v_bill.branch_id <> v_branch then
+      raise exception 'This checkout id belongs to another bill';
+    end if;
+    -- H2: the first result is replayed only for the very same payments
+    if not pos_checkout_same_payments(v_bill.id, p_payments) then
+      raise exception 'This payment was already recorded with other amounts — check Today''s bills';
+    end if;
+    return pos_checkout_result(v_bill.id);
+  end if;
+
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.checkout_id is not distinct from p_checkout_id then  -- won by the same checkout while we waited
+    if not pos_checkout_same_payments(v_bill.id, p_payments) then                                   -- H2
+      raise exception 'This payment was already recorded with other amounts — check Today''s bills';  -- H2
+    end if;                                                                                          -- H2
+    return pos_checkout_result(v_bill.id);
+  end if;
+  -- 4a: money moves only inside the branch's open shift. FOR SHARE lets checkouts run
+  -- side by side, while close_shift (FOR UPDATE) waits for one in flight and then counts it.
+  select id into v_shift from pos_shifts where branch_id = v_branch and status = 'open' for share;
+  if not found then raise exception 'Open the shift first'; end if;
+  if v_bill.status <> 'open' then
+    raise exception 'This bill is already %', case v_bill.status when 'paid' then 'paid'
+                                                                 when 'voided' then 'voided'
+                                                                 else 'merged into another bill' end;
+  end if;
+  if not exists (select 1 from order_items where bill_id = v_bill.id and voided_at is null) then
+    raise exception 'This bill has no items to pay for';
+  end if;
+
+  v_totals := pos_bill_totals(v_bill.id);
+  perform pos_check_payments(v_branch, p_payments,
+                             (v_totals->>'totalSen')::integer - pos_bill_paid_parts(v_bill.id));    -- B2: the balance
+  return pos_pay_and_close(v_bill.id, v_branch, v_shift, p_payments, v_totals, p_checkout_id); -- S3: payments, paid, receipt
+end $function$;
+
+-- pos_checkout_same_payments: the live text of migration-2026-10-25-pos-hardening.sql with the lines
+-- marked B2 changed — only the final checkout's payments (part_id null) are compared.
+create or replace function pos_checkout_same_payments(p_bill_id uuid, p_payments jsonb) returns boolean
+language sql stable security definer set search_path = public, pg_temp as $$
+  with given as (
+    select case when jsonb_typeof(p_payments) = 'array' then p_payments else null end as arr
+  )
+  select given.arr is not null
+     and jsonb_array_length(given.arr) = (select count(*) from payments p where p.bill_id = p_bill_id and p.part_id is null)   -- B2
+     and not exists (
+       select 1
+         from jsonb_array_elements(coalesce(given.arr, '[]'::jsonb)) with ordinality as x(v, n)
+         left join payments p on p.bill_id = p_bill_id and p.part_id is null and p.line_no = x.n                                 -- B2
+        where p.id is null
+           or lower(x.v->>'methodId') is distinct from p.method_id::text
+           or (case when jsonb_typeof(x.v->'amountSen') = 'number' then (x.v->>'amountSen')::numeric end)
+                is distinct from p.amount_sen::numeric
+           or (case when jsonb_typeof(x.v->'tenderedSen') = 'number' then (x.v->>'tenderedSen')::numeric end)
+                is distinct from p.tendered_sen::numeric)
+  from given
+$$;
+revoke all on function pos_checkout_same_payments(uuid, jsonb) from public, anon, authenticated;
+
+-- pos_checkout_result: the live text of migration-2026-10-24-pos-checkout-fn.sql with the line marked
+-- B2 changed — the change of the final checkout only (each part's change was given with its part).
+create or replace function pos_checkout_result(p_bill_id uuid) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'billId', b.id, 'billNo', b.bill_no, 'totalSen', b.total_sen,
+    'changeSen', (select coalesce(sum(p.change_sen), 0) from payments p where p.bill_id = b.id and p.part_id is null),   -- B2
+    'receiptQueued', coalesce(b.receipt_queued, false))
+  from bills b where b.id = p_bill_id
+$$;
+revoke all on function pos_checkout_result(uuid) from public, anon, authenticated;
+
+-- ── B2. Guards: each re-created from its live text with only the line marked B2 added ─────────
+-- pos_split_check: migration-2026-11-16-pos-split-bill.sql (SF, with lineQty). Covers pos_split_totals,
+-- checkout_items, move_items.
+create or replace function pos_split_check(p_bill bills, p_items jsonb) returns integer
+language plpgsql stable set search_path = public, pg_temp as $$
+declare
+  v_e     jsonb;
+  v_id    uuid;
+  v_qty   integer;
+  v_line  order_items;
+  v_seen  uuid[] := '{}';
+  v_units integer := 0;
+  v_live  integer;
+begin
+  perform pos_no_parts(p_bill.id);                                                                      -- B2
+  if p_items is null or jsonb_typeof(p_items) <> 'array'
+     or jsonb_array_length(p_items) = 0 or jsonb_array_length(p_items) > 100 then
+    raise exception 'Invalid selection';
+  end if;
+  for v_e in select * from jsonb_array_elements(p_items) loop
+    if jsonb_typeof(v_e) <> 'object' or jsonb_typeof(v_e->'itemId') is distinct from 'string'
+       or (v_e->>'itemId') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+       or jsonb_typeof(v_e->'qty') is distinct from 'number'
+       or (v_e->'qty')::numeric <> trunc((v_e->'qty')::numeric)
+       or (v_e->'qty')::numeric < 1 or (v_e->'qty')::numeric > 100 then
+      raise exception 'Invalid selection';
+    end if;
+    if v_e ? 'lineQty' and (jsonb_typeof(v_e->'lineQty') is distinct from 'number'                     -- SF
+       or (v_e->'lineQty')::numeric <> trunc((v_e->'lineQty')::numeric)                                   -- SF
+       or (v_e->'lineQty')::numeric < 1 or (v_e->'lineQty')::numeric > 100) then                          -- SF
+      raise exception 'Invalid selection';                                                                -- SF
+    end if;                                                                                               -- SF
+    v_id  := (v_e->>'itemId')::uuid;
+    v_qty := (v_e->'qty')::numeric::integer;
+    if v_id = any (v_seen) then raise exception 'Invalid selection'; end if;
+    v_seen := v_seen || v_id;
+    select * into v_line from order_items where id = v_id;
+    if not found or v_line.bill_id <> p_bill.id or v_line.voided_at is not null or v_line.qty < v_qty
+       or (v_e ? 'lineQty' and v_line.qty <> (v_e->'lineQty')::numeric) then                             -- SF
+      raise exception 'The bill changed. Check the items again.';
+    end if;
+    v_units := v_units + v_qty;
+  end loop;
+  select coalesce(sum(qty), 0)::integer into v_live from order_items where bill_id = p_bill.id and voided_at is null;
+  if v_units >= v_live then raise exception 'Select fewer items, or pay the whole bill'; end if;
+  return v_units;
+end $$;
+revoke all on function pos_split_check(bills, jsonb) from public, anon, authenticated;
+
+-- void_order_item: migration-2026-10-29-pos-device-till.sql
+CREATE OR REPLACE FUNCTION void_order_item(p_item_id uuid, p_reason text, p_approver_id uuid, p_pin text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_item   order_items;
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+begin
+  select * into v_item from order_items where id = p_item_id;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_bill from bills where id = v_item.bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_item from order_items where id = p_item_id;            -- again, under the bill lock
+  if v_item.bill_id <> v_bill.id then raise exception 'The bill just changed — please try again'; end if;
+  if v_item.voided_at is not null then return jsonb_build_object('ok', true); end if;   -- a retry
+  perform pos_no_parts(v_bill.id);                                                                       -- B2
+  if v_bill.status <> 'open' then
+    raise exception 'Only items on an open bill can be voided — refund a paid bill instead';
+  end if;
+  v_reason := pos_check_reason(v_branch, 'void_item', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  update order_items
+     set voided_at = now(), voided_by = pos_actor(), voided_device_id = pos_current_device(), void_reason = v_reason, void_approved_by = p_approver_id
+   where id = p_item_id;
+  update bills set updated_at = now() where id = v_bill.id;   -- H3: a bills event, so other iPads hear of it at once
+  perform pos_queue_void_tickets(array[p_item_id]);
+  return jsonb_build_object('ok', true);
+end $function$;
+
+-- void_bill: migration-2026-10-29-pos-device-till.sql
+CREATE OR REPLACE FUNCTION void_bill(p_bill_id uuid, p_reason text, p_approver_id uuid, p_pin text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+  v_ids    uuid[];
+begin
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.status = 'voided' then return jsonb_build_object('ok', true); end if;      -- a retry
+  perform pos_no_parts(v_bill.id);                                                                       -- B2
+  if v_bill.status = 'paid' then raise exception 'This bill is paid — refund it instead'; end if;
+  if v_bill.status <> 'open' then raise exception 'This bill was merged into another bill'; end if;
+  select coalesce(array_agg(id), '{}') into v_ids from order_items where bill_id = v_bill.id and voided_at is null;
+  if cardinality(v_ids) > 0 then
+    v_reason := pos_check_reason(v_branch, 'void_bill', p_reason);
+    v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+    if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+    update order_items
+       set voided_at = now(), voided_by = pos_actor(), voided_device_id = pos_current_device(), void_reason = v_reason, void_approved_by = p_approver_id
+     where id = any (v_ids);
+  else
+    v_reason := nullif(trim(left(p_reason, 200)), '');
+  end if;
+  update bills
+     set status = 'voided', closed_at = now(), closed_by = pos_actor(), closed_device_id = pos_current_device(), void_reason = v_reason,
+         void_approved_by = case when cardinality(v_ids) > 0 then p_approver_id end
+   where id = v_bill.id;
+  perform pos_queue_void_tickets(v_ids);
+  return jsonb_build_object('ok', true);
+end $function$;
+
+-- set_item_discount: migration-2026-10-30-pos-discounts.sql
+create or replace function set_item_discount(p_item_id uuid, p_kind text, p_value integer, p_reason text,
+                                             p_approver_id uuid, p_pin text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_item   order_items;
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+begin
+  perform pos_check_discount(p_kind, p_value);
+  select * into v_item from order_items where id = p_item_id;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_bill from bills where id = v_item.bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_item from order_items where id = p_item_id;            -- again, under the bill lock
+  if v_item.bill_id <> v_bill.id then raise exception 'The bill just changed — please try again'; end if;
+  perform pos_no_parts(v_bill.id);                                                                       -- B2
+  if v_bill.status <> 'open' then raise exception 'Only an open bill can be discounted'; end if;
+  if v_item.voided_at is not null then raise exception 'A voided item cannot be discounted'; end if;
+  v_reason := pos_check_reason(v_branch, 'discount', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  update order_items
+     set discount_kind = p_kind, discount_value = p_value, discount_reason = v_reason,
+         discount_approved_by = p_approver_id, discount_by = pos_actor(), discount_at = now()
+   where id = p_item_id;
+  insert into pos_discount_log(branch_id, bill_id, order_item_id, action, kind, value, reason, approved_by, actor)
+  values (v_branch, v_bill.id, p_item_id, 'set', p_kind, p_value, v_reason, p_approver_id, pos_actor());
+  update bills set updated_at = now() where id = v_bill.id;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function set_item_discount(uuid, text, integer, text, uuid, text) from public, anon;
+grant execute on function set_item_discount(uuid, text, integer, text, uuid, text) to authenticated;
+
+-- set_bill_discount: migration-2026-10-30-pos-discounts.sql
+create or replace function set_bill_discount(p_bill_id uuid, p_kind text, p_value integer, p_reason text,
+                                             p_approver_id uuid, p_pin text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+begin
+  perform pos_check_discount(p_kind, p_value);
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  perform pos_no_parts(v_bill.id);                                                                       -- B2
+  if v_bill.status <> 'open' then raise exception 'Only an open bill can be discounted'; end if;
+  v_reason := pos_check_reason(v_branch, 'discount', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  update bills
+     set discount_kind = p_kind, discount_value = p_value, discount_reason = v_reason,
+         discount_approved_by = p_approver_id, discount_by = pos_actor(), discount_at = now(), updated_at = now()
+   where id = p_bill_id;
+  insert into pos_discount_log(branch_id, bill_id, action, kind, value, reason, approved_by, actor)
+  values (v_branch, p_bill_id, 'set', p_kind, p_value, v_reason, p_approver_id, pos_actor());
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function set_bill_discount(uuid, text, integer, text, uuid, text) from public, anon;
+grant execute on function set_bill_discount(uuid, text, integer, text, uuid, text) to authenticated;
+
+-- merge_bills: migration-2026-10-30-pos-discounts.sql — the source must have no part (the target may)
+CREATE OR REPLACE FUNCTION merge_bills(p_from_bill uuid, p_into_bill uuid)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_from   bills;
+  v_into   bills;
+begin
+  if p_from_bill is null or p_into_bill is null or p_from_bill = p_into_bill then
+    raise exception 'Choose two different bills';
+  end if;
+  -- lock both in one fixed order, so two iPads merging the same pair cannot deadlock
+  perform 1 from bills where id in (p_from_bill, p_into_bill) order by id for update;
+  select * into v_from from bills where id = p_from_bill and branch_id = v_branch;
+  select * into v_into from bills where id = p_into_bill and branch_id = v_branch;
+  if v_from.id is null or v_into.id is null then raise exception 'Bill not found'; end if;
+  perform pos_no_parts(v_from.id);                                                                       -- B2
+  if v_from.status <> 'open' or v_into.status <> 'open' then raise exception 'Only open bills can be merged'; end if;
+  if v_from.discount_kind is not null then raise exception 'Remove the bill discount before merging'; end if;   -- D
+  if v_from.order_type = 'dine_in' and v_into.order_type = 'takeaway' then
+    raise exception 'Merge the takeaway bill into the table''s bill, not the other way round';
+  end if;
+  update orders set bill_id = v_into.id where bill_id = v_from.id;
+  update order_items set bill_id = v_into.id where bill_id = v_from.id;
+  update bills
+     set pax = case when v_into.pax is null and v_from.pax is null then null
+                    else least(99, coalesce(v_into.pax, 0) + coalesce(v_from.pax, 0)) end
+   where id = v_into.id;
+  update bills
+     set status = 'merged', merged_into = v_into.id, closed_at = now(), closed_by = pos_actor(), closed_device_id = pos_current_device()
+   where id = v_from.id;
+end $function$;
 
 notify pgrst, 'reload schema';
 select 'pos bill parts applied' as result;

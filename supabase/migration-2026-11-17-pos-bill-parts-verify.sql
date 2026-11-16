@@ -2,7 +2,8 @@
 -- migration-2026-11-17-pos-bill-parts.sql. Everything is rolled back. Success = a result row
 -- "VERIFY OK". Sections (one DO block each, ids in the temp table fixture): FIXTURE; B1 quote and
 -- part payments; B1f fixes after the B1 review (rolled back inside the block); B2 the balance by
--- checkout_bill and the guards; B3 receipts and screen reads.
+-- checkout_bill and the guards; B2p pay_bill_part's p_paid_sen (rolled back inside the block); B3
+-- receipts and screen reads.
 -- Numbers: no service charge, 0% SST, 5 sen rounding; Set A 70.35, Set B 70.40, Extra 3.00.
 begin;
 
@@ -113,7 +114,7 @@ begin
      or not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'payments' and column_name = 'part_id') then
     raise exception 'FAIL B1 schema: bill_parts RLS / privileges / payments.part_id';
   end if;
-  for r in select f from unnest(array['pos_part_quote(uuid,integer)', 'pay_bill_part(uuid,uuid,integer,integer,jsonb)']) f loop
+  for r in select f from unnest(array['pos_part_quote(uuid,integer)', 'pay_bill_part(uuid,uuid,integer,integer,jsonb,integer)']) f loop
     if not has_function_privilege('authenticated', r.f, 'execute') or has_function_privilege('anon', r.f, 'execute') then
       raise exception 'FAIL B1 grants: %', r.f;
     end if;
@@ -266,6 +267,120 @@ begin
   if exists (select 1 from bill_parts bp join bills b on b.id = bp.bill_id where b.table_id = pg_temp.id('t6'))
      or to_regprocedure('verify_b1f_race()') is not null then
     raise exception 'FAIL B1f: not rolled back';
+  end if;
+end $$;
+
+-- ── B2. The balance by checkout_bill; the guards (spec §4.6) ─────────────────
+do $$
+declare
+  v_x   uuid := pg_temp.id('bX');
+  v_w   uuid := pg_temp.id('bW');
+  v_v   uuid := pg_temp.id('bV');
+  v_cid uuid := gen_random_uuid();
+  v_res jsonb; v_res2 jsonb; v_order uuid;
+  v_wx  jsonb := jsonb_build_array(jsonb_build_object('itemId', pg_temp.id('Wx'), 'qty', 1));
+  v_msg text := 'This bill has a part payment. Pay the rest first.';
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- X (70.35, two shares paid): checkout_bill takes exactly the balance, 23.45
+  perform pg_temp.expect_error(format('select checkout_bill(%L, %L, %L)', v_x, pg_temp.card(7035), gen_random_uuid()),
+    'Payments (RM 70.35) do not match the total (RM 23.45)', 'B2 the whole total');
+  v_res := checkout_bill(v_x, pg_temp.card(2345), v_cid);
+  if (v_res->>'billId')::uuid <> v_x or (v_res->>'totalSen')::int <> 7035 or (v_res->>'changeSen')::int <> 0
+     or (select status from bills where id = v_x) <> 'paid' or (select total_sen from bills where id = v_x) <> 7035
+     or (select count(*) from payments where bill_id = v_x) <> 3
+     or (select count(*) from payments where bill_id = v_x and part_id is null and line_no = 1 and amount_sen = 2345) <> 1 then
+    raise exception 'FAIL B2 X paid: %', v_res;
+  end if;
+  -- its replay still works; other amounts are refused
+  v_res2 := checkout_bill(v_x, pg_temp.card(2345), v_cid);
+  if v_res2 <> v_res then raise exception 'FAIL B2 replay: % vs %', v_res2, v_res; end if;
+  perform pg_temp.expect_error(format('select checkout_bill(%L, %L, %L)', v_x, pg_temp.card(2340), v_cid),
+    'This payment was already recorded with other amounts — check Today''s bills', 'B2 replay other amounts');
+  -- Y: the last share 23.50; Z: 24.95 after the extra item
+  v_res := checkout_bill(pg_temp.id('bY'), pg_temp.card(2350), gen_random_uuid());
+  if (v_res->>'totalSen')::int <> 7040 then raise exception 'FAIL B2 Y: %', v_res; end if;
+  v_res := checkout_bill(pg_temp.id('bZ'), pg_temp.card(2495), gen_random_uuid());
+  if (v_res->>'totalSen')::int <> 7335 then raise exception 'FAIL B2 Z: %', v_res; end if;
+
+  -- guards on W (RM 10.00 paid as a part)
+  perform pg_temp.expect_error(format('select void_order_item(%L, %L, %L, %L)', pg_temp.id('Wx'), 'Wrong item keyed', pg_temp.id('sup'), '2222'),
+    v_msg, 'B2 void item');
+  perform pg_temp.expect_error(format('select void_bill(%L, %L, %L, %L)', v_w, 'Customer left', pg_temp.id('sup'), '2222'),
+    v_msg, 'B2 void bill');
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', pg_temp.id('Wx'), 'percent', 'Regular', pg_temp.id('sup'), '2222'),
+    v_msg, 'B2 item discount');
+  perform pg_temp.expect_error(format('select set_bill_discount(%L, %L, 1000, %L, %L, %L)', v_w, 'percent', 'Regular', pg_temp.id('sup'), '2222'),
+    v_msg, 'B2 bill discount');
+  perform pg_temp.expect_error(format('select merge_bills(%L, %L)', v_w, v_v), v_msg, 'B2 merge it away');
+  perform pg_temp.expect_error(format('select pos_split_totals(%L, %L)', v_w, v_wx), v_msg, 'B2 split preview');
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', v_w, v_wx, pg_temp.card(300), gen_random_uuid()),
+    v_msg, 'B2 split by item');
+  perform pg_temp.expect_error(format('select move_items(%L, %L, %L)', v_w, v_wx, pg_temp.id('t6')), v_msg, 'B2 move items');
+  -- allowed: merge another bill into it, move it to a free table, add items
+  perform merge_bills(v_v, v_w);
+  perform move_bill(v_w, pg_temp.id('t6'));
+  v_order := pg_temp.order_on('t6', array['extra']);
+  if (select bill_id from orders where id = v_order) <> v_w or (select table_id from bills where id = v_w) <> pg_temp.id('t6')
+     or (select status from bills where id = v_v) <> 'merged' then
+    raise exception 'FAIL B2 merge in, move, add items on W';
+  end if;
+
+  -- Z report: 3 bills closed (X, Y, Z = 214.10); every payment in its shift (cash 23.45, card 200.65)
+  v_res := pos_shift_report(pg_temp.id('shift'));
+  if (v_res->'summary'->>'billCount')::int <> 3 or (v_res->'summary'->>'nettSen')::int <> 21410
+     or (v_res->'cash'->>'cashSalesSen')::int <> 2345
+     or (select (p->>'amountSen')::int from jsonb_array_elements(v_res->'payments') p where p->>'name' = 'P Card') <> 20065 then
+    raise exception 'FAIL B2 Z report: % % %', v_res->'summary', v_res->'cash', v_res->'payments';
+  end if;
+end $$;
+
+-- ── B2p. pay_bill_part's p_paid_sen: the paid parts the screen saw (null: not checked). A part whose
+--    reply was lost commits late after Check bill said "not recorded"; the same guest's second Pay
+--    (a new part id, the old paidSen) is refused instead of paid twice. Undone at the end (SQLSTATE
+--    B2PRB). ─
+do $$
+declare
+  v_b uuid; v_res jsonb; v_first jsonb; v_lost uuid := gen_random_uuid();
+  v_sig text := 'pay_bill_part(uuid,uuid,integer,integer,jsonb,integer)';
+begin
+  -- one pay_bill_part (the 5-argument one dropped, no overload), granted as before
+  if to_regprocedure('pay_bill_part(uuid,uuid,integer,integer,jsonb)') is not null
+     or (select count(*) from pg_proc where proname = 'pay_bill_part' and pronamespace = 'public'::regnamespace) <> 1
+     or not has_function_privilege('authenticated', v_sig, 'execute') or has_function_privilege('anon', v_sig, 'execute') then
+    raise exception 'FAIL B2p signature / grants';
+  end if;
+  begin
+    perform pg_temp.act(pg_temp.id('dev'));
+    v_b := pg_temp.order_on('t1', array['seta']);                     -- RM 70.35 on P1 (X is paid)
+    v_b := (select bill_id from orders where id = v_b);
+    -- named arguments, as PostgREST sends them: without p_paid_sen (the client today) ...
+    v_res := pay_bill_part(p_bill_id => v_b, p_part_id => gen_random_uuid(), p_amount_sen => 1000, p_ways => null,
+                           p_payments => pg_temp.card(1000));
+    if (v_res->>'partNo')::int <> 1 or (v_res->>'paidSen')::int <> 1000 then raise exception 'FAIL B2p without p_paid_sen: %', v_res; end if;
+    -- ... and with it: the screen saw RM 10.00 paid
+    v_first := pay_bill_part(p_bill_id => v_b, p_part_id => v_lost, p_amount_sen => 1000, p_ways => null,
+                             p_payments => pg_temp.card(1000), p_paid_sen => 1000);
+    if (v_first->>'partNo')::int <> 2 or (v_first->>'paidSen')::int <> 2000 then raise exception 'FAIL B2p with p_paid_sen: %', v_first; end if;
+    -- that reply was lost; the same guest pays again under a new id, the screen still at RM 10.00: refused
+    perform pg_temp.expect_error(format('select pay_bill_part(p_bill_id => %L, p_part_id => %L, p_amount_sen => 1000, p_ways => null, p_payments => %L, p_paid_sen => 1000)',
+                                        v_b, gen_random_uuid(), pg_temp.card(1000)),
+      'The bill changed. Check the split again.', 'B2p paid twice');
+    perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 1000, null, %L, 3000)', v_b, gen_random_uuid(), pg_temp.card(1000)),
+      'The bill changed. Check the split again.', 'B2p paidSen above');
+    -- the lost one's resend still gets its first answer; with the bill's paidSen the next part goes through
+    if pay_bill_part(v_b, v_lost, 1000, null, pg_temp.card(1000), 1000) <> v_first then raise exception 'FAIL B2p replay'; end if;
+    v_res := pay_bill_part(v_b, gen_random_uuid(), 1000, null, pg_temp.card(1000), 2000);
+    if (v_res->>'partNo')::int <> 3 or (v_res->>'paidSen')::int <> 3000 then raise exception 'FAIL B2p next part: %', v_res; end if;
+    if (select count(*) from bill_parts where bill_id = v_b) <> 3 or (select count(*) from payments where bill_id = v_b) <> 3 then
+      raise exception 'FAIL B2p parts written';
+    end if;
+    raise exception 'B2p rollback' using errcode = 'B2PRB';
+  exception when sqlstate 'B2PRB' then
+    null;
+  end;
+  if exists (select 1 from bills where table_id = pg_temp.id('t1') and status = 'open') then
+    raise exception 'FAIL B2p: not rolled back';
   end if;
 end $$;
 
