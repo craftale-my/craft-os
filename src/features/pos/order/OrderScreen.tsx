@@ -16,8 +16,8 @@ import BillColumn from './BillColumn'
 import BillActionsOverlay from './BillActionsOverlay'
 import ItemActionsOverlay from './ItemActionsOverlay'
 import MoveToGrid from './MoveToGrid'
-import { billActions, itemActions, type BillAction, type ItemAction } from './billActions'
-import { SPLIT_OFFLINE } from './splitSelection'
+import { billActionNotes, billActions, itemActionNotes, itemActions, type BillAction, type ItemAction } from './billActions'
+import { SPLIT_ACTION_LABEL } from './splitSelection'
 import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
 import { moveTargets, type MoveTarget } from './moveTargets'
 import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
@@ -348,14 +348,18 @@ export default function OrderScreen({
     isTable: target.kind === 'table', hasBill: !!bill, loaded, liveSentCount: view.liveSentCount, draftCount: view.draftCount,
     qrPaused: paused, qrRequiresOpenBill: billing?.settings.qrRequiresOpenBill ?? false, billDiscount: billDisc !== null,
   })
+  const partPaid = bill ? summaries.get(bill.id)?.paidSen ?? 0 : 0       // split spec §3.5
+  // shown off with why: offline (split), or a part paid (split, discount, void: the server refuses them)
+  const actionNotes = billActionNotes({ online, partPaid: partPaid > 0 })
+  const itemNotes = itemActionNotes({ partPaid: partPaid > 0 })
   const pickAction = (a: BillAction) => {
     setDialog(null)
+    if (actionNotes[a]) return
     if (a === 'send') void send()
     else if (a === 'move') setDialog({ kind: 'move' })
     else if (a === 'split' && bill) {
-      if (!online) return
       if (view.draftCount > 0) {
-        setConfirm({ title: discardQuestion(view.draftCount), message: 'Then Split / Move items opens.', confirmLabel: 'Discard', danger: true,
+        setConfirm({ title: discardQuestion(view.draftCount), message: `Then ${SPLIT_ACTION_LABEL} opens.`, confirmLabel: 'Discard', danger: true,
           onConfirm: () => onSplit(bill) })
         return
       }
@@ -374,6 +378,7 @@ export default function OrderScreen({
     else if (a === 'pause_qr' || a === 'resume_qr') void togglePause()
   }
   const pickItemAction = (row: SentRow, a: ItemAction) => {
+    if (itemNotes[a]) return
     if (a === 'void_item') setDialog({ kind: 'void_item', row })
     else if (a === 'discount_item' || a === 'edit_item_discount') setDialog({ kind: 'discount_item', row })
     else {
@@ -422,7 +427,6 @@ export default function OrderScreen({
     ? pairsFor(shownMenu, picks, goesWellFor, lines).filter((p) => tileSlotLabel(slots.windows, p.id, slots.now) === null)
     : []
 
-  const partPaid = bill ? summaries.get(bill.id)?.paidSen ?? 0 : 0       // split spec §3.5
   const title = targetTitle(target, bill, tables)
   const tileNotice = !takesNewItems(target) ? (bill ? TAKEAWAY_ONE_ORDER : BILL_GONE) : null
   return (
@@ -519,7 +523,7 @@ export default function OrderScreen({
           }} />
       )}
       {dialog?.kind === 'actions' && (
-        <BillActionsOverlay title={title} actions={actions} disabled={busy || sending} notes={online ? undefined : { split: SPLIT_OFFLINE }}
+        <BillActionsOverlay title={title} actions={actions} disabled={busy || sending} notes={actionNotes}
           onPick={pickAction} onClose={() => setDialog(null)} />
       )}
       {bill && dialog?.kind === 'move' && (
@@ -538,6 +542,7 @@ export default function OrderScreen({
       {bill && dialog?.kind === 'item_actions' && (
         <ItemActionsOverlay title={`${dialog.row.qty} × ${dialog.row.name}`}
           actions={itemActions({ discounted: storedDiscount(dialog.row.item) !== null })}
+          notes={itemNotes}
           disabled={busy || sending} onPick={(a) => pickItemAction(dialog.row, a)} onClose={() => setDialog(null)} />
       )}
       {bill && dialog?.kind === 'discount_item' && (

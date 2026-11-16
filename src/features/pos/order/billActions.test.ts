@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { BILL_ACTION_LABEL, billActions, itemActions } from './billActions'
+import { BILL_ACTION_LABEL, PART_PAID_FIRST, billActionNotes, billActions, itemActionNotes, itemActions } from './billActions'
+import { SPLIT_ACTION_LABEL, SPLIT_OFFLINE } from './splitSelection'
 
 const table = { isTable: true, hasBill: true, loaded: true, liveSentCount: 2, draftCount: 0, qrPaused: false, qrRequiresOpenBill: false, billDiscount: false }
 
@@ -31,6 +32,26 @@ describe('billActions', () => {
   })
   it('the split action reads Split / Move items', () => {
     expect(BILL_ACTION_LABEL.split).toBe('Split / Move items')
+    expect(BILL_ACTION_LABEL.split).toBe(SPLIT_ACTION_LABEL)
+  })
+})
+
+describe('billActionNotes', () => {
+  it('nothing is off online on a bill with no part paid', () => {
+    expect(billActionNotes({ online: true, partPaid: false })).toEqual({})
+  })
+  it('offline: Split / Move items needs a connection', () => {
+    expect(billActionNotes({ online: false, partPaid: false })).toEqual({ split: SPLIT_OFFLINE })
+  })
+  it('a part paid: split, discount (set or edit) and void bill are off with the server\'s words; Remove discount and Move stay', () => {
+    expect(PART_PAID_FIRST).toBe('This bill has a part payment. Pay the rest first.')
+    const notes = billActionNotes({ online: true, partPaid: true })
+    expect(notes).toEqual({ split: PART_PAID_FIRST, discount_bill: PART_PAID_FIRST, edit_bill_discount: PART_PAID_FIRST, void_bill: PART_PAID_FIRST })
+    expect(notes.remove_bill_discount).toBeUndefined()
+    expect(notes.move).toBeUndefined()
+  })
+  it('a part paid and offline: the part note wins for split', () => {
+    expect(billActionNotes({ online: false, partPaid: true }).split).toBe(PART_PAID_FIRST)
   })
 })
 
@@ -38,5 +59,14 @@ describe('itemActions', () => {
   it('Discount item and Void item; a discounted item offers Edit and Remove', () => {
     expect(itemActions({ discounted: false })).toEqual(['discount_item', 'void_item'])
     expect(itemActions({ discounted: true })).toEqual(['edit_item_discount', 'remove_item_discount', 'void_item'])
+  })
+})
+
+describe('itemActionNotes', () => {
+  it('no part paid: nothing is off', () => {
+    expect(itemActionNotes({ partPaid: false })).toEqual({})
+  })
+  it('a part paid: discount (set or edit) and void item are off with the server\'s words; Remove discount stays', () => {
+    expect(itemActionNotes({ partPaid: true })).toEqual({ discount_item: PART_PAID_FIRST, edit_item_discount: PART_PAID_FIRST, void_item: PART_PAID_FIRST })
   })
 })

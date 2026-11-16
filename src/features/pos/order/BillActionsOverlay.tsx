@@ -10,7 +10,7 @@ const ICON: Record<BillAction, ComponentType<{ size?: number }>> = {
 }
 
 /** The bill's actions (billActions()); Void bill and Close empty bill are red. An action with a note
- *  (e.g. Split / Move items offline) is shown disabled with the note under it. */
+ *  (e.g. Split / Move items offline, or a bill with a part paid) is shown disabled with the note under it. */
 export default function BillActionsOverlay({ title, actions, disabled, notes, onPick, onClose }: {
   title: string
   actions: BillAction[]

@@ -8,17 +8,21 @@ const ICON: Record<ItemAction, ComponentType<{ size?: number }>> = {
   discount_item: Percent, edit_item_discount: Percent, remove_item_discount: Undo2, void_item: Ban,
 }
 
-/** What a tapped sent item offers: discount it (or edit / remove its discount) and void it (red). */
-export default function ItemActionsOverlay({ title, actions, disabled, onPick, onClose }: {
+/** What a tapped sent item offers: discount it (or edit / remove its discount) and void it (red). An
+ *  action with a note (e.g. a bill with a part paid) is shown disabled with the note under it. */
+export default function ItemActionsOverlay({ title, actions, disabled, notes, onPick, onClose }: {
   title: string
   actions: ItemAction[]
   disabled: boolean
+  notes?: Partial<Record<ItemAction, string>>
   onPick: (a: ItemAction) => void
   onClose: () => void
 }) {
   return (
     <ActionsOverlay title={title} menuLabel="Item actions" empty="Nothing to do on this item." disabled={disabled}
       onPick={onPick} onClose={onClose}
-      actions={actions.map((a) => ({ id: a, label: ITEM_ACTION_LABEL[a], icon: ICON[a], danger: a === 'void_item' }))} />
+      actions={actions.map((a) => ({
+        id: a, label: ITEM_ACTION_LABEL[a], icon: ICON[a], danger: a === 'void_item', disabled: !!notes?.[a], note: notes?.[a],
+      }))} />
   )
 }

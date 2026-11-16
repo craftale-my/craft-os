@@ -11,6 +11,7 @@ vi.mock('../checkout/checkoutApi', () => ({ splitTotals: api.splitTotals, moveBi
 
 import SplitItemsScreen, { PREVIEW_DEBOUNCE_MS } from './SplitItemsScreen'
 import type { BillItemRow, OpenBillRow, TableRow } from './posApi'
+import { BILL_CHANGED_ITEMS } from './splitSelection'
 
 const row = (id: string, name: string, qty: number, unit: number): BillItemRow => ({
   id, order_id: 'o1', product_id: `p-${id}`, name_snapshot: name, unit_price_sen: unit, sst_rate_bp: 600, takeaway_fee_sen: 0,
@@ -127,12 +128,12 @@ describe('SplitItemsScreen', () => {
   })
 
   it('shows the server\'s refusal and keeps Pay selected off', async () => {
-    api.splitTotals.mockRejectedValue(new Error('The bill changed. Check the items again.'))
+    api.splitTotals.mockRejectedValue(new Error(BILL_CHANGED_ITEMS))
     renderPicker()
     await flush()
     press('More Latte')
     await wait(PREVIEW_DEBOUNCE_MS)
-    expect(screen.getByText('The bill changed. Check the items again.')).toBeTruthy()
+    expect(screen.getByText(BILL_CHANGED_ITEMS)).toBeTruthy()
     expect(button('Pay selected').disabled).toBe(true)
   })
 

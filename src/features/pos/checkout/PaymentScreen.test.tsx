@@ -307,10 +307,10 @@ describe('PaymentScreen — split by item (split spec §3.3)', () => {
   })
 
   it('a selection the server refuses locks the screen with its words', async () => {
-    api.splitTotals.mockRejectedValue(new Error('The bill changed. Check the items again.'))
+    api.splitTotals.mockRejectedValue(new Error(BILL_CHANGED_ITEMS))
     renderSplit()
     await flush()
-    expect(screen.getByText('The bill changed. Check the items again.')).toBeTruthy()
+    expect(screen.getByText(BILL_CHANGED_ITEMS)).toBeTruthy()
     expect(screen.getAllByRole('button', { name: 'Close' }).length).toBeGreaterThan(0)
   })
 
@@ -414,6 +414,103 @@ describe('PaymentScreen — split by item (split spec §3.3)', () => {
     renderSplit()
     await flush()
     expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
+  })
+
+  const partResult = { billId: 'p1', billNo: '261116-010', totalSen: 3250, changeSen: 0, receiptQueued: true }
+  const openState = { status: 'open', billNo: bill.bill_no, mergedIntoBillNo: null, totals, result: null }
+  const EARLIER = 'An earlier Pay selected went through: Bill 261116-010 · RM 32.50'
+
+  it('a lost checkout_items lands between the two reads: the re-read shows it paid, never locks on "The bill changed"', async () => {
+    const onSendIds = vi.fn()
+    api.splitTotals.mockResolvedValueOnce(partTotals)
+    api.checkoutItems.mockRejectedValueOnce(new Error('Failed to fetch'))
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={[]} split={{ items: picked }}
+      onSendIds={onSendIds} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    press('Cash')
+    // the follow after no reply: the bill still open, then the part commits, so the picked units are gone
+    api.fetchCheckoutState.mockResolvedValueOnce(openState)
+    api.fetchCheckoutState.mockResolvedValueOnce({ ...openState, result: partResult })
+    api.splitTotals.mockRejectedValue(new Error(BILL_CHANGED_ITEMS))
+    press('Pay RM 32.50')
+    await flush()
+    expect(screen.queryByText(BILL_CHANGED_ITEMS)).toBeNull()
+    expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
+    const reads = api.fetchCheckoutState.mock.calls
+    expect(reads[reads.length - 1][1]).toEqual(reads[reads.length - 2][1])   // the same ids
+    expect(onSendIds).toHaveBeenLastCalledWith([])
+  })
+
+  it('a refused selection with nothing paid on the re-read still locks with the server\'s words', async () => {
+    api.fetchCheckoutState.mockClear()
+    api.splitTotals.mockRejectedValue(new Error(BILL_CHANGED_ITEMS))
+    renderSplit()
+    await flush()
+    expect(api.fetchCheckoutState).toHaveBeenCalledTimes(2)
+    expect(screen.getByText(BILL_CHANGED_ITEMS)).toBeTruthy()
+  })
+
+  it('an earlier Pay selected that landed late shows as that, never as this selection paid; its ids are cleared', async () => {
+    api.fetchCheckoutState.mockResolvedValue({ ...openState, result: partResult })
+    const onSendIds = vi.fn()
+    const onPaid = vi.fn()
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={['old-id']}
+      split={{ items: [{ itemId: 'i3', qty: 1, lineQty: 1 }] }} onSendIds={onSendIds} onClose={() => {}} onPaid={onPaid} />)
+    await flush()
+    expect(screen.getByText(EARLIER)).toBeTruthy()
+    expect(screen.queryByText(/paid ·/)).toBeNull()
+    expect(screen.queryByText('Change')).toBeNull()
+    expect(onSendIds).toHaveBeenLastCalledWith([])
+    press('Done')
+    expect(onPaid).toHaveBeenCalledTimes(1)
+  })
+
+  it('the race on a screen opened with an earlier id: the earlier part shows as earlier, not this selection paid', async () => {
+    api.fetchCheckoutState.mockResolvedValueOnce(openState)
+    api.fetchCheckoutState.mockResolvedValueOnce({ ...openState, result: partResult })
+    api.splitTotals.mockRejectedValue(new Error(BILL_CHANGED_ITEMS))
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={['old-id']}
+      split={{ items: [{ itemId: 'i3', qty: 1, lineQty: 1 }] }} onSendIds={() => {}} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    expect(screen.queryByText(BILL_CHANGED_ITEMS)).toBeNull()
+    expect(screen.getByText(EARLIER)).toBeTruthy()
+  })
+
+  it('this screen sent too: a result its own ids do not find is the earlier one', async () => {
+    api.checkoutItems.mockRejectedValueOnce(new Error('Failed to fetch'))
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={['old-id']}
+      split={{ items: picked }} onSendIds={() => {}} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    press('Cash')
+    api.fetchCheckoutState.mockImplementation(async (_b: string, ids: string[]) =>
+      (ids.includes('old-id') ? { ...openState, result: partResult } : openState))
+    press('Pay RM 32.50')
+    await flush()
+    expect(screen.getByText(EARLIER)).toBeTruthy()
+    const reads = api.fetchCheckoutState.mock.calls
+    expect(reads[reads.length - 1][1]).toEqual([api.checkoutItems.mock.calls[0][3]])
+  })
+
+  it('this screen sent too: a result its own ids find is this selection paid', async () => {
+    api.checkoutItems.mockRejectedValueOnce(new Error('Failed to fetch'))
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={['old-id']}
+      split={{ items: picked }} onSendIds={() => {}} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    press('Cash')
+    api.fetchCheckoutState.mockResolvedValue({ ...openState, result: partResult })
+    press('Pay RM 32.50')
+    await flush()
+    expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
+    expect(screen.queryByText(EARLIER)).toBeNull()
+  })
+
+  it('the whole bill: a result found under an earlier id is the bill paid, as before', async () => {
+    api.fetchCheckoutState.mockResolvedValue({ status: 'paid', billNo: bill.bill_no, mergedIntoBillNo: null, totals: null,
+      result: { billId: 'b1', billNo: bill.bill_no, totalSen: 10670, changeSen: 0, receiptQueued: true } })
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3" refreshKey={0} earlierIds={['old-id']}
+      onSendIds={() => {}} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    expect(screen.getByText('Bill 261026-001 paid · RM 106.70')).toBeTruthy()
   })
 })
 

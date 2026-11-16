@@ -13,7 +13,7 @@ import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
 import { discardQuestion } from './billView'
 import { billTitle, targetBill, targetKey, targetTitle, type OrderTarget } from './orderTarget'
-import { cancelPayment, deadline, onSession, payIdsKey, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, type Screen } from './posScreen'
+import { billOfPayIdsKey, cancelPayment, deadline, onSession, payIdsKey, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, type Screen } from './posScreen'
 import HomeScreen from './HomeScreen'
 import SplitItemsScreen from './SplitItemsScreen'
 import { splitTitle } from './splitSelection'
@@ -131,8 +131,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   useEffect(() => {
     const open = new Set(bills.map((b) => b.id))
     for (const k of checkoutIdsByBill.current.keys()) {
-      const id = k.startsWith('split:') ? k.slice('split:'.length) : k
-      if (!open.has(id)) checkoutIdsByBill.current.delete(k)
+      if (!open.has(billOfPayIdsKey(k))) checkoutIdsByBill.current.delete(k)
     }
   }, [bills])
   const loadBilling = useCallback(() => {

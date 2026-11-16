@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  cancelPayment, deadline, onSession, payIdsKey, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, SENT_BILL_CLOSED, SENT_BILL_NOT_LOADED, type Screen,
+  billOfPayIdsKey, cancelPayment, deadline, onSession, payIdsKey, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, SENT_BILL_CLOSED, SENT_BILL_NOT_LOADED, type Screen,
 } from './posScreen'
 import { QUEUED_NOT_SENT } from './billView'
 import type { OpenBillRow, TableRow } from './posApi'
@@ -114,5 +114,9 @@ describe('split payment screens', () => {
   it('a split payment keeps its checkout ids apart from the whole bill\'s', () => {
     expect(payIdsKey({ kind: 'payment', bill, back })).toBe('b5')
     expect(payIdsKey({ kind: 'payment', bill, back, split: { items: [], picked: {} } })).toBe('split:b5')
+  })
+  it('the bill of a kept ids key, split or whole', () => {
+    expect(billOfPayIdsKey(payIdsKey({ kind: 'payment', bill, back }))).toBe('b5')
+    expect(billOfPayIdsKey(payIdsKey({ kind: 'payment', bill, back, split: { items: [], picked: {} } }))).toBe('b5')
   })
 })

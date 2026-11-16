@@ -37,6 +37,11 @@ export function billChangedAtPay(method: { kind: string; needsReference: boolean
   return `The bill changed on another iPad — check the new total, ${again}.`
 }
 
+/** Split by item: a part paid under a checkout id an earlier split Payment of this bill sent (its reply
+ *  was lost), found by a later Payment for other units — never shown as that later selection paid. */
+export const earlierPartPaid = (r: CheckoutResult): string =>
+  `An earlier Pay selected went through: Bill ${r.billNo} · RM ${(r.totalSen / 100).toFixed(2)}`
+
 /** shownDueSen: the balance on screen now — total minus parts (null before the first load). */
 export function followBill(state: CheckoutState, shownDueSen: number | null): FollowAction {
   switch (state.status) {

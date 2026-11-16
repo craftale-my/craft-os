@@ -90,4 +90,7 @@ export function cancelPayment(s: PaymentScreenState): Screen | null {
 }
 /** Where PosTill keeps a Payment's checkout ids: a split payment's apart from the whole bill's, so a
  *  late split part never reads as the whole bill paid, nor the other way round. */
-export const payIdsKey = (s: PaymentScreenState): string => (s.split ? `split:${s.bill.id}` : s.bill.id)
+const SPLIT_IDS = 'split:'
+export const payIdsKey = (s: PaymentScreenState): string => (s.split ? `${SPLIT_IDS}${s.bill.id}` : s.bill.id)
+/** The bill a payIdsKey belongs to, split or whole. */
+export const billOfPayIdsKey = (key: string): string => (key.startsWith(SPLIT_IDS) ? key.slice(SPLIT_IDS.length) : key)
