@@ -3,14 +3,17 @@ import { useState } from 'react'
 import { Minus, Plus, X } from 'lucide-react'
 import { defaultLine, formatSen, linePriceSen, validateLine, type OrderLine, type PosProduct } from './cart'
 import { groupBadge, toggleOption } from './modifiers'
+import PickPill from './PickPill'
 
 /** The order screen's modifier sheet, Feedme style (spec §2): each group with a red SELECT n badge
  *  when it is required, options as a two-column grid of name and price, qty and a kitchen note,
  *  Confirm at the bottom. Same rules as LineSheet (which the QR page keeps): validateLine judges
  *  the line, toggleOption is LineSheet's tap rule. A draft being edited also offers Remove. */
-export default function ModifierSheet({ product, initial, onCancel, onDone, onRemove }: {
+export default function ModifierSheet({ product, initial, mostPicked, onCancel, onDone, onRemove }: {
   product: PosProduct
   initial?: OrderLine
+  /** Most picked (menu picks): group id → option id, marked with a pill — never chosen for the cashier */
+  mostPicked?: Readonly<Record<string, string>>
   onCancel: () => void
   onDone: (line: OrderLine) => void
   onRemove?: () => void
@@ -59,7 +62,7 @@ export default function ModifierSheet({ product, initial, onCancel, onDone, onRe
                     return (
                       <button key={o.id} type="button" disabled={!o.available} aria-pressed={on} className={tile(on)}
                         onClick={() => { setTouched(true); setLine((l) => toggleOption(l, g.max, ids, o.id)) }}>
-                        <span>{o.name}{!o.available && ' (sold out)'}</span>
+                        <span>{o.name}{!o.available && ' (sold out)'}{o.available && mostPicked?.[g.id] === o.id && <PickPill text="Most picked" />}</span>
                         <span className="tabular-nums">{o.priceDeltaSen > 0 ? `+${formatSen(o.priceDeltaSen)}` : ''}</span>
                       </button>
                     )

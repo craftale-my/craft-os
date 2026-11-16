@@ -46,4 +46,14 @@ describe('ModifierSheet', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     expect(onRemove).toHaveBeenCalledTimes(1)
   })
+
+  it('Most picked: a pill on that option, nothing chosen for the cashier, none on a sold-out option', () => {
+    render(<ModifierSheet product={latte} mostPicked={{ milk: 'oat' }} onCancel={() => {}} onDone={() => {}} />)
+    const oat = screen.getByRole('button', { name: /Oat/ })
+    expect(oat.textContent).toContain('Most picked')
+    expect(oat.getAttribute('aria-pressed')).toBe('false')
+    cleanup()
+    render(<ModifierSheet product={latte} mostPicked={{ milk: 'soy' }} onCancel={() => {}} onDone={() => {}} />)
+    expect(screen.queryByText('Most picked')).toBeNull()
+  })
 })

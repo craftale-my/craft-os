@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import { defaultLine, formatSen, linePriceSen, validateLine, type OrderLine, type PosProduct } from './cart'
+import PickPill from './PickPill'
 
-export default function LineSheet({ product, initial, onCancel, onDone }: {
+export default function LineSheet({ product, initial, mostPicked, onCancel, onDone }: {
   product: PosProduct
   initial?: OrderLine
+  /** Most picked (menu picks): group id → option id, marked with a pill — never chosen for the guest */
+  mostPicked?: Readonly<Record<string, string>>
   onCancel: () => void
   onDone: (line: OrderLine) => void
 }) {
@@ -54,6 +57,7 @@ export default function LineSheet({ product, initial, onCancel, onDone }: {
                   <button key={o.id} disabled={!o.available} onClick={() => toggle(g.max, ids, o.id)}
                     className={`rounded-lg border px-3 py-2 text-sm disabled:opacity-40 ${line.optionIds.includes(o.id) ? 'border-brown-btn bg-brown-btn text-white' : 'border-border'}`}>
                     {o.name}{o.priceDeltaSen > 0 && ` +${formatSen(o.priceDeltaSen)}`}{!o.available && ' (sold out)'}
+                    {o.available && mostPicked?.[g.id] === o.id && <PickPill text="Most picked" />}
                   </button>
                 ))}
               </div>
