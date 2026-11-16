@@ -7,6 +7,8 @@ export interface OverlayAction<A extends string> {
   label: string
   icon: ComponentType<{ size?: number }>
   danger?: boolean
+  disabled?: boolean            // shown but not available now (its note says why)
+  note?: string
 }
 
 /** The dark overlay of round action buttons (spec §3, Feedme style) that the bill's grid button and
@@ -24,11 +26,12 @@ export default function ActionsOverlay<A extends string>({ title, menuLabel, emp
     <div className="fixed inset-0 z-30 flex flex-col items-center justify-center bg-brown-dark/90 p-6" onClick={onClose}>
       <h2 className="mb-8 text-xl font-semibold text-cream">{title}</h2>
       <div role="menu" aria-label={menuLabel} className="flex max-w-3xl flex-wrap justify-center gap-6" onClick={(e) => e.stopPropagation()}>
-        {actions.map(({ id, label, icon: Icon, danger }) => (
-          <button key={id} type="button" role="menuitem" disabled={disabled} onClick={() => onPick(id)}
+        {actions.map(({ id, label, icon: Icon, danger, disabled: off, note }) => (
+          <button key={id} type="button" role="menuitem" disabled={disabled || off} onClick={() => onPick(id)}
             className="flex w-24 flex-col items-center gap-2 text-cream disabled:opacity-40">
             <span className={`flex h-20 w-20 items-center justify-center rounded-full ${danger ? 'bg-red-700 text-white' : 'bg-cream text-brown-dark'}`}><Icon size={30} /></span>
             <span className="text-center text-sm font-medium">{label}</span>
+            {note && <span className="text-center text-xs">{note}</span>}
           </button>
         ))}
         {actions.length === 0 && <p className="text-cream">{empty}</p>}

@@ -36,6 +36,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   earlierIds: string[]          // checkout ids an earlier Payment of this bill used on this iPad
   split?: { items: SplitItem[] }   // split by item: pay only these units, as their own bill
   onSendIds: (ids: string[]) => void   // every id used so far, at each send: PosPage keeps them per bill
+                                       // (split: [] once the part's result shows — those ids are spent)
   onClose: () => void           // Cancel payment: back to the bill (split: back to the picker)
   onPaid: () => void            // Done on the success screen: back home (split: back to the bill)
 }) {
@@ -119,6 +120,12 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       .catch((e) => { if (live) setMethodsError(msg(e)) })
     return () => { live = false }
   }, [branchId, methodsKey])
+  // Split by item: once a part's result shows, its ids are spent. Drop them now, not on Done: the till
+  // may lock before Done, and the next split Payment of this bill (other units) must not start with
+  // them, or the follow would find that paid part and show the new selection as paid.
+  useEffect(() => {
+    if (result && byItem) onSendIds([])
+  }, [result]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const phase = sessionRef.current.phase
     if (!result && !lockNote && phase !== 'paying' && phase !== 'checking') void follow()

@@ -2,16 +2,17 @@
 /** The bill actions overlay (spec §3) and what a tapped sent item offers: only what exists for this
  *  bill right now, Feedme order. */
 
-export type BillAction = 'send' | 'move' | 'discount_bill' | 'edit_bill_discount' | 'remove_bill_discount'
+export type BillAction = 'send' | 'move' | 'split' | 'discount_bill' | 'edit_bill_discount' | 'remove_bill_discount'
   | 'void_bill' | 'close_empty' | 'pax' | 'pause_qr' | 'resume_qr' | 'open_qr'
 
 export const BILL_ACTION_LABEL: Record<BillAction, string> = {
-  send: 'Send', move: 'Move', discount_bill: 'Discount bill', edit_bill_discount: 'Edit discount',
+  send: 'Send', move: 'Move', split: 'Split / Move items', discount_bill: 'Discount bill', edit_bill_discount: 'Edit discount',
   remove_bill_discount: 'Remove discount', void_bill: 'Void bill', close_empty: 'Close empty bill', pax: 'Pax',
   pause_qr: 'Pause QR', resume_qr: 'Resume QR', open_qr: 'Open for QR',
 }
 
-/** Send with drafts; Move with a bill; once its items are loaded: Discount bill when it has live items
+/** Send with drafts; Move with a bill; once its items are loaded: Split / Move items once loaded with
+ *  two live units or more (split spec §3.1), Discount bill when it has live items
  *  (Edit and Remove discount when it has one), then Void bill when it has live items, Close empty
  *  bill when it has none; on a table: Pax, Pause or Resume QR, and Open for QR while it has no bill
  *  and the branch makes QR wait for an open bill (today's BillPanel). */
@@ -23,6 +24,7 @@ export function billActions(p: {
   if (p.draftCount > 0) out.push('send')
   if (p.hasBill) out.push('move')
   if (p.hasBill && p.loaded) {
+    if (p.liveSentCount >= 2) out.push('split')
     if (p.billDiscount) out.push('edit_bill_discount', 'remove_bill_discount')
     else if (p.liveSentCount > 0) out.push('discount_bill')
     out.push(p.liveSentCount > 0 ? 'void_bill' : 'close_empty')

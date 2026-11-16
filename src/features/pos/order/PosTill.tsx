@@ -13,8 +13,10 @@ import type { QueuedOrder } from '../offline/orderQueue'
 import { useOrderQueue } from './useOrderQueue'
 import { discardQuestion } from './billView'
 import { billTitle, targetBill, targetKey, targetTitle, type OrderTarget } from './orderTarget'
-import { deadline, onSession, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, type Screen } from './posScreen'
+import { cancelPayment, deadline, onSession, payIdsKey, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, type Screen } from './posScreen'
 import HomeScreen from './HomeScreen'
+import SplitItemsScreen from './SplitItemsScreen'
+import { splitTitle } from './splitSelection'
 import QueueStrip from './QueueStrip'
 import OrderScreen from './OrderScreen'
 import { fetchBillingConfig, fetchProductNames, type BillingConfig } from '../checkout/checkoutApi'
@@ -61,13 +63,15 @@ export interface TillProps {
    *  The staff panel shows it in `slot`; `problems` is its count for the bottom bar's badge.
    *  Without it (Craft OS) the staff panel runs its own. */
   printHost?: { slot: HTMLElement; problems: number }
+  /** The server answers (the POS app's useOnline). Split / Move items needs it. Craft OS: always true. */
+  online?: boolean
 }
 
 /** The till — the Feedme-layout POS (docs/superpowers/specs/2026-10-26-pos-feedme-frontend-design.md),
  *  run by Craft OS's /pos (PosPage) and by the POS app. Owns the data every screen shares (tables,
  *  open bills and their summaries, billing config, catalogs, the offline queue, realtime, the shift)
  *  and which screen is up. */
-export default function PosTill({ branchId, branchName, staffId, staffName, can, prints, locked, onBackOffice, onExit, myPin = false, onLock, onUnpair, onDraftCount, printHost }: TillProps) {
+export default function PosTill({ branchId, branchName, staffId, staffName, can, prints, locked, onBackOffice, onExit, myPin = false, onLock, onUnpair, onDraftCount, printHost, online = true }: TillProps) {
   const [tables, setTables] = useState<TableRow[]>([])
   const [bills, setBills] = useState<OpenBillRow[]>([])
   const [summaries, setSummaries] = useState<Map<string, BillSummary>>(new Map())
@@ -99,7 +103,8 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const orderSending = useRef(false)                // the order screen is sending: the menu stays shut until it is done
   const openBillIdRef = useRef<string | null>(null)
   // checkout ids this iPad sent per bill: a reopened Payment re-reads with them, so an unsure payment
-  // that lands late shows as paid here. Dropped once the bill is paid or no longer open.
+  // that lands late shows as paid here. Dropped once the bill is paid or no longer open. A split
+  // payment's ids are kept apart under split:<billId> (payIdsKey), dropped as soon as its part shows paid.
   const checkoutIdsByBill = useRef(new Map<string, string[]>())
   // The rejected original stays in the strip until its edited copy is saved; leaving the order
   // screen without sending keeps it, so nothing the cashier confirmed is ever silently dropped.
@@ -125,7 +130,10 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const bump = useCallback(() => { setRefreshKey((k) => k + 1); void reload() }, [reload])
   useEffect(() => {
     const open = new Set(bills.map((b) => b.id))
-    for (const id of checkoutIdsByBill.current.keys()) if (!open.has(id)) checkoutIdsByBill.current.delete(id)
+    for (const k of checkoutIdsByBill.current.keys()) {
+      const id = k.startsWith('split:') ? k.slice('split:'.length) : k
+      if (!open.has(id)) checkoutIdsByBill.current.delete(k)
+    }
   }, [bills])
   const loadBilling = useCallback(() => {
     fetchBillingConfig(branchId).then(setBilling, (e) => setError(msg(e)))
@@ -151,11 +159,11 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
 
   // ── navigation ──
   const goHome = () => { editingFrom.current = null; setDrafts(0); setScreen({ kind: 'home' }) }
-  const openOrder = (target: OrderTarget, lines?: OrderLine[], catalogId?: string | null) => {
+  const openOrder = (target: OrderTarget, lines?: OrderLine[], catalogId?: string | null, notice?: string | null) => {
     setNotice(null)
     editingFrom.current = null                      // editRejected sets it again after opening
     setDrafts(lines?.reduce((n, l) => n + l.qty, 0) ?? 0)
-    setScreen({ kind: 'order', session: ++session.current, target, lines, catalogId })
+    setScreen({ kind: 'order', session: ++session.current, target, lines, catalogId, notice })
   }
   /** The order screen of `sess` changed target (retarget): a move or merge onto another bill starts it
    *  again there, without the drafts or the rejected order being edited. A late call from a screen
@@ -203,7 +211,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
     if (!locked) return
     setMenuOpen(false); setStaffOpen(false); setReportOpen(false); setPaxFor(null); setConfirm(null)
     // Payment and Transaction have no drafts to keep; the order screen stays (its own dialogs close via `locked`)
-    if (screenRef.current.kind === 'payment' || screenRef.current.kind === 'transaction') goHome()
+    if (screenRef.current.kind === 'payment' || screenRef.current.kind === 'transaction' || screenRef.current.kind === 'split') goHome()
   }, [locked])
   // a sign-in after the lock, the same person or the next: read everything again (calls made while
   // locked were refused). Craft OS never locks.
@@ -264,8 +272,8 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const items = menuItems({ manageMenu: can.manageMenu && !!onBackOffice, supervise: can.supervise, settings: can.settings && !!onBackOffice })
   const title = screen.kind === 'home' ? 'Tables'
     : screen.kind === 'order' ? targetTitle(screen.target, orderBill, tables)
-    : screen.kind === 'transaction' ? 'Transaction' : 'Payment'
-  const current: MenuItem | null = screen.kind === 'transaction' ? 'transaction' : screen.kind === 'payment' ? null : 'order'
+    : screen.kind === 'transaction' ? 'Transaction' : screen.kind === 'split' ? 'Split' : 'Payment'
+  const current: MenuItem | null = screen.kind === 'transaction' ? 'transaction' : screen.kind === 'payment' || screen.kind === 'split' ? null : 'order'
   const banners = (
     <>
       {shift.open === false && (
@@ -301,6 +309,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
         <OrderScreen key={`${screen.session}:${targetKey(screen.target)}`} branchId={branchId} target={screen.target}
           tables={tables} bills={bills} summaries={summaries} refreshKey={refreshKey} billing={billing} shiftOpen={shift.open}
           locked={locked} lastCatalogs={branchCatalogs} initialLines={screen.lines} initialCatalogId={screen.catalogId}
+          online={online} initialNotice={screen.notice ?? null}
           submit={submit}
           onCatalogs={setBranchCatalogs}
           onTarget={(t) => changeTarget(screen.session, t)}
@@ -310,18 +319,39 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
           onSendAndPay={(id) => sendAndPay(id, screen.target, screen.session)}
           onChanged={async () => { setRefreshKey((k) => k + 1); await reload() }}
           onDraftCount={setDrafts}
-          onSending={(busy) => { orderSending.current = busy }} />
+          onSending={(busy) => { orderSending.current = busy }}
+          onSplit={(bill) => { setDrafts(0); setScreen({ kind: 'split', bill, back: screen.target }) }} />
+      )}
+      {screen.kind === 'split' && (
+        <SplitItemsScreen key={screen.bill.id} bill={screen.bill} title={billTitle(screen.bill.table_id, screen.bill.bill_no, tables)}
+          tables={tables} bills={bills} summaries={summaries} refreshKey={refreshKey} online={online} shiftOpen={shift.open}
+          initialPicked={screen.picked}
+          onBack={() => openOrder(screen.back)}
+          onPay={(items, picked) => { loadBilling(); setScreen({ kind: 'payment', bill: screen.bill, back: screen.back, split: { items, picked } }) }}
+          onPayWhole={() => { loadBilling(); setScreen({ kind: 'payment', bill: screen.bill, back: screen.back }) }}
+          onMoved={(notice) => { bump(); openOrder(screen.back, undefined, undefined, notice) }}
+          onWholeMoved={(to) => { bump(); openOrder(to) }} />
       )}
       {screen.kind === 'transaction' && <TransactionScreen branchId={branchId} />}
       {screen.kind === 'payment' && (
-        <PaymentScreen key={screen.bill.id} branchId={branchId} bill={screen.bill} refreshKey={refreshKey}
-          title={billTitle(screen.bill.table_id, screen.bill.bill_no, tables)}
-          earlierIds={checkoutIdsByBill.current.get(screen.bill.id) ?? []}
-          onSendIds={(ids) => checkoutIdsByBill.current.set(screen.bill.id, ids)}
-          onClose={() => openOrder(screen.back)}
-          onPaid={() => { checkoutIdsByBill.current.delete(screen.bill.id); goHome(); bump() }} />
+        <PaymentScreen key={`${screen.bill.id}:${screen.split ? 'split' : 'whole'}`} branchId={branchId} bill={screen.bill} refreshKey={refreshKey}
+          title={screen.split ? splitTitle(billTitle(screen.bill.table_id, screen.bill.bill_no, tables)) : billTitle(screen.bill.table_id, screen.bill.bill_no, tables)}
+          split={screen.split ? { items: screen.split.items } : undefined}
+          earlierIds={checkoutIdsByBill.current.get(payIdsKey(screen)) ?? []}
+          onSendIds={(ids) => {
+            // split: [] once the part shows paid (its ids are spent) — drop the key, not only on Done
+            if (ids.length) checkoutIdsByBill.current.set(payIdsKey(screen), ids)
+            else checkoutIdsByBill.current.delete(payIdsKey(screen))
+          }}
+          onClose={() => { const back = cancelPayment(screen); if (back) setScreen(back); else openOrder(screen.back) }}
+          onPaid={() => {
+            checkoutIdsByBill.current.delete(payIdsKey(screen))
+            if (screen.split) openOrder(screen.back)        // split: back to the table's bill, which shows what is left
+            else goHome()
+            bump()
+          }} />
       )}
-      {screen.kind !== 'payment' && (
+      {screen.kind !== 'payment' && screen.kind !== 'split' && (
         <BottomBar title={title} staffName={staffName} printProblems={printHost?.problems ?? printProblems} onMenu={() => { if (!orderSending.current) setMenuOpen(true) }} onStaff={() => setStaffOpen(true)} />
       )}
       {menuOpen && <GridMenu items={items} current={current} onPick={pickMenu} onClose={() => setMenuOpen(false)} />}

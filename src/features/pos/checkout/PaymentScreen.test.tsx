@@ -351,6 +351,44 @@ describe('PaymentScreen — split by item (split spec §3.3)', () => {
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
   })
 
+  it('a paid part clears its checkout ids as soon as its result shows, before Done', async () => {
+    api.checkoutItems.mockResolvedValue({ billId: 'p1', billNo: '261116-010', totalSen: 3250, changeSen: 0, receiptQueued: true })
+    const onSendIds = vi.fn()
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={[]} split={{ items: picked }}
+      onSendIds={onSendIds} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    press('Cash')
+    press('Pay RM 32.50')
+    await flush()
+    expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
+    expect(onSendIds.mock.calls[0][0]).toHaveLength(1)
+    expect(onSendIds).toHaveBeenLastCalledWith([])
+  })
+
+  it('part 1 paid, then the till locks before Done: the next split Payment of the bill starts without part 1\'s id', async () => {
+    // PosTill keeps the ids under split:<billId>; an empty list drops the key
+    const kept = new Map<string, string[]>()
+    const keep = (ids: string[]) => { if (ids.length) kept.set('split:b1', ids); else kept.delete('split:b1') }
+    api.checkoutItems.mockResolvedValue({ billId: 'p1', billNo: '261116-010', totalSen: 3250, changeSen: 0, receiptQueued: true })
+    const first = render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={kept.get('split:b1') ?? []}
+      split={{ items: picked }} onSendIds={keep} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    press('Cash')
+    press('Pay RM 32.50')
+    await flush()
+    const id1 = api.checkoutItems.mock.calls[0][3] as string
+    expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
+    first.unmount()                                            // the lock sends the till home; Done was never pressed
+    expect(kept.has('split:b1')).toBe(false)
+    api.fetchCheckoutState.mockClear()
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={kept.get('split:b1') ?? []}
+      split={{ items: [{ itemId: 'i3', qty: 1 }] }} onSendIds={keep} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    expect(api.fetchCheckoutState).toHaveBeenCalled()
+    expect(api.fetchCheckoutState.mock.calls[0][1]).not.toContain(id1)
+    expect(screen.queryByText(/paid ·/)).toBeNull()
+  })
+
   it('a part this screen paid shows as paid (the reply was lost), though the table bill is open', async () => {
     api.fetchCheckoutState.mockResolvedValue({ status: 'open', billNo: bill.bill_no, mergedIntoBillNo: null, totals,
       result: { billId: 'p1', billNo: '261116-010', totalSen: 3250, changeSen: 0, receiptQueued: true } })

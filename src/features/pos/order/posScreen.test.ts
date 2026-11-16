@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  deadline, onSession, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, SENT_BILL_CLOSED, SENT_BILL_NOT_LOADED, type Screen,
+  cancelPayment, deadline, onSession, payIdsKey, payOutcome, retarget, settleReload, SEND_PAY_WAIT_MS, SENT_BILL_CLOSED, SENT_BILL_NOT_LOADED, type Screen,
 } from './posScreen'
 import { QUEUED_NOT_SENT } from './billView'
 import type { OpenBillRow, TableRow } from './posApi'
@@ -99,5 +99,20 @@ describe('settleReload', () => {
   it('the tables or the bills fail: an error', () => {
     expect(settleReload(no('Failed to fetch'), ok([]), ok(sums))).toEqual({ ok: false, error: 'Failed to fetch' })
     expect(settleReload(ok([table]), no('timeout'), ok(sums))).toEqual({ ok: false, error: 'timeout' })
+  })
+})
+
+describe('split payment screens', () => {
+  const bill = { id: 'b5', bill_no: '261116-009', table_id: 't5', order_type: 'dine_in' as const, pax: 4, opened_at: '2026-11-16T04:00:00Z',
+    discount_kind: null, discount_value: null, discount_reason: null }
+  const back = { kind: 'table' as const, tableId: 't5', pax: null }
+  it('Cancel payment in split mode reopens the picker with the selection kept; a whole-bill Payment has no such screen', () => {
+    const split = { items: [{ itemId: 'i1', qty: 1 }], picked: { i1: 1 } }
+    expect(cancelPayment({ kind: 'payment', bill, back, split })).toEqual({ kind: 'split', bill, back, picked: { i1: 1 } })
+    expect(cancelPayment({ kind: 'payment', bill, back })).toBeNull()
+  })
+  it('a split payment keeps its checkout ids apart from the whole bill\'s', () => {
+    expect(payIdsKey({ kind: 'payment', bill, back })).toBe('b5')
+    expect(payIdsKey({ kind: 'payment', bill, back, split: { items: [], picked: {} } })).toBe('split:b5')
   })
 })

@@ -282,7 +282,8 @@ export default function PosApp() {
           staffName={who?.staffName ?? till.staffName}
           can={{ manageMenu: false, supervise: who?.canSupervise ?? false, settings: false }}
           prints={printing} locked={who === null} printHost={printing ? { slot: printSlot, problems: printProblems } : undefined}
-          onLock={requestLock} onUnpair={who?.canUnpair ? requestUnpair : undefined} onDraftCount={setDrafts} />
+          onLock={requestLock} onUnpair={who?.canUnpair ? requestUnpair : undefined} onDraftCount={setDrafts}
+          online={online} />
       )}
       {!who && (
         <LockScreen roster={roster} note={lockNote} offline={!online} loadError={loadError}

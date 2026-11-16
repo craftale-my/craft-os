@@ -17,6 +17,7 @@ import BillActionsOverlay from './BillActionsOverlay'
 import ItemActionsOverlay from './ItemActionsOverlay'
 import MoveToGrid from './MoveToGrid'
 import { billActions, itemActions, type BillAction, type ItemAction } from './billActions'
+import { SPLIT_OFFLINE } from './splitSelection'
 import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
 import { moveTargets, type MoveTarget } from './moveTargets'
 import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
@@ -62,6 +63,7 @@ type Dialog =
  *  bill discounts (docs/superpowers/specs/2026-10-30-pos-discounts-design.md "Screens"). */
 export default function OrderScreen({
   branchId, target, tables, bills, summaries, refreshKey, billing, shiftOpen, locked = false, lastCatalogs, initialLines, initialCatalogId,
+  online = true, initialNotice = null, onSplit,
   submit, onCatalogs, onTarget, onBack, onSent, onPay, onSendAndPay, onChanged, onDraftCount, onSending,
 }: {
   branchId: string
@@ -76,6 +78,9 @@ export default function OrderScreen({
   lastCatalogs: BranchCatalogs | null        // the last catalogs this iPad saw: used when the fresh read fails
   initialLines?: OrderLine[]                 // a rejected order being edited
   initialCatalogId?: string | null           // ...keeps its catalog
+  online?: boolean                           // the server answers (POS app); Split / Move items needs it
+  initialNotice?: string | null              // e.g. "Moved 2 items to T7" after a move from the picker
+  onSplit: (bill: OpenBillRow) => void       // Split / Move items: the picker (PosTill)
   submit: (o: QueuedOrder) => Promise<SubmitResult>
   onCatalogs: (c: BranchCatalogs) => void
   onTarget: (t: OrderTarget) => void         // a move or merge landed elsewhere, or pax was chosen for an empty table
@@ -126,7 +131,7 @@ export default function OrderScreen({
   const [sending, setSending] = useState(false)
   const sendingRef = useRef(false)              // synchronous guard: Send and Send & pay never run twice
   const [carry, setCarry] = useState<{ lines: OrderLine[]; to: string } | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(initialNotice)
   const [info, setInfo] = useState<ReadonlyMap<string, PadProductInfo>>(new Map())
   const loadSeq = useRef(0)
   const catalogIdRef = useRef(catalogId)
@@ -346,6 +351,15 @@ export default function OrderScreen({
     setDialog(null)
     if (a === 'send') void send()
     else if (a === 'move') setDialog({ kind: 'move' })
+    else if (a === 'split' && bill) {
+      if (!online) return
+      if (view.draftCount > 0) {
+        setConfirm({ title: discardQuestion(view.draftCount), message: 'Then Split / Move items opens.', confirmLabel: 'Discard', danger: true,
+          onConfirm: () => onSplit(bill) })
+        return
+      }
+      onSplit(bill)
+    }
     else if (a === 'void_bill') setDialog({ kind: 'void_bill' })
     else if (a === 'discount_bill' || a === 'edit_bill_discount') setDialog({ kind: 'discount_bill' })
     else if (a === 'remove_bill_discount' && bill) {
@@ -502,7 +516,8 @@ export default function OrderScreen({
           }} />
       )}
       {dialog?.kind === 'actions' && (
-        <BillActionsOverlay title={title} actions={actions} disabled={busy || sending} onPick={pickAction} onClose={() => setDialog(null)} />
+        <BillActionsOverlay title={title} actions={actions} disabled={busy || sending} notes={online ? undefined : { split: SPLIT_OFFLINE }}
+          onPick={pickAction} onClose={() => setDialog(null)} />
       )}
       {bill && dialog?.kind === 'move' && (
         <MoveToGrid billNo={bill.bill_no} targets={moveTargets(bill, tables, bills, summaries, billDisc !== null)} busy={busy}

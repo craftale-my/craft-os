@@ -5,6 +5,7 @@ import type { OpenBillRow, TableRow } from './posApi'
 import type { BillSummary } from './billSummaries'
 import { QUEUED_NOT_SENT } from './billView'
 import { targetKey, type OrderTarget } from './orderTarget'
+import type { Picked, SplitItem } from './splitSelection'
 
 /** Which POS screen is up. An order screen is keyed by its session and its table or takeaway bill
  *  (targetKey): Select pax keeps the screen, a move or merge starts it again on the new bill, so
@@ -12,8 +13,9 @@ import { targetKey, type OrderTarget } from './orderTarget'
  *  Cancel) starts clean. */
 export type Screen =
   | { kind: 'home' }
-  | { kind: 'order'; session: number; target: OrderTarget; lines?: OrderLine[]; catalogId?: string | null }
-  | { kind: 'payment'; bill: OpenBillRow; back: OrderTarget }
+  | { kind: 'order'; session: number; target: OrderTarget; lines?: OrderLine[]; catalogId?: string | null; notice?: string | null }
+  | { kind: 'payment'; bill: OpenBillRow; back: OrderTarget; split?: { items: SplitItem[]; picked: Picked } }
+  | { kind: 'split'; bill: OpenBillRow; back: OrderTarget; picked?: Picked }
   | { kind: 'transaction' }
 
 /** True only while the order screen of that session is up: a late callback from a screen the
@@ -79,3 +81,13 @@ export function settleReload(
   return { ok: true, tables: tables.value, bills: bills.value, summaries: summaries.status === 'fulfilled' ? summaries.value : null }
 }
 const reason = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+type PaymentScreenState = Extract<Screen, { kind: 'payment' }>
+/** Cancel payment in split mode (split spec §3.3): back to the picker with the selection kept;
+ *  null for a whole-bill Payment (it goes back to the bill). */
+export function cancelPayment(s: PaymentScreenState): Screen | null {
+  return s.split ? { kind: 'split', bill: s.bill, back: s.back, picked: s.split.picked } : null
+}
+/** Where PosTill keeps a Payment's checkout ids: a split payment's apart from the whole bill's, so a
+ *  late split part never reads as the whole bill paid, nor the other way round. */
+export const payIdsKey = (s: PaymentScreenState): string => (s.split ? `split:${s.bill.id}` : s.bill.id)
