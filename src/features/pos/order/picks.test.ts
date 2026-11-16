@@ -1,0 +1,76 @@
+import { describe, expect, it } from 'vitest'
+import { MAX_PAIRS, mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from './picks'
+import type { OrderLine, PosMenu, PosProduct } from './cart'
+
+const product = (id: string, extra: Partial<PosProduct> = {}): PosProduct => ({
+  id, name: id.toUpperCase(), description: null, soldOut: false,
+  variants: [{ id: `${id}-v`, name: 'Regular', priceSen: 1000, isBase: true }], groups: [], ...extra,
+})
+const menu: PosMenu = {
+  categories: [
+    { name: 'COFFEE', products: [product('latte'), product('mocha')] },
+    { name: 'CAKE', products: [product('cake'), product('brownie', { soldOut: true }), product('tart', { variants: [] })] },
+    { name: 'BREAD', products: [product('croissant'), product('bagel'), product('scone')] },
+  ],
+}
+const picks: MenuPicks = {
+  popular: ['gone', 'cake', 'brownie', 'latte', 'tart', 'croissant'],
+  pairs: { latte: ['brownie', 'cake', 'gone', 'latte', 'croissant', 'bagel', 'scone'], mocha: [] },
+  mostPicked: { latte: { milk: 'oat' } },
+  fromSales: true,
+}
+const line = (productId: string): OrderLine => ({ productId, variantId: `${productId}-v`, qty: 1, note: null, optionIds: [] })
+
+describe('parsePicks', () => {
+  it('reads the server payload', () => {
+    expect(parsePicks(picks)).toEqual(picks)
+  })
+  it('null (an unknown table), text or a half payload is no picks', () => {
+    expect(parsePicks(null)).toBeNull()
+    expect(parsePicks('nope')).toBeNull()
+    expect(parsePicks({ popular: [] })).toBeNull()
+  })
+  it('drops what is not an id and reads a missing fromSales as false', () => {
+    expect(parsePicks({ popular: ['a', 3, null], pairs: { a: ['b', 4], c: 'x' }, mostPicked: { a: { g: 'o', h: 5 }, b: 'x' } }))
+      .toEqual({ popular: ['a'], pairs: { a: ['b'], c: [] }, mostPicked: { a: { g: 'o' } }, fromSales: false })
+  })
+})
+
+describe('visiblePopular', () => {
+  it('keeps the server order and only what the menu offers now', () => {
+    // gone: not on this menu (catalog or time slot) · brownie: sold out · tart: no price in this catalog
+    expect(visiblePopular(menu, picks).map((p) => p.id)).toEqual(['cake', 'latte', 'croissant'])
+  })
+  it('no picks, no row', () => {
+    expect(visiblePopular(menu, null)).toEqual([])
+  })
+})
+
+describe('pairsFor', () => {
+  it('leaves out what is not offered, sold out, in the cart or the product itself, and keeps at most 3', () => {
+    expect(pairsFor(menu, picks, 'latte', []).map((p) => p.id)).toEqual(['cake', 'croissant', 'bagel'])
+    expect(pairsFor(menu, picks, 'latte', [line('latte'), line('cake')]).map((p) => p.id)).toEqual(['croissant', 'bagel', 'scone'])
+    expect(MAX_PAIRS).toBe(3)
+  })
+  it('a product without pairs, or no picks, gives nothing', () => {
+    expect(pairsFor(menu, picks, 'mocha', [])).toEqual([])
+    expect(pairsFor(menu, picks, 'scone', [])).toEqual([])
+    expect(pairsFor(menu, null, 'latte', [])).toEqual([])
+  })
+})
+
+describe('offerPairs', () => {
+  it('once per product per visit, and only with something to show', () => {
+    expect(offerPairs(menu, picks, 'latte', [line('latte')], new Set())).toBe(true)
+    expect(offerPairs(menu, picks, 'latte', [line('latte')], new Set(['latte']))).toBe(false)
+    expect(offerPairs(menu, picks, 'mocha', [line('mocha')], new Set())).toBe(false)
+  })
+})
+
+describe('mostPickedFor', () => {
+  it("the product's group → option map, or nothing", () => {
+    expect(mostPickedFor(picks, 'latte')).toEqual({ milk: 'oat' })
+    expect(mostPickedFor(picks, 'mocha')).toBeUndefined()
+    expect(mostPickedFor(null, 'latte')).toBeUndefined()
+  })
+})
