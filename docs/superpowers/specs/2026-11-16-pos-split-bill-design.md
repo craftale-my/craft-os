@@ -101,7 +101,7 @@ Guards while a bill has paid parts (assumed — keeps a paid part from ever exce
 |---|---|
 | Add items (counter or QR) | Yes: the balance grows |
 | Void an item, void the bill, item or bill discount, split by item, move items, merge it into another bill | No: `This bill has a part payment. Pay the rest first.` |
-| Move the whole bill to another table, merge another bill into it | Yes |
+| Move the whole bill to another table, merge another bill into it | Yes (a move that would make the total less than the parts paid is refused, §4.6) |
 
 A refund of a part before the bill is closed is not offered; pay the rest, then refund the closed bill
 as today (its refund limits already count every payment of the bill).
@@ -242,14 +242,17 @@ RLS: read for `authenticated` like the other POS tables; written only by the fun
   `shareSen` = the balance when this is the last share (`ways − partsPaid ≤ 1`), else
   `floor(balance / (ways − partsPaid) / 5) × 5` (a multiple of 5 sen; the last share takes the rest).
   For p_ways null it returns the same object with `ways` and `shareSen` null (the by-amount screen).
-- **`pay_bill_part(p_bill_id uuid, p_part_id uuid, p_amount_sen integer, p_ways integer, p_payments jsonb)
-  returns jsonb`**, in one transaction:
+- **`pay_bill_part(p_bill_id uuid, p_part_id uuid, p_amount_sen integer, p_ways integer, p_payments jsonb,
+  p_paid_sen integer default null) returns jsonb`**, in one transaction:
   1. **Replay:** a `bill_parts` row with `id = p_part_id` → same bill and branch, same amount and the same
      payments (compared like `pos_checkout_same_payments`, over `payments.part_id = p_part_id`), else
      `This payment was already recorded with other amounts — check Today's bills`; return its result.
   2. Lock the bill `for update`; re-check the part id after the lock (a waiting resend replays);
      open shift `for share` (`Open the shift first`); bill must be open (today's messages) and have items.
-  3. Balance = `pos_bill_totals.totalSen − paid parts`. `p_amount_sen` must be ≥ 1 and **< balance**
+  3. `p_paid_sen` is the paid parts the screen saw (null: not checked); when given it must equal the
+     bill's paid parts under the lock, else `The bill changed. Check the split again.` (a part whose reply
+     was lost and that committed late cannot let the same guest's next Pay through: no paying twice).
+     Balance = `pos_bill_totals.totalSen − paid parts`. `p_amount_sen` must be ≥ 1 and **< balance**
      (`Pay the rest with Pay, not as a part` when equal; `The amount is more than the balance` when more).
   4. Equal split (`p_ways` not null): the bill's earlier N, if any, must equal p_ways (`The bill changed.
      Check the split again.`), and p_amount_sen must equal `pos_part_quote(…).shareSen` (same message —
@@ -266,7 +269,14 @@ RLS: read for `authenticated` like the other POS tables; written only by the fun
 - **Guards:** `void_order_item`, `void_bill`, `set_item_discount`, `set_bill_discount`, `merge_bills`
   (as the source), `checkout_items` and `move_items` raise `This bill has a part payment. Pay the rest
   first.` when the bill has a `bill_parts` row. Each is re-created from its live text with only that check
-  added after the bill lock.
+  added after the bill lock and after the bill's status checks (a paid, voided or merged bill gets its
+  usual message).
+- **`move_bill`** (the whole bill to another table): a bill with part payments is refused with `Moving this
+  bill would make it less than what was already paid.` when its total at the new table (service-charge
+  rules can be set by table) would be less than its paid parts; the move is undone. A bill with no parts
+  behaves exactly as today.
+- Note: changing service-charge rules or SST registration while a bill has part payments can leave its
+  total below what was paid; do it with no part-paid bills open.
 - `pos_checkout_state` adds `paidSen` and `parts: [{ partNo, ways, amountSen, methods }]` for an open
   bill; `pos_open_bill_summaries` adds `paidSen` for the home tile.
 - Z report: a part's payments carry the shift they were taken in (cash counted in that drawer); the bill

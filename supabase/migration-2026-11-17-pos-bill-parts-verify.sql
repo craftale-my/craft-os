@@ -2,7 +2,8 @@
 -- migration-2026-11-17-pos-bill-parts.sql. Everything is rolled back. Success = a result row
 -- "VERIFY OK". Sections (one DO block each, ids in the temp table fixture): FIXTURE; B1 quote and
 -- part payments; B1f fixes after the B1 review (rolled back inside the block); B2 the balance by
--- checkout_bill and the guards; B2p pay_bill_part's p_paid_sen (rolled back inside the block); B3
+-- checkout_bill and the guards; B2p pay_bill_part's p_paid_sen (rolled back inside the block); B2f
+-- the guards after the status checks, move_bill and the paid parts (rolled back inside the block); B3
 -- receipts and screen reads.
 -- Numbers: no service charge, 0% SST, 5 sen rounding; Set A 70.35, Set B 70.40, Extra 3.00.
 begin;
@@ -381,6 +382,88 @@ begin
   end;
   if exists (select 1 from bills where table_id = pg_temp.id('t1') and status = 'open') then
     raise exception 'FAIL B2p: not rolled back';
+  end if;
+end $$;
+
+-- ── B2f. Fixes after the B2 review: a paid / voided / merged bill gets its usual message before the
+--    part guard; move_bill refuses a table whose total would fall below the parts paid; an equal share
+--    with a stale p_paid_sen is refused. Undone at the end (SQLSTATE B2FRB). ─
+do $$
+declare
+  v_x   uuid := pg_temp.id('bX');                                   -- paid, two parts
+  v_xi  uuid := (select id from order_items where bill_id = pg_temp.id('bX') order by id limit 1);
+  v_w   uuid := pg_temp.id('bW');                                   -- open, RM 10.00 paid as a part
+  v_msg text := 'This bill has a part payment. Pay the rest first.';
+  v_less text := 'Moving this bill would make it less than what was already paid.';
+  v_n uuid; v_b uuid; v_c uuid; v_q jsonb; v_res jsonb; v_s integer;
+begin
+  begin
+    perform pg_temp.act(pg_temp.id('dev'));
+    -- a paid bill that has parts: its usual message, not the part guard
+    perform pg_temp.expect_error(format('select void_order_item(%L, %L, %L, %L)', v_xi, 'Wrong item keyed', pg_temp.id('sup'), '2222'),
+      'Only items on an open bill can be voided — refund a paid bill instead', 'B2f void item of a paid bill');
+    perform pg_temp.expect_error(format('select void_bill(%L, %L, %L, %L)', v_x, 'Customer left', pg_temp.id('sup'), '2222'),
+      'This bill is paid — refund it instead', 'B2f void a paid bill');
+    perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_xi, 'percent', 'Regular', pg_temp.id('sup'), '2222'),
+      'Only an open bill can be discounted', 'B2f item discount on a paid bill');
+    perform pg_temp.expect_error(format('select set_bill_discount(%L, %L, 1000, %L, %L, %L)', v_x, 'percent', 'Regular', pg_temp.id('sup'), '2222'),
+      'Only an open bill can be discounted', 'B2f bill discount on a paid bill');
+    perform pg_temp.expect_error(format('select merge_bills(%L, %L)', v_x, v_w), 'Only open bills can be merged', 'B2f merge a paid bill');
+    -- an open bill that has a part: still the guard
+    v_n := pg_temp.order_on('t5', array['seta']);                      -- an open bill on P5 (V was merged)
+    v_n := (select bill_id from orders where id = v_n);
+    perform pg_temp.expect_error(format('select void_order_item(%L, %L, %L, %L)', pg_temp.id('Wx'), 'Wrong item keyed', pg_temp.id('sup'), '2222'),
+      v_msg, 'B2f void item');
+    perform pg_temp.expect_error(format('select void_bill(%L, %L, %L, %L)', v_w, 'Customer left', pg_temp.id('sup'), '2222'),
+      v_msg, 'B2f void bill');
+    perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', pg_temp.id('Wx'), 'percent', 'Regular', pg_temp.id('sup'), '2222'),
+      v_msg, 'B2f item discount');
+    perform pg_temp.expect_error(format('select set_bill_discount(%L, %L, 1000, %L, %L, %L)', v_w, 'percent', 'Regular', pg_temp.id('sup'), '2222'),
+      v_msg, 'B2f bill discount');
+    perform pg_temp.expect_error(format('select merge_bills(%L, %L)', v_w, v_n), v_msg, 'B2f merge it away');
+
+    -- a 10% service charge on P1 and P3 only
+    insert into service_charge_rules(branch_id, rate_bp, order_types, table_ids)
+    values (pg_temp.id('branch'), 1000, array['dine_in'], array[pg_temp.id('t1'), pg_temp.id('t3')]);
+    -- C on P3 (Set A + service charge), split in 3: share 1 with p_paid_sen 0; share 2 with the same
+    -- stale p_paid_sen 0 is refused; with the bill's paidSen it goes through
+    v_c := pg_temp.order_on('t3', array['seta']);
+    v_c := (select bill_id from orders where id = v_c);
+    if (pos_bill_totals(v_c)->>'totalSen')::int <= 7035 then raise exception 'FAIL B2f service charge on P3'; end if;
+    v_s := (pos_part_quote(v_c, 3)->>'shareSen')::int;
+    v_res := pay_bill_part(v_c, gen_random_uuid(), v_s, 3, pg_temp.card(v_s), 0);
+    v_s := (pos_part_quote(v_c, 3)->>'shareSen')::int;
+    perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, %s, 3, %L, 0)', v_c, gen_random_uuid(), v_s, pg_temp.card(v_s)),
+      'The bill changed. Check the split again.', 'B2f equal share, stale p_paid_sen');
+    v_res := pay_bill_part(v_c, gen_random_uuid(), v_s, 3, pg_temp.card(v_s), (v_res->>'paidSen')::int);
+    if (v_res->>'partNo')::int <> 2 then raise exception 'FAIL B2f equal share, right p_paid_sen: %', v_res; end if;
+    -- C to P4 (no service charge): 70.35 still covers its two shares — allowed
+    perform move_bill(v_c, pg_temp.id('t4'));
+    if (select table_id from bills where id = v_c) <> pg_temp.id('t4')
+       or (pos_bill_totals(v_c)->>'totalSen')::int <> 7035 or pos_bill_paid_parts(v_c) > 7035 then
+      raise exception 'FAIL B2f move C to P4';
+    end if;
+    -- B on P1 (Set A + service charge), RM 71.00 paid by amount: on P2 it would be 70.35 — refused,
+    -- and it stays on P1; to P3 (the same service charge) — allowed
+    v_b := pg_temp.order_on('t1', array['seta']);
+    v_b := (select bill_id from orders where id = v_b);
+    v_res := pay_bill_part(v_b, gen_random_uuid(), 7100, null, pg_temp.card(7100), 0);
+    perform pg_temp.expect_error(format('select move_bill(%L, %L)', v_b, pg_temp.id('t2')), v_less, 'B2f move below the parts');
+    if (select table_id from bills where id = v_b) <> pg_temp.id('t1') then raise exception 'FAIL B2f refused move not undone'; end if;
+    perform move_bill(v_b, pg_temp.id('t3'));
+    if (select table_id from bills where id = v_b) <> pg_temp.id('t3') then raise exception 'FAIL B2f move B to P3'; end if;
+    -- a bill with no part moves off the service charge as before
+    v_n := pg_temp.order_on('t1', array['seta']);
+    v_n := (select bill_id from orders where id = v_n);
+    perform move_bill(v_n, pg_temp.id('t2'));
+    if (select table_id from bills where id = v_n) <> pg_temp.id('t2') then raise exception 'FAIL B2f move a bill with no part'; end if;
+    raise exception 'B2f rollback' using errcode = 'B2FRB';
+  exception when sqlstate 'B2FRB' then
+    null;
+  end;
+  if exists (select 1 from service_charge_rules where branch_id = pg_temp.id('branch'))
+     or exists (select 1 from bills where branch_id = pg_temp.id('branch') and status = 'open' and id <> pg_temp.id('bW')) then
+    raise exception 'FAIL B2f: not rolled back';
   end if;
 end $$;
 

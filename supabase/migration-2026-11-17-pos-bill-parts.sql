@@ -13,12 +13,16 @@
 --     pay_bill_part takes p_paid_sen, the paid parts the screen saw (a 6th argument, default null).
 -- B3  The final receipt lists the parts' payments first, labelled; pos_checkout_state and
 --     pos_open_bill_summaries carry paidSen.
+-- B2f After the B2 review: the guards of void item / bill, item / bill discount and merge run after
+--     the bill's status checks (a paid, voided or merged bill gets its usual message); move_bill
+--     refuses a bill whose total at the new table (its service charge) is less than its parts paid.
 -- Re-run hazards: re-running migration-2026-11-16-pos-split-bill.sql puts back the part-less
 -- checkout_bill, pos_split_check, pos_receipt_payload and pos_checkout_state (its pos_insert_payments
 -- writes part_id since B1f; an older text that does not makes pay_bill_part stop with "STOP: ...");
 -- migration-2026-10-29-pos-device-till.sql the unguarded void_bill / void_order_item;
 -- migration-2026-10-30-pos-discounts.sql the unguarded discounts and merge_bills;
--- migration-2026-10-26-pos-frontend.sql the old pos_open_bill_summaries (paid_sen gone) — re-run
+-- migration-2026-10-26-pos-frontend.sql the old pos_open_bill_summaries (paid_sen gone);
+-- migration-2026-10-24-pos-bill-actions-fn.sql the move_bill without the parts check — re-run
 -- this file after any of them.
 -- Every DELETE / UPDATE has a WHERE: Supabase's API role runs pg-safeupdate
 -- (src/features/pos/sqlSafeUpdate.test.ts scans this file).
@@ -826,6 +830,224 @@ begin
 end $$;
 revoke all on function pos_open_bill_summaries(uuid) from public, anon;
 grant execute on function pos_open_bill_summaries(uuid) to authenticated;
+
+-- ── B2f. Guards after the status checks; move_bill and the paid parts (spec §4.6) ─────────────
+-- Each function re-created from its newest text (the B2 section above; move_bill from
+-- migration-2026-10-24-pos-bill-actions-fn.sql) with only the lines marked B2f changed. pos_no_parts
+-- now runs after the bill's status checks (still under the bill lock), so a paid, voided or merged
+-- bill that had parts answers its usual message.
+
+-- void_order_item: the B2 text above, the guard after the open-bill check
+CREATE OR REPLACE FUNCTION void_order_item(p_item_id uuid, p_reason text, p_approver_id uuid, p_pin text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_item   order_items;
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+begin
+  select * into v_item from order_items where id = p_item_id;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_bill from bills where id = v_item.bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_item from order_items where id = p_item_id;            -- again, under the bill lock
+  if v_item.bill_id <> v_bill.id then raise exception 'The bill just changed — please try again'; end if;
+  if v_item.voided_at is not null then return jsonb_build_object('ok', true); end if;   -- a retry
+  if v_bill.status <> 'open' then
+    raise exception 'Only items on an open bill can be voided — refund a paid bill instead';
+  end if;
+  perform pos_no_parts(v_bill.id);                                                                       -- B2f: after the status check
+  v_reason := pos_check_reason(v_branch, 'void_item', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  update order_items
+     set voided_at = now(), voided_by = pos_actor(), voided_device_id = pos_current_device(), void_reason = v_reason, void_approved_by = p_approver_id
+   where id = p_item_id;
+  update bills set updated_at = now() where id = v_bill.id;   -- H3: a bills event, so other iPads hear of it at once
+  perform pos_queue_void_tickets(array[p_item_id]);
+  return jsonb_build_object('ok', true);
+end $function$;
+
+-- void_bill: the B2 text above, the guard after the status checks
+CREATE OR REPLACE FUNCTION void_bill(p_bill_id uuid, p_reason text, p_approver_id uuid, p_pin text)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+  v_ids    uuid[];
+begin
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.status = 'voided' then return jsonb_build_object('ok', true); end if;      -- a retry
+  if v_bill.status = 'paid' then raise exception 'This bill is paid — refund it instead'; end if;
+  if v_bill.status <> 'open' then raise exception 'This bill was merged into another bill'; end if;
+  perform pos_no_parts(v_bill.id);                                                                       -- B2f: after the status checks
+  select coalesce(array_agg(id), '{}') into v_ids from order_items where bill_id = v_bill.id and voided_at is null;
+  if cardinality(v_ids) > 0 then
+    v_reason := pos_check_reason(v_branch, 'void_bill', p_reason);
+    v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+    if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+    update order_items
+       set voided_at = now(), voided_by = pos_actor(), voided_device_id = pos_current_device(), void_reason = v_reason, void_approved_by = p_approver_id
+     where id = any (v_ids);
+  else
+    v_reason := nullif(trim(left(p_reason, 200)), '');
+  end if;
+  update bills
+     set status = 'voided', closed_at = now(), closed_by = pos_actor(), closed_device_id = pos_current_device(), void_reason = v_reason,
+         void_approved_by = case when cardinality(v_ids) > 0 then p_approver_id end
+   where id = v_bill.id;
+  perform pos_queue_void_tickets(v_ids);
+  return jsonb_build_object('ok', true);
+end $function$;
+
+-- set_item_discount: the B2 text above, the guard after the open-bill check
+create or replace function set_item_discount(p_item_id uuid, p_kind text, p_value integer, p_reason text,
+                                             p_approver_id uuid, p_pin text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_item   order_items;
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+begin
+  perform pos_check_discount(p_kind, p_value);
+  select * into v_item from order_items where id = p_item_id;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_bill from bills where id = v_item.bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Item not found'; end if;
+  select * into v_item from order_items where id = p_item_id;            -- again, under the bill lock
+  if v_item.bill_id <> v_bill.id then raise exception 'The bill just changed — please try again'; end if;
+  if v_bill.status <> 'open' then raise exception 'Only an open bill can be discounted'; end if;
+  perform pos_no_parts(v_bill.id);                                                                       -- B2f: after the status check
+  if v_item.voided_at is not null then raise exception 'A voided item cannot be discounted'; end if;
+  v_reason := pos_check_reason(v_branch, 'discount', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  update order_items
+     set discount_kind = p_kind, discount_value = p_value, discount_reason = v_reason,
+         discount_approved_by = p_approver_id, discount_by = pos_actor(), discount_at = now()
+   where id = p_item_id;
+  insert into pos_discount_log(branch_id, bill_id, order_item_id, action, kind, value, reason, approved_by, actor)
+  values (v_branch, v_bill.id, p_item_id, 'set', p_kind, p_value, v_reason, p_approver_id, pos_actor());
+  update bills set updated_at = now() where id = v_bill.id;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function set_item_discount(uuid, text, integer, text, uuid, text) from public, anon;
+grant execute on function set_item_discount(uuid, text, integer, text, uuid, text) to authenticated;
+
+-- set_bill_discount: the B2 text above, the guard after the open-bill check
+create or replace function set_bill_discount(p_bill_id uuid, p_kind text, p_value integer, p_reason text,
+                                             p_approver_id uuid, p_pin text) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+  v_reason text;
+  v_err    text;
+begin
+  perform pos_check_discount(p_kind, p_value);
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.status <> 'open' then raise exception 'Only an open bill can be discounted'; end if;
+  perform pos_no_parts(v_bill.id);                                                                       -- B2f: after the status check
+  v_reason := pos_check_reason(v_branch, 'discount', p_reason);
+  v_err := pos_check_approver(v_branch, p_approver_id, p_pin);
+  if v_err is not null then return jsonb_build_object('ok', false, 'error', v_err); end if;
+  update bills
+     set discount_kind = p_kind, discount_value = p_value, discount_reason = v_reason,
+         discount_approved_by = p_approver_id, discount_by = pos_actor(), discount_at = now(), updated_at = now()
+   where id = p_bill_id;
+  insert into pos_discount_log(branch_id, bill_id, action, kind, value, reason, approved_by, actor)
+  values (v_branch, p_bill_id, 'set', p_kind, p_value, v_reason, p_approver_id, pos_actor());
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function set_bill_discount(uuid, text, integer, text, uuid, text) from public, anon;
+grant execute on function set_bill_discount(uuid, text, integer, text, uuid, text) to authenticated;
+
+-- merge_bills: the B2 text above, the guard after 'Only open bills can be merged' (the source must
+-- have no part; the target may)
+CREATE OR REPLACE FUNCTION merge_bills(p_from_bill uuid, p_into_bill uuid)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+declare
+  v_branch uuid := pos_my_branch();
+  v_from   bills;
+  v_into   bills;
+begin
+  if p_from_bill is null or p_into_bill is null or p_from_bill = p_into_bill then
+    raise exception 'Choose two different bills';
+  end if;
+  -- lock both in one fixed order, so two iPads merging the same pair cannot deadlock
+  perform 1 from bills where id in (p_from_bill, p_into_bill) order by id for update;
+  select * into v_from from bills where id = p_from_bill and branch_id = v_branch;
+  select * into v_into from bills where id = p_into_bill and branch_id = v_branch;
+  if v_from.id is null or v_into.id is null then raise exception 'Bill not found'; end if;
+  if v_from.status <> 'open' or v_into.status <> 'open' then raise exception 'Only open bills can be merged'; end if;
+  perform pos_no_parts(v_from.id);                                                                       -- B2f: after the status check
+  if v_from.discount_kind is not null then raise exception 'Remove the bill discount before merging'; end if;   -- D
+  if v_from.order_type = 'dine_in' and v_into.order_type = 'takeaway' then
+    raise exception 'Merge the takeaway bill into the table''s bill, not the other way round';
+  end if;
+  update orders set bill_id = v_into.id where bill_id = v_from.id;
+  update order_items set bill_id = v_into.id where bill_id = v_from.id;
+  update bills
+     set pax = case when v_into.pax is null and v_from.pax is null then null
+                    else least(99, coalesce(v_into.pax, 0) + coalesce(v_from.pax, 0)) end
+   where id = v_into.id;
+  update bills
+     set status = 'merged', merged_into = v_into.id, closed_at = now(), closed_by = pos_actor(), closed_device_id = pos_current_device()
+   where id = v_from.id;
+end $function$;
+
+-- move_bill: migration-2026-10-24-pos-bill-actions-fn.sql. A bill with part payments must still cover
+-- them at the new table (a service charge set by table can lower its total); the raise undoes the move.
+-- A bill with no part: exactly as before.
+create or replace function move_bill(p_bill_id uuid, p_table_id uuid) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+  v_label  text;
+  v_paid   integer;                                                                                      -- B2f
+begin
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch for update;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.status <> 'open' then raise exception 'Only an open bill can move'; end if;
+  if v_bill.order_type <> 'dine_in' then raise exception 'Only a dine-in bill can move to another table'; end if;
+  if v_bill.table_id = p_table_id then return; end if;
+  select label into v_label from dining_tables where id = p_table_id and branch_id = v_branch and is_active;
+  if not found then raise exception 'Invalid table'; end if;
+  if exists (select 1 from bills where table_id = p_table_id and status = 'open') then
+    raise exception 'Table % already has an open bill — merge instead', v_label;
+  end if;
+  begin
+    update bills set table_id = p_table_id where id = v_bill.id;
+  exception when unique_violation then
+    raise exception 'Table % already has an open bill — merge instead', v_label;
+  end;
+  v_paid := pos_bill_paid_parts(v_bill.id);                                                              -- B2f
+  if v_paid > 0 and (pos_bill_totals(v_bill.id)->>'totalSen')::integer < v_paid then                    -- B2f
+    raise exception 'Moving this bill would make it less than what was already paid.';                  -- B2f
+  end if;                                                                                                -- B2f
+end $$;
+revoke all on function move_bill(uuid, uuid) from public, anon;
+grant execute on function move_bill(uuid, uuid) to authenticated;
 
 notify pgrst, 'reload schema';
 select 'pos bill parts applied' as result;

@@ -2871,7 +2871,7 @@ EOF
   - `pos_part_same_payments(p_part_id uuid, p_payments jsonb) returns boolean`, `pos_part_result(p_part_id uuid) returns jsonb`, `pos_part_replay(bill_parts, uuid, uuid, integer, jsonb) returns jsonb` — internal
   - `pos_part_receipt_payload(p_part_id uuid) returns jsonb` (payload `kind: 'part'`), `pos_queue_part_receipt(p_part_id uuid) returns boolean` — internal
   - RPC `pos_part_quote(p_bill_id uuid, p_ways integer) returns jsonb` — `{ totalSen, paidSen, balanceSen, partsPaid, sharesPaid, ways, shareSen }`
-  - RPC `pay_bill_part(p_bill_id uuid, p_part_id uuid, p_amount_sen integer, p_ways integer, p_payments jsonb) returns jsonb` — `{ partId, partNo, ways, amountSen, paidSen, balanceSen, payments, changeSen, receiptQueued }`
+  - RPC `pay_bill_part(p_bill_id uuid, p_part_id uuid, p_amount_sen integer, p_ways integer, p_payments jsonb, p_paid_sen integer default null) returns jsonb` (p_paid_sen added in B2: when given it must equal the bill's paid parts, else `The bill changed. Check the split again.`) — `{ partId, partNo, ways, amountSen, paidSen, balanceSen, payments, changeSen, receiptQueued }`
   - verify fixture keys: `branch`, `t1`…`t6`, `cash`, `card`, `seta`, `seta_v`, `setb`, `setb_v`, `extra`, `extra_v`, `shift`, `dev`, `sup`, `cashier`, `owner`, bills `bX` (P1), `bY` (P2), `bZ` (P3), `bW` (P4), `bV` (P5), items `Wx` (W's extra), parts `x1`, `x2`, `y1`, `y2`, `z1`, `z2`, `w1`
 
 - [ ] **Step 1: Write the verify file**
