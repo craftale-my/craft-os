@@ -210,7 +210,10 @@ export default function OrderScreen({
     const q = search.trim().toLowerCase()
     return all.filter((p) => (q ? p.name.toLowerCase().includes(q) : !category || p.category === category))
   }, [shownMenu, category, search])
-  const popularIds = useMemo(() => new Set(shownMenu ? visiblePopular(shownMenu, picks).map((p) => p.id) : []), [shownMenu, picks])
+  // the counter menu also shows products outside their time slot (greyed): no Popular pill on those
+  const popularIds = useMemo(() => new Set(shownMenu
+    ? visiblePopular(shownMenu, picks).filter((p) => tileSlotLabel(slots.windows, p.id, slots.now) === null).map((p) => p.id)
+    : []), [shownMenu, picks, slots.windows, slots.now])
   /** A new draft line; its Goes well with chip row replaces the last one. */
   const addDraft = (line: OrderLine) => { setLines((ls) => [...ls, line]); setGoesWellFor(line.productId) }
 

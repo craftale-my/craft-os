@@ -96,8 +96,10 @@ then testing and cut-over. Check items off as they land.
 
 - [ ] Run the whole POS SQL chain on prod in order (menu → catalogs → ordering → checkout → shifts → hardening →
       front end → outlets → devices → device-till (`migration-2026-10-29-pos-device-till.sql`) → POS app
-      (`migration-2026-10-30-pos-app.sql`) → discounts (`migration-2026-10-30-pos-discounts.sql`)), each with its
-      `-verify.sql`, after the prod menu import.
+      (`migration-2026-10-30-pos-app.sql`) → discounts (`migration-2026-10-30-pos-discounts.sql`) → split bill
+      (`migration-2026-11-16-pos-split-bill.sql`) → bill parts (`migration-2026-11-17-pos-bill-parts.sql`) → menu
+      picks (`migration-2026-11-17-menu-picks.sql`, which drops and re-creates `pos_picks_rules()` on a re-run)),
+      each with its `-verify.sql`, after the prod menu import.
 - [ ] In every environment the SQL runs before the app that needs it is deployed: the discounts build reads new
       columns (`discount_*`, `catalog_discount_*`, `menu_catalogs.discount_bp`), and the home and order screens fail
       without them.
