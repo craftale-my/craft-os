@@ -5,7 +5,7 @@ import {
   cartKey, cartSubtotalSen, findProduct, formatSen, lineLabel, linePriceSen, posMenuFromQr,
   type OrderLine, type PosMenu, type PosProduct, type QrMenuJson,
 } from '../features/pos/order/cart'
-import { mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from '../features/pos/order/picks'
+import { goesWellVisible, mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from '../features/pos/order/picks'
 import LineSheet from '../features/pos/order/LineSheet'
 import PickPill from '../features/pos/order/PickPill'
 
@@ -51,7 +51,9 @@ export default function QrApp() {
   // picks (docs/superpowers/specs/2026-11-17-menu-picks-design.md §4): hints only. A failed first read
   // leaves them hidden, a failed re-read keeps the last ones; ordering never waits on them.
   const [picks, setPicks] = useState<MenuPicks | null>(null)
-  const picksAt = useRef(0)
+  const picksAt = useRef(0)                                          // when picks last LOADED; 0 until they have
+  const picksSeq = useRef(0)                                         // an older reply never overwrites a newer one
+  const picksLoaded = useRef(false)
   const [goesWellFor, setGoesWellFor] = useState<string | null>(null)   // the product the Goes well with panel is about
   const pairsShown = useRef(new Set<string>())                           // Goes well with: once per product per visit
 
@@ -61,9 +63,13 @@ export default function QrApp() {
   }
   const loadPicks = () => {
     if (!token) return
-    picksAt.current = Date.now()
+    const mine = ++picksSeq.current
     qrClient.rpc('qr_picks', { p_token: token }).then(
-      ({ data, error }) => { if (!error) setPicks(parsePicks(data)) },
+      ({ data, error }) => {
+        if (error || mine !== picksSeq.current) return
+        picksAt.current = Date.now(); picksLoaded.current = true
+        setPicks(parsePicks(data))
+      },
       () => { /* offline for a moment: the last picks stay */ },
     )
   }
@@ -113,7 +119,7 @@ export default function QrApp() {
           setLines(pruneAfterRefresh(cart, menu, null).lines)
           setNotice(leftTheMenuNotice(gone))
         }
-        if (Date.now() - picksAt.current >= PICKS_REFRESH_MS) loadPicks()
+        if (!picksLoaded.current || Date.now() - picksAt.current >= PICKS_REFRESH_MS) loadPicks()
       }, () => { /* offline for a moment: try again next minute */ })
     }
     const timer = setInterval(refresh, REFRESH_MS)
@@ -143,7 +149,7 @@ export default function QrApp() {
   const popularIds = new Set(popular.map((p) => p.id))
   const goesWell = goesWellFor ? pairsFor(menu, picks, goesWellFor, lines) : []
   const goesWellName = goesWellFor ? findProduct(menu, goesWellFor)?.name ?? null : null
-  const showGoesWell = goesWell.length > 0 && goesWellName !== null
+  const showGoesWell = goesWell.length > 0 && goesWellName !== null && goesWellVisible(goesWellFor, lines)
 
   const place = async () => {
     if (lines.length === 0 || sending || sendingRef.current) return
@@ -234,7 +240,7 @@ export default function QrApp() {
           <section aria-label="Goes well with" className="mb-2 rounded-xl border border-border bg-cream p-2">
             <div className="flex items-center justify-between gap-2">
               <span className="font-semibold text-brown-dark">Goes well with your {goesWellName}</span>
-              <button type="button" aria-label="Close" className="h-8 w-8 shrink-0" onClick={() => setGoesWellFor(null)}>✕</button>
+              <button type="button" aria-label="Close" className="-m-1 h-11 w-11 shrink-0" onClick={() => setGoesWellFor(null)}>✕</button>
             </div>
             <div className="mt-1 flex gap-2 overflow-x-auto">
               {goesWell.map((p) => <PickCard key={p.id} product={p} onOpen={() => setSheet({ product: p, index: null })} />)}

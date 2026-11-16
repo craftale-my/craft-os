@@ -98,7 +98,7 @@ export default function BillColumn(p: {
         )}
         {p.goesWell && p.goesWell.products.length > 0 && (
           <div role="group" aria-label="Goes well with"
-            className="mt-2 flex items-center gap-1 overflow-x-auto whitespace-nowrap text-xs text-brown-muted">
+            className="mt-2 flex flex-wrap items-center gap-1 text-xs text-brown-muted">
             <span>Goes well with:</span>
             {p.goesWell.products.map((g, k) => (
               <span key={g.id} className="flex items-center gap-1">

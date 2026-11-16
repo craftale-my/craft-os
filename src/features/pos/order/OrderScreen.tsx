@@ -21,7 +21,7 @@ import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, send
 import { moveTargets, type MoveTarget } from './moveTargets'
 import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
 import { withPhotos, type PadProductInfo } from './padInfo'
-import { mostPickedFor, pairsFor, visiblePopular, type MenuPicks } from './picks'
+import { goesWellVisible, mostPickedFor, pairsFor, visiblePopular, type MenuPicks } from './picks'
 import { tileSlotLabel } from './padSlots'
 import type { BillSummary } from './billSummaries'
 import {
@@ -400,7 +400,7 @@ export default function OrderScreen({
 
   // Goes well with: the chip row for the product just added, while it is still among the drafts —
   // what the menu offers now and inside its time slot; never in sold-out mode or when the bill takes no new items
-  const goesWell = goesWellFor && shownMenu && !soldOutMode && takesNewItems(target) && lines.some((l) => l.productId === goesWellFor)
+  const goesWell = goesWellFor && shownMenu && !sending && !soldOutMode && takesNewItems(target) && goesWellVisible(goesWellFor, lines)
     ? pairsFor(shownMenu, picks, goesWellFor, lines).filter((p) => tileSlotLabel(slots.windows, p.id, slots.now) === null)
     : []
 

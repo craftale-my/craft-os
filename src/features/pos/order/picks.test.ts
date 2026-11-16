@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_PAIRS, MAX_POPULAR, mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from './picks'
+import { goesWellVisible, MAX_PAIRS, MAX_POPULAR, mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from './picks'
 import type { OrderLine, PosMenu, PosProduct } from './cart'
 
 const product = (id: string, extra: Partial<PosProduct> = {}): PosProduct => ({
@@ -80,5 +80,15 @@ describe('mostPickedFor', () => {
     expect(mostPickedFor(picks, 'latte')).toEqual({ milk: 'oat' })
     expect(mostPickedFor(picks, 'mocha')).toBeUndefined()
     expect(mostPickedFor(null, 'latte')).toBeUndefined()
+  })
+})
+
+describe('goesWellVisible', () => {
+  const line = (productId: string) => ({ productId }) as OrderLine
+  it('is true only while the product is still in the cart', () => {
+    expect(goesWellVisible('latte', [line('latte'), line('cake')])).toBe(true)
+    expect(goesWellVisible('latte', [line('cake')])).toBe(false)
+    expect(goesWellVisible('latte', [])).toBe(false)
+    expect(goesWellVisible(null, [line('latte')])).toBe(false)
   })
 })

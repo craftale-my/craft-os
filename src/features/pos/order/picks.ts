@@ -71,3 +71,8 @@ export function offerPairs(
 export function mostPickedFor(picks: MenuPicks | null, productId: string): Readonly<Record<string, string>> | undefined {
   return picks?.mostPicked[productId]
 }
+
+/** The Goes well with panel / chip row is about a product that must still be in the cart. */
+export function goesWellVisible(productId: string | null, cart: readonly OrderLine[]): boolean {
+  return productId !== null && cart.some((l) => l.productId === productId)
+}
