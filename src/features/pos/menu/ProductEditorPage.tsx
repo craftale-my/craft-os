@@ -11,6 +11,7 @@ import GroupsSection from './product/GroupsSection'
 import CatalogsSection from './product/CatalogsSection'
 import PhotoSection from './product/PhotoSection'
 import TimeSlotsSection from './product/TimeSlotsSection'
+import RecommendSection from './product/RecommendSection'
 import { OutcomeLine, PageHeader, btnCls, errorText, useSavedNotice, useUnsavedWarning, type Outcome } from './editorUi'
 
 /** /menu/products/new and /menu/products/:id. Everything is saved at once by
@@ -112,6 +113,7 @@ export default function ProductEditorPage({ productId }: { productId: string | n
           {form.id
             ? <PhotoSection productId={form.id} productName={form.name} />
             : <p className="text-sm text-brown-muted">Create the product first, then add its photo and time slots.</p>}
+          {form.id && <RecommendSection productId={form.id} />}
           <fieldset disabled={saving || !!loadError} className="m-0 min-w-0 space-y-4 border-0 p-0">
             <VariantsSection form={form} onChange={change} problem={problemOf('variants')} />
             <GroupsSection form={form} onChange={change} groups={lookups.groups} problem={problemOf('groups')} />

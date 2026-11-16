@@ -26,8 +26,8 @@ export interface SchedulePayload {
   windows: SlotWindow[]
   productIds?: string[]
 }
-/** menu_product_extras: the product editor's Photo and Time slots sections. */
-export interface ProductExtras { imagePath: string | null; imageUpdatedAt: string | null; scheduleIds: string[] }
+/** menu_product_extras: the product editor's Photo, Time slots and Recommend sections. */
+export interface ProductExtras { imagePath: string | null; imageUpdatedAt: string | null; scheduleIds: string[]; isRecommended: boolean }
 /** menu_photo_targets: what the import's Photos step matches files against. */
 export interface PhotoTarget {
   id: string
@@ -53,6 +53,9 @@ export const deleteSchedule = (id: string) => rpc<null>('menu_delete_schedule', 
 export const fetchProductExtras = (productId: string) => rpc<ProductExtras>('menu_product_extras', { p_product_id: productId })
 export const setProductSchedules = (productId: string, scheduleIds: string[]) =>
   rpc<null>('menu_set_product_schedules', { p_product_id: productId, p_schedule_ids: scheduleIds })
+/** Recommend on QR menu (menu picks): saved on its own; every outlet's picks are computed again. */
+export const setProductRecommended = (productId: string, on: boolean) =>
+  rpc<null>('set_product_recommended', { p_product_id: productId, p_on: on })
 export const fetchPhotoTargets = () => rpc<PhotoTarget[]>('menu_photo_targets')
 /** Returns the path it replaced (delete that file), or null. */
 export const setProductImage = (productId: string, path: string | null) =>
