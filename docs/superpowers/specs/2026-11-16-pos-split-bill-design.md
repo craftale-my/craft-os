@@ -1,18 +1,30 @@
 # POS split bill and move items — design
 
-Date: 2026-11-16 · Branch: `feature/pos-demo` · Status: approved by the owner in chat, awaiting spec review.
+Date: 2026-11-16, revised 2026-11-17 · Branch: `feature/pos-demo` · Status: Part A approved by the owner
+in chat; Part B added 2026-11-17 on the owner's "make it like Feedme" instruction (assumed — Feedme
+behaviour, owner asleep; see §2).
 
 ## 1. Goal
 
 Several people at one table pay for their own items, each with their own receipt (Feedme "Split Bill").
 The same screen also moves selected items to another table (Feedme "Separate Table").
 
+Feedme splits a bill three ways: **by item, equally among the guests, and by percentage**. This spec
+covers all three:
+
+- **Part A — by item** (§3.1–§3.4, §4.1–§4.5, §5): the paid part becomes its own paid bill.
+- **Part B — equally / by amount or percent** (§3.5, §4.6): a share of the money is paid on the open
+  bill as a *part payment*; the last share closes the bill.
+
 Today the POS can only pay a whole bill (with several payments: Split payment), move a whole bill to a
 free table (`move_bill`) and merge two bills (`merge_bills`).
 
 ## 2. Owner decisions (2026-11-01 and 2026-11-16)
 
-- Split **by item**, with a quantity per line (1 of 3 lattes). No "split evenly by N".
+- Split **by item**, with a quantity per line (1 of 3 lattes). ~~No "split evenly by N".~~
+  **Changed 2026-11-17:** the owner asked for the POS to match Feedme as closely as possible, and Feedme
+  also splits equally and by percentage, so Part B adds both (with by amount, which percent is converted
+  to). Choices inside Part B were made without the owner (asleep) and are marked "assumed".
 - **Moving selected items to another table** is built at the same time, on the same item picker.
 - A **bill discount follows the paid part pro rata**: a percent discount is copied; an amount discount is
   shared by value, and the parts add up to the original amount. No new supervisor PIN.
@@ -62,6 +74,37 @@ the server must price the part at the moment of payment.
 
 Back on the source bill, a toast says "Moved 2 items to T7". The target table shows the items at once
 (realtime). No kitchen ticket is reprinted for a split or a move.
+
+### 3.5 Split equally / by amount (Part B, Payment screen)
+
+The Payment screen of an open bill gets a **Split** row above the method tabs with three choices:
+**By item** (opens the §3.2 picker), **Equally**, **By amount**. It is hidden in Part A's split mode and
+disabled offline ("Split needs a connection").
+
+- **Equally:** a stepper "Split into N" (2…20, starts at 2, or at the bill's earlier N once a share was
+  paid — the N is then fixed). The screen shows "Share 1 of 3 · RM 23.45" and the amount to pay becomes
+  that share. The share comes from the server (`pos_part_quote`, §4.6).
+- **By amount:** a numpad amount, plus quick chips **25% / 33% / 50%** of the bill total (assumed: Feedme's
+  "by percentage" is expressed as an amount — the server only ever sees sen). Must be more than 0 and
+  less than the balance; equal to the balance means "pay the rest" (a normal checkout).
+- The method tabs, split tender and numpad work as today, for the share's amount.
+- **Pay** records a part payment (`pay_bill_part`, §4.6); its receipt prints; the screen stays on the
+  bill and shows the paid parts above the balance: "Paid 1 of 3 · RM 23.45 (Cash)" and **Balance due
+  RM 46.90**. The next share is quoted again.
+- The **last share**, or any amount equal to the balance, is paid with today's `checkout_bill`, which
+  closes the bill (its receipt lists the earlier parts, §6).
+- While a bill has paid parts, the bill header and the home tile show "Part paid · RM 23.45".
+
+Guards while a bill has paid parts (assumed — keeps a paid part from ever exceeding the bill):
+
+| Action | Allowed? |
+|---|---|
+| Add items (counter or QR) | Yes: the balance grows |
+| Void an item, void the bill, item or bill discount, split by item, move items, merge it into another bill | No: `This bill has a part payment. Pay the rest first.` |
+| Move the whole bill to another table, merge another bill into it | Yes |
+
+A refund of a part before the bill is closed is not offered; pay the rest, then refund the closed bill
+as today (its refund limits already count every payment of the bill).
 
 ## 4. Server
 
@@ -164,6 +207,66 @@ Items keep their `order_id`, so an order's source (Counter / QR) and catalog sta
 screen and report reads lines by `order_items.bill_id` (bill column, receipt, Z report, QR table state);
 the implementation plan re-checks each one.
 
+### 4.6 Part payments (Part B)
+
+Its own migration `supabase/migration-2026-11-17-pos-bill-parts.sql` plus `-verify.sql`, run after Part A's.
+
+```sql
+create table if not exists bill_parts (
+  id           uuid primary key,                         -- client-generated: a resend is safe
+  bill_id      uuid not null references bills(id),
+  branch_id    uuid not null references branches(id),
+  part_no      integer not null check (part_no between 1 and 20),
+  ways         integer check (ways between 2 and 20),    -- set for an equal split, null for by amount
+  amount_sen   integer not null check (amount_sen > 0),
+  shift_id     uuid not null references pos_shifts(id),
+  taken_by     uuid references staff(id),
+  device_id    uuid,
+  taken_at     timestamptz not null default now(),
+  unique (bill_id, part_no)
+);
+alter table payments add column if not exists part_id uuid references bill_parts(id);
+```
+
+RLS: read for `authenticated` like the other POS tables; written only by the functions.
+
+- **`pos_bill_paid_parts(p_bill_id) returns integer`** (internal): the sum of `bill_parts.amount_sen`.
+- **`pos_part_quote(p_bill_id uuid, p_ways integer) returns jsonb`** (stable): `{ totalSen, paidSen,
+  balanceSen, partsPaid, ways, shareSen }` for the caller branch's open bill. `ways` is the bill's earlier
+  equal-split N when one exists (p_ways is then ignored), else p_ways (2…20, else `Invalid split`).
+  `shareSen` = the balance when this is the last share (`ways − partsPaid ≤ 1`), else
+  `floor(balance / (ways − partsPaid) / 5) × 5` (a multiple of 5 sen; the last share takes the rest).
+  For p_ways null it returns the same object with `ways` and `shareSen` null (the by-amount screen).
+- **`pay_bill_part(p_bill_id uuid, p_part_id uuid, p_amount_sen integer, p_ways integer, p_payments jsonb)
+  returns jsonb`**, in one transaction:
+  1. **Replay:** a `bill_parts` row with `id = p_part_id` → same bill and branch, same amount and the same
+     payments (compared like `pos_checkout_same_payments`, over `payments.part_id = p_part_id`), else
+     `This payment was already recorded with other amounts — check Today's bills`; return its result.
+  2. Lock the bill `for update`; re-check the part id after the lock (a waiting resend replays);
+     open shift `for share` (`Open the shift first`); bill must be open (today's messages) and have items.
+  3. Balance = `pos_bill_totals.totalSen − paid parts`. `p_amount_sen` must be ≥ 1 and **< balance**
+     (`Pay the rest with Pay, not as a part` when equal; `The amount is more than the balance` when more).
+  4. Equal split (`p_ways` not null): the bill's earlier N, if any, must equal p_ways (`The bill changed.
+     Check the split again.`), and p_amount_sen must equal `pos_part_quote(…).shareSen` (same message —
+     items were added since the quote).
+  5. Validate `p_payments` with checkout_bill's rules and messages against `p_amount_sen`.
+  6. Insert the `bill_parts` row (`part_no` = parts so far + 1), the payments (`bill_id` = the bill,
+     `part_id`, `line_no` from 1 within the part, `shift_id`), bump the bill's `updated_at`, queue the part
+     receipt (§6).
+  7. Return `{ partId, partNo, ways, amountSen, paidSen, balanceSen, payments, changeSen, receiptQueued }`.
+- **`checkout_bill`** (re-created from its live text, only these changes): the payments must add up to
+  `totalSen − paid parts` (the message shows that balance); its inserted payments continue `line_no` after
+  none of the parts (`line_no` counts only rows with `part_id is null`); `pos_checkout_same_payments` and
+  the replay compare only `part_id is null` rows. A bill with no parts behaves exactly as today.
+- **Guards:** `void_order_item`, `void_bill`, `set_item_discount`, `set_bill_discount`, `merge_bills`
+  (as the source), `checkout_items` and `move_items` raise `This bill has a part payment. Pay the rest
+  first.` when the bill has a `bill_parts` row. Each is re-created from its live text with only that check
+  added after the bill lock.
+- `pos_checkout_state` adds `paidSen` and `parts: [{ partNo, ways, amountSen, methods }]` for an open
+  bill; `pos_open_bill_summaries` adds `paidSen` for the home tile.
+- Z report: a part's payments carry the shift they were taken in (cash counted in that drawer); the bill
+  counts as a sale in the shift that closes it, as today.
+
 ## 5. Discount shares
 
 All amounts in sen; "line net" = `unit_price × qty` after the catalog discount and the item discount, as
@@ -193,6 +296,12 @@ same `pos_compute_bill`, so each receipt adds up on its own.
   null, so covers are not counted twice. Bill count goes up by one per split.
 - **Today's bills / refunds:** a paid part shows like any paid bill and can be refunded as usual.
 - **QR table page:** shows the table bill's remaining items only.
+- **Part receipt (Part B):** `pos_part_receipt_payload(p_part_id)` — the bill's header and current items
+  and totals (as on a pre-bill), then `Part 2 of 3` (or `Part 2` for by amount), this part's payments and
+  change, `Paid before RM x`, `Balance due RM y`. Not an official receipt line: footer
+  "Part payment — the official receipt prints when the bill is paid in full."
+- **Final receipt of a bill with parts:** `pos_receipt_payload` lists every payment of the bill, the
+  parts first, each part's lines labelled `Part 1`, `Part 2`…, then the last payment.
 
 ## 7. Client
 
@@ -205,7 +314,11 @@ same `pos_compute_bill`, so each receipt adds up on its own.
 | `src/features/pos/checkout/PaymentScreen.tsx` | Optional `split` prop: title, items, totals source, `checkoutItems` |
 | `src/features/pos/checkout/checkoutApi.ts` | `splitTotals`, `checkoutItems` |
 | `src/features/pos/order/posApi.ts` | `moveItems` |
-| `src/features/pos/print/receipt.ts` | `splitFrom` line |
+| `src/features/pos/print/receipt.ts` | `splitFrom` line; part receipt; part labels on payments |
+| `src/features/pos/checkout/partSplit.ts` (new, Part B) | Pure: split mode state, percent chip → amount (rounded down to 5 sen, capped below the balance), labels |
+| `src/features/pos/checkout/PaymentScreen.tsx` (Part B) | Split row, Equally / By amount, paid-parts list, Balance due, `payBillPart` vs `checkout` |
+| `src/features/pos/checkout/checkoutApi.ts` (Part B) | `partQuote`, `payBillPart` |
+| Home tile / bill header (Part B) | "Part paid · RM x" from `paidSen` |
 
 UI copy (English): "Split / Move items", "Pay selected", "Move to table", "Select all", "Clear",
 "2 of 3", "Split needs a connection", "Remove the bill discount before moving items",
@@ -224,6 +337,12 @@ UI copy (English): "Split / Move items", "Pay selected", "Move to table", "Selec
      whole-line and part-line moves, catalog discount and order type kept on a cut row after the catalog's
      Discount % changed.
   7. Shift Z report: the paid part counted once, covers unchanged.
+- **Part B verify** (`migration-2026-11-17-pos-bill-parts-verify.sql`): RM 70.35 bill split 3 ways →
+  shares 23.45 / 23.45 / 23.45 (last by checkout_bill); RM 70.40 → 23.45 / 23.45 / 23.50; replay of a part
+  returns the first result, other amounts refused; an item added after share 1 changes share 2 and a stale
+  share is refused; amount ≥ balance refused; each guard in §4.6 raises its message; checkout_bill on a
+  bill with parts takes exactly the balance and its replay still works; a bill with no parts behaves as
+  before (the existing checkout verify vectors pass); Z report cash of the part's shift includes the part.
 - **Client unit tests:** `splitSelection` (stepper bounds, select all, everything-selected), Payment screen
   split mode (title, uses `checkoutItems`, Cancel keeps the selection), picker buttons' disabled states.
 - **Browser check on dev:** split-pay a table into two receipts, move items to a free and a busy table,
@@ -234,10 +353,14 @@ UI copy (English): "Split / Move items", "Pay selected", "Move to table", "Selec
 Dev first (SQL, verify, browser check, redeploy craft-pos-dev). On prod the migration joins the POS SQL
 chain after `migration-2026-10-30-pos-discounts.sql` and runs before the app that uses it. `checkout_items`,
 `move_items` and `pos_split_totals` are front-of-house RPCs and belong in W1 Part C's switch to `pos_ctx`.
+Part B's migration runs after Part A's; `pay_bill_part` and `pos_part_quote` join the same `pos_ctx` list.
+Part A ships first and is usable on its own; Part B follows in the same branch.
 
 ## 10. Not in scope
 
-- Split evenly by N people, or by amount.
+- Sharing one item between N people ("share between N" on a single line).
+- Split by seat (we do not record seats).
+- Refunding one part while the bill is still open.
 - Several open bills on one table.
 - Moving items between two takeaway bills, or from a table to takeaway.
 - Offline split or move.
