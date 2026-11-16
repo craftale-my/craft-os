@@ -258,6 +258,20 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/raise notice 'VERIFY OK';\s*end \$\$;\s*select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
+  it('scans the menu picks: its functions, anon only on qr_picks, internal functions closed, a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-17-menu-picks.sql', SUPABASE), 'utf8')
+    expect(functionBodies(sql).map((b) => b.name)).toEqual([
+      'pos_picks_rules', 'pos_compute_picks', 'pos_menu_picks_for', 'qr_picks', 'pos_menu_picks',
+      'set_product_recommended', 'menu_product_extras',
+    ])
+    expect([...sql.matchAll(/grant execute on function (\w+)\([^)]*\) to anon/g)].map((m) => m[1])).toEqual(['qr_picks'])
+    expect(sql).toMatch(/revoke all on function pos_picks_rules\(\) from public, anon, authenticated;/)
+    expect(sql).toMatch(/revoke all on function pos_compute_picks\(uuid\) from public, anon, authenticated;/)
+    expect(sql).toMatch(/revoke all on function pos_menu_picks_for\(uuid\) from public, anon, authenticated;/)
+    expect(sql).toMatch(/revoke all on menu_picks_cache from public, anon, authenticated;/)
+    expect(sql).toMatch(/raise exception 'STOP: /)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
+  })
 })
 
 describe('the discount RPCs act as the POS session, never auth.uid()', () => {
