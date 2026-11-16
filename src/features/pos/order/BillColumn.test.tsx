@@ -42,3 +42,14 @@ describe('BillColumn Goes well with', () => {
     expect(screen.queryByRole('group', { name: 'Goes well with' })).toBeNull()
   })
 })
+
+describe('BillColumn part payments', () => {
+  it('the header says what the parts paid', () => {
+    render(<BillColumn {...props} billNo="261117-001" catalogName={null} onCatalog={null} partPaidSen={2345} />)
+    expect(screen.getByText('Part paid · RM 23.45')).toBeTruthy()
+  })
+  it('nothing without a part', () => {
+    render(<BillColumn {...props} billNo="261117-001" catalogName={null} onCatalog={null} partPaidSen={0} />)
+    expect(screen.queryByText(/Part paid/)).toBeNull()
+  })
+})

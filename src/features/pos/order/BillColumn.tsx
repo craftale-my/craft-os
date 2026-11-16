@@ -1,6 +1,7 @@
 // src/features/pos/order/BillColumn.tsx
 import { LayoutGrid, Users } from 'lucide-react'
 import { formatSen } from './cart'
+import { partPaidTag } from '../checkout/partSplit'
 import { formatRate, type BillTotals } from '../checkout/bill'
 import { itemsWord, type BillView, type DraftRow, type SentRow } from './billView'
 import DiscountRows from '../checkout/DiscountRows'
@@ -16,6 +17,7 @@ export default function BillColumn(p: {
   pax: number | null
   onPax: (() => void) | null          // null = no pax here (takeaway)
   catalogName: string | null
+  partPaidSen?: number                 // what the bill's parts paid (split spec §3.5)
   catalogIsExtra: boolean             // an additional catalog: amber
   onCatalog: (() => void) | null      // null = cannot switch now
   view: BillView
@@ -52,6 +54,7 @@ export default function BillColumn(p: {
           <span>
             {p.billNo ? `Bill ${p.billNo}` : 'No bill yet'}
             {view.catalogTag && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800">{view.catalogTag}</span>}
+            {(p.partPaidSen ?? 0) > 0 && <span className="ml-2 rounded bg-green-100 px-1.5 py-0.5 font-medium text-green-800">{partPaidTag(p.partPaidSen ?? 0)}</span>}
           </span>
           {p.catalogName && (p.onCatalog ? (
             <button type="button" onClick={p.onCatalog}

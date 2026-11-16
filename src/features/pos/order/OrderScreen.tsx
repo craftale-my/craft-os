@@ -421,6 +421,7 @@ export default function OrderScreen({
     ? pairsFor(shownMenu, picks, goesWellFor, lines).filter((p) => tileSlotLabel(slots.windows, p.id, slots.now) === null)
     : []
 
+  const partPaid = bill ? summaries.get(bill.id)?.paidSen ?? 0 : 0       // split spec §3.5
   const title = targetTitle(target, bill, tables)
   const tileNotice = !takesNewItems(target) ? (bill ? TAKEAWAY_ONE_ORDER : BILL_GONE) : null
   return (
@@ -482,6 +483,7 @@ export default function OrderScreen({
         pax={shownPax(target, bill)}
         onPax={target.kind === 'table' ? () => setDialog({ kind: 'pax', purpose: 'set' }) : null}
         catalogName={current?.name ?? null}
+        partPaidSen={partPaid}
         catalogIsExtra={!!current && !current.isDefault}
         onCatalog={catalogs && (catalogs.length > 1 || (catalogId === null && catalogs.length > 0)) && !sending && takesNewItems(target) ? () => setDialog({ kind: 'catalog' }) : null}
         view={view}
@@ -494,7 +496,7 @@ export default function OrderScreen({
         onSend={() => void send()}
         sendDisabled={sending || lines.length === 0}
         sending={sending}
-        payLabel={view.totals ? `Payment ${formatSen(view.totals.totalSen)}` : 'Payment'}
+        payLabel={view.totals ? `Payment ${formatSen(view.totals.totalSen - partPaid)}` : 'Payment'}
         payDisabled={sending || gate === 'no_shift' || gate === 'empty' || (gate === 'ready' && !loaded)}
         payHint={gate === 'no_shift' ? NO_SHIFT_PAY : null}
         onPay={pay}

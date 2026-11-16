@@ -2,6 +2,7 @@
 import { useState, type ReactNode } from 'react'
 import { RefreshCw, Search } from 'lucide-react'
 import { formatSen } from './cart'
+import { partPaidTag } from '../checkout/partSplit'
 import type { BillSummary } from './billSummaries'
 import { areaTabs, currentArea, elapsedLabel, visibleTables } from './home'
 import type { OpenBillRow, TableRow } from './posApi'
@@ -75,6 +76,7 @@ export default function HomeScreen({ tables, bills, summaries, newBillIds, banne
                 <span>
                   <span className="block font-semibold text-brown-dark">{b.bill_no}</span>
                   <span className="block text-xs text-brown-muted">Takeaway · {elapsedLabel(b.opened_at, now)}</span>
+                  {(s?.paidSen ?? 0) > 0 && <span className="block text-xs font-semibold text-green-800">{partPaidTag(s?.paidSen ?? 0)}</span>}
                 </span>
                 <span className="font-semibold tabular-nums text-brown-dark">{s ? formatSen(s.totalSen) : ''}</span>
               </button>
@@ -97,6 +99,7 @@ function TableTile({ card, summary, nowMs, onPick }: { card: TableCard; summary:
         {card.bill
           ? <span className="tabular-nums">{summary ? `${formatSen(summary.totalSen)} · ` : ''}{elapsedLabel(card.bill.opened_at, nowMs)}</span>
           : <span className="text-brown-muted">{card.paused ? 'QR paused' : ''}</span>}
+        {(summary?.paidSen ?? 0) > 0 && <span className="block text-xs font-semibold">{partPaidTag(summary?.paidSen ?? 0)}</span>}
         {card.state === 'new' && <span className="block text-xs font-semibold text-green-200">New QR order</span>}
         {open && card.paused && <span className="block text-xs opacity-80">QR paused</span>}
       </span>
