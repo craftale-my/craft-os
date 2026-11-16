@@ -48,6 +48,7 @@ export interface ReceiptPayload {
   reprint: boolean
   header: ReceiptHeader
   billNo: string
+  splitFrom?: { billNo: string; table: string | null } | null // a paid part of a split bill: its table bill (absent before split bill)
   closedAt: string // ISO, UTC
   cashier: string | null
   tableLabel: string | null // null = takeaway
@@ -81,7 +82,7 @@ export interface RefundSlipPayload {
 }
 
 const ASCII_MAP: Record<string, string> = {
-  '–': '-', '—': '-', '‘': "'", '’': "'", '“': '"', '”': '"', '•': '-', ' ': ' ',
+  '–': '-', '—': '-', '‘': "'", '’': "'", '“': '"', '”': '"', '•': '-', '·': '-', ' ': ' ',
 }
 
 /** The ZY301 prints anything outside printable ASCII as "?"; map the common
@@ -107,6 +108,11 @@ export function asciiDeep<T>(value: T): T {
 /** 9280 → "92.80", −2 → "-0.02". */
 export function money(sen: number): string {
   return `${sen < 0 ? '-' : ''}${(Math.abs(sen) / 100).toFixed(2)}`
+}
+
+/** "Split from 261116-009 · T5" (split bill §6); a takeaway table bill has no table. */
+export function splitFromLine(s: { billNo: string; table: string | null }): string {
+  return s.table ? `Split from ${s.billNo} · ${s.table}` : `Split from ${s.billNo}`
 }
 
 function pct(bp: number): string {
@@ -156,6 +162,7 @@ export function renderReceiptLines(input: ReceiptPayload, cols: number): string[
     ...(h.email ? center(h.email, cols) : []),
     '',
     ...lr('Invoice no', r.billNo, cols),
+    ...(r.splitFrom ? wrap(toAscii(splitFromLine(r.splitFrom)), cols) : []),   // r is ASCII already; the · added here is not
     ...lr('Date', formatMyt(r.closedAt), cols),
     ...lr('Cashier', r.cashier ?? '-', cols),
     ...(r.pax !== null ? lr('Table pax', String(r.pax), cols) : []),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { money, toAscii, renderReceiptLines, renderRefundSlipLines, type ReceiptPayload, type RefundSlipPayload } from './receipt'
+import { money, toAscii, renderReceiptLines, renderRefundSlipLines, splitFromLine, type ReceiptPayload, type RefundSlipPayload } from './receipt'
 
 // Receipt #87846 (Craft Cafe Cheras, 22/10/2026): the four prices, the totals and the
 // payment are the real ones; item names, header numbers and the time are placeholders
@@ -179,5 +179,24 @@ describe('receipt discounts', () => {
     const { billDiscountSen: _b, ...old } = base
     const lines = renderReceiptLines({ ...old, items: [{ ...base.items[0], discounts: undefined }] } as ReceiptPayload, 32)
     expect(lines.some((l) => l.includes('Discount'))).toBe(false)
+  })
+})
+
+describe('split from (split bill §6)', () => {
+  it('the line under the invoice number names the table bill and its table', () => {
+    expect(splitFromLine({ billNo: '261116-009', table: 'T5' })).toBe('Split from 261116-009 · T5')
+    expect(splitFromLine({ billNo: '261116-004', table: null })).toBe('Split from 261116-004')
+  })
+  it('prints under the invoice number, in ASCII', () => {
+    const lines = renderReceiptLines({ ...r87846, splitFrom: { billNo: '261116-009', table: 'T5' } }, 48)
+    const at = lines.findIndex((l) => l.startsWith('Invoice no'))
+    expect(lines[at + 1]).toBe('Split from 261116-009 - T5')
+    expect(lines[at + 2].startsWith('Date')).toBe(true)
+  })
+  it('a receipt with splitFrom null prints no such line', () => {
+    expect(renderReceiptLines({ ...r87846, splitFrom: null }, 48)).toEqual(renderReceiptLines(r87846, 48))
+  })
+  it('maps the middle dot to a hyphen for the printer', () => {
+    expect(toAscii('a · b')).toBe('a - b')
   })
 })

@@ -669,5 +669,41 @@ exception when sqlstate 'SFRB0' then
   null;   -- undo this block's writes; a FAIL (any other error) still stops the script
 end $$;
 
+-- ── A4. Receipt "Split from" and the Z report (spec §6; §8 test 7) ──────────
+do $$
+declare
+  v_res jsonb;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  v_res := pos_receipt_payload(pg_temp.id('p1'), false);
+  if v_res->'splitFrom' is distinct from jsonb_build_object('billNo', (select bill_no from bills where id = pg_temp.id('b1')), 'table', 'S1')
+     or v_res->'pax' <> 'null'::jsonb or (v_res->>'totalSen')::int <> 3250 or jsonb_array_length(v_res->'items') <> 2 then
+    raise exception 'FAIL A4 receipt of the part: %', v_res;
+  end if;
+  if pos_receipt_payload(pg_temp.id('b9'), false)->'splitFrom' <> 'null'::jsonb then
+    raise exception 'FAIL A4 receipt of a whole bill has splitFrom';
+  end if;
+  -- the cut latte of S2's part keeps its 1.00 item discount on the receipt (found by the cut row's id)
+  v_res := pos_receipt_payload(pg_temp.id('p2'), false);
+  if not exists (select 1 from jsonb_array_elements(v_res->'items') i, jsonb_array_elements(i->'discounts') d
+                  where d->>'label' = 'Discount' and (d->>'amountSen')::int = 100) then
+    raise exception 'FAIL A4 receipt discount of a cut row: %', v_res;
+  end if;
+  -- the rest of S1 (Latte ×2: 30.15) paid: the shift now has 6 paid bills — the 4 parts (pax null),
+  -- S9 (pax 1) and S1 (pax 4); 32.50 + 13.90 + 14.15 + 15.65 + 15.10 + 30.15 = 121.45
+  perform checkout_bill(pg_temp.id('b1'), pg_temp.card(3015), gen_random_uuid());
+  v_res := pos_shift_report(pg_temp.id('shift'));
+  if (v_res->'summary'->>'billCount')::int <> 6 or (v_res->'summary'->>'pax')::int <> 5
+     or (v_res->'summary'->>'nettSen')::int <> 12145 then
+    raise exception 'FAIL A4 Z summary: %', v_res->'summary';
+  end if;
+  -- sources by item: orders S1/1, S1/2 (the voided cake), S2/1, S5/1, S6/1, S9/1; items
+  -- 13.00 + 15.00 (part 1) + 26.00 (S1) + 13.00 (S2 part) + 15.00 + 15.00 + 13.00 (S9) = 110.00
+  if (select (s->>'orders')::int from jsonb_array_elements(v_res->'sources') s where s->>'source' = 'counter') <> 6
+     or (select (s->>'itemSen')::int from jsonb_array_elements(v_res->'sources') s where s->>'source' = 'counter') <> 11000 then
+    raise exception 'FAIL A4 Z sources: %', v_res->'sources';
+  end if;
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;
