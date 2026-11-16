@@ -77,10 +77,10 @@ describe('SplitItemsScreen', () => {
     expect(api.splitTotals).not.toHaveBeenCalled()
     await wait(1)
     expect(api.splitTotals).toHaveBeenCalledTimes(1)
-    expect(api.splitTotals).toHaveBeenCalledWith('b5', [{ itemId: 'i1', qty: 1 }, { itemId: 'i2', qty: 1 }])
+    expect(api.splitTotals).toHaveBeenCalledWith('b5', [{ itemId: 'i1', qty: 1, lineQty: 3 }, { itemId: 'i2', qty: 1, lineQty: 1 }])
     expect(screen.getByLabelText('Selected total').textContent).toBe('RM 32.50')
     press('Pay selected')
-    expect(p.onPay).toHaveBeenCalledWith([{ itemId: 'i1', qty: 1 }, { itemId: 'i2', qty: 1 }], { i1: 1, i2: 1 })
+    expect(p.onPay).toHaveBeenCalledWith([{ itemId: 'i1', qty: 1, lineQty: 3 }, { itemId: 'i2', qty: 1, lineQty: 1 }], { i1: 1, i2: 1 })
   })
 
   it('a late reply for an older selection never replaces the newer total', async () => {
@@ -177,7 +177,7 @@ describe('SplitItemsScreen', () => {
     expect(screen.getByText(/a table with a bill takes the items/)).toBeTruthy()
     press(/T7\s*Empty/)
     await flush()
-    expect(api.moveItems).toHaveBeenCalledWith('b5', [{ itemId: 'i1', qty: 2 }], 't7')
+    expect(api.moveItems).toHaveBeenCalledWith('b5', [{ itemId: 'i1', qty: 2, lineQty: 3 }], 't7')
     expect(p.onMoved).toHaveBeenCalledWith('Moved 2 items to T7')
   })
 

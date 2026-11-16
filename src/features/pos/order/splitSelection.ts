@@ -4,8 +4,10 @@
  *  the client never computes the part's money. */
 import type { BillItemRow } from './posApi'
 
-/** One entry of p_items: an order item and how many of its units. */
-export interface SplitItem { itemId: string; qty: number }
+/** One entry of p_items: an order item, how many of its units, and the line's qty as the picker showed it
+ *  (lineQty). The server refuses the pick when the line's qty is no longer lineQty ("The bill changed"), so a
+ *  Pay selected that lands after its reply was lost cannot let the next id pay the same unit again. */
+export interface SplitItem { itemId: string; qty: number; lineQty: number }
 /** A live line of the bill, as the picker lists it. */
 export interface SplitLine { id: string; name: string; mods: string[]; note: string | null; qty: number; amountSen: number }
 /** item id → units picked; a line that is not in it has none picked. */
@@ -54,9 +56,10 @@ export function everythingSelected(p: Picked, lines: SplitLine[]): boolean {
   return lines.length > 0 && lines.every((l) => (p[l.id] ?? 0) === l.qty)
 }
 
-/** p_items for pos_split_totals / checkout_items / move_items: picked lines in bill order. */
+/** p_items for pos_split_totals / checkout_items / move_items: picked lines in bill order, each with the
+ *  line's qty the picker shows. */
 export function toSplitItems(p: Picked, lines: SplitLine[]): SplitItem[] {
-  return lines.flatMap((l) => ((p[l.id] ?? 0) > 0 ? [{ itemId: l.id, qty: p[l.id] }] : []))
+  return lines.flatMap((l) => ((p[l.id] ?? 0) > 0 ? [{ itemId: l.id, qty: p[l.id], lineQty: l.qty }] : []))
 }
 
 /** The pick after the bill was read again: lines that are gone are dropped, a smaller line caps its pick. */

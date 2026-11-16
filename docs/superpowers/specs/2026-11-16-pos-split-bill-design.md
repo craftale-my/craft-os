@@ -132,6 +132,11 @@ alter table order_items add column if not exists split_from_item uuid references
 
 `p_items` is a JSON array `[{ "itemId": uuid, "qty": int }]`: each item at most once, qty 1…the line's qty.
 
+Each entry may also carry `"lineQty": int`, the line's qty as the picker showed it (the client always sends
+it). When present it must be a whole number 1…100 (`Invalid selection`) and equal the line's qty now, else
+`The bill changed. Check the items again.` — so a Pay selected whose reply was lost, landing after Check bill
+unlocked with a new id, cannot let that id pay the same unit a second time.
+
 A private helper `pos_split_check(v_bill bills, p_items jsonb)` validates it against the bill **under the
 bill's row lock** and raises:
 

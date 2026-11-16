@@ -107,7 +107,7 @@ describe('split payment screens', () => {
     discount_kind: null, discount_value: null, discount_reason: null }
   const back = { kind: 'table' as const, tableId: 't5', pax: null }
   it('Cancel payment in split mode reopens the picker with the selection kept; a whole-bill Payment has no such screen', () => {
-    const split = { items: [{ itemId: 'i1', qty: 1 }], picked: { i1: 1 } }
+    const split = { items: [{ itemId: 'i1', qty: 1, lineQty: 3 }], picked: { i1: 1 } }
     expect(cancelPayment({ kind: 'payment', bill, back, split })).toEqual({ kind: 'split', bill, back, picked: { i1: 1 } })
     expect(cancelPayment({ kind: 'payment', bill, back })).toBeNull()
   })

@@ -17,6 +17,10 @@
 --     one of the screen's checkout ids. pos_move_units cuts or moves the units.
 -- S4  move_items: selected units to another table (its open bill, or a new one).
 -- S5  Receipt "Split from <bill> · <table>"; the Z report's sources count by order_items.bill_id.
+-- SF  Fixes after review: a p_items entry may carry lineQty (the line's qty the picker saw) and
+--     pos_split_check refuses it when the line's qty differs, so a split payment that lands late
+--     cannot let a second one book the same unit; pos_checkout_state answers the newest part;
+--     move_items reads the target table's open bill under its lock.
 -- Re-run hazards: re-running migration-2026-10-30-pos-discounts.sql puts back the old
 -- order_items_catalog_discount, pos_bill_totals and pos_receipt_payload, and
 -- migration-2026-10-25-pos-hardening.sql the old order_items_order_type and pos_checkout_state;
@@ -389,6 +393,7 @@ end $function$;
 -- discounts, void history); part of a line is cut into a copy with qty = taken (every snapshot
 -- column copied, its share of an item amount discount, split_from_item = the line) and the line
 -- keeps the rest. Returns { "<line id>": "<cut row id>" } for the cut lines. Internal.
+-- Callers run pos_split_check under the source bill's lock first: this trusts p_items as checked.
 create or replace function pos_move_units(p_items jsonb, p_to uuid) returns jsonb
 language plpgsql set search_path = public, pg_temp as $$
 declare
@@ -581,6 +586,127 @@ begin
   if v_bill.discount_kind is not null then raise exception 'Remove the bill discount before moving items'; end if;
   v_units := pos_split_check(v_bill, p_items);
   select * into v_target from bills where table_id = p_table_id and status = 'open';
+  if not found then
+    begin
+      insert into bills(branch_id, bill_no, table_id, order_type, pax)
+      values (v_branch, pos_next_bill_no(v_branch), p_table_id, 'dine_in', 1)
+      returning * into v_target;
+    exception when unique_violation then
+      raise exception 'Table % just got a bill. Try again.', v_label;
+    end;
+  end if;
+  perform pos_move_units(p_items, v_target.id);
+  update bills set updated_at = now() where id in (v_bill.id, v_target.id);   -- both tables refresh on every tablet
+  return jsonb_build_object('targetBillId', v_target.id, 'targetBillNo', v_target.bill_no, 'movedUnits', v_units);
+end $$;
+revoke all on function move_items(uuid, jsonb, uuid) from public, anon;
+grant execute on function move_items(uuid, jsonb, uuid) to authenticated;
+
+-- ── SF. lineQty, the newest part, the target bill's lock (fixes after the A2 / A3 reviews) ──
+-- pos_split_check: the S2 text above with the lines marked SF changed — an entry may carry
+-- "lineQty", the line's qty the picker showed; when present it must be a whole number 1…100 and
+-- equal the line's qty now, else "The bill changed. Check the items again." Without it, as before.
+-- A Pay selected whose reply was lost then lands (the line 3 → 2) cannot let the next id pay the
+-- same unit again: that id still says 3. Preview, checkout_items and move_items all run it.
+create or replace function pos_split_check(p_bill bills, p_items jsonb) returns integer
+language plpgsql stable set search_path = public, pg_temp as $$
+declare
+  v_e     jsonb;
+  v_id    uuid;
+  v_qty   integer;
+  v_line  order_items;
+  v_seen  uuid[] := '{}';
+  v_units integer := 0;
+  v_live  integer;
+begin
+  if p_items is null or jsonb_typeof(p_items) <> 'array'
+     or jsonb_array_length(p_items) = 0 or jsonb_array_length(p_items) > 100 then
+    raise exception 'Invalid selection';
+  end if;
+  for v_e in select * from jsonb_array_elements(p_items) loop
+    if jsonb_typeof(v_e) <> 'object' or jsonb_typeof(v_e->'itemId') is distinct from 'string'
+       or (v_e->>'itemId') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+       or jsonb_typeof(v_e->'qty') is distinct from 'number'
+       or (v_e->'qty')::numeric <> trunc((v_e->'qty')::numeric)
+       or (v_e->'qty')::numeric < 1 or (v_e->'qty')::numeric > 100 then
+      raise exception 'Invalid selection';
+    end if;
+    if v_e ? 'lineQty' and (jsonb_typeof(v_e->'lineQty') is distinct from 'number'                     -- SF
+       or (v_e->'lineQty')::numeric <> trunc((v_e->'lineQty')::numeric)                                   -- SF
+       or (v_e->'lineQty')::numeric < 1 or (v_e->'lineQty')::numeric > 100) then                          -- SF
+      raise exception 'Invalid selection';                                                                -- SF
+    end if;                                                                                               -- SF
+    v_id  := (v_e->>'itemId')::uuid;
+    v_qty := (v_e->'qty')::numeric::integer;
+    if v_id = any (v_seen) then raise exception 'Invalid selection'; end if;
+    v_seen := v_seen || v_id;
+    select * into v_line from order_items where id = v_id;
+    if not found or v_line.bill_id <> p_bill.id or v_line.voided_at is not null or v_line.qty < v_qty
+       or (v_e ? 'lineQty' and v_line.qty <> (v_e->'lineQty')::numeric) then                             -- SF
+      raise exception 'The bill changed. Check the items again.';
+    end if;
+    v_units := v_units + v_qty;
+  end loop;
+  select coalesce(sum(qty), 0)::integer into v_live from order_items where bill_id = p_bill.id and voided_at is null;
+  if v_units >= v_live then raise exception 'Select fewer items, or pay the whole bill'; end if;
+  return v_units;
+end $$;
+revoke all on function pos_split_check(bills, jsonb) from public, anon, authenticated;
+
+-- pos_checkout_state: the S3 text above with the line marked SF changed — of the parts paid under
+-- the screen's ids, the newest (the last Pay selected this screen made).
+create or replace function pos_checkout_state(p_bill_id uuid, p_checkout_ids uuid[]) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+begin
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch;
+  if not found then raise exception 'Bill not found'; end if;
+  return jsonb_build_object(
+    'status', v_bill.status,
+    'billNo', v_bill.bill_no,
+    'mergedIntoBillNo', (select m.bill_no from bills m where m.id = v_bill.merged_into),
+    'totals', case when v_bill.status = 'open' then pos_bill_totals(v_bill.id) end,
+    'result', case when v_bill.status = 'paid' and v_bill.checkout_id = any(coalesce(p_checkout_ids, '{}'::uuid[]))
+                   then pos_checkout_result(v_bill.id)
+                   else (select pos_checkout_result(p.id) from bills p                                    -- S3
+                          where p.split_from = v_bill.id                                                  -- S3
+                            and p.checkout_id = any(coalesce(p_checkout_ids, '{}'::uuid[]))               -- S3
+                          order by p.closed_at desc limit 1) end);                                        -- SF
+end $$;
+revoke all on function pos_checkout_state(uuid, uuid[]) from public, anon;
+grant execute on function pos_checkout_state(uuid, uuid[]) to authenticated;
+
+-- move_items: the S4 text above with the line marked SF changed — the target table's open bill is
+-- read FOR UPDATE: a bill another tablet's open_table committed after the first lock statement is
+-- locked before any unit moves onto it (a checkout of it waits, and then counts them).
+create or replace function move_items(p_bill_id uuid, p_items jsonb, p_table_id uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+  v_target bills;
+  v_label  text;
+  v_units  integer;
+begin
+  select label into v_label from dining_tables where id = p_table_id and branch_id = v_branch and is_active;
+  if not found then raise exception 'Invalid table'; end if;
+  -- the source and the target table's open bill locked in one fixed order (as merge_bills)
+  perform 1 from bills
+   where (id = p_bill_id and branch_id = v_branch) or (table_id = p_table_id and status = 'open')
+   order by id for update;
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch;
+  if not found then raise exception 'Bill not found'; end if;
+  if v_bill.status <> 'open' then
+    raise exception 'This bill is already %', case v_bill.status when 'paid' then 'paid'
+                                                                 when 'voided' then 'voided'
+                                                                 else 'merged into another bill' end;
+  end if;
+  if v_bill.table_id is not distinct from p_table_id then raise exception 'Invalid table'; end if;
+  if v_bill.discount_kind is not null then raise exception 'Remove the bill discount before moving items'; end if;
+  v_units := pos_split_check(v_bill, p_items);
+  select * into v_target from bills where table_id = p_table_id and status = 'open' for update;      -- SF
   if not found then
     begin
       insert into bills(branch_id, bill_no, table_id, order_type, pax)

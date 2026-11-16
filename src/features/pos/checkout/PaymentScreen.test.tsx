@@ -243,7 +243,7 @@ describe('PaymentScreen — split by item (split spec §3.3)', () => {
     orders: { order_no: '261116-009/1', source: 'counter', placed_at: '2026-11-16T04:00:00Z' },
   })
   const partTotals = { ...totals, subtotalSen: 2800, serviceChargeSen: 280, sstSen: 168, beforeRoundingSen: 3248, roundingSen: 2, totalSen: 3250 }
-  const picked = [{ itemId: 'i1', qty: 1 }, { itemId: 'i2', qty: 1 }]
+  const picked = [{ itemId: 'i1', qty: 1, lineQty: 3 }, { itemId: 'i2', qty: 1, lineQty: 1 }]
   const renderSplit = (onClose = vi.fn(), onPaid = vi.fn()) => {
     render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={[]} split={{ items: picked }}
       onSendIds={() => {}} onClose={onClose} onPaid={onPaid} />)
@@ -278,6 +278,20 @@ describe('PaymentScreen — split by item (split spec §3.3)', () => {
     expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
     press('Done')
     expect(onPaid).toHaveBeenCalledTimes(1)
+  })
+
+  it('a part of RM 0.00 is paid with no payment ([]), as a whole bill of RM 0.00 is', async () => {
+    api.splitTotals.mockResolvedValue({ ...partTotals, subtotalSen: 0, serviceChargeSen: 0, sstSen: 0, beforeRoundingSen: 0, roundingSen: 0, totalSen: 0 })
+    api.fetchPaymentMethods.mockResolvedValue([])
+    api.checkoutItems.mockResolvedValue({ billId: 'p1', billNo: '261116-010', totalSen: 0, changeSen: 0, receiptQueued: true })
+    renderSplit()
+    await flush()
+    press('Pay RM 0.00')
+    await flush()
+    expect(screen.queryByText('Choose how the bill is paid')).toBeNull()
+    expect(api.checkoutBill).not.toHaveBeenCalled()
+    expect(api.checkoutItems).toHaveBeenCalledTimes(1)
+    expect(api.checkoutItems.mock.calls[0].slice(0, 3)).toEqual(['b1', picked, []])
   })
 
   it('Cancel payment goes back (PosTill reopens the picker with the selection kept)', async () => {
@@ -382,7 +396,7 @@ describe('PaymentScreen — split by item (split spec §3.3)', () => {
     expect(kept.has('split:b1')).toBe(false)
     api.fetchCheckoutState.mockClear()
     render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={kept.get('split:b1') ?? []}
-      split={{ items: [{ itemId: 'i3', qty: 1 }] }} onSendIds={keep} onClose={() => {}} onPaid={() => {}} />)
+      split={{ items: [{ itemId: 'i3', qty: 1, lineQty: 1 }] }} onSendIds={keep} onClose={() => {}} onPaid={() => {}} />)
     await flush()
     expect(api.fetchCheckoutState).toHaveBeenCalled()
     expect(api.fetchCheckoutState.mock.calls[0][1]).not.toContain(id1)

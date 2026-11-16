@@ -2,7 +2,7 @@
 -- migration-2026-11-16-pos-split-bill.sql. Everything is rolled back. Success = a result row
 -- "VERIFY OK". Sections (one DO block each; the fixture's ids are kept in the temp table
 -- fixture): FIXTURE; A1 schema, grants, discount shares, preview and selection checks;
--- A2 checkout_items; A3 move_items; A4 receipt and Z report.
+-- A2 checkout_items; A3 move_items; A4 receipt and Z report; SF lineQty and the A2/A3 review fixes.
 -- Numbers: Latte 13.00 and Cake 15.00, both SST 6%; service charge 10% on dine-in; 5 sen rounding.
 begin;
 
@@ -550,6 +550,123 @@ begin
      or (select order_type from bills where id = (v_res->>'targetBillId')::uuid) <> 'dine_in' then
     raise exception 'FAIL A3 cut rows keep catalog discount and order type: %', v_res;
   end if;
+end $$;
+
+-- ── SF. lineQty: the line's qty the picker saw (a late-landing split payment cannot be paid twice);
+--    the table bill's updated_at bumped; a RM 0.00 part replayed; pos_checkout_state's newest part;
+--    move_items locks the target bill. Everything this block writes is undone at its end (SFRB0).
+create function pg_temp.selq(p_item uuid, p_qty integer, p_line_qty integer) returns jsonb
+language sql as $$ select jsonb_build_object('itemId', p_item, 'qty', p_qty, 'lineQty', p_line_qty) $$;
+do $$
+declare
+  v_t11 uuid; v_t12 uuid; v_order uuid; v_b uuid; v_l uuid; v_c uuid; v_tb uuid; v_line uuid; v_cake uuid;
+  v_x uuid := gen_random_uuid(); v_y uuid := gen_random_uuid(); v_z uuid := gen_random_uuid();
+  v_px uuid; v_py uuid; v_mv uuid; v_res jsonb; v_res2 jsonb; r record;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  insert into dining_tables(branch_id, label, sort_order) values (pg_temp.id('branch'), 'S11', 11) returning id into v_t11;
+  insert into dining_tables(branch_id, label, sort_order) values (pg_temp.id('branch'), 'S12', 12) returning id into v_t12;
+  -- S11: Latte ×3 (v_l), Cake ×2 (v_c). One latte dine-in = 13.00 + SC 1.30 + SST 0.78 = 15.08 → 15.10
+  v_order := place_counter_order(v_t11, 'dine_in', 2,
+    jsonb_build_array(jsonb_build_object('productId', pg_temp.id('latte'), 'variantId', pg_temp.id('latte_v'), 'qty', 3),
+                      jsonb_build_object('productId', pg_temp.id('cake'), 'variantId', pg_temp.id('cake_v'), 'qty', 2)), gen_random_uuid());
+  v_b := (select bill_id from orders where id = v_order);
+  v_l := (select id from order_items where order_id = v_order and product_id = pg_temp.id('latte'));
+  v_c := (select id from order_items where order_id = v_order and product_id = pg_temp.id('cake'));
+
+  -- lineQty, when present, is a whole number 1…100
+  for r in select v from unnest(array['0', '1.5', '"3"', '101', 'null', '-1']) as x(v) loop
+    perform pg_temp.expect_error(format('select pos_split_totals(%L, %L)', v_b,
+        jsonb_build_array(jsonb_build_object('itemId', v_l, 'qty', 1, 'lineQty', r.v::jsonb))),
+      'Invalid selection', 'SF lineQty ' || r.v);
+  end loop;
+  -- a lineQty that is not the line's qty: refused by the preview, Pay selected and Move to table alike
+  perform pg_temp.expect_error(format('select pos_split_totals(%L, %L)', v_b, jsonb_build_array(pg_temp.selq(v_l, 1, 2))),
+    'The bill changed. Check the items again.', 'SF preview lineQty 2 of 3');
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', v_b, jsonb_build_array(pg_temp.selq(v_l, 1, 4)),
+      pg_temp.card(1510), gen_random_uuid()),
+    'The bill changed. Check the items again.', 'SF pay selected lineQty 4 of 3');
+  perform pg_temp.expect_error(format('select move_items(%L, %L, %L)', v_b, jsonb_build_array(pg_temp.selq(v_l, 1, 2)), v_t12),
+    'The bill changed. Check the items again.', 'SF move lineQty 2 of 3');
+  if exists (select 1 from bills where split_from = v_b) or exists (select 1 from bills where table_id = v_t12) then
+    raise exception 'FAIL SF refusals wrote something';
+  end if;
+  -- a matching lineQty passes; without lineQty, as before
+  if (pos_split_totals(v_b, jsonb_build_array(pg_temp.selq(v_l, 1, 3)))->>'totalSen')::int is distinct from 1510
+     or (pos_split_totals(v_b, jsonb_build_array(pg_temp.sel(v_l, 1)))->>'totalSen')::int is distinct from 1510 then
+    raise exception 'FAIL SF preview with a matching / no lineQty';
+  end if;
+
+  -- the double pay: Pay selected (id X) of 1 of 3 lattes goes through but its reply is lost
+  update bills set updated_at = now() - interval '1 hour' where id = v_b;
+  v_res := checkout_items(v_b, jsonb_build_array(pg_temp.selq(v_l, 1, 3)), pg_temp.card(1510), v_x);
+  v_px := (v_res->>'billId')::uuid;
+  if (v_res->>'totalSen')::int <> 1510 or (select qty from order_items where id = v_l) <> 2
+     or (select updated_at from bills where id = v_b) <> now() then
+    raise exception 'FAIL SF first part: % (table bill updated_at %)', v_res, (select updated_at from bills where id = v_b);
+  end if;
+  -- a resend of X (the same items, saying 3) still gets the first answer: the replay runs before the check
+  v_res2 := checkout_items(v_b, jsonb_build_array(pg_temp.selq(v_l, 1, 3)), pg_temp.card(1510), v_x);
+  if v_res2 <> v_res then raise exception 'FAIL SF replay of X: % vs %', v_res2, v_res; end if;
+  -- Check bill found the table bill open and unlocked with id Y; X then landed. Y with the picker's
+  -- old view (lineQty 3) is refused: no second unit booked, nothing written
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', v_b, jsonb_build_array(pg_temp.selq(v_l, 1, 3)),
+      pg_temp.card(1510), v_y),
+    'The bill changed. Check the items again.', 'SF double pay');
+  if exists (select 1 from bills where checkout_id = v_y) or (select qty from order_items where id = v_l) <> 2
+     or (select count(*) from bills where split_from = v_b) <> 1 then
+    raise exception 'FAIL SF double pay wrote something';
+  end if;
+  -- the picker read again (lineQty 2): Y pays the next latte
+  v_res := checkout_items(v_b, jsonb_build_array(pg_temp.selq(v_l, 1, 2)), pg_temp.card(1510), v_y);
+  v_py := (v_res->>'billId')::uuid;
+  if v_py = v_px or (select qty from order_items where id = v_l) <> 1 then raise exception 'FAIL SF second part: %', v_res; end if;
+  -- pos_checkout_state answers the newest part paid under the screen's ids
+  update bills set closed_at = now() - interval '1 minute' where id = v_px;
+  if (pos_checkout_state(v_b, array[v_x, v_y])->'result'->>'billId')::uuid is distinct from v_py
+     or (pos_checkout_state(v_b, array[v_y, v_x])->'result'->>'billId')::uuid is distinct from v_py
+     or (pos_checkout_state(v_b, array[v_x])->'result'->>'billId')::uuid is distinct from v_px then
+    raise exception 'FAIL SF checkout state newest part: %', pos_checkout_state(v_b, array[v_x, v_y]);
+  end if;
+
+  -- move_items: 1 of 2 cakes saying 1 refused; saying 2 moves to S12 (a new bill); then the last cake
+  -- to that bill: both bills' updated_at bumped
+  perform pg_temp.expect_error(format('select move_items(%L, %L, %L)', v_b, jsonb_build_array(pg_temp.selq(v_c, 1, 1)), v_t12),
+    'The bill changed. Check the items again.', 'SF move lineQty 1 of 2');
+  v_mv := (move_items(v_b, jsonb_build_array(pg_temp.selq(v_c, 1, 2)), v_t12)->>'targetBillId')::uuid;
+  update bills set updated_at = now() - interval '1 hour' where id in (v_b, v_mv);
+  v_res := move_items(v_b, jsonb_build_array(pg_temp.selq(v_c, 1, 1)), v_t12);
+  if (v_res->>'targetBillId')::uuid <> v_mv or (select bill_id from order_items where id = v_c) <> v_mv
+     or (select updated_at from bills where id = v_b) <> now() or (select updated_at from bills where id = v_mv) <> now() then
+    raise exception 'FAIL SF move bumps both bills: %', v_res;
+  end if;
+  -- the target table's open bill is read under its lock
+  if pg_get_functiondef('move_items(uuid,jsonb,uuid)'::regprocedure) not like '%where table_id = p_table_id and status = ''open'' for update%' then
+    raise exception 'FAIL SF move_items reads the target bill without its lock';
+  end if;
+
+  -- a RM 0.00 part (A2's over-discount bill) paid with [] replays with []
+  v_order := place_counter_order(null, 'takeaway', null,
+    jsonb_build_array(jsonb_build_object('productId', pg_temp.id('latte'), 'variantId', pg_temp.id('latte_v'), 'qty', 3),
+                      jsonb_build_object('productId', pg_temp.id('cake'), 'variantId', pg_temp.id('cake_v'), 'qty', 3)), gen_random_uuid());
+  v_tb := (select bill_id from orders where id = v_order);
+  v_line := (select id from order_items where order_id = v_order and product_id = pg_temp.id('latte'));
+  v_cake := (select id from order_items where order_id = v_order and product_id = pg_temp.id('cake'));
+  v_res := set_bill_discount(v_tb, 'amount', 5000, 'Regular', pg_temp.id('sup'), '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL SF zero fixture: %', v_res; end if;
+  v_res := void_order_item(v_line, 'Wrong item keyed', pg_temp.id('sup'), '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL SF zero void: %', v_res; end if;
+  v_res := checkout_items(v_tb, jsonb_build_array(pg_temp.selq(v_cake, 1, 3)), '[]'::jsonb, v_z);
+  if (v_res->>'totalSen')::int <> 0 then raise exception 'FAIL SF zero part: %', v_res; end if;
+  v_res2 := checkout_items(v_tb, jsonb_build_array(pg_temp.selq(v_cake, 1, 3)), '[]'::jsonb, v_z);
+  if v_res2 <> v_res then raise exception 'FAIL SF zero part replay: % vs %', v_res2, v_res; end if;
+  perform pg_temp.expect_error(format('select checkout_items(%L, %L, %L, %L)', v_tb, jsonb_build_array(pg_temp.selq(v_cake, 1, 3)),
+      pg_temp.card(100), v_z),
+    'This payment was already recorded with other amounts — check Today''s bills', 'SF zero part replay with a payment');
+
+  raise exception 'SF checks done' using errcode = 'SFRB0';
+exception when sqlstate 'SFRB0' then
+  null;   -- undo this block's writes; a FAIL (any other error) still stops the script
 end $$;
 
 select 'VERIFY OK' as result;

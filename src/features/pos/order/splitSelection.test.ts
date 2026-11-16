@@ -53,9 +53,14 @@ describe('everything selected', () => {
 })
 
 describe('toSplitItems and prune', () => {
-  it('p_items in bill order, picked lines only', () => {
-    expect(toSplitItems({ i2: 1, i1: 1 }, lines)).toEqual([{ itemId: 'i1', qty: 1 }, { itemId: 'i2', qty: 1 }])
+  it('p_items in bill order, picked lines only, each with the line\'s qty the picker shows (lineQty)', () => {
+    expect(toSplitItems({ i2: 1, i1: 1 }, lines)).toEqual([{ itemId: 'i1', qty: 1, lineQty: 3 }, { itemId: 'i2', qty: 1, lineQty: 1 }])
     expect(toSplitItems({}, lines)).toEqual([])
+  })
+  it('lineQty is the line as read now: a Pay selected that landed late (3 → 2) makes the old view refused by the server', () => {
+    const after = splitLines([row('i1', 'Latte', 2, 1300), row('i2', 'Cake', 1, 1500)])
+    expect(toSplitItems({ i1: 1 }, lines)).toEqual([{ itemId: 'i1', qty: 1, lineQty: 3 }])
+    expect(toSplitItems({ i1: 1 }, after)).toEqual([{ itemId: 'i1', qty: 1, lineQty: 2 }])
   })
   it('after the bill changed: a gone line is dropped, a smaller line caps its pick', () => {
     const after = splitLines([row('i1', 'Latte', 2, 1300)])
