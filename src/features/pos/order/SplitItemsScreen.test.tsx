@@ -40,8 +40,8 @@ function renderPicker(over: Partial<Props> = {}) {
     refreshKey: 0, online: true, shiftOpen: true,
     onBack: vi.fn(), onPay: vi.fn(), onPayWhole: vi.fn(), onMoved: vi.fn(), onWholeMoved: vi.fn(), ...over,
   }
-  render(<SplitItemsScreen {...props} />)
-  return props
+  const { rerender } = render(<SplitItemsScreen {...props} />)
+  return { ...props, rerender: (o: Partial<Props>) => rerender(<SplitItemsScreen {...props} {...o} />) }
 }
 
 beforeEach(() => {
@@ -81,6 +81,49 @@ describe('SplitItemsScreen', () => {
     expect(screen.getByLabelText('Selected total').textContent).toBe('RM 32.50')
     press('Pay selected')
     expect(p.onPay).toHaveBeenCalledWith([{ itemId: 'i1', qty: 1 }, { itemId: 'i2', qty: 1 }], { i1: 1, i2: 1 })
+  })
+
+  it('a late reply for an older selection never replaces the newer total', async () => {
+    let late!: (v: typeof partTotals) => void
+    api.splitTotals
+      .mockReturnValueOnce(new Promise((res) => { late = res }))
+      .mockResolvedValueOnce({ ...partTotals, totalSen: 2000 })
+    renderPicker()
+    await flush()
+    press('More Latte')
+    await wait(PREVIEW_DEBOUNCE_MS)
+    press('More Latte')
+    await wait(PREVIEW_DEBOUNCE_MS)
+    expect(api.splitTotals).toHaveBeenCalledTimes(2)
+    expect(screen.getByLabelText('Selected total').textContent).toBe('RM 20.00')
+    await act(async () => { late({ ...partTotals, totalSen: 1000 }) })
+    await flush()
+    expect(screen.getByLabelText('Selected total').textContent).toBe('RM 20.00')
+  })
+
+  it('a bills event for the same selection keeps the total and Pay selected on while it re-asks', async () => {
+    const p = renderPicker()
+    await flush()
+    press('More Latte')
+    await wait(PREVIEW_DEBOUNCE_MS)
+    expect(screen.getByLabelText('Selected total').textContent).toBe('RM 32.50')
+    let fresh!: (v: typeof partTotals) => void
+    api.splitTotals.mockReturnValueOnce(new Promise((res) => { fresh = res }))
+    p.rerender({ refreshKey: 1 })
+    await flush()
+    expect(screen.getByLabelText('Selected total').textContent).toBe('RM 32.50')
+    expect(button('Pay selected').disabled).toBe(false)
+    await wait(PREVIEW_DEBOUNCE_MS)
+    expect(api.splitTotals).toHaveBeenCalledTimes(2)
+    expect(screen.getByLabelText('Selected total').textContent).toBe('RM 32.50')
+    expect(button('Pay selected').disabled).toBe(false)
+    await act(async () => { fresh({ ...partTotals, totalSen: 3300 }) })
+    await flush()
+    expect(screen.getByLabelText('Selected total').textContent).toBe('RM 33.00')
+    // a changed selection still shows "…" and turns Pay off
+    press('More Latte')
+    expect(screen.getByLabelText('Selected total').textContent).toBe('…')
+    expect(button('Pay selected').disabled).toBe(true)
   })
 
   it('shows the server\'s refusal and keeps Pay selected off', async () => {

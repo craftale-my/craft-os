@@ -57,6 +57,7 @@ export default function SplitItemsScreen({
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const previewSeq = useRef(0)
+  const previewKey = useRef<string | null>(null)   // the selection the footer currently shows or is fetching
 
   useEffect(() => {
     let live = true
@@ -79,8 +80,11 @@ export default function SplitItemsScreen({
 
   useEffect(() => {
     const seq = ++previewSeq.current
-    if (chosen.length === 0 || all || !online) { setPreview({ kind: 'none' }); return }
-    setPreview({ kind: 'loading' })
+    if (chosen.length === 0 || all || !online) { previewKey.current = null; setPreview({ kind: 'none' }); return }
+    // Only a bills event / sweep (refreshKey) re-asks for the same selection: keep the total on screen and
+    // Pay enabled meanwhile, so a tap is not lost. A changed selection shows "…" and turns Pay off.
+    const key = `${bill.id}|${chosenKey}`
+    if (previewKey.current !== key) { previewKey.current = key; setPreview({ kind: 'loading' }) }
     const timer = setTimeout(() => {
       splitTotals(bill.id, chosen).then(
         (t) => { if (seq === previewSeq.current) setPreview({ kind: 'total', sen: t.totalSen }) },
