@@ -696,5 +696,136 @@ begin
    where id = v_from.id;
 end $function$;
 
+-- ── B3. Receipt: the text of migration-2026-11-16-pos-split-bill.sql (S5) with the lines marked B3
+--    changed — the parts' payments come first, labelled with their part, a part's cash at its amount
+--    (its change was given with its part receipt); the change is the final payments'. ─
+create or replace function pos_receipt_payload(p_bill_id uuid, p_reprint boolean) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'kind', 'receipt',
+    'route', s.receipt_route,
+    'reprint', p_reprint,
+    'header', jsonb_build_object(
+      'title', coalesce(nullif(trim(br.receipt_title), ''), br.name),
+      'legalName', nullif(trim(br.legal_name), ''),
+      'registrationNo', nullif(trim(br.registration_no), ''),
+      'sstNo', nullif(trim(br.sst_no), ''),
+      'address', nullif(trim(br.address), ''),
+      'phone', nullif(trim(br.phone), ''),
+      'email', nullif(trim(br.email), '')),
+    'billNo', b.bill_no,
+    'splitFrom', (select jsonb_build_object('billNo', sf.bill_no, 'table', t.label)                   -- S5: the part's own table, frozen at the split
+                    from bills sf where sf.id = b.split_from),                                        -- S5
+    'closedAt', to_char(b.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'cashier', (select st.name from staff st where st.id = b.closed_by),
+    'tableLabel', t.label,
+    'pax', b.pax,
+    'items', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'qty', oi.qty, 'name', oi.name_snapshot, 'unitSen', oi.unit_price_sen,
+               'amountSen', oi.unit_price_sen * oi.qty,
+               'mods', (select coalesce(jsonb_agg(m->>'name' order by ord), '[]'::jsonb)
+                          from jsonb_array_elements(oi.modifiers_snapshot) with ordinality as x(m, ord)),
+               'discounts', (select coalesce(jsonb_agg(d.j order by d.k), '[]'::jsonb) from (                  -- D
+                   select 1 as k, jsonb_build_object(
+                            'label', coalesce(oi.catalog_discount_name, 'Catalog') || ' ' || (oi.catalog_discount_bp / 100) || '%',
+                            'amountSen', (ln.l->>'catalogDiscountSen')::integer) as j
+                    where coalesce((ln.l->>'catalogDiscountSen')::integer, 0) > 0
+                   union all
+                   select 2, jsonb_build_object(
+                            'label', case when oi.discount_kind = 'percent' then 'Discount ' || (oi.discount_value / 100) || '%'
+                                          else 'Discount' end,
+                            'amountSen', (ln.l->>'itemDiscountSen')::integer)
+                    where coalesce((ln.l->>'itemDiscountSen')::integer, 0) > 0) d))
+             order by o.placed_at, oi.name_snapshot, oi.id)
+        from order_items oi join orders o on o.id = oi.order_id
+        left join lateral (select x.l from jsonb_array_elements(coalesce(b.totals->'lines', '[]'::jsonb)) as x(l)-- D
+                            where x.l->>'id' = oi.id::text) ln on true
+       where oi.bill_id = b.id and oi.voided_at is null), '[]'::jsonb),
+    'itemCount', (select coalesce(sum(oi.qty), 0) from order_items oi where oi.bill_id = b.id and oi.voided_at is null),
+    'subtotalSen', b.subtotal_sen,
+    'billDiscountSen', coalesce((b.totals->>'billDiscountSen')::integer, 0),                                   -- D
+    'sstGroups', coalesce(b.totals->'sstGroups', '[]'::jsonb),
+    'serviceChargeGroups', coalesce(b.totals->'serviceChargeGroups', '[]'::jsonb),
+    'takeawayFeeSen', b.takeaway_fee_sen,
+    'roundingSen', b.rounding_sen,
+    'totalSen', b.total_sen,
+    'payments', coalesce((
+      select jsonb_agg(jsonb_build_object('name', p.method_name, 'kind', p.kind, 'amountSen', p.amount_sen,
+                                          'tenderedSen', case when p.part_id is null then p.tendered_sen end,      -- B3
+                                          'reference', p.reference,
+                                          'part', bp.part_no)                                                       -- B3
+                       order by bp.part_no nulls last, p.line_no, p.id)                                            -- B3
+        from payments p left join bill_parts bp on bp.id = p.part_id                                               -- B3
+       where p.bill_id = b.id), '[]'::jsonb),
+    'changeSen', (select coalesce(sum(p.change_sen), 0) from payments p where p.bill_id = b.id and p.part_id is null),   -- B3
+    'footer', coalesce(s.receipt_footer, 'This is an official receipt. Thank you for visiting us.'))
+  from bills b
+  join branches br on br.id = b.branch_id
+  left join branch_pos_settings s on s.branch_id = b.branch_id
+  left join dining_tables t on t.id = b.table_id
+  where b.id = p_bill_id
+$$;
+revoke all on function pos_receipt_payload(uuid, boolean) from public, anon, authenticated;
+
+-- pos_checkout_state: the text of migration-2026-11-16-pos-split-bill.sql (SF, the newest part paid
+-- under the screen's ids) with the lines marked B3 added — what the parts of an open bill paid, for
+-- the Payment screen (paidSen; parts oldest first, with their ids: a part sent with no reply is
+-- found by its id). A part id among p_checkout_ids is never a result: only bills.checkout_id is.
+create or replace function pos_checkout_state(p_bill_id uuid, p_checkout_ids uuid[]) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+  v_bill   bills;
+begin
+  select * into v_bill from bills where id = p_bill_id and branch_id = v_branch;
+  if not found then raise exception 'Bill not found'; end if;
+  return jsonb_build_object(
+    'status', v_bill.status,
+    'billNo', v_bill.bill_no,
+    'mergedIntoBillNo', (select m.bill_no from bills m where m.id = v_bill.merged_into),
+    'totals', case when v_bill.status = 'open' then pos_bill_totals(v_bill.id) end,
+    'result', case when v_bill.status = 'paid' and v_bill.checkout_id = any(coalesce(p_checkout_ids, '{}'::uuid[]))
+                   then pos_checkout_result(v_bill.id)
+                   else (select pos_checkout_result(p.id) from bills p                                    -- S3
+                          where p.split_from = v_bill.id                                                  -- S3
+                            and p.checkout_id = any(coalesce(p_checkout_ids, '{}'::uuid[]))               -- S3
+                          order by p.closed_at desc limit 1) end,                                         -- SF  B3: , not );
+    'paidSen', case when v_bill.status = 'open' then pos_bill_paid_parts(v_bill.id) else 0 end,           -- B3
+    'parts', case when v_bill.status <> 'open' then '[]'::jsonb else coalesce((                            -- B3
+      select jsonb_agg(jsonb_build_object(                                                                -- B3
+               'id', bp.id, 'partNo', bp.part_no, 'ways', bp.ways, 'amountSen', bp.amount_sen,             -- B3
+               'methods', (select coalesce(jsonb_agg(m.n order by m.first), '[]'::jsonb)                  -- B3
+                             from (select p.method_name as n, min(p.line_no) as first                     -- B3
+                                     from payments p where p.part_id = bp.id group by p.method_name) m))  -- B3
+             order by bp.part_no)                                                                          -- B3
+        from bill_parts bp where bp.bill_id = v_bill.id), '[]'::jsonb) end);                               -- B3
+end $$;
+revoke all on function pos_checkout_state(uuid, uuid[]) from public, anon;
+grant execute on function pos_checkout_state(uuid, uuid[]) to authenticated;
+
+-- pos_open_bill_summaries: the live text of migration-2026-10-26-pos-frontend.sql with the column
+-- marked B3 added (paid_sen: the home tile's "Part paid"). A new result column needs a drop first.
+drop function if exists pos_open_bill_summaries(uuid);
+create or replace function pos_open_bill_summaries(p_branch_id uuid)
+returns table (bill_id uuid, total_sen integer, item_count integer, paid_sen integer)                    -- B3: paid_sen
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  if p_branch_id is distinct from pos_my_branch() then
+    raise exception 'Not your branch';
+  end if;
+  return query
+    select b.id,
+           (pos_bill_totals(b.id)->>'totalSen')::integer,
+           coalesce((select sum(oi.qty) from order_items oi
+                      where oi.bill_id = b.id and oi.voided_at is null), 0)::integer,                       -- B3: ,
+           pos_bill_paid_parts(b.id)                                                                       -- B3
+      from bills b
+     where b.branch_id = p_branch_id and b.status = 'open'
+     order by b.opened_at, b.id;
+end $$;
+revoke all on function pos_open_bill_summaries(uuid) from public, anon;
+grant execute on function pos_open_bill_summaries(uuid) to authenticated;
+
 notify pgrst, 'reload schema';
 select 'pos bill parts applied' as result;

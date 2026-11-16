@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { money, toAscii, renderReceiptLines, renderRefundSlipLines, splitFromLine, type ReceiptPayload, type RefundSlipPayload } from './receipt'
+import { money, toAscii, renderReceiptLines, renderRefundSlipLines, splitFromLine, lr, center, partLabel, renderPartReceiptLines, type PartReceiptPayload, type ReceiptPayload, type RefundSlipPayload } from './receipt'
 
 // Receipt #87846 (Craft Cafe Cheras, 22/10/2026): the four prices, the totals and the
 // payment are the real ones; item names, header numbers and the time are placeholders
@@ -198,5 +198,49 @@ describe('split from (split bill §6)', () => {
   })
   it('maps the middle dot to a hyphen for the printer', () => {
     expect(toAscii('a · b')).toBe('a - b')
+  })
+})
+
+describe('part payments on receipts (split bill §6)', () => {
+  it('the final receipt labels each part\'s payment; a part\'s cash prints its amount', () => {
+    const lines = renderReceiptLines({
+      ...r87846,
+      payments: [
+        { name: 'Cash', kind: 'cash', amountSen: 2320, tenderedSen: null, reference: null, part: 1 },
+        { name: 'Visa', kind: 'card', amountSen: 2320, tenderedSen: null, reference: 'A1', part: 2 },
+        { name: 'Cash', kind: 'cash', amountSen: 4640, tenderedSen: 5000, reference: null, part: null },
+      ],
+      changeSen: 360,
+    }, 48)
+    expect(lines).toContain(lr('Part 1 - Cash', '23.20', 48)[0])
+    expect(lines).toContain(lr('Part 2 - Visa', '23.20', 48)[0])
+    expect(lines).toContain(lr('Cash', '50.00', 48)[0])
+    expect(lines).toContain(lr('Change', '3.60', 48)[0])
+  })
+
+  it('a part receipt: the bill, then the part, its payment and change, paid before and the balance', () => {
+    const part: PartReceiptPayload = {
+      ...r87846, kind: 'part', partNo: 2, ways: 4, amountSen: 2320, paidBeforeSen: 2320, balanceSen: 4640,
+      payments: [{ name: 'Cash', kind: 'cash', amountSen: 2320, tenderedSen: 5000, reference: null }], changeSen: 2680,
+      footer: 'Part payment — the official receipt prints when the bill is paid in full.',
+    }
+    const lines = renderPartReceiptLines(part, 48)
+    const total = lines.indexOf(lr('Total (MYR)', '92.80', 48)[0])
+    expect(total).toBeGreaterThan(0)
+    expect(lines.slice(total)).toEqual(expect.arrayContaining([
+      center('Part 2 of 4', 48)[0].trimEnd(),
+      lr('This part (MYR)', '23.20', 48)[0],
+      lr('Cash', '50.00', 48)[0],
+      lr('Change', '26.80', 48)[0],
+      lr('Paid before', '23.20', 48)[0],
+      lr('Balance due', '46.40', 48)[0],
+    ]))
+    expect(lines.join('\n')).toContain('Part payment - the official receipt')
+    expect(lines.join('\n')).not.toContain('Charges summary')
+  })
+
+  it('labels a part with its N, or alone for a part by amount', () => {
+    expect(partLabel(2, 3)).toBe('Part 2 of 3')
+    expect(partLabel(2, null)).toBe('Part 2')
   })
 })

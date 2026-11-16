@@ -40,6 +40,7 @@ export interface ReceiptPayment {
   amountSen: number
   tenderedSen: number | null // cash only: what the customer handed over
   reference: string | null
+  part?: number | null // a part payment's part number on the final receipt (split bill §6); null = the final payment
 }
 
 export interface ReceiptPayload {
@@ -80,6 +81,20 @@ export interface RefundSlipPayload {
   refundedBy: string | null
   approvedBy: string | null
 }
+
+/** A part paid on an open bill (split bill §4.6, §6): the bill as on a pre-bill (current items and
+ *  totals), then this part. Not an official receipt. pos_part_receipt_payload builds exactly this. */
+export interface PartReceiptPayload extends Omit<ReceiptPayload, 'kind' | 'splitFrom'> {
+  kind: 'part'
+  partNo: number
+  ways: number | null       // an equal split's N; null = by amount
+  amountSen: number         // this part
+  paidBeforeSen: number     // the parts before this one
+  balanceSen: number        // what is left after this part
+}
+
+/** "Part 2 of 3"; "Part 2" for a part by amount. */
+export const partLabel = (partNo: number, ways: number | null): string => (ways ? `Part ${partNo} of ${ways}` : `Part ${partNo}`)
 
 const ASCII_MAP: Record<string, string> = {
   '–': '-', '—': '-', '‘': "'", '’': "'", '“': '"', '”': '"', '•': '-', '·': '-', ' ': ' ',
@@ -147,11 +162,14 @@ function chargeRow(label: string, base: string, amount: string, cols: number): s
   return label.slice(0, w).padEnd(w) + base.padStart(11) + amount.padStart(11)
 }
 
-export function renderReceiptLines(input: ReceiptPayload, cols: number): string[] {
-  const r = asciiDeep(input)
-  const rule = '-'.repeat(cols)
+type HeadInput = Pick<ReceiptPayload, 'reprint' | 'header' | 'billNo' | 'closedAt' | 'cashier' | 'pax' | 'tableLabel' | 'splitFrom'>
+type BodyInput = Pick<ReceiptPayload, 'items' | 'itemCount' | 'subtotalSen' | 'billDiscountSen' | 'sstGroups' | 'serviceChargeGroups'
+  | 'takeawayFeeSen' | 'roundingSen' | 'totalSen'>
+
+/** Title, outlet details, invoice no (and Split from), date, cashier, pax, table. `r` is ASCII already. */
+function headLines(r: HeadInput, cols: number): string[] {
   const h = r.header
-  const header = [
+  return [
     ...(r.reprint ? center('*** REPRINT ***', cols) : []),
     ...center(h.title, cols),
     ...(h.legalName ? center(h.legalName, cols) : []),
@@ -162,13 +180,21 @@ export function renderReceiptLines(input: ReceiptPayload, cols: number): string[
     ...(h.email ? center(h.email, cols) : []),
     '',
     ...lr('Invoice no', r.billNo, cols),
-    ...(r.splitFrom ? wrap(toAscii(splitFromLine(r.splitFrom)), cols) : []),   // r is ASCII already; the · added here is not
+    ...(r.splitFrom ? wrap(toAscii(splitFromLine(r.splitFrom)), cols) : []),   // the · added here is not ASCII yet
     ...lr('Date', formatMyt(r.closedAt), cols),
     ...lr('Cashier', r.cashier ?? '-', cols),
     ...(r.pax !== null ? lr('Table pax', String(r.pax), cols) : []),
     ...center(r.tableLabel ? `ORDER ${r.tableLabel}` : 'TAKEAWAY', cols),
   ]
-  const totals = [
+}
+
+/** The items, the totals and the Total (MYR) band. */
+function bodyLines(r: BodyInput, cols: number): string[] {
+  const rule = '-'.repeat(cols)
+  return [
+    rule,
+    ...r.items.flatMap((it) => itemLines(it, cols)),
+    rule,
     ...lr('Item count', String(r.itemCount), cols),
     ...lr('Subtotal', money(r.subtotalSen), cols),
     ...((r.billDiscountSen ?? 0) > 0 ? lr('Discount', money(-(r.billDiscountSen ?? 0)), cols) : []),
@@ -176,14 +202,26 @@ export function renderReceiptLines(input: ReceiptPayload, cols: number): string[
     ...r.serviceChargeGroups.flatMap((g) => lr(`SERVICE CHARGE (${pct(g.rateBp)})`, money(g.amountSen), cols)),
     ...(r.takeawayFeeSen > 0 ? lr('Takeaway packaging', money(r.takeawayFeeSen), cols) : []),
     ...lr('Bill rounding', money(r.roundingSen), cols),
+    '='.repeat(cols),
+    ...lr('Total (MYR)', money(r.totalSen), cols),
+    '='.repeat(cols),
   ]
-  const payments = [
-    ...r.payments.flatMap((p) => [
-      ...lr(p.name, money(p.kind === 'cash' ? (p.tenderedSen ?? p.amountSen) : p.amountSen), cols),
+}
+
+/** Each payment (a part's labelled "Part 1 - Cash"; cash shows what was handed over), then Change. */
+function paymentLines(payments: ReceiptPayment[], changeSen: number, cols: number): string[] {
+  return [
+    ...payments.flatMap((p) => [
+      ...lr(p.part ? toAscii(`Part ${p.part} · ${p.name}`) : p.name, money(p.kind === 'cash' ? (p.tenderedSen ?? p.amountSen) : p.amountSen), cols),
       ...(p.reference ? wrap(`Ref: ${p.reference}`, cols - 2).map((s) => `  ${s}`) : []),
     ]),
-    ...lr('Change', money(r.changeSen), cols),
+    ...lr('Change', money(changeSen), cols),
   ]
+}
+
+export function renderReceiptLines(input: ReceiptPayload, cols: number): string[] {
+  const r = asciiDeep(input)
+  const rule = '-'.repeat(cols)
   const charges = r.sstGroups.length + r.serviceChargeGroups.length > 0
     ? [
         'Charges summary',
@@ -194,17 +232,27 @@ export function renderReceiptLines(input: ReceiptPayload, cols: number): string[
       ]
     : []
   return [
-    ...header,
-    rule,
-    ...r.items.flatMap((it) => itemLines(it, cols)),
-    rule,
-    ...totals,
-    '='.repeat(cols),
-    ...lr('Total (MYR)', money(r.totalSen), cols),
-    '='.repeat(cols),
-    ...payments,
+    ...headLines(r, cols),
+    ...bodyLines(r, cols),
+    ...paymentLines(r.payments, r.changeSen, cols),
     rule,
     ...charges,
+    ...center(r.footer, cols),
+  ].map((l) => l.trimEnd())
+}
+
+/** A part receipt: the bill, then "Part 2 of 3", this part's payments and change, Paid before and Balance due. */
+export function renderPartReceiptLines(input: PartReceiptPayload, cols: number): string[] {
+  const r = asciiDeep(input)
+  return [
+    ...headLines(r, cols),
+    ...bodyLines(r, cols),
+    ...center(partLabel(r.partNo, r.ways), cols),
+    ...lr('This part (MYR)', money(r.amountSen), cols),
+    ...paymentLines(r.payments, r.changeSen, cols),
+    ...lr('Paid before', money(r.paidBeforeSen), cols),
+    ...lr('Balance due', money(r.balanceSen), cols),
+    '-'.repeat(cols),
     ...center(r.footer, cols),
   ].map((l) => l.trimEnd())
 }

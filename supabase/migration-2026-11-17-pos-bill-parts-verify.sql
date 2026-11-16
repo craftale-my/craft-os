@@ -384,5 +384,80 @@ begin
   end if;
 end $$;
 
+-- ── B3. Part receipt, the final receipt's parts, the screens' reads (spec §4.6, §6) ──
+do $$
+declare
+  v_w   uuid := pg_temp.id('bW');
+  v_res jsonb;
+  v_order uuid;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- X share 1: the bill as a pre-bill, then Part 1 of 3, its cash and change, paid before, balance
+  v_res := pos_part_receipt_payload(pg_temp.id('x1'));
+  if v_res->>'kind' <> 'part' or (v_res->>'partNo')::int <> 1 or (v_res->>'ways')::int <> 3 or (v_res->>'amountSen')::int <> 2345
+     or (v_res->>'paidBeforeSen')::int <> 0 or (v_res->>'balanceSen')::int <> 4690 or (v_res->>'totalSen')::int <> 7035
+     or (v_res->>'changeSen')::int <> 2655 or (v_res->'payments'->0->>'tenderedSen')::int <> 5000
+     or v_res->>'footer' <> 'Part payment — the official receipt prints when the bill is paid in full.'
+     or jsonb_array_length(v_res->'items') <> 1 or v_res->>'tableLabel' <> 'P1' or v_res->>'route' <> 'Bar' then
+    raise exception 'FAIL B3 part receipt of X1: %', v_res;
+  end if;
+  -- Z share 2 after the extra item: paid before 23.45, balance 24.95 of 73.35
+  v_res := pos_part_receipt_payload(pg_temp.id('z2'));
+  if (v_res->>'partNo')::int <> 2 or (v_res->>'paidBeforeSen')::int <> 2345 or (v_res->>'balanceSen')::int <> 2495
+     or (v_res->>'totalSen')::int <> 7335 then
+    raise exception 'FAIL B3 part receipt of Z2: %', v_res;
+  end if;
+  if pos_part_receipt_payload(pg_temp.id('w1'))->'ways' <> 'null'::jsonb then raise exception 'FAIL B3 part receipt of W1'; end if;
+  -- X's final receipt: the parts' payments first and labelled, a part's cash at its amount; the change of the last payment only
+  v_res := pos_receipt_payload(pg_temp.id('bX'), false);
+  if v_res->'payments' is distinct from jsonb_build_array(
+        jsonb_build_object('name', 'P Cash', 'kind', 'cash', 'amountSen', 2345, 'tenderedSen', null, 'reference', null, 'part', 1),
+        jsonb_build_object('name', 'P Card', 'kind', 'card', 'amountSen', 2345, 'tenderedSen', null, 'reference', null, 'part', 2),
+        jsonb_build_object('name', 'P Card', 'kind', 'card', 'amountSen', 2345, 'tenderedSen', null, 'reference', null, 'part', null))
+     or (v_res->>'changeSen')::int <> 0 or (v_res->>'totalSen')::int <> 7035 then
+    raise exception 'FAIL B3 final receipt of X: %', v_res;
+  end if;
+  -- the Payment screen and the home tile read what the parts paid
+  v_res := pos_checkout_state(v_w, '{}'::uuid[]);
+  if (v_res->>'paidSen')::int <> 1000 or jsonb_array_length(v_res->'parts') <> 1
+     or ((v_res->'parts'->0) - 'id') is distinct from '{"partNo": 1, "ways": null, "amountSen": 1000, "methods": ["P Card"]}'::jsonb
+     or (v_res->'parts'->0->>'id')::uuid <> pg_temp.id('w1') then
+    raise exception 'FAIL B3 checkout state of W: %', v_res;
+  end if;
+  -- a part's id among the screen's checkout ids is not a result: the bill is still open (B3, extra)
+  v_res := pos_checkout_state(v_w, array[pg_temp.id('w1'), gen_random_uuid()]);
+  if v_res->'result' <> 'null'::jsonb or v_res->>'status' <> 'open' or (v_res->>'paidSen')::int <> 1000 then
+    raise exception 'FAIL B3 a part id read as a result: %', v_res;
+  end if;
+  v_res := pos_checkout_state(pg_temp.id('bX'), '{}'::uuid[]);
+  if (v_res->>'paidSen')::int <> 0 or v_res->'parts' <> '[]'::jsonb then raise exception 'FAIL B3 a paid bill shows parts: %', v_res; end if;
+  -- W: Set A + Extra + V's Set A (merged in) + Extra (added on P6) = 146.70, 10.00 paid
+  if (select s.paid_sen from pos_open_bill_summaries(pg_temp.id('branch')) s where s.bill_id = v_w) <> 1000
+     or (select s.total_sen from pos_open_bill_summaries(pg_temp.id('branch')) s where s.bill_id = v_w) <> 14670 then
+    raise exception 'FAIL B3 summaries of W';
+  end if;
+  -- (B3, extra) the summaries keep their grants after the drop; a bill with no part: paid_sen 0,
+  -- paidSen 0 and parts [] while open, and its receipt as before (part null, its cash and change)
+  if not has_function_privilege('authenticated', 'pos_open_bill_summaries(uuid)', 'execute')
+     or has_function_privilege('anon', 'pos_open_bill_summaries(uuid)', 'execute') then
+    raise exception 'FAIL B3 summaries grants';
+  end if;
+  v_order := pg_temp.order_on('t2', array['setb']);                -- RM 70.40 on P2 (Y is paid)
+  perform pg_temp.put('bQ', (select bill_id from orders where id = v_order));
+  if (select s.paid_sen from pos_open_bill_summaries(pg_temp.id('branch')) s where s.bill_id = pg_temp.id('bQ')) <> 0 then
+    raise exception 'FAIL B3 summaries of a bill with no part';
+  end if;
+  v_res := pos_checkout_state(pg_temp.id('bQ'), null);
+  if (v_res->>'paidSen')::int <> 0 or v_res->'parts' <> '[]'::jsonb then raise exception 'FAIL B3 checkout state with no part: %', v_res; end if;
+  perform checkout_bill(pg_temp.id('bQ'),
+    jsonb_build_array(jsonb_build_object('methodId', pg_temp.id('cash'), 'amountSen', 7040, 'tenderedSen', 10000)), gen_random_uuid());
+  v_res := pos_receipt_payload(pg_temp.id('bQ'), false);
+  if v_res->'payments' is distinct from jsonb_build_array(
+        jsonb_build_object('name', 'P Cash', 'kind', 'cash', 'amountSen', 7040, 'tenderedSen', 10000, 'reference', null, 'part', null))
+     or (v_res->>'changeSen')::int <> 2960 then
+    raise exception 'FAIL B3 receipt of a bill with no part: %', v_res;
+  end if;
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;

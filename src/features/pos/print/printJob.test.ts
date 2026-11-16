@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { jobLabel, renderJobLines, type JobPayload } from './printJob'
 import { renderTicketLines, type TicketPayload } from './ticket'
-import { renderReceiptLines, renderRefundSlipLines, type ReceiptPayload, type RefundSlipPayload } from './receipt'
+import { renderPartReceiptLines, renderReceiptLines, renderRefundSlipLines, type PartReceiptPayload, type ReceiptPayload, type RefundSlipPayload } from './receipt'
 
 const ticket: TicketPayload = {
   kind: 'ticket', route: 'Kitchen', tableLabel: 'T2', orderNo: '261024-003/1', source: 'counter',
@@ -37,5 +37,22 @@ describe('jobLabel', () => {
     expect(jobLabel({ ...ticket, tableLabel: null, void: true })).toBe('261024-003/1 · takeaway · VOID')
     expect(jobLabel(receipt)).toBe('Receipt 261024-003 · takeaway')
     expect(jobLabel(refund)).toBe('Refund slip 261024-003')
+  })
+})
+
+describe('part receipts (split bill §6)', () => {
+  const part = {
+    kind: 'part', route: 'Bar', reprint: false,
+    header: { title: 'Craft Cafe', legalName: null, registrationNo: null, sstNo: null, address: null, phone: null, email: null },
+    billNo: '261117-003', closedAt: '2026-11-17T06:00:00.000Z', cashier: 'Aina', tableLabel: 'T5', pax: 3,
+    items: [{ qty: 1, name: 'Set A', unitSen: 7035, amountSen: 7035, mods: [] }], itemCount: 1, subtotalSen: 7035, billDiscountSen: 0,
+    sstGroups: [], serviceChargeGroups: [], takeawayFeeSen: 0, roundingSen: 0, totalSen: 7035,
+    partNo: 1, ways: 3, amountSen: 2345, paidBeforeSen: 0, balanceSen: 4690,
+    payments: [{ name: 'Cash', kind: 'cash', amountSen: 2345, tenderedSen: 5000, reference: null }], changeSen: 2655,
+    footer: 'Part payment — the official receipt prints when the bill is paid in full.',
+  } satisfies PartReceiptPayload
+  it('renders through renderPartReceiptLines and is labelled with its part', () => {
+    expect(renderJobLines(part, 42)).toEqual(renderPartReceiptLines(part, 42))
+    expect(jobLabel(part)).toBe('Part receipt 261117-003 · Part 1 of 3')
   })
 })

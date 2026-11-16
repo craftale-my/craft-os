@@ -205,7 +205,7 @@ begin
   set local role authenticated;
   v_res := pos_checkout_state(b3, null);
   reset role;
-  if v_res is distinct from jsonb_build_object('status', 'open', 'billNo', (select bill_no from bills where id = b3),
+  if v_res - 'paidSen' - 'parts' is distinct from jsonb_build_object('status', 'open', 'billNo', (select bill_no from bills where id = b3),   -- paidSen / parts: split bill B3
        'mergedIntoBillNo', null, 'totals', pos_bill_totals(b3), 'result', null) then
     raise exception 'FAIL H1 open: %', v_res;
   end if;
@@ -251,7 +251,7 @@ begin
   if (select count(*) from payments where bill_id = b1) is distinct from 2 then raise exception 'FAIL H2: a refused replay wrote payments'; end if;
   -- the sheet that paid gets its result back from the state — also when the paying id is an
   -- earlier one it sent (Check bill gave it a new id meanwhile); any other sheet does not
-  if pos_checkout_state(b1, array[v_checkout]) is distinct from jsonb_build_object('status', 'paid', 'billNo', (select bill_no from bills where id = b1),
+  if pos_checkout_state(b1, array[v_checkout]) - 'paidSen' - 'parts' is distinct from jsonb_build_object('status', 'paid', 'billNo', (select bill_no from bills where id = b1),
        'mergedIntoBillNo', null, 'totals', null, 'result', v_res)
      or pos_checkout_state(b1, array[v_checkout, gen_random_uuid()])->'result' is distinct from v_res
      or pos_checkout_state(b1, array[gen_random_uuid(), v_checkout])->'result' is distinct from v_res
@@ -288,7 +288,7 @@ begin
   if not (void_bill(b5, 'Customer left', v_sup, '2468')->>'ok')::boolean then raise exception 'FAIL H5 bill void between shifts'; end if;
   -- H1: the checkout state of a voided bill — no totals, no result
   v_res := pos_checkout_state(b5, array[gen_random_uuid()]);
-  if v_res is distinct from jsonb_build_object('status', 'voided', 'billNo', (select bill_no from bills where id = b5),
+  if v_res - 'paidSen' - 'parts' is distinct from jsonb_build_object('status', 'voided', 'billNo', (select bill_no from bills where id = b5),   -- paidSen / parts: split bill B3
        'mergedIntoBillNo', null, 'totals', null, 'result', null) then
     raise exception 'FAIL H1 voided: %', v_res;
   end if;
