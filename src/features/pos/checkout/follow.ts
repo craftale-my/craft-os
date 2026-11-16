@@ -44,6 +44,7 @@ export function followBill(state: CheckoutState, shownTotalSen: number | null): 
     case 'merged':
       return { kind: 'lock', note: mergedElsewhere(state.mergedIntoBillNo) }
     case 'open':
+      if (state.result) return { kind: 'paidHere', result: state.result }   // split: a part this screen paid (the table bill stays open)
       if (!state.totals) return { kind: 'keep' }
       if (shownTotalSen === null) return { kind: 'reload', totals: state.totals, note: null }
       if (state.totals.totalSen !== shownTotalSen) return { kind: 'reload', totals: state.totals, note: BILL_CHANGED }

@@ -2,12 +2,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatSen } from '../order/cart'
 import { fetchBillItems, type BillItemRow, type OpenBillRow } from '../order/posApi'
+import type { SplitItem } from '../order/splitSelection'
 import type { BillTotals } from './bill'
-import { checkoutBill, fetchCheckoutState, fetchPaymentMethods, type CheckoutResult } from './checkoutApi'
+import { checkoutBill, checkoutItems, fetchCheckoutState, fetchPaymentMethods, splitTotals, type CheckoutResult } from './checkoutApi'
 import CheckoutTotals from './CheckoutTotals'
 import DiscountRows from './DiscountRows'
 import { catalogTag, discountLabel, lineDiscountRows, linesById, storedDiscount } from './discounts'
-import { billChangedAtPay, followBill, type FollowAction } from './follow'
+import { billChangedAtPay, followBill, type CheckoutState, type FollowAction } from './follow'
 import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
 import { looksOffline } from './rpcResult'
 import {
@@ -24,16 +25,19 @@ const money = (sen: number) => (Math.max(0, sen) / 100).toFixed(2)
  *  per attempt (paySession: Try again after a lost reply never charges twice, Check bill), the
  *  follow rules (paid / voided / merged on another iPad locks the screen) and tender.ts' checks.
  *  New is only the layout: the bill on the left; the amount, method tabs, quick tender and number
- *  pad on the right; Split payment for several payments. */
-export default function PaymentScreen({ branchId, bill, title, refreshKey, earlierIds, onSendIds, onClose, onPaid }: {
+ *  pad on the right; Split payment for several payments. With `split` (split spec §3.3) only the picked
+ *  units are paid: their totals are pos_split_totals', Pay is checkout_items, and the table bill stays
+ *  open (the screen still follows it: paid, voided or merged elsewhere locks it). */
+export default function PaymentScreen({ branchId, bill, title, refreshKey, earlierIds, split: byItem, onSendIds, onClose, onPaid }: {
   branchId: string
   bill: OpenBillRow
-  title: string                 // "Table T3" or "Takeaway 261024-004"
+  title: string                 // "Table T3", "Takeaway 261024-004", "Table T3 · Split"
   refreshKey: number            // bumped on every bills event, order and 15 s sweep: re-read the bill
   earlierIds: string[]          // checkout ids an earlier Payment of this bill used on this iPad
+  split?: { items: SplitItem[] }   // split by item: pay only these units, as their own bill
   onSendIds: (ids: string[]) => void   // every id used so far, at each send: PosPage keeps them per bill
-  onClose: () => void           // Cancel payment: back to the bill
-  onPaid: () => void            // Done on the success screen: back home
+  onClose: () => void           // Cancel payment: back to the bill (split: back to the picker)
+  onPaid: () => void            // Done on the success screen: back home (split: back to the bill)
 }) {
   const [totals, setTotals] = useState<BillTotals | null>(null)
   const [methods, setMethods] = useState<TenderMethod[]>([])
@@ -81,11 +85,26 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
       if (a.note) setChangeNote(a.note)
     }
   }
+  // The bill as this screen follows it. Split by item: an open table bill with no part paid under our
+  // ids is weighed by the PART's totals (pos_split_totals), never the table bill's — in the follow and
+  // in Check bill alike, so neither can put the table's total on the Pay button. A selection the
+  // server refuses comes back as its words (the picked units changed: back to the picker).
+  const readState = async (): Promise<CheckoutState | { refused: string }> => {
+    const state = await fetchCheckoutState(bill.id, checkoutIds(sessionRef.current))
+    if (!byItem || state.status !== 'open' || state.result) return state
+    try {
+      return { ...state, totals: await splitTotals(bill.id, byItem.items) }
+    } catch (e) {
+      if (looksOffline(msg(e))) throw e
+      return { refused: msg(e) }
+    }
+  }
   const follow = async () => {
     const seq = ++readSeq.current
     try {
-      const state = await fetchCheckoutState(bill.id, checkoutIds(sessionRef.current))
+      const state = await readState()
       if (seq !== readSeq.current) return
+      if ('refused' in state) { apply({ kind: 'lock', note: state.refused }); return }
       apply(followBill(state, totalsRef.current?.totalSen ?? null))
       if (loadFailed.current) { loadFailed.current = false; setError(null) }
     } catch (e) {
@@ -172,7 +191,9 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     }
     step({ type: 'send' }); setError(null); setChangeNote(null)
     try {
-      setResult(await checkoutBill(bill.id, toPayments(sending), s.checkoutId))
+      setResult(byItem
+        ? await checkoutItems(bill.id, byItem.items, toPayments(sending), s.checkoutId)
+        : await checkoutBill(bill.id, toPayments(sending), s.checkoutId))
     } catch (e) {
       const m = msg(e)
       if (looksOffline(m)) { step({ type: 'noReply' }); setError(UNSURE); void follow() }
@@ -204,7 +225,9 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     step({ type: 'check' }); setError(null)
     ++readSeq.current
     try {
-      const a = followBill(await fetchCheckoutState(bill.id, checkoutIds(sessionRef.current)), totalsRef.current?.totalSen ?? null)
+      const state = await readState()
+      if ('refused' in state) { step({ type: 'checkEnded' }); apply({ kind: 'lock', note: state.refused }); return }
+      const a = followBill(state, totalsRef.current?.totalSen ?? null)
       apply(a)
       if (a.kind === 'keep' || a.kind === 'reload') {
         step({ type: 'checkedOpen', newCheckoutId: crypto.randomUUID() }); setError(CHECKED_OPEN)
@@ -234,7 +257,10 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   }
 
   const live = (items ?? []).filter((i) => !i.voided_at)
-  const itemCount = live.reduce((n, i) => n + i.qty, 0)
+  const shown = byItem
+    ? byItem.items.flatMap((s) => { const it = live.find((i) => i.id === s.itemId); return it ? [{ ...it, qty: s.qty }] : [] })
+    : live
+  const itemCount = shown.reduce((n, i) => n + i.qty, 0)
   const showPad = !locked && method !== null && (split || method.kind === 'cash')
   const change = !split && method?.kind === 'cash' ? liveChangeSen(total, entry) : null
   const quick = method?.kind === 'cash' ? quickTenders(split ? parseRinggit(entry) ?? left : total) : []
@@ -252,7 +278,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
         </div>
         <div className="mt-3 flex-1 space-y-1 overflow-y-auto">
           {items === null && <p className="text-brown-muted">Loading…</p>}
-          {live.map((i) => (
+          {shown.map((i) => (
             <div key={i.id} className="flex justify-between gap-2">
               <span>
                 {i.qty} × {i.name_snapshot}

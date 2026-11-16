@@ -8,18 +8,23 @@ const api = vi.hoisted(() => ({
   fetchCheckoutState: vi.fn(),
   fetchPaymentMethods: vi.fn(),
   checkoutBill: vi.fn(),
+  checkoutItems: vi.fn(),
+  splitTotals: vi.fn(),
   fetchBillItems: vi.fn(),
 }))
 vi.mock('./checkoutApi', () => ({
   fetchCheckoutState: api.fetchCheckoutState,
   fetchPaymentMethods: api.fetchPaymentMethods,
   checkoutBill: api.checkoutBill,
+  checkoutItems: api.checkoutItems,
+  splitTotals: api.splitTotals,
 }))
 vi.mock('../order/posApi', () => ({ fetchBillItems: api.fetchBillItems }))
 
 import PaymentScreen from './PaymentScreen'
 import { billChangedAtPay } from './follow'
-import { CHECKED_OPEN } from './paySession'
+import { CHECKED_OPEN, UNSURE } from './paySession'
+import { BILL_CHANGED_ITEMS } from '../order/splitSelection'
 
 const totals = {
   subtotalSen: 10066, serviceChargeSen: 0, sstSen: 604, takeawayFeeSen: 0, beforeRoundingSen: 10670,
@@ -49,7 +54,7 @@ beforeEach(() => {
     { id: 'm-visa', branch_id: 'br', name: 'Visa', kind: 'card', needs_reference: true, sort_order: 2, is_active: true },
   ])
   api.fetchBillItems.mockResolvedValue([])
-  api.checkoutBill.mockReset()
+  api.checkoutBill.mockReset(); api.checkoutItems.mockReset(); api.splitTotals.mockReset()
 })
 afterEach(cleanup)
 
@@ -227,5 +232,130 @@ describe('PaymentScreen', () => {
     expect(api.fetchPaymentMethods.mock.calls.length).toBe(before + 1)
     expect(screen.getByRole('button', { name: 'Cash' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+  })
+})
+
+describe('PaymentScreen — split by item (split spec §3.3)', () => {
+  const itemRow = (id: string, name: string, qty: number, unit: number) => ({
+    id, order_id: 'o1', product_id: `p-${id}`, name_snapshot: name, unit_price_sen: unit, sst_rate_bp: 600, takeaway_fee_sen: 0,
+    order_type: 'dine_in', qty, note: null, modifiers_snapshot: [], voided_at: null, catalog_discount_bp: 0, catalog_discount_name: null,
+    discount_kind: null, discount_value: null, discount_reason: null,
+    orders: { order_no: '261116-009/1', source: 'counter', placed_at: '2026-11-16T04:00:00Z' },
+  })
+  const partTotals = { ...totals, subtotalSen: 2800, serviceChargeSen: 280, sstSen: 168, beforeRoundingSen: 3248, roundingSen: 2, totalSen: 3250 }
+  const picked = [{ itemId: 'i1', qty: 1 }, { itemId: 'i2', qty: 1 }]
+  const renderSplit = (onClose = vi.fn(), onPaid = vi.fn()) => {
+    render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={[]} split={{ items: picked }}
+      onSendIds={() => {}} onClose={onClose} onPaid={onPaid} />)
+    return { onClose, onPaid }
+  }
+  beforeEach(() => {
+    api.fetchBillItems.mockResolvedValue([itemRow('i1', 'Latte', 3, 1300), itemRow('i2', 'Cake', 1, 1500), itemRow('i3', 'Soup', 1, 900)])
+    api.splitTotals.mockResolvedValue(partTotals)
+  })
+
+  it('shows the split title, only the picked units and the part\'s totals', async () => {
+    renderSplit()
+    await flush()
+    expect(screen.getByText('Table T3 · Split')).toBeTruthy()
+    expect(screen.getByText('1 × Latte')).toBeTruthy()
+    expect(screen.getByText('1 × Cake')).toBeTruthy()
+    expect(screen.queryByText(/Soup/)).toBeNull()
+    expect(api.splitTotals).toHaveBeenCalledWith('b1', picked)
+    expect(screen.getByRole('button', { name: 'Pay RM 32.50' })).toBeTruthy()
+  })
+
+  it('Pay goes through checkout_items with the picked units, never checkout_bill', async () => {
+    api.checkoutItems.mockResolvedValue({ billId: 'p1', billNo: '261116-010', totalSen: 3250, changeSen: 0, receiptQueued: true })
+    const { onPaid } = renderSplit()
+    await flush()
+    press('Cash')
+    press('Pay RM 32.50')
+    await flush()
+    expect(api.checkoutBill).not.toHaveBeenCalled()
+    expect(api.checkoutItems).toHaveBeenCalledTimes(1)
+    expect(api.checkoutItems.mock.calls[0].slice(0, 3)).toEqual(['b1', picked, [{ methodId: 'm-cash', amountSen: 3250, tenderedSen: null, reference: null }]])
+    expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
+    press('Done')
+    expect(onPaid).toHaveBeenCalledTimes(1)
+  })
+
+  it('Cancel payment goes back (PosTill reopens the picker with the selection kept)', async () => {
+    const { onClose } = renderSplit()
+    await flush()
+    press('Cancel payment')
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('a selection the server refuses locks the screen with its words', async () => {
+    api.splitTotals.mockRejectedValue(new Error('The bill changed. Check the items again.'))
+    renderSplit()
+    await flush()
+    expect(screen.getByText('The bill changed. Check the items again.')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Close' }).length).toBeGreaterThan(0)
+  })
+
+  it('no reply: Try again resends checkout_items with the same units, payments and checkout id', async () => {
+    api.checkoutItems.mockRejectedValueOnce(new Error('Failed to fetch'))
+    api.checkoutItems.mockResolvedValueOnce({ billId: 'p1', billNo: '261116-010', totalSen: 3250, changeSen: 0, receiptQueued: true })
+    renderSplit()
+    await flush()
+    press('Cash')
+    press('Pay RM 32.50')
+    await flush()
+    expect(screen.getByText(UNSURE)).toBeTruthy()
+    press('Try again')
+    await flush()
+    expect(api.checkoutItems).toHaveBeenCalledTimes(2)
+    expect(api.checkoutItems.mock.calls[1]).toEqual(api.checkoutItems.mock.calls[0])
+    expect(api.checkoutBill).not.toHaveBeenCalled()
+    expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
+  })
+
+  it('Check bill finds the part unpaid: unlocks with a new id and keeps the PART\'s total, never the table bill\'s', async () => {
+    api.checkoutItems.mockRejectedValueOnce(new Error('Failed to fetch'))
+    renderSplit()
+    await flush()
+    press('Cash')
+    press('Pay RM 32.50')
+    await flush()
+    api.fetchCheckoutState.mockReset()
+    api.fetchCheckoutState.mockResolvedValueOnce({ status: 'open', billNo: bill.bill_no, mergedIntoBillNo: null, totals, result: null })
+    api.fetchCheckoutState.mockRejectedValue(new Error('Failed to fetch'))   // the follow after Check bill finds no network
+    press('Check bill')
+    await flush()
+    expect(screen.getByText(CHECKED_OPEN)).toBeTruthy()
+    expect(screen.queryByText('The bill changed on another iPad — check the total.')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Pay RM 32.50' })).toBeTruthy()
+    api.checkoutItems.mockResolvedValueOnce({ billId: 'p1', billNo: '261116-010', totalSen: 3250, changeSen: 0, receiptQueued: true })
+    press('Cash')
+    press('Pay RM 32.50')
+    await flush()
+    expect(api.checkoutItems).toHaveBeenCalledTimes(2)
+    expect(api.checkoutItems.mock.calls[1][3]).not.toBe(api.checkoutItems.mock.calls[0][3])
+    expect(api.checkoutItems.mock.calls[1][2]).toEqual([{ methodId: 'm-cash', amountSen: 3250, tenderedSen: null, reference: null }])
+  })
+
+  it('Check bill finds the picked units changed: locks with the server\'s words', async () => {
+    api.checkoutItems.mockRejectedValueOnce(new Error('Failed to fetch'))
+    renderSplit()
+    await flush()
+    press('Cash')
+    press('Pay RM 32.50')
+    await flush()
+    api.splitTotals.mockRejectedValue(new Error(BILL_CHANGED_ITEMS))
+    press('Check bill')
+    await flush()
+    expect(screen.getByText(BILL_CHANGED_ITEMS)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Pay/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+  })
+
+  it('a part this screen paid shows as paid (the reply was lost), though the table bill is open', async () => {
+    api.fetchCheckoutState.mockResolvedValue({ status: 'open', billNo: bill.bill_no, mergedIntoBillNo: null, totals,
+      result: { billId: 'p1', billNo: '261116-010', totalSen: 3250, changeSen: 0, receiptQueued: true } })
+    renderSplit()
+    await flush()
+    expect(screen.getByText('Bill 261116-010 paid · RM 32.50')).toBeTruthy()
   })
 })

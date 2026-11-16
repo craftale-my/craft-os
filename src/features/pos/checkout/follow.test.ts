@@ -34,6 +34,9 @@ describe('followBill — the checkout sheet follows its bill', () => {
   it('keeps everything when the total is the same', () => {
     expect(followBill(state({ totals: totals(7600) }), 7600)).toEqual({ kind: 'keep' })
   })
+  it('split by item: the table bill stays open, and a part paid under this screen\'s id is shown as paid here', () => {
+    expect(followBill(state({ status: 'open', totals: totals(3015), result }), 3250)).toEqual({ kind: 'paidHere', result })
+  })
 })
 
 describe('parseCheckoutState', () => {

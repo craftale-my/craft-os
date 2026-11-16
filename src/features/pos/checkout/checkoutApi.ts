@@ -196,6 +196,17 @@ export async function checkoutBill(billId: string, payments: PaymentInput[], che
   return parseCheckoutResult(data)
 }
 
+/** Pay selected (checkout_items, split spec §4.3): the units become their own bill, paid. A timeout or a
+ *  dropped connection throws — Try again resends with the SAME checkoutId, which the server answers
+ *  with the first result (never charges twice). */
+export async function checkoutItems(billId: string, items: SplitItem[], payments: PaymentInput[], checkoutId: string): Promise<CheckoutResult> {
+  const { data, error } = await supabase
+    .rpc('checkout_items', { p_bill_id: billId, p_items: items, p_payments: payments, p_checkout_id: checkoutId })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  return parseCheckoutResult(data)
+}
+
 export async function reprintReceipt(billId: string): Promise<void> {
   const { error } = await supabase.rpc('reprint_receipt', { p_bill_id: billId })
   if (error) fail(error)
