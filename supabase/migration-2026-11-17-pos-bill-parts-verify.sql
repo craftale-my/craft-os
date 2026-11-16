@@ -1,0 +1,216 @@
+-- Self-check for POS part payments (split equally / by amount, Part B). Run on craft-os-dev after
+-- migration-2026-11-17-pos-bill-parts.sql. Everything is rolled back. Success = a result row
+-- "VERIFY OK". Sections (one DO block each, ids in the temp table fixture): FIXTURE; B1 quote and
+-- part payments; B2 the balance by checkout_bill and the guards; B3 receipts and screen reads.
+-- Numbers: no service charge, 0% SST, 5 sen rounding; Set A 70.35, Set B 70.40, Extra 3.00.
+begin;
+
+create function pg_temp.expect_error(p_sql text, p_message text, p_label text) returns void
+language plpgsql as $$
+begin
+  execute p_sql;
+  raise exception 'FAIL %: no error (expected "%")', p_label, p_message using errcode = 'assert_failure';
+exception when raise_exception then
+  if sqlerrm is distinct from p_message then
+    raise exception 'FAIL %: got "%" (expected "%")', p_label, sqlerrm, p_message;
+  end if;
+end $$;
+create function pg_temp.act(p_user uuid) returns void
+language sql as $$
+  select set_config('request.jwt.claims', json_build_object('sub', p_user, 'role', 'authenticated')::text, true);
+$$;
+create temp table fixture (k text primary key, v uuid);
+create function pg_temp.put(p_k text, p_v uuid) returns void
+language sql as $$ insert into pg_temp.fixture(k, v) values (p_k, p_v) on conflict (k) do update set v = excluded.v $$;
+create function pg_temp.id(p_k text) returns uuid
+language sql as $$ select v from pg_temp.fixture where k = p_k $$;
+create function pg_temp.card(p_sen integer) returns jsonb
+language sql as $$ select jsonb_build_array(jsonb_build_object('methodId', pg_temp.id('card'), 'amountSen', p_sen)) $$;
+-- one order of products on a table (or onto its open bill); returns the order id
+create function pg_temp.order_on(p_table text, p_products text[]) returns uuid
+language sql as $$
+  select place_counter_order(pg_temp.id(p_table), 'dine_in', 2,
+           (select jsonb_agg(jsonb_build_object('productId', pg_temp.id(p), 'variantId', pg_temp.id(p || '_v'))) from unnest(p_products) p),
+           gen_random_uuid())
+$$;
+
+-- ── FIXTURE: outlet VERIFY P, tables P1–P6, Set A 70.35, Set B 70.40, Extra 3.00 (0% SST), no
+--    service charge, a card and a cash method, staff with PINs, one tablet signed in, a shift open;
+--    bills X (P1: Set A), Y (P2: Set B), Z (P3: Set A), W (P4: Set A + Extra), V (P5: Set A) ──
+do $$
+declare
+  v_owner uuid := '76cbcf9f-905e-450d-9f5e-1c9e72a9373d';   -- dev test login (owner)
+  v_cash  uuid := 'eeeeeeee-0000-0000-0000-0000000006a1';
+  v_sup   uuid := 'eeeeeeee-0000-0000-0000-0000000006a2';
+  v_dev   uuid := 'eeeeeeee-0000-0000-0000-0000000006a3';
+  v_a uuid; v_t uuid; v_cat uuid; v_catalog uuid; v_p uuid; v_v uuid; v_res jsonb; v_order uuid; r record; i integer;
+begin
+  update system_role_permissions set permissions = permissions - 'pos_login' - 'all_branches' - 'access_settings' - 'pos_supervise'
+   where true;
+  insert into branches(name, address) values ('VERIFY P', 'p') returning id into v_a;
+  perform pg_temp.put('branch', v_a);
+  for i in 1..6 loop
+    insert into dining_tables(branch_id, label, sort_order) values (v_a, 'P' || i, i) returning id into v_t;
+    perform pg_temp.put('t' || i, v_t);
+  end loop;
+  insert into print_routes(branch_id, name, kind, address) values (v_a, 'Bar', 'agent', '127.0.0.1:9100');
+  insert into branch_pos_settings(branch_id, receipt_route) values (v_a, 'Bar');
+  insert into menu_categories(name, sort_order) values ('VERIFY P SETS', 900) returning id into v_cat;
+  insert into menu_catalogs(name, sort_order) values ('VERIFY P MENU', 900) returning id into v_catalog;
+  for r in select * from (values ('seta', 'Verify P Set A', 7035), ('setb', 'Verify P Set B', 7040), ('extra', 'Verify P Extra', 300)) as x(k, name, sen) loop
+    insert into menu_products(name, category_id, sst_rate_bp) values (r.name, v_cat, 0) returning id into v_p;
+    insert into menu_variants(product_id, feedme_variant_key, name, price_sen) values (v_p, '', 'Regular', r.sen) returning id into v_v;
+    insert into catalog_products(catalog_id, product_id, availability) values (v_catalog, v_p, 'all');
+    insert into catalog_variant_prices(catalog_id, variant_id, price_sen) values (v_catalog, v_v, r.sen);
+    perform pg_temp.put(r.k, v_p); perform pg_temp.put(r.k || '_v', v_v);
+  end loop;
+  insert into branch_catalogs(branch_id, role, catalog_id) values (v_a, 'dine_in', v_catalog), (v_a, 'takeaway', v_catalog), (v_a, 'qr', v_catalog);
+  insert into payment_methods(branch_id, name, kind, sort_order) values (v_a, 'P Card', 'card', 1) returning id into v_t;
+  perform pg_temp.put('card', v_t);
+  insert into payment_methods(branch_id, name, kind, sort_order) values (v_a, 'P Cash', 'cash', 2) returning id into v_t;
+  perform pg_temp.put('cash', v_t);
+  update staff set branch_id = v_a where id = v_owner;
+  perform pg_temp.act(v_owner);
+  insert into auth.users (id) values (v_cash), (v_sup), (v_dev);
+  insert into staff (id, name, rank, onboarding_completed, joined_at, system_role, branch_id) values
+    (v_cash, 'Verify P Cashier',    'trainee', true, current_date, 'staff', v_a),
+    (v_sup,  'Verify P Supervisor', 'trainee', true, current_date, 'staff', v_a);
+  update staff set system_role = 'supervisor' where id = v_sup;
+  for r in select * from (values (v_cash, '1111'), (v_sup, '2222')) as x(id, pin) loop
+    perform pg_temp.act(r.id);
+    if not coalesce((set_my_pos_pin(r.pin, null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: PIN of %', r.id; end if;
+  end loop;
+  insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by) values (v_dev, v_a, 'pos', 'P Counter', 'ipad', true, v_owner);
+  perform pg_temp.put('owner', v_owner); perform pg_temp.put('sup', v_sup); perform pg_temp.put('cashier', v_cash); perform pg_temp.put('dev', v_dev);
+  perform pg_temp.act(v_dev);
+  v_res := pos_start_session(v_cash, '1111');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL fixture: cashier sign-in: %', v_res; end if;
+  v_res := open_shift(10000);
+  perform pg_temp.put('shift', (v_res->'shift'->>'id')::uuid);
+  for r in select * from (values ('bX', 't1', array['seta']), ('bY', 't2', array['setb']), ('bZ', 't3', array['seta']),
+                                 ('bW', 't4', array['seta', 'extra']), ('bV', 't5', array['seta'])) as x(k, t, products) loop
+    v_order := pg_temp.order_on(r.t, r.products);
+    perform pg_temp.put(r.k, (select bill_id from orders where id = v_order));
+    if r.k = 'bW' then perform pg_temp.put('Wx', (select id from order_items where order_id = v_order and product_id = pg_temp.id('extra'))); end if;
+  end loop;
+  for r in select k from unnest(array['x1', 'x2', 'y1', 'y2', 'z1', 'z2', 'w1']) k loop
+    perform pg_temp.put(r.k, gen_random_uuid());
+  end loop;
+end $$;
+
+-- ── B1. Quotes and part payments (spec §4.6; §8 Part B) ──────────────────────
+do $$
+declare
+  v_x uuid := pg_temp.id('bX');
+  v_q jsonb; v_res jsonb; v_cash jsonb;
+  r record;
+begin
+  -- schema and grants
+  if not (select relrowsecurity from pg_class where relname = 'bill_parts' and relnamespace = 'public'::regnamespace)
+     or has_table_privilege('authenticated', 'bill_parts', 'insert')
+     or not has_table_privilege('authenticated', 'bill_parts', 'select')
+     or not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'payments' and column_name = 'part_id') then
+    raise exception 'FAIL B1 schema: bill_parts RLS / privileges / payments.part_id';
+  end if;
+  for r in select f from unnest(array['pos_part_quote(uuid,integer)', 'pay_bill_part(uuid,uuid,integer,integer,jsonb)']) f loop
+    if not has_function_privilege('authenticated', r.f, 'execute') or has_function_privilege('anon', r.f, 'execute') then
+      raise exception 'FAIL B1 grants: %', r.f;
+    end if;
+  end loop;
+  for r in select f from unnest(array['pos_bill_paid_parts(uuid)', 'pos_part_result(uuid)', 'pos_part_same_payments(uuid,jsonb)',
+                                      'pos_part_receipt_payload(uuid)', 'pos_queue_part_receipt(uuid)']) f loop
+    if has_function_privilege('authenticated', r.f, 'execute') then raise exception 'FAIL B1 grants: % is internal', r.f; end if;
+  end loop;
+
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- RM 70.35 in 3: floor(7035 / 3 / 5) × 5 = 23.45
+  v_q := pos_part_quote(v_x, 3);
+  if v_q is distinct from '{"totalSen": 7035, "paidSen": 0, "balanceSen": 7035, "partsPaid": 0, "sharesPaid": 0, "ways": 3, "shareSen": 2345}'::jsonb then
+    raise exception 'FAIL B1 quote X: %', v_q;
+  end if;
+  v_q := pos_part_quote(v_x, null);
+  if v_q->'ways' <> 'null'::jsonb or v_q->'shareSen' <> 'null'::jsonb or (v_q->>'balanceSen')::int <> 7035 then
+    raise exception 'FAIL B1 quote by amount: %', v_q;
+  end if;
+  perform pg_temp.expect_error(format('select pos_part_quote(%L, 1)', v_x), 'Invalid split', 'B1 1 way');
+  perform pg_temp.expect_error(format('select pos_part_quote(%L, 21)', v_x), 'Invalid split', 'B1 21 ways');
+
+  -- share 1 of 3 in cash, RM 50.00 received: change 26.55
+  v_cash := jsonb_build_array(jsonb_build_object('methodId', pg_temp.id('cash'), 'amountSen', 2345, 'tenderedSen', 5000));
+  v_res := pay_bill_part(v_x, pg_temp.id('x1'), 2345, 3, v_cash);
+  if (v_res->>'partId')::uuid <> pg_temp.id('x1') or (v_res->>'partNo')::int <> 1 or (v_res->>'ways')::int <> 3
+     or (v_res->>'amountSen')::int <> 2345 or (v_res->>'paidSen')::int <> 2345 or (v_res->>'balanceSen')::int <> 4690
+     or (v_res->>'changeSen')::int <> 2655 or not (v_res->>'receiptQueued')::boolean
+     or jsonb_array_length(v_res->'payments') <> 1
+     or (select count(*) from payments where part_id = pg_temp.id('x1') and bill_id = v_x and line_no = 1
+            and tendered_sen = 5000 and change_sen = 2655 and shift_id = pg_temp.id('shift')) <> 1
+     or (select status from bills where id = v_x) <> 'open'
+     or (select taken_by from bill_parts where id = pg_temp.id('x1')) <> pg_temp.id('cashier') then
+    raise exception 'FAIL B1 part 1 of X: %', v_res;
+  end if;
+  -- a resend gets the first answer; other amounts or another bill are refused
+  if pay_bill_part(v_x, pg_temp.id('x1'), 2345, 3, v_cash) <> v_res or (select count(*) from bill_parts where bill_id = v_x) <> 1 then
+    raise exception 'FAIL B1 replay';
+  end if;
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 2340, 3, %L)', v_x, pg_temp.id('x1'), pg_temp.card(2340)),
+    'This payment was already recorded with other amounts — check Today''s bills', 'B1 replay other amount');
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 2345, 3, %L)', v_x, pg_temp.id('x1'), pg_temp.card(2345)),
+    'This payment was already recorded with other amounts — check Today''s bills', 'B1 replay other payments');
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 2345, 3, %L)', pg_temp.id('bY'), pg_temp.id('x1'), v_cash),
+    'This part id belongs to another bill', 'B1 replay on another bill');
+  -- the N is now fixed at 3
+  v_q := pos_part_quote(v_x, 5);
+  if (v_q->>'ways')::int <> 3 or (v_q->>'sharesPaid')::int <> 1 or (v_q->>'partsPaid')::int <> 1 or (v_q->>'shareSen')::int <> 2345 then
+    raise exception 'FAIL B1 fixed N: %', v_q;
+  end if;
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 2345, 4, %L)', v_x, gen_random_uuid(), pg_temp.card(2345)),
+    'The bill changed. Check the split again.', 'B1 another N');
+  v_res := pay_bill_part(v_x, pg_temp.id('x2'), 2345, 3, pg_temp.card(2345));
+  if (v_res->>'partNo')::int <> 2 or (v_res->>'balanceSen')::int <> 2345 then raise exception 'FAIL B1 part 2 of X: %', v_res; end if;
+  -- the last share and anything at or above the balance are not parts
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 2345, 3, %L)', v_x, gen_random_uuid(), pg_temp.card(2345)),
+    'Pay the rest with Pay, not as a part', 'B1 last share');
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 3000, null, %L)', v_x, gen_random_uuid(), pg_temp.card(3000)),
+    'The amount is more than the balance', 'B1 above the balance');
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 0, null, %L)', v_x, gen_random_uuid(), '[]'),
+    'Invalid payment amount', 'B1 zero');
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 1000, null, %L)', v_x, gen_random_uuid(), pg_temp.card(900)),
+    'Payments (RM 9.00) do not match the total (RM 10.00)', 'B1 payments short');
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, null, 1000, null, %L)', v_x, pg_temp.card(1000)),
+    'Part id is missing', 'B1 no part id');
+
+  -- RM 70.40 in 3: 23.45, 23.45 (the last, 23.50, by checkout_bill in B2)
+  v_res := pay_bill_part(pg_temp.id('bY'), pg_temp.id('y1'), 2345, 3, pg_temp.card(2345));
+  v_q := pos_part_quote(pg_temp.id('bY'), 3);
+  if (v_q->>'shareSen')::int <> 2345 or (v_q->>'balanceSen')::int <> 4695 then raise exception 'FAIL B1 Y share 2: %', v_q; end if;
+  v_res := pay_bill_part(pg_temp.id('bY'), pg_temp.id('y2'), 2345, 3, pg_temp.card(2345));
+  if (v_res->>'balanceSen')::int <> 2350 then raise exception 'FAIL B1 Y after 2 shares: %', v_res; end if;
+
+  -- Z: an item added after share 1 changes share 2 (49.90 left in 2 → 24.95); the old share is refused
+  v_res := pay_bill_part(pg_temp.id('bZ'), pg_temp.id('z1'), 2345, 3, pg_temp.card(2345));
+  perform pg_temp.order_on('t3', array['extra']);
+  v_q := pos_part_quote(pg_temp.id('bZ'), 3);
+  if (v_q->>'balanceSen')::int <> 4990 or (v_q->>'shareSen')::int <> 2495 then raise exception 'FAIL B1 Z re-quote: %', v_q; end if;
+  perform pg_temp.expect_error(format('select pay_bill_part(%L, %L, 2345, 3, %L)', pg_temp.id('bZ'), gen_random_uuid(), pg_temp.card(2345)),
+    'The bill changed. Check the split again.', 'B1 stale share');
+  v_res := pay_bill_part(pg_temp.id('bZ'), pg_temp.id('z2'), 2495, 3, pg_temp.card(2495));
+  if (v_res->>'balanceSen')::int <> 2495 then raise exception 'FAIL B1 Z share 2: %', v_res; end if;
+
+  -- W: by amount, RM 10.00 of 73.35
+  v_res := pay_bill_part(pg_temp.id('bW'), pg_temp.id('w1'), 1000, null, pg_temp.card(1000));
+  if (v_res->>'partNo')::int <> 1 or v_res->'ways' <> 'null'::jsonb or (v_res->>'balanceSen')::int <> 6335 then
+    raise exception 'FAIL B1 W by amount: %', v_res;
+  end if;
+
+  -- one part receipt per part; a part's cash counts in its shift though no bill closed yet
+  if (select count(*) from print_jobs where branch_id = pg_temp.id('branch') and payload->>'kind' = 'part') <> 7 then
+    raise exception 'FAIL B1 part receipts queued';
+  end if;
+  v_res := pos_shift_report(pg_temp.id('shift'));
+  if (v_res->'cash'->>'cashSalesSen')::int <> 2345 or (v_res->'summary'->>'billCount')::int <> 0 then
+    raise exception 'FAIL B1 Z report: % %', v_res->'cash', v_res->'summary';
+  end if;
+end $$;
+
+select 'VERIFY OK' as result;
+rollback;
