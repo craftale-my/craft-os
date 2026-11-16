@@ -670,6 +670,29 @@ exception when sqlstate 'SFRB0' then
 end $$;
 
 -- ── A4. Receipt "Split from" and the Z report (spec §6; §8 test 7) ──────────
+-- Block A4 leaves b1 paid on purpose: the blocks after it read that state.
+-- Moving the open table bill must not change the table an earlier part's receipt names (own rolled-back sub-block).
+do $$
+declare
+  v_free uuid;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  select id into v_free from dining_tables dt
+   where dt.branch_id = pg_temp.id('branch') and dt.is_active and dt.label <> 'S1'
+     and not exists (select 1 from bills ob where ob.table_id = dt.id and ob.status = 'open')
+   order by dt.sort_order limit 1;
+  if v_free is null then raise exception 'FAIL A4 move: no free table'; end if;
+  perform move_bill(pg_temp.id('b1'), v_free);
+  if (select table_id from bills where id = pg_temp.id('b1')) <> v_free then
+    raise exception 'FAIL A4 move_bill did not move b1';
+  end if;
+  if pos_receipt_payload(pg_temp.id('p1'), false)->'splitFrom'->>'table' is distinct from 'S1' then
+    raise exception 'FAIL A4 part receipt after the table bill moved: %', pos_receipt_payload(pg_temp.id('p1'), false)->'splitFrom';
+  end if;
+  raise exception 'A4 move checks done' using errcode = 'A4RB0';
+exception when sqlstate 'A4RB0' then
+  null;   -- undo the move; a FAIL (any other error) still stops the script
+end $$;
 do $$
 declare
   v_res jsonb;

@@ -742,9 +742,8 @@ language sql stable security definer set search_path = public, pg_temp as $$
       'phone', nullif(trim(br.phone), ''),
       'email', nullif(trim(br.email), '')),
     'billNo', b.bill_no,
-    'splitFrom', (select jsonb_build_object('billNo', sf.bill_no, 'table', sft.label)                 -- S5
-                    from bills sf left join dining_tables sft on sft.id = sf.table_id                 -- S5
-                   where sf.id = b.split_from),                                                       -- S5
+    'splitFrom', (select jsonb_build_object('billNo', sf.bill_no, 'table', t.label)                   -- S5: the part's own table, frozen at the split
+                    from bills sf where sf.id = b.split_from),                                        -- S5
     'closedAt', to_char(b.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
     'cashier', (select st.name from staff st where st.id = b.closed_by),
     'tableLabel', t.label,
@@ -755,7 +754,7 @@ language sql stable security definer set search_path = public, pg_temp as $$
                'amountSen', oi.unit_price_sen * oi.qty,
                'mods', (select coalesce(jsonb_agg(m->>'name' order by ord), '[]'::jsonb)
                           from jsonb_array_elements(oi.modifiers_snapshot) with ordinality as x(m, ord)),
-               'discounts', (select coalesce(jsonb_agg(d.j order by d.k), '[]'::jsonb) from (
+               'discounts', (select coalesce(jsonb_agg(d.j order by d.k), '[]'::jsonb) from (                  -- D
                    select 1 as k, jsonb_build_object(
                             'label', coalesce(oi.catalog_discount_name, 'Catalog') || ' ' || (oi.catalog_discount_bp / 100) || '%',
                             'amountSen', (ln.l->>'catalogDiscountSen')::integer) as j
@@ -768,12 +767,12 @@ language sql stable security definer set search_path = public, pg_temp as $$
                     where coalesce((ln.l->>'itemDiscountSen')::integer, 0) > 0) d))
              order by o.placed_at, oi.name_snapshot, oi.id)
         from order_items oi join orders o on o.id = oi.order_id
-        left join lateral (select x.l from jsonb_array_elements(coalesce(b.totals->'lines', '[]'::jsonb)) as x(l)
+        left join lateral (select x.l from jsonb_array_elements(coalesce(b.totals->'lines', '[]'::jsonb)) as x(l)-- D
                             where x.l->>'id' = oi.id::text) ln on true
        where oi.bill_id = b.id and oi.voided_at is null), '[]'::jsonb),
     'itemCount', (select coalesce(sum(oi.qty), 0) from order_items oi where oi.bill_id = b.id and oi.voided_at is null),
     'subtotalSen', b.subtotal_sen,
-    'billDiscountSen', coalesce((b.totals->>'billDiscountSen')::integer, 0),
+    'billDiscountSen', coalesce((b.totals->>'billDiscountSen')::integer, 0),                                   -- D
     'sstGroups', coalesce(b.totals->'sstGroups', '[]'::jsonb),
     'serviceChargeGroups', coalesce(b.totals->'serviceChargeGroups', '[]'::jsonb),
     'takeawayFeeSen', b.takeaway_fee_sen,
