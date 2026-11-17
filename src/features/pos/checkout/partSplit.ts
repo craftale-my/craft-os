@@ -36,6 +36,9 @@ export function fixedWays(parts: BillPart[]): number | null {
   const equal = parts.filter((p) => p.ways !== null)
   return equal.length > 0 ? equal[equal.length - 1].ways : null
 }
+/** By amount with nothing (or nothing above 0) typed: there is no part to pay yet, so Pay is off. */
+export const amountMissing = (mode: PartMode, dueSen: number | null): boolean =>
+  mode === 'amount' && (dueSen === null || dueSen <= 0)
 export const splitIntoLabel = (n: number): string => `Split into ${n}`
 export const shareLabel = (k: number, n: number, sen: number): string => `Share ${k} of ${n} · ${formatSen(sen)}`
 /** "Paid 1 of 3 · RM 23.45 (Cash)" for an equal share (k counts equal shares only); "Paid part 2 · RM 10.00 (Card)" by amount. */

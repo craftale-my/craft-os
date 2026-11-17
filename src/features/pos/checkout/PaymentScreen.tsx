@@ -12,7 +12,7 @@ import DiscountRows from './DiscountRows'
 import { catalogTag, discountLabel, lineDiscountRows, linesById, storedDiscount } from './discounts'
 import { billChangedAtPay, earlierPartPaid, followBill, type CheckoutState, type FollowAction } from './follow'
 import {
-  BALANCE_DUE, MAX_WAYS, MIN_WAYS, PERCENT_CHIPS, SPLIT_MODE_LABEL, clampWays, equalPay, fixedWays, paidPartLabel, partPaidNote, partProblem,
+  BALANCE_DUE, MAX_WAYS, MIN_WAYS, PERCENT_CHIPS, SPLIT_MODE_LABEL, amountMissing, clampWays, equalPay, fixedWays, paidPartLabel, partPaidNote, partProblem,
   percentChipSen, shareLabel, splitIntoLabel, type BillPart, type PartDone, type PartMode, type PartQuote,
 } from './partSplit'
 import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
@@ -215,6 +215,14 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   // an equal split already started fixes N; the share is the server's, quoted again whenever the bill moves.
   // The old quote goes at once: Pay waits for the new one, so a share for the old N or the old bill is never sent.
   useEffect(() => { const f = fixedWays(parts); if (f !== null) setWays(f) }, [parts])
+  // A screen opened on a bill whose equal split has begun comes back in Equally, once: a cashier who then
+  // turns it off keeps it off while the bill is read again.
+  const modeRestoredRef = useRef(false)
+  useEffect(() => {
+    if (modeRestoredRef.current || parts.length === 0) return
+    modeRestoredRef.current = true
+    if (fixedWays(parts) !== null) setPartMode((cur) => (cur === 'none' ? 'equal' : cur))
+  }, [parts])
   useEffect(() => {
     ++quoteSeq.current
     setQuote(null); setQuoteError(null)
@@ -522,7 +530,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
               Received {entry ? `RM ${entry}` : 'exact'} · Change {change === null ? '—' : formatSen(change)}
             </div>
           )}
-          {split && <div className="mt-1 text-sm text-brown-muted">This payment RM {entry || '0'}</div>}
+          {split && <div className="mt-1 text-sm text-brown-muted">This payment {formatSen(parseRinggit(entry) ?? 0)}</div>}
         </div>
         {split && method?.kind === 'cash' && !locked && (
           <label className="mx-auto mt-3 block w-full max-w-sm text-sm">Cash received (RM)
@@ -606,7 +614,8 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
             </button>
           </div>
         ) : (
-          <button type="button" onClick={pay} disabled={busy || !totals || (split ? left !== 0 : !method && total !== 0) || equal?.kind === 'problem' || partOffline}
+          <button type="button" onClick={pay} disabled={busy || !totals || (split ? left !== 0 : !method && total !== 0) || equal?.kind === 'problem' || partOffline
+              || (!settled && amountMissing(partMode, partDue))}
             className="mt-3 min-h-16 rounded-xl bg-brown-btn text-lg font-semibold text-white hover:bg-brown-btn-hover disabled:opacity-40">
             {busy ? 'Paying…' : `Pay ${formatSen(total)}`}
           </button>

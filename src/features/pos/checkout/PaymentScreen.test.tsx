@@ -583,7 +583,7 @@ describe('PaymentScreen — split equally / by amount (split spec §3.5)', () =>
     api.checkoutBill.mockResolvedValue({ billId: 'b1', billNo: bill.bill_no, totalSen: 7035, changeSen: 0, receiptQueued: true })
     renderParts()
     await flush()
-    press('Equally')
+    // Equally comes back on its own: the bill's equal split has begun
     await flush()
     expect(api.partQuote).toHaveBeenLastCalledWith('b1', 3)
     expect((screen.getByRole('button', { name: 'More ways' }) as HTMLButtonElement).disabled).toBe(true)   // N is fixed
@@ -807,7 +807,7 @@ describe('PaymentScreen — split follow-up fixes (p_paid_sen, the last share, q
     api.checkoutBill.mockResolvedValue({ billId: 'b1', billNo: bill.bill_no, totalSen: 7035, changeSen: 0, receiptQueued: true })
     render(el())
     await flush()
-    press('Equally')
+    // Equally comes back on its own: the bill's equal split has begun
     await flush()
     expect(screen.getByText('Share 3 of 3 · RM 23.45')).toBeTruthy()          // the balance, as Pay records it
     press('Cash')
@@ -909,5 +909,70 @@ describe('PaymentScreen — split follow-up fixes (p_paid_sen, the last share, q
     press('Pay RM 70.35')
     await flush()
     expect(api.checkoutBill.mock.calls[0][1]).toEqual(cashPayment(7035))
+  })
+})
+
+describe('PaymentScreen — split screen fixes from the 2026-11-17 dev run', () => {
+  const t1740 = { ...totals, subtotalSen: 1500, sstSen: 90, serviceChargeSen: 150, beforeRoundingSen: 1740, roundingSen: 0, totalSen: 1740 }
+  const openState = (paidSen: number, parts: unknown[]) =>
+    ({ status: 'open', billNo: bill.bill_no, mergedIntoBillNo: null, totals: t1740, result: null, paidSen, parts })
+
+  it('reopened after an equal share was paid: Equally and its N come back without a tap', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(580, [{ id: 'x1', partNo: 1, ways: 3, amountSen: 580, methods: ['Card'] }]))
+    api.partQuote.mockResolvedValue({ totalSen: 1740, paidSen: 580, balanceSen: 1160, partsPaid: 1, sharesPaid: 1, ways: 3, shareSen: 580 })
+    renderScreen()
+    await flush()
+    await flush()
+    expect(screen.getByRole('button', { name: 'Equally' }).className).toContain('bg-brown-dark')
+    expect(screen.getByText('Split into 3')).toBeTruthy()
+    expect(screen.getByText('Share 2 of 3 · RM 5.80')).toBeTruthy()
+  })
+
+  it('reopened after a by-amount part: no mode is picked for the cashier', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(500, [{ id: 'x1', partNo: 1, ways: null, amountSen: 500, methods: ['Cash'] }]))
+    renderScreen()
+    await flush()
+    expect(screen.getByRole('button', { name: 'Equally' }).className).not.toContain('bg-brown-dark')
+    expect(screen.queryByText(/^Split into/)).toBeNull()
+  })
+
+  it('Equally turned off after reopening stays off when the same screen reads the bill again', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(580, [{ id: 'x1', partNo: 1, ways: 3, amountSen: 580, methods: ['Card'] }]))
+    api.partQuote.mockResolvedValue({ totalSen: 1740, paidSen: 580, balanceSen: 1160, partsPaid: 1, sharesPaid: 1, ways: 3, shareSen: 580 })
+    const { rerender } = render(screenAt(0, vi.fn()))
+    await flush()
+    await flush()
+    expect(screen.getByText('Split into 3')).toBeTruthy()
+    press('Equally')
+    await flush()
+    expect(screen.queryByText('Split into 3')).toBeNull()
+    api.fetchCheckoutState.mockResolvedValue(openState(580, [{ id: 'x1', partNo: 1, ways: 3, amountSen: 580, methods: ['Card'] }]))
+    rerender(screenAt(1, vi.fn()))
+    await flush()
+    await flush()
+    expect(screen.queryByText('Split into 3')).toBeNull()
+  })
+
+  it('By amount with no amount typed: Pay is off', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(0, []))
+    renderScreen()
+    await flush()
+    press('By amount')
+    const payBtn = screen.getByRole('button', { name: /^Pay RM/ }) as HTMLButtonElement
+    expect(payBtn.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Amount (RM)'), { target: { value: '5' } })
+    press('Cash')
+    expect((screen.getByRole('button', { name: 'Pay RM 5.00' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('split payment: "This payment" shows ringgit and sen, also with the pad cleared', async () => {
+    api.fetchCheckoutState.mockResolvedValue(openState(0, []))
+    renderScreen()
+    await flush()
+    press('Split payment')
+    press('Cash')
+    expect(screen.getByText('This payment RM 17.40')).toBeTruthy()
+    press('C')
+    expect(screen.getByText('This payment RM 0.00')).toBeTruthy()
   })
 })
