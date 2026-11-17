@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 //
 // nav.ts 已覆盖过滤与高亮的纯逻辑;本文件只验证 WIRING:
-// 大类默认折叠、点击展开/收起、子项在展开后才可见、点击大类本身绝不触发导航。
+// 侧栏只列当前模块的页面、切换器开合、选模块本身绝不触发导航。
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
 // SidebarContent itself doesn't touch supabase (NotificationBell is mounted
@@ -63,41 +63,56 @@ const renderWithLocationSpy = (path: string) => {
   return { ...utils, pathnames }
 }
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); localStorage.clear() })
 
-describe('Sidebar 两级导航', () => {
-  it('顶层叶子项始终可见', () => {
-    renderAt('/profile')
+describe('Sidebar 模块导航', () => {
+  it('固定项在任何模块下都可见', () => {
+    renderAt('/hr/leave')
     expect(screen.getByText('Profile')).toBeTruthy()
     expect(screen.getByText('Settings')).toBeTruthy()
+    expect(screen.getByText('Feedback')).toBeTruthy()
   })
 
-  it('未选中的大类不展开子项', () => {
-    renderAt('/profile')
-    expect(screen.getByText('Team')).toBeTruthy()
-    expect(screen.queryByText('Directory')).toBeNull()
-  })
-
-  it('当前路径所在的大类自动展开', () => {
+  it('侧栏只列当前路径所在模块的页面', () => {
     renderAt('/team/reviews')
     expect(screen.getByText('Directory')).toBeTruthy()
     expect(screen.getByText('Reviews')).toBeTruthy()
+    expect(screen.queryByText('Schedule')).toBeNull()
+    expect(screen.queryByText('Purchase Orders')).toBeNull()
   })
 
-  it('点击折叠的大类标题只展开子项,不触发导航', () => {
-    const { pathnames } = renderWithLocationSpy('/profile')
-    fireEvent.click(screen.getByText('Team'))
-    expect(screen.getByText('Directory')).toBeTruthy()
-    expect(pathnames[pathnames.length - 1]).toBe('/profile')
+  it('切换器默认收起,点开后列出全部模块', () => {
+    renderAt('/team')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /switch module/i }))
+    const dialog = screen.getByRole('dialog')
+    for (const label of ['People', 'Time & Pay', 'Work', 'Inventory']) {
+      expect(within(dialog).getByText(label)).toBeTruthy()
+    }
   })
 
-  it('点击已展开的大类标题会收起子项,同样不触发导航', () => {
-    const { pathnames } = renderWithLocationSpy('/team/reviews')
-    // /team/reviews 命中 team-reviews,Team 组已自动展开
-    expect(screen.getByText('Directory')).toBeTruthy()
-    fireEvent.click(screen.getByText('Team'))
+  it('选模块只换侧栏的页面清单,不触发导航', () => {
+    const { pathnames } = renderWithLocationSpy('/team')
+    fireEvent.click(screen.getByRole('button', { name: /switch module/i }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByText('Inventory'))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByText('Purchase Orders')).toBeTruthy()
     expect(screen.queryByText('Directory')).toBeNull()
-    expect(pathnames[pathnames.length - 1]).toBe('/team/reviews')
+    expect(pathnames[pathnames.length - 1]).toBe('/team')
+  })
+
+  it('路径不属于任何模块时,回到上次所在的模块', () => {
+    localStorage.setItem('craftos.nav.module', 'time-pay')
+    renderAt('/profile')
+    expect(screen.getByText('Schedule')).toBeTruthy()
+    expect(screen.queryByText('Directory')).toBeNull()
+  })
+
+  it('Escape 关闭切换器', () => {
+    renderAt('/team')
+    fireEvent.click(screen.getByRole('button', { name: /switch module/i }))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('侧栏不存在两个指向同一路由的链接', () => {
