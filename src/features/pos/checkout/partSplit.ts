@@ -27,6 +27,7 @@ export const SPLIT_MODE_LABEL = { item: 'By item', equal: 'Equally', amount: 'By
 export const BALANCE_DUE = 'Balance due'
 export const AMOUNT_OVER_BALANCE = 'The amount is more than the balance'
 export const ENTER_AMOUNT = 'Enter the amount'
+export const AMOUNT_STEP = 'The amount must end in 0 or 5 sen'
 export const SHARE_LOADING = 'Getting the share — try again in a moment'
 export const SHARE_ZERO = 'The share came back as RM 0.00 — check the bill'
 
@@ -64,11 +65,14 @@ export function percentChipSen(totalSen: number, pct: number, balanceSen: number
   return sen > 0 ? sen : null
 }
 
-/** Pay's check of a part before it goes out. An amount equal to the balance is fine: it pays the rest (checkout_bill). */
+/** Pay's check of a part before it goes out. An amount equal to the balance is fine: it pays the rest (checkout_bill).
+ *  A smaller amount goes in 5 sen steps, as equal shares and the % chips do. */
 export function partProblem(mode: PartMode, dueSen: number | null, balanceSen: number): string | null {
   if (mode === 'amount') {
     if (dueSen === null || dueSen <= 0) return ENTER_AMOUNT
     if (dueSen > balanceSen) return AMOUNT_OVER_BALANCE
+    // a part in 5 sen steps leaves a balance that cash can still pay; the whole balance is taken as it is
+    if (dueSen < balanceSen && dueSen % 5 !== 0) return AMOUNT_STEP
     return null
   }
   if (mode === 'equal' && dueSen === null) return SHARE_LOADING

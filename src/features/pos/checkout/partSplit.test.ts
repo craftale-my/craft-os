@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AMOUNT_STEP,
   AMOUNT_OVER_BALANCE, BALANCE_DUE, ENTER_AMOUNT, PERCENT_CHIPS, SHARE_LOADING, SHARE_ZERO, SPLIT_MODE_LABEL, clampWays, equalPay, fixedWays,
   paidPartLabel, parseBillParts, parsePartQuote, parsePartResult, partPaidNote, partPaidTag, partProblem, payLabelFor, percentChipSen,
   shareLabel, splitIntoLabel, type BillPart, type PartQuote,
@@ -62,6 +63,13 @@ describe('partProblem: what Pay checks before a part goes out', () => {
     expect(AMOUNT_OVER_BALANCE).toBe('The amount is more than the balance')
     expect(partProblem('amount', 7035, 7035)).toBeNull()
     expect(partProblem('amount', 2000, 7035)).toBeNull()
+  })
+  it('by amount: 5 sen steps, as equal shares and the % chips are; the whole balance may end in any sen', () => {
+    expect(partProblem('amount', 583, 7035)).toBe(AMOUNT_STEP)
+    expect(AMOUNT_STEP).toBe('The amount must end in 0 or 5 sen')
+    expect(partProblem('amount', 585, 7035)).toBeNull()
+    expect(partProblem('amount', 7033, 7033)).toBeNull()      // the rest, on a branch that does not round
+    expect(partProblem('amount', 8001, 7035)).toBe(AMOUNT_OVER_BALANCE)
   })
   it('equally: the share must have come', () => {
     expect(partProblem('equal', null, 7035)).toBe(SHARE_LOADING)

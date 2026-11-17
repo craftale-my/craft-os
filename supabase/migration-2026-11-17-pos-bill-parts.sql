@@ -20,8 +20,10 @@
 --     that counts (an active rule added, removed, edited, moved or turned on / off) and a
 --     branch_pos_settings change of sst_registered or cash_rounding (what pos_bill_input reads) are
 --     refused while the branch has an open bill with part payments. Other columns pass.
+-- B6  The Z report's 'parts': part payments taken in this shift on bills that closed elsewhere (or are
+--     still open), and parts from earlier shifts on bills that closed in this one.
 -- Re-run hazards: re-running migration-2026-11-16-pos-split-bill.sql puts back the part-less
--- checkout_bill, pos_split_check, pos_receipt_payload and pos_checkout_state (its pos_insert_payments
+-- checkout_bill, pos_split_check, pos_receipt_payload, pos_checkout_state and pos_shift_report (its pos_insert_payments
 -- writes part_id since B1f; an older text that does not makes pay_bill_part stop with "STOP: ...");
 -- migration-2026-10-29-pos-device-till.sql the unguarded void_bill / void_order_item;
 -- migration-2026-10-30-pos-discounts.sql the unguarded discounts and merge_bills;
@@ -1146,6 +1148,175 @@ revoke all on function branch_pos_settings_part_guard() from public, anon, authe
 drop trigger if exists branch_pos_settings_part_guard on branch_pos_settings;
 create trigger branch_pos_settings_part_guard before insert or update or delete on branch_pos_settings
   for each row execute function branch_pos_settings_part_guard();
+
+-- ── B6. Z report: part payments next to the sales. A bill's sale counts in the shift it closes in, a
+--    part's payment in the shift it was taken in; 'parts' lists both gaps so PAYMENTS and nett sales
+--    agree on paper. The live text of migration-2026-11-16-pos-split-bill.sql S5 with the lines marked
+--    B6 added (re-running 11-16 alone takes them out again: re-run this file after it). Internal. ─
+create or replace function pos_shift_report(p_shift_id uuid) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  with s as (
+    select sh.*, coalesce(sh.closed_at, now()) as until,
+           -- H5: the close of the branch's shift before this one (null when there is none)
+           (select max(p.closed_at) from pos_shifts p
+             where p.branch_id = sh.branch_id and p.status = 'closed' and p.opened_at < sh.opened_at) as prev_close
+      from pos_shifts sh where sh.id = p_shift_id
+  ),
+  sb as (                                                                -- the shift's bills
+    select b.* from bills b where b.shift_id = p_shift_id
+  ),
+  t as (
+    select count(*)::integer as bill_count, coalesce(sum(sb.pax), 0)::integer as pax,
+           coalesce(sum(sb.subtotal_sen - coalesce((sb.totals->>'billDiscountSen')::integer, 0)), 0)::integer as gross,   -- D
+           coalesce(sum(sb.takeaway_fee_sen), 0)::integer as fee,
+           coalesce(sum(sb.service_charge_sen), 0)::integer as sc, coalesce(sum(sb.sst_sen), 0)::integer as sst,
+           coalesce(sum(sb.rounding_sen), 0)::integer as rounding, coalesce(sum(sb.total_sen), 0)::integer as nett,
+           coalesce(sum(coalesce((sb.totals->>'grossSen')::integer, sb.subtotal_sen)), 0)::integer as before_disc,           -- D
+           coalesce(sum(coalesce((sb.totals->>'catalogDiscountSen')::integer, 0)), 0)::integer as cat_disc,                  -- D
+           coalesce(sum(coalesce((sb.totals->>'itemDiscountSen')::integer, 0)), 0)::integer as item_disc,                    -- D
+           coalesce(sum(coalesce((sb.totals->>'billDiscountSen')::integer, 0)), 0)::integer as bill_disc,                    -- D
+           (count(*) filter (where coalesce((sb.totals->>'catalogDiscountSen')::integer, 0) > 0))::integer as cat_bills,      -- D
+           (count(*) filter (where coalesce((sb.totals->>'billDiscountSen')::integer, 0) > 0))::integer as bill_disc_bills   -- D
+      from sb
+  ),
+  vi as (                                                                -- items voided since the last close
+    select oi.*, b.bill_no from order_items oi join bills b on b.id = oi.bill_id, s
+     where b.branch_id = s.branch_id and oi.voided_at <= s.until
+       and (oi.voided_at > s.prev_close or (s.prev_close is null and oi.voided_at >= s.opened_at))   -- H5
+  ),
+  vb as (                                                                -- bills voided since the last close
+    select b.* from bills b, s
+     where b.branch_id = s.branch_id and b.status = 'voided' and b.closed_at <= s.until
+       and (b.closed_at > s.prev_close or (s.prev_close is null and b.closed_at >= s.opened_at))     -- H5
+  ),
+  rf as (select r.* from refunds r where r.shift_id = p_shift_id),
+  mv as (select m.* from pos_cash_moves m where m.shift_id = p_shift_id),
+  pm as (
+    select p.method_id, min(p.method_name) as name, min(p.kind) as kind, count(*)::integer as n, sum(p.amount_sen)::integer as amt
+      from payments p where p.shift_id = p_shift_id group by p.method_id
+  ),
+  rm as (
+    select r.method_id, min(r.method_name) as name, min(coalesce(r.kind, 'other')) as kind, count(*)::integer as n,
+           sum(r.amount_sen)::integer as amt
+      from rf r group by r.method_id
+  )
+  select jsonb_build_object(
+    'branch', (select coalesce(nullif(trim(br.receipt_title), ''), br.name) from branches br where br.id = s.branch_id),
+    'openedAt', to_char(s.opened_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'openedBy', (select st.name from staff st where st.id = s.opened_by),
+    'closedAt', to_char(s.until at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'closedBy', (select st.name from staff st where st.id = s.closed_by),
+    'summary', jsonb_build_object(
+      'billCount', t.bill_count, 'pax', t.pax, 'nettSen', t.nett,
+      'avgPerBillSen', case when t.bill_count > 0 then round(t.nett::numeric / t.bill_count)::integer else 0 end,
+      'avgPerPaxSen', case when t.pax > 0 then round(t.nett::numeric / t.pax)::integer else 0 end,
+      'voidBillCount', (select count(*)::integer from vb),
+      'voidSen', (select coalesce(sum(vi.unit_price_sen * vi.qty), 0)::integer from vi),
+      'refundSen', (select coalesce(sum(rf.amount_sen), 0)::integer from rf)),
+    'sales', jsonb_build_object(
+      'grossSen', t.gross, 'takeawayFeeSen', t.fee, 'serviceChargeSen', t.sc, 'sstSen', t.sst,
+      'roundingSen', t.rounding, 'nettSen', t.nett,
+      'beforeDiscountsSen', t.before_disc, 'discountSen', t.cat_disc + t.item_disc + t.bill_disc),                       -- D
+    'discounts', jsonb_build_object(                                                                                       -- D
+      'catalogSen', t.cat_disc, 'catalogBills', t.cat_bills,
+      'itemSen', t.item_disc,
+      'itemCount', (select count(*)::integer from sb, jsonb_array_elements(coalesce(sb.totals->'lines', '[]'::jsonb)) as x(l)
+                     where coalesce((x.l->>'itemDiscountSen')::integer, 0) > 0),
+      'billSen', t.bill_disc, 'billCount', t.bill_disc_bills),
+    'payments', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'name', coalesce(pm.name, rm.name), 'kind', coalesce(pm.kind, rm.kind),
+               'count', coalesce(pm.n, 0), 'amountSen', coalesce(pm.amt, 0),
+               'refundCount', coalesce(rm.n, 0), 'refundSen', coalesce(rm.amt, 0),
+               'netSen', coalesce(pm.amt, 0) - coalesce(rm.amt, 0))
+             order by coalesce(pm.name, rm.name))
+        from pm full join rm on rm.method_id = pm.method_id), '[]'::jsonb),
+    'orderTypes', (
+      select jsonb_agg(jsonb_build_object(
+               'orderType', x.ot,
+               'bills', (select count(*)::integer from sb where sb.order_type = x.ot),
+               'nettSen', (select coalesce(sum(sb.total_sen), 0)::integer from sb where sb.order_type = x.ot))
+             order by x.ord)
+        from (values ('dine_in', 1), ('takeaway', 2)) as x(ot, ord)),
+    'sources', (
+      select jsonb_agg(jsonb_build_object(
+               'source', x.src,
+               'orders', (select count(distinct oi.order_id)::integer                                         -- S5
+                            from order_items oi join orders o on o.id = oi.order_id                           -- S5
+                           where oi.bill_id in (select sb.id from sb) and o.source = x.src),                  -- S5
+               'itemSen', (select coalesce(sum(oi.unit_price_sen * oi.qty), 0)::integer
+                             from order_items oi join orders o on o.id = oi.order_id
+                            where oi.bill_id in (select sb.id from sb) and o.source = x.src and oi.voided_at is null))   -- S5
+             order by x.ord)
+        from (values ('counter', 1), ('qr', 2)) as x(src, ord)),
+    'cash', jsonb_build_object(
+      'openingFloatSen', s.opening_float_sen,
+      'cashSalesSen', coalesce((select sum(p.amount_sen) from payments p where p.shift_id = s.id and p.kind = 'cash'), 0)::integer,
+      'cashRefundSen', coalesce((select sum(rf.amount_sen) from rf where rf.kind = 'cash'), 0)::integer,
+      'moves', coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'kind', mv.kind, 'amountSen', mv.amount_sen, 'reason', mv.reason,
+                 'by', (select st.name from staff st where st.id = mv.created_by),
+                 'approvedBy', (select st.name from staff st where st.id = mv.approved_by),
+                 'at', to_char(mv.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+               order by mv.created_at, mv.id)
+          from mv), '[]'::jsonb),
+      'payInSen', coalesce((select sum(mv.amount_sen) from mv where mv.kind = 'pay_in'), 0)::integer,
+      'payOutSen', coalesce((select sum(mv.amount_sen) from mv where mv.kind = 'pay_out'), 0)::integer,
+      'expectedSen', coalesce(s.expected_cash_sen, pos_shift_expected_cash(s.id)),
+      'firstCountSen', s.first_count_sen,
+      'firstVarianceSen', s.first_variance_sen,
+      'countedSen', s.counted_cash_sen,
+      'varianceSen', s.variance_sen,
+      'varianceReason', s.variance_reason,
+      'varianceApprovedBy', (select st.name from staff st where st.id = s.variance_approved_by)),
+    'parts', jsonb_build_object(                                                                                           -- B6
+      -- taken in this shift on a bill that did not close in it: in PAYMENTS, its sale is in a later shift          -- B6
+      'openSen', coalesce((select sum(p.amount_sen) from payments p join bills b on b.id = p.bill_id                       -- B6
+                            where p.shift_id = s.id and p.part_id is not null and b.shift_id is distinct from s.id), 0)::integer,   -- B6
+      'openCount', (select count(distinct p.part_id)::integer from payments p join bills b on b.id = p.bill_id             -- B6
+                     where p.shift_id = s.id and p.part_id is not null and b.shift_id is distinct from s.id),                -- B6
+      -- taken in an earlier shift on a bill that closed in this one: in its sales, not in this PAYMENTS             -- B6
+      'earlierSen', coalesce((select sum(p.amount_sen) from payments p                                                    -- B6
+                               where p.bill_id in (select sb.id from sb) and p.part_id is not null and p.shift_id <> s.id), 0)::integer,   -- B6
+      'earlierCount', (select count(distinct p.part_id)::integer from payments p                                          -- B6
+                        where p.bill_id in (select sb.id from sb) and p.part_id is not null and p.shift_id <> s.id)),      -- B6
+    'voids', jsonb_build_object(
+      'items', coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'at', to_char(vi.voided_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                 'billNo', vi.bill_no, 'name', vi.name_snapshot, 'qty', vi.qty,
+                 'valueSen', vi.unit_price_sen * vi.qty, 'reason', vi.void_reason,
+                 'by', (select st.name from staff st where st.id = vi.voided_by),
+                 'approvedBy', (select st.name from staff st where st.id = vi.void_approved_by))
+               order by vi.voided_at, vi.id)
+          from vi), '[]'::jsonb),
+      'bills', coalesce((
+        select jsonb_agg(jsonb_build_object(
+                 'at', to_char(vb.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                 'billNo', vb.bill_no, 'reason', vb.void_reason,
+                 'by', (select st.name from staff st where st.id = vb.closed_by),
+                 'approvedBy', (select st.name from staff st where st.id = vb.void_approved_by))
+               order by vb.closed_at, vb.id)
+          from vb), '[]'::jsonb)),
+    'refunds', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'at', to_char(rf.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'billNo', (select b.bill_no from bills b where b.id = rf.bill_id),
+               'amountSen', rf.amount_sen, 'method', rf.method_name, 'reason', rf.reason,
+               'approvedBy', (select st.name from staff st where st.id = rf.approved_by))
+             order by rf.created_at, rf.id)
+        from rf), '[]'::jsonb),
+    'products', coalesce((
+      select jsonb_agg(jsonb_build_object('name', x.name, 'qty', x.qty, 'valueSen', x.value)
+                       order by x.qty desc, x.value desc, x.name)
+        from (select oi.name_snapshot as name, sum(oi.qty)::integer as qty, sum(oi.unit_price_sen * oi.qty)::integer as value
+                from order_items oi
+               where oi.bill_id in (select sb.id from sb) and oi.voided_at is null
+               group by oi.name_snapshot) x), '[]'::jsonb))
+  from s, t
+$$;
+revoke all on function pos_shift_report(uuid) from public, anon, authenticated;
 
 notify pgrst, 'reload schema';
 select 'pos bill parts applied' as result;

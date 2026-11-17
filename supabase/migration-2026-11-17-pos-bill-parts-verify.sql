@@ -5,7 +5,7 @@
 -- checkout_bill and the guards; B2p pay_bill_part's p_paid_sen (rolled back inside the block); B2f
 -- the guards after the status checks, move_bill and the paid parts (rolled back inside the block); B3
 -- receipts and screen reads; B4g settings that change a total wait for the part-paid bills (rolled
--- back inside the block).
+-- back inside the block); B6 the Z report's part payments (rolled back inside the block).
 -- Numbers: no service charge, 0% SST, 5 sen rounding; Set A 70.35, Set B 70.40, Extra 3.00.
 begin;
 
@@ -626,6 +626,64 @@ begin
      or not (select sst_registered from branch_pos_settings where branch_id = v_a)
      or (select receipt_footer from branch_pos_settings where branch_id = v_a) = 'Verify B4g footer' then
     raise exception 'FAIL B4g: not rolled back';
+  end if;
+end $$;
+
+-- ── B6. The Z report's 'parts': a part taken in this shift on a bill not closed in it, then the same
+--    part as one from an earlier shift on a bill closed in this one. Undone at the end (SQLSTATE B6RBK). ─
+do $$
+declare
+  v_s    uuid := pg_temp.id('shift');
+  v_part uuid := gen_random_uuid();
+  v_t uuid; v_old uuid; v_p0 jsonb; v_p jsonb;
+begin
+  begin
+    perform pg_temp.act(pg_temp.id('dev'));
+    v_p0 := pos_shift_report(v_s)->'parts';
+    if v_p0 is null or jsonb_typeof(v_p0->'openSen') <> 'number' or jsonb_typeof(v_p0->'openCount') <> 'number'
+       or jsonb_typeof(v_p0->'earlierSen') <> 'number' or jsonb_typeof(v_p0->'earlierCount') <> 'number' then
+      raise exception 'FAIL B6 shape: %', v_p0;
+    end if;
+    if (v_p0->>'openSen')::int < 1000 then                     -- W is open with its RM 10.00 part taken in this shift
+      raise exception 'FAIL B6 W not counted: %', v_p0;
+    end if;
+    -- a new takeaway bill, RM 10.00 taken as a part: open in this shift
+    v_t := place_counter_order(null, 'takeaway', null,
+             jsonb_build_array(jsonb_build_object('productId', pg_temp.id('seta'), 'variantId', pg_temp.id('seta_v'))), gen_random_uuid());
+    v_t := (select bill_id from orders where id = v_t);
+    perform pay_bill_part(v_t, v_part, 1000, null, pg_temp.card(1000), 0);
+    v_p := pos_shift_report(v_s)->'parts';
+    if (v_p->>'openSen')::int <> (v_p0->>'openSen')::int + 1000 or (v_p->>'openCount')::int <> (v_p0->>'openCount')::int + 1 then
+      raise exception 'FAIL B6 open part: % (before %)', v_p, v_p0;
+    end if;
+    -- closed in this same shift: neither open nor earlier
+    perform checkout_bill(v_t, pg_temp.card((pos_bill_totals(v_t)->>'totalSen')::int - pos_bill_paid_parts(v_t)), gen_random_uuid());
+    v_p := pos_shift_report(v_s)->'parts';
+    if v_p is distinct from v_p0 then
+      raise exception 'FAIL B6 closed in the same shift: % (before %)', v_p, v_p0;
+    end if;
+    -- the part taken in an earlier, closed shift: earlier here; open in that shift's report
+    insert into pos_shifts(branch_id, opened_by, opened_at, opening_float_sen, status, counted_cash_sen, expected_cash_sen,
+                           variance_sen, closed_by, closed_at)
+    values (pg_temp.id('branch'), pg_temp.id('owner'), now() - interval '3 hours', 0, 'closed', 0, 0, 0, pg_temp.id('owner'),
+            now() - interval '2 hours')
+    returning id into v_old;
+    update payments set shift_id = v_old where part_id = v_part;
+    v_p := pos_shift_report(v_s)->'parts';
+    if (v_p->>'earlierSen')::int <> (v_p0->>'earlierSen')::int + 1000 or (v_p->>'earlierCount')::int <> (v_p0->>'earlierCount')::int + 1
+       or (v_p->>'openSen')::int <> (v_p0->>'openSen')::int then
+      raise exception 'FAIL B6 earlier part: % (before %)', v_p, v_p0;
+    end if;
+    v_p := pos_shift_report(v_old)->'parts';
+    if v_p is distinct from '{"openSen": 1000, "openCount": 1, "earlierSen": 0, "earlierCount": 0}'::jsonb then
+      raise exception 'FAIL B6 the earlier shift: %', v_p;
+    end if;
+    raise exception 'B6 rollback' using errcode = 'B6RBK';
+  exception when sqlstate 'B6RBK' then
+    null;
+  end;
+  if exists (select 1 from bill_parts where id = v_part) then
+    raise exception 'FAIL B6: not rolled back';
   end if;
 end $$;
 

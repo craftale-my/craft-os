@@ -1,7 +1,8 @@
 // src/features/pos/checkout/transactions.ts
 /** The Transaction screen's list (spec §5): today's closed bills, filtered and searched. */
 import { formatSen } from '../order/cart'
-import type { ClosedBillRow } from './checkoutApi'
+import { partLabel } from '../print/receipt'
+import type { ClosedBillRow, PaymentRow } from './checkoutApi'
 
 export type TxFilter = 'all' | 'paid' | 'voided' | 'refunded' | 'merged'
 export const TX_FILTERS: { id: TxFilter; label: string }[] = [
@@ -39,3 +40,13 @@ export function mytDateLabel(nowMs: number): string {
   const d = new Date(nowMs + 8 * 3600_000)
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`
 }
+
+/** One payment on the bill detail: "Part 2 of 4 · Cash · received RM 50.00, change RM 26.80" for a part
+ *  paid on the open bill (split equally / by amount), the method alone for the final payment. */
+export function txPaymentLabel(p: Pick<PaymentRow, 'method_name' | 'reference' | 'tendered_sen' | 'change_sen' | 'part'>): string {
+  return `${p.part ? `${partLabel(p.part.partNo, p.part.ways)} · ` : ''}${p.method_name}${p.reference ? ` · ${p.reference}` : ''}`
+    + (p.tendered_sen !== null ? ` · received ${formatSen(p.tendered_sen)}, change ${formatSen(p.change_sen)}` : '')
+}
+
+/** A part paid by item is its own bill: it names the table bill it came from. */
+export const splitFromNote = (billNo: string): string => `Split from bill ${billNo}.`

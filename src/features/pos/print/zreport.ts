@@ -72,6 +72,24 @@ function discountLines(d: ZReportDiscounts, cols: number): string[] {
   ]
 }
 
+/** Part payments (split equally / by amount) that sit in one shift's payments and another's sales:
+ *  a bill's sale counts in the shift it closes in, a part in the shift it was taken in. */
+export interface ZReportParts {
+  openSen: number      // taken in this shift on bills still open at the close: in PAYMENTS, not in sales
+  openCount: number
+  earlierSen: number   // taken in earlier shifts on bills closed in this one: in sales, not in PAYMENTS
+  earlierCount: number
+}
+
+function partLines(p: ZReportParts, cols: number): string[] {
+  return [
+    ...(p.openSen > 0 ? [...lr(`Parts on open bills (${p.openCount})`, money(p.openSen), cols),
+      ...indented('In payments; the sale counts when it closes', cols)] : []),
+    ...(p.earlierSen > 0 ? [...lr(`Parts from earlier shifts (${p.earlierCount})`, money(p.earlierSen), cols),
+      ...indented('In sales; paid in an earlier shift', cols)] : []),
+  ]
+}
+
 export interface ZReport {
   branch: string
   openedAt: string
@@ -94,6 +112,7 @@ export interface ZReport {
     discountSen?: number
   }
   discounts?: ZReportDiscounts
+  parts?: ZReportParts // absent on reports frozen before part payments
   payments: ZReportPayment[]
   orderTypes: { orderType: 'dine_in' | 'takeaway'; bills: number; nettSen: number }[]
   sources: { source: 'counter' | 'qr'; orders: number; itemSen: number }[]
@@ -177,6 +196,7 @@ export function renderZReportLines(input: ZReportPayload, cols: number): string[
       ...(p.refundCount > 0 ? lr(`  Refunds (${p.refundCount})`, money(-p.refundSen), cols) : []),
       ...lr('  Net', money(p.netSen), cols),
     ])),
+    ...(r.parts && r.parts.openSen + r.parts.earlierSen > 0 ? section('PART PAYMENTS', partLines(r.parts, cols)) : []),
     ...section('ORDER TYPE', r.orderTypes.flatMap((o) => lr(`${ORDER_TYPE_LABEL[o.orderType] ?? o.orderType} (${o.bills})`, money(o.nettSen), cols))),
     ...section('SOURCE', r.sources.flatMap((o) => lr(`${SOURCE_LABEL[o.source] ?? o.source} (${o.orders} order${o.orders === 1 ? '' : 's'})`, money(o.itemSen), cols))),
     ...section('CASH DRAWER', [

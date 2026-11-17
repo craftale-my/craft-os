@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { filterTransactions, mytDateLabel, txKind, txStatusLabel, txWhere } from './transactions'
+import { filterTransactions, mytDateLabel, splitFromNote, txKind, txPaymentLabel, txStatusLabel, txWhere } from './transactions'
 
 const b = (bill_no: string, status: 'paid' | 'voided' | 'merged', refunded_sen = 0, label: string | null = 'T3') => ({
   bill_no, status, refunded_sen, order_type: label ? 'dine_in' as const : 'takeaway' as const,
@@ -28,5 +28,20 @@ describe('transactions', () => {
   it('today\'s date in Malaysia', () => {
     expect(mytDateLabel(Date.parse('2026-10-26T15:59:00Z'))).toBe('26 Oct 2026')
     expect(mytDateLabel(Date.parse('2026-10-26T16:00:00Z'))).toBe('27 Oct 2026')
+  })
+})
+
+describe('txPaymentLabel and splitFromNote: a bill paid in parts or split from a table bill', () => {
+  const pay = { method_name: 'Cash', reference: null, tendered_sen: 5000, change_sen: 2680, part: null }
+  it('a payment of a part says which part, before the method', () => {
+    expect(txPaymentLabel({ ...pay, part: { partNo: 2, ways: 4 } })).toBe('Part 2 of 4 · Cash · received RM 50.00, change RM 26.80')
+    expect(txPaymentLabel({ ...pay, tendered_sen: null, method_name: 'Card', reference: 'A12', part: { partNo: 1, ways: null } }))
+      .toBe('Part 1 · Card · A12')
+  })
+  it('the final payment of the bill is labelled as before', () => {
+    expect(txPaymentLabel(pay)).toBe('Cash · received RM 50.00, change RM 26.80')
+  })
+  it('a part paid by item names its table bill', () => {
+    expect(splitFromNote('261117-001')).toBe('Split from bill 261117-001.')
   })
 })

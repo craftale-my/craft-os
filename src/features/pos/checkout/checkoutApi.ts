@@ -367,17 +367,22 @@ export interface PaymentRow {
   reference: string | null
   line_no: number
   taken_at: string
+  part: { partNo: number; ways: number | null } | null   // the part it paid on the open bill; null for the final payment
 }
 export interface RefundRow { id: string; method_name: string; amount_sen: number; reason: string | null; created_at: string }
 /** What the Transaction screen shows of a closed bill besides its items: the totals stored at
  *  checkout (bills.totals, null on a voided or merged bill), the bill it was merged into, its
  *  payments and its refunds. */
-export interface ClosedBillDetail { totals: BillTotals | null; billDiscount: StoredDiscount | null; mergedIntoBillNo: string | null; payments: PaymentRow[]; refunds: RefundRow[] }
+export interface ClosedBillDetail {
+  totals: BillTotals | null; billDiscount: StoredDiscount | null; mergedIntoBillNo: string | null
+  splitFromBillNo: string | null   // a part paid by item: the table bill it came from
+  payments: PaymentRow[]; refunds: RefundRow[]
+}
 
 export async function fetchClosedBillDetail(billId: string): Promise<ClosedBillDetail> {
   const [b, p, r] = await Promise.all([
-    supabase.from('bills').select('totals, merged_into, discount_kind, discount_value, discount_reason').eq('id', billId).maybeSingle(),
-    supabase.from('payments').select('id, method_name, kind, amount_sen, tendered_sen, change_sen, reference, line_no, taken_at')
+    supabase.from('bills').select('totals, merged_into, split_from, discount_kind, discount_value, discount_reason').eq('id', billId).maybeSingle(),
+    supabase.from('payments').select('id, method_name, kind, amount_sen, tendered_sen, change_sen, reference, line_no, taken_at, bill_parts(part_no, ways)')
       .eq('bill_id', billId).order('taken_at').order('line_no'),
     supabase.from('refunds').select('id, method_name, amount_sen, reason, created_at').eq('bill_id', billId).order('created_at'),
   ])
@@ -385,7 +390,7 @@ export async function fetchClosedBillDetail(billId: string): Promise<ClosedBillD
   if (p.error) fail(p.error)
   if (r.error) fail(r.error)
   const row = b.data as {
-    totals: BillTotals | null; merged_into: string | null
+    totals: BillTotals | null; merged_into: string | null; split_from: string | null
     discount_kind: DiscountKind | null; discount_value: number | null; discount_reason: string | null
   } | null
   let mergedIntoBillNo: string | null = null
@@ -394,7 +399,16 @@ export async function fetchClosedBillDetail(billId: string): Promise<ClosedBillD
     if (m.error) fail(m.error)
     mergedIntoBillNo = (m.data as { bill_no: string } | null)?.bill_no ?? null
   }
-  return { totals: row?.totals ?? null, billDiscount: row ? storedDiscount(row) : null, mergedIntoBillNo, payments: (p.data ?? []) as PaymentRow[], refunds: (r.data ?? []) as RefundRow[] }
+  let splitFromBillNo: string | null = null
+  if (row?.split_from) {
+    const f = await supabase.from('bills').select('bill_no').eq('id', row.split_from).maybeSingle()
+    if (f.error) fail(f.error)
+    splitFromBillNo = (f.data as { bill_no: string } | null)?.bill_no ?? null
+  }
+  type PaymentRead = Omit<PaymentRow, 'part'> & { bill_parts: { part_no: number; ways: number | null } | null }
+  const payments = ((p.data ?? []) as unknown as PaymentRead[]).map(({ bill_parts: bp, ...rest }) =>
+    ({ ...rest, part: bp ? { partNo: bp.part_no, ways: bp.ways } : null }))
+  return { totals: row?.totals ?? null, billDiscount: row ? storedDiscount(row) : null, mergedIntoBillNo, splitFromBillNo, payments, refunds: (r.data ?? []) as RefundRow[] }
 }
 
 // ── /pos/settings ───────────────────────────────────────────────────────────

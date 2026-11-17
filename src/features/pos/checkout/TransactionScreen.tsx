@@ -12,7 +12,7 @@ import CheckoutTotals from './CheckoutTotals'
 import DiscountRows from './DiscountRows'
 import { catalogTag, discountLabel, lineDiscountRows, linesById } from './discounts'
 import { mytDayStartIso, refundChoices, refundDoneNote, refundableSen, type RefundChoice } from './todayBills'
-import { filterTransactions, mytDateLabel, TX_FILTERS, txStatusLabel, txWhere, type TxFilter } from './transactions'
+import { filterTransactions, mytDateLabel, splitFromNote, TX_FILTERS, txPaymentLabel, txStatusLabel, txWhere, type TxFilter } from './transactions'
 import { parseRinggit } from './tender'
 import type { RefundResult } from './rpcResult'
 
@@ -167,6 +167,7 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
               {detail && (
                 <div className="space-y-3">
                   {detail.d.mergedIntoBillNo && <p className="text-brown-muted">Merged into bill {detail.d.mergedIntoBillNo}.</p>}
+                  {detail.d.splitFromBillNo && <p className="text-brown-muted">{splitFromNote(detail.d.splitFromBillNo)}</p>}
                   {detailTag && <span className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">{detailTag}</span>}
                   <div className="space-y-1">
                     {detail.items.map((i) => (
@@ -188,7 +189,7 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
                       <div className="mb-1 text-xs font-semibold uppercase text-brown-muted">Payments</div>
                       {detail.d.payments.map((p) => (
                         <div key={p.id} className="flex justify-between">
-                          <span>{p.method_name}{p.reference ? ` · ${p.reference}` : ''}{p.tendered_sen !== null ? ` · received ${formatSen(p.tendered_sen)}, change ${formatSen(p.change_sen)}` : ''}</span>
+                          <span>{txPaymentLabel(p)}</span>
                           <span className="tabular-nums">{formatSen(p.amount_sen)}</span>
                         </div>
                       ))}

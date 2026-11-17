@@ -86,7 +86,9 @@ disabled offline ("Split needs a connection").
   that share. The share comes from the server (`pos_part_quote`, §4.6).
 - **By amount:** a numpad amount, plus quick chips **25% / 33% / 50%** of the bill total (assumed: Feedme's
   "by percentage" is expressed as an amount — the server only ever sees sen). Must be more than 0 and
-  less than the balance; equal to the balance means "pay the rest" (a normal checkout).
+  less than the balance; equal to the balance means "pay the rest" (a normal checkout). A part below the
+  balance goes in 5 sen steps, as equal shares and the chips do ("The amount must end in 0 or 5 sen"),
+  so the balance stays payable in cash (decided 2026-11-17).
 - The method tabs, split tender and numpad work as today, for the share's amount.
 - **Pay** records a part payment (`pay_bill_part`, §4.6); its receipt prints; the screen stays on the
   bill and shows the paid parts above the balance: "Paid 1 of 3 · RM 23.45 (Cash)" and **Balance due
@@ -288,7 +290,10 @@ RLS: read for `authenticated` like the other POS tables; written only by the fun
 - `pos_checkout_state` adds `paidSen` and `parts: [{ partNo, ways, amountSen, methods }]` for an open
   bill; `pos_open_bill_summaries` adds `paidSen` for the home tile.
 - Z report: a part's payments carry the shift they were taken in (cash counted in that drawer); the bill
-  counts as a sale in the shift that closes it, as today.
+  counts as a sale in the shift that closes it, as today. The report's `parts` (B6) names both gaps, and
+  the printed Z report shows them under PART PAYMENTS when either is above 0: "Parts on open bills (n)"
+  (taken in this shift, bill still open at the close: in payments, not in sales) and "Parts from earlier
+  shifts (n)" (taken earlier, bill closed in this shift: in sales, not in payments).
 
 ## 5. Discount shares
 

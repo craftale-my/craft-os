@@ -194,3 +194,29 @@ describe('Z report discounts', () => {
     expect(renderZReportLines(payload(shiftOne), 48)).not.toContain('DISCOUNTS')
   })
 })
+
+describe('Z report part payments', () => {
+  it('a PART PAYMENTS section after PAYMENTS explains both gaps between payments and sales', () => {
+    const report: ZReport = { ...shiftOne, parts: { openSen: 1000, openCount: 1, earlierSen: 2345, earlierCount: 2 } }
+    const lines = renderZReportLines(payload(report), 48)
+    const at = lines.indexOf('PART PAYMENTS')
+    expect(at).toBeGreaterThan(lines.indexOf('PAYMENTS'))
+    expect(at).toBeLessThan(lines.indexOf('ORDER TYPE'))
+    expect(lines[at + 1]).toMatch(/^Parts on open bills \(1\)\s+10\.00$/)
+    expect(lines[at + 2]).toBe('  In payments; the sale counts when it closes')
+    expect(lines[at + 3]).toMatch(/^Parts from earlier shifts \(2\)\s+23\.45$/)
+    expect(lines[at + 4]).toBe('  In sales; paid in an earlier shift')
+  })
+  it('only the line that applies; none at all, or a report frozen before parts, has no section', () => {
+    const open = renderZReportLines(payload({ ...shiftOne, parts: { openSen: 500, openCount: 1, earlierSen: 0, earlierCount: 0 } }), 48)
+    expect(open).toContain('PART PAYMENTS')
+    expect(open.some((l) => l.startsWith('Parts from earlier shifts'))).toBe(false)
+    const zero = { ...shiftOne, parts: { openSen: 0, openCount: 0, earlierSen: 0, earlierCount: 0 } }
+    expect(renderZReportLines(payload(zero), 48)).not.toContain('PART PAYMENTS')
+    expect(renderZReportLines(payload(shiftOne), 48)).not.toContain('PART PAYMENTS')
+  })
+  it('fits a 32-column printer', () => {
+    const report: ZReport = { ...shiftOne, parts: { openSen: 123456, openCount: 12, earlierSen: 123456, earlierCount: 12 } }
+    for (const l of renderZReportLines(payload(report), 32)) expect(l.length).toBeLessThanOrEqual(32)
+  })
+})
