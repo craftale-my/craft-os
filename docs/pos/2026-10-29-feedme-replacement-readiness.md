@@ -61,8 +61,10 @@ then testing and cut-over. Check items off as they land.
 - [ ] **WG Grab integration (cut-over gate, D1)** — owner applies for Grab API access now (long lead); then a
       spec: menu sync from our catalogs, order webhook into a Grab bill with tickets, accept/reject and
       ready status, Grab payment type, sold-out sync. Built as soon as access is granted, in parallel with W3–W6.
-- [ ] **W3 Sales reports** — at least: daily sales, hourly sales, product and add-on sales, category sales, payment
+- [x] **W3 Sales reports** — at least: daily sales, hourly sales, product and add-on sales, category sales, payment
       methods, discounts, voids, refunds, cash drawer, SST by rate (6% / 8% / exempt), per outlet and date range.
+      Built 2026-11-18: Craft OS → POS → Reports (12 tabs, CSV, ledger export of bills / lines / payments up to
+      92 days); spec docs/superpowers/specs/2026-11-18-pos-sales-reports-design.md; dev SQL + verify OK, browser-checked.
 - [ ] **W4 Receipt and numbers** — receipt template (logo, header, address, phone, email, hide zero-price add-ons,
       footer text, footer QR, font size); order numbers per channel (takeaway TA001–TA999, pickup P001–P999) with
       auto reset; an "open drawer" button and per-payment-method drawer pulse.
@@ -99,7 +101,8 @@ then testing and cut-over. Check items off as they land.
       front end → outlets → devices → device-till (`migration-2026-10-29-pos-device-till.sql`) → POS app
       (`migration-2026-10-30-pos-app.sql`) → discounts (`migration-2026-10-30-pos-discounts.sql`) → split bill
       (`migration-2026-11-16-pos-split-bill.sql`) → bill parts (`migration-2026-11-17-pos-bill-parts.sql`) → menu
-      picks (`migration-2026-11-17-menu-picks.sql`, which drops and re-creates `pos_picks_rules()` on a re-run)),
+      picks (`migration-2026-11-17-menu-picks.sql`, which drops and re-creates `pos_picks_rules()` on a re-run) →
+      sales reports (`migration-2026-11-18-pos-reports.sql`)),
       each with its `-verify.sql`, after the prod menu import.
 - [ ] Split bill (11-16) and bill parts (11-17) run as a pair, 11-16 then 11-17; never re-run 11-16 alone once 11-17
       is installed (it reverts `checkout_bill` and other functions Part B re-creates).
