@@ -274,8 +274,8 @@ describe('pg-safeupdate guard: POS migrations', () => {
   })
   it('scans the sales reports: read-only reports for authenticated only, internal helpers closed, a STOP guard', () => {
     const sql = readFileSync(new URL('migration-2026-11-18-pos-reports.sql', SUPABASE), 'utf8')
-    const internal = ['pos_business_day', 'pos_report_scope', 'pos_report_paid_bills', 'pos_report_cards']
-    const reports = ['pos_report_sales']
+    const internal = ['pos_business_day', 'pos_report_scope', 'pos_report_paid_bills', 'pos_report_cards', 'pos_report_lines']
+    const reports = ['pos_report_sales', 'pos_report_products', 'pos_report_payments', 'pos_report_sst']
     const bodies = functionBodies(sql)
     expect(bodies.map((b) => b.name).sort()).toEqual([...internal, ...reports].sort())
     for (const { name, body } of bodies) {

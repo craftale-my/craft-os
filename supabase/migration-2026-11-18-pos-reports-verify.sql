@@ -352,5 +352,74 @@ begin
   end if;
 end $$;
 
+-- ── R3. Products, payments and SST (spec §4, §5.5–5.7) ───────────────────────
+do $$
+declare
+  v_a uuid := pg_temp.id('branch');
+  v   jsonb;
+  r   record;
+begin
+  for r in select f from unnest(array['pos_report_products(uuid[],date,date)', 'pos_report_payments(uuid[],date,date)',
+                                      'pos_report_sst(uuid[],date,date)']) f loop
+    if not has_function_privilege('authenticated', r.f, 'execute') or has_function_privilege('anon', r.f, 'execute') then
+      raise exception 'FAIL R3 grants: %', r.f;
+    end if;
+  end loop;
+  if has_function_privilege('authenticated', 'pos_report_lines(uuid[],timestamptz,timestamptz)', 'execute') then
+    raise exception 'FAIL R3 grants: pos_report_lines is internal';
+  end if;
+  perform pg_temp.act(pg_temp.id('mgr'));
+  for r in select f from unnest(array['pos_report_products', 'pos_report_payments', 'pos_report_sst']) f loop
+    perform pg_temp.expect_error(format('select %s(%L, %L, %L)', r.f, array[v_a], '2026-01-05', '2026-01-06'),
+      'You cannot see reports for this outlet.', 'R3 ' || r.f || ' of another outlet');
+  end loop;
+  perform pg_temp.act(pg_temp.id('owner'));
+
+  -- products: today's name and category; net after every discount (B's RM 2.00 sits on its Latte)
+  v := pos_report_products(array[v_a], '2026-01-05', '2026-01-06');
+  if v->'products' <> '[
+       {"name": "Verify R Latte",  "category": "VERIFY R DRINKS", "qty": 5, "grossSen": 5000, "discountSen": 200, "netSen": 4800},
+       {"name": "Verify R Cake",   "category": "VERIFY R FOOD",   "qty": 3, "grossSen": 2400, "discountSen": 80,  "netSen": 2320},
+       {"name": "Verify R Muffin", "category": "VERIFY R FOOD",   "qty": 2, "grossSen": 2040, "discountSen": 0,   "netSen": 2040},
+       {"name": "Verify R Water",  "category": "VERIFY R DRINKS", "qty": 2, "grossSen": 400,  "discountSen": 0,   "netSen": 400}]'::jsonb then
+    raise exception 'FAIL R3 products: %', v->'products';
+  end if;
+  -- add-ons: the options on the live lines, priceDeltaSen × qty (A's and E's Latte; B's two Lattes)
+  if v->'addOns' <> '[{"name": "Oat milk", "count": 2, "valueSen": 300}, {"name": "Extra shot", "count": 2, "valueSen": 200}]'::jsonb then
+    raise exception 'FAIL R3 add-ons: %', v->'addOns';
+  end if;
+  if v->'categories' <> '[{"category": "VERIFY R DRINKS", "qty": 7, "netSen": 5200},
+                          {"category": "VERIFY R FOOD", "qty": 5, "netSen": 4360}]'::jsonb then
+    raise exception 'FAIL R3 categories: %', v->'categories';
+  end if;
+
+  -- payments of the bills sold in the range (E's part is a payment like any other); refunds by their own
+  -- time; the amounts add up to Nett sales (102.00)
+  v := pos_report_payments(array[v_a], '2026-01-05', '2026-01-06');
+  if v <> '{"methods": [
+       {"name": "R Card", "kind": "card", "count": 4, "amountSen": 4300, "refundCount": 0, "refundSen": 0, "netSen": 4300},
+       {"name": "R Cash", "kind": "cash", "count": 3, "amountSen": 5900, "refundCount": 1, "refundSen": 300, "netSen": 5600}]}'::jsonb then
+    raise exception 'FAIL R3 payments: %', v;
+  end if;
+
+  -- SST from the bills' sstGroups: 6% on 10.00 + 18.00 + 10.00 + 10.00; 8% on 7.20 + 28.40 + 8.00;
+  -- exempt = the 0% lines' net (the Water of A and of D')
+  v := pos_report_sst(array[v_a], '2026-01-05', '2026-01-06');
+  if v <> '{"rates": [{"rateBp": 600, "baseSen": 4800, "sstSen": 288}, {"rateBp": 800, "baseSen": 4360, "sstSen": 349}],
+            "exemptSen": 400,
+            "months": [{"month": "2026-01",
+                        "rates": [{"rateBp": 600, "baseSen": 4800, "sstSen": 288}, {"rateBp": 800, "baseSen": 4360, "sstSen": 349}],
+                        "exemptSen": 400}]}'::jsonb then
+    raise exception 'FAIL R3 SST: %', v;
+  end if;
+
+  -- an outlet with no sales
+  if pos_report_products(array[pg_temp.id('other')], '2026-01-05', '2026-01-06') <> '{"products": [], "addOns": [], "categories": []}'::jsonb
+     or pos_report_payments(array[pg_temp.id('other')], '2026-01-05', '2026-01-06') <> '{"methods": []}'::jsonb
+     or pos_report_sst(array[pg_temp.id('other')], '2026-01-05', '2026-01-06') <> '{"rates": [], "exemptSen": 0, "months": []}'::jsonb then
+    raise exception 'FAIL R3 an outlet with no sales';
+  end if;
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;

@@ -212,5 +212,158 @@ end $$;
 revoke all on function pos_report_sales(uuid[], date, date) from public, anon;
 grant execute on function pos_report_sales(uuid[], date, date) to authenticated;
 
+-- ── R3. The lines of the sales (spec §4) ────────────────────────────────────
+-- One row per live line of the paid bills in the bounds, with its discounts and its net after discounts
+-- as frozen in bills.totals.lines (a bill without them: price × qty, no discount). sst_base_sen is what
+-- its SST was charged on: the net, plus a takeaway line's fee (pos_compute_bill). Internal.
+create or replace function pos_report_lines(p_branch_ids uuid[], p_start timestamptz, p_end timestamptz)
+returns table (item_id uuid, bill_id uuid, branch_id uuid, bill_no text, bday date, order_id uuid, product_id uuid,
+               name text, qty integer, unit_price_sen integer, sst_rate_bp integer, modifiers jsonb,
+               gross_sen integer, catalog_discount_sen integer, item_discount_sen integer, bill_share_sen integer,
+               net_sen integer, sst_base_sen integer)
+language sql stable security definer set search_path = public, pg_temp as $$
+  select oi.id, b.id, b.branch_id, b.bill_no, pos_business_day(b.closed_at), oi.order_id, oi.product_id,
+         oi.name_snapshot, oi.qty, oi.unit_price_sen, oi.sst_rate_bp, oi.modifiers_snapshot,
+         oi.unit_price_sen * oi.qty,
+         coalesce((l.v->>'catalogDiscountSen')::integer, 0),
+         coalesce((l.v->>'itemDiscountSen')::integer, 0),
+         coalesce((l.v->>'billShareSen')::integer, 0),
+         coalesce((l.v->>'netSen')::integer, oi.unit_price_sen * oi.qty),
+         coalesce((l.v->>'netSen')::integer, oi.unit_price_sen * oi.qty)
+           + case when coalesce(oi.order_type, b.order_type) = 'takeaway' then oi.takeaway_fee_sen * oi.qty else 0 end
+    from pos_report_paid_bills(p_branch_ids, p_start, p_end) b
+    join order_items oi on oi.bill_id = b.id and oi.voided_at is null
+    left join lateral (
+      select x.v from jsonb_array_elements(coalesce(b.totals->'lines', '[]'::jsonb)) as x(v)
+       where x.v->>'id' = oi.id::text) l on true
+$$;
+revoke all on function pos_report_lines(uuid[], timestamptz, timestamptz) from public, anon, authenticated;
+
+-- ── R3. Products, add-ons and categories (spec §5.5) ────────────────────────
+-- Per product (today's name and category): quantity, gross (price × qty), discounts (gross − net), net.
+-- Add-ons: per option name on the lines, count = units, value = priceDeltaSen × qty.
+create or replace function pos_report_products(p_branch_ids uuid[], p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  s     record;
+  v_out jsonb;
+begin
+  select * into s from pos_report_scope(p_branch_ids, p_from, p_to);
+  with ln as (
+    select x.*, p.name as product_name, c.id as category_id, c.name as category
+      from pos_report_lines(p_branch_ids, s.start_at, s.end_at) x
+      left join menu_products p on p.id = x.product_id
+      left join menu_categories c on c.id = p.category_id),
+  per_product as (
+    select coalesce(min(ln.product_name), min(ln.name)) as name, min(ln.category) as category,
+           sum(ln.qty)::integer as qty, sum(ln.gross_sen) as gross, sum(ln.net_sen) as net
+      from ln
+     group by coalesce(ln.product_id::text, ln.name)),
+  add_ons as (
+    select coalesce(m.v->>'name', 'Add-on') as name, sum(ln.qty)::integer as n,
+           sum(coalesce((m.v->>'priceDeltaSen')::integer, 0) * ln.qty) as val
+      from ln
+      cross join jsonb_array_elements(coalesce(ln.modifiers, '[]'::jsonb)) as m(v)
+     group by coalesce(m.v->>'name', 'Add-on')),
+  per_category as (
+    select min(ln.category) as category, sum(ln.qty)::integer as qty, sum(ln.net_sen) as net
+      from ln
+     group by ln.category_id)
+  select jsonb_build_object(
+    'products', coalesce((
+      select jsonb_agg(jsonb_build_object('name', x.name, 'category', x.category, 'qty', x.qty, 'grossSen', x.gross,
+                                          'discountSen', x.gross - x.net, 'netSen', x.net)
+                       order by x.qty desc, x.net desc, x.name)
+        from per_product x), '[]'::jsonb),
+    'addOns', coalesce((
+      select jsonb_agg(jsonb_build_object('name', x.name, 'count', x.n, 'valueSen', x.val)
+                       order by x.n desc, x.val desc, x.name)
+        from add_ons x), '[]'::jsonb),
+    'categories', coalesce((
+      select jsonb_agg(jsonb_build_object('category', x.category, 'qty', x.qty, 'netSen', x.net)
+                       order by x.net desc, x.category nulls last)
+        from per_category x), '[]'::jsonb))
+    into v_out;
+  return v_out;
+end $$;
+revoke all on function pos_report_products(uuid[], date, date) from public, anon;
+grant execute on function pos_report_products(uuid[], date, date) to authenticated;
+
+-- ── R3. Payments (spec §5.6) ────────────────────────────────────────────────
+-- The payments of the bills sold in the range (a part payment is a payment like any other), so the total
+-- equals Nett sales; refunds by their own time. Methods by name and kind across outlets.
+create or replace function pos_report_payments(p_branch_ids uuid[], p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  s     record;
+  v_out jsonb;
+begin
+  select * into s from pos_report_scope(p_branch_ids, p_from, p_to);
+  with pm as (
+    select p.method_name as name, p.kind, count(*)::integer as n, sum(p.amount_sen) as amt
+      from payments p
+      join pos_report_paid_bills(p_branch_ids, s.start_at, s.end_at) b on b.id = p.bill_id
+     group by p.method_name, p.kind),
+  rm as (
+    select r.method_name as name, coalesce(r.kind, 'other') as kind, count(*)::integer as n, sum(r.amount_sen) as amt
+      from refunds r
+     where r.branch_id = any (p_branch_ids) and r.created_at >= s.start_at and r.created_at < s.end_at
+     group by r.method_name, coalesce(r.kind, 'other'))
+  select jsonb_build_object('methods', coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'name', coalesce(pm.name, rm.name), 'kind', coalesce(pm.kind, rm.kind),
+             'count', coalesce(pm.n, 0), 'amountSen', coalesce(pm.amt, 0),
+             'refundCount', coalesce(rm.n, 0), 'refundSen', coalesce(rm.amt, 0),
+             'netSen', coalesce(pm.amt, 0) - coalesce(rm.amt, 0))
+           order by coalesce(pm.name, rm.name), coalesce(pm.kind, rm.kind))
+      from pm full join rm on rm.name = pm.name and rm.kind = pm.kind), '[]'::jsonb))
+    into v_out;
+  return v_out;
+end $$;
+revoke all on function pos_report_payments(uuid[], date, date) from public, anon;
+grant execute on function pos_report_payments(uuid[], date, date) to authenticated;
+
+-- ── R3. SST (spec §5.7) ─────────────────────────────────────────────────────
+-- Per rate: taxable base and SST from the bills' totals.sstGroups (as charged; service charge carries no
+-- SST). Exempt: the net of the 0% lines. Then one row per month of the business days (SST-02).
+create or replace function pos_report_sst(p_branch_ids uuid[], p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  s     record;
+  v_out jsonb;
+begin
+  select * into s from pos_report_scope(p_branch_ids, p_from, p_to);
+  with grp as (
+    select to_char(pos_business_day(b.closed_at), 'YYYY-MM') as ym, (g.v->>'rateBp')::integer as rate_bp,
+           (g.v->>'baseSen')::bigint as base, (g.v->>'amountSen')::bigint as amt
+      from pos_report_paid_bills(p_branch_ids, s.start_at, s.end_at) b
+      cross join jsonb_array_elements(coalesce(b.totals->'sstGroups', '[]'::jsonb)) as g(v)),
+  ex as (
+    select to_char(ln.bday, 'YYYY-MM') as ym, sum(ln.net_sen) as exempt
+      from pos_report_lines(p_branch_ids, s.start_at, s.end_at) ln
+     where ln.sst_rate_bp = 0
+     group by to_char(ln.bday, 'YYYY-MM')),
+  months as (select grp.ym from grp union select ex.ym from ex)
+  select jsonb_build_object(
+    'rates', coalesce((
+      select jsonb_agg(jsonb_build_object('rateBp', x.rate_bp, 'baseSen', x.base, 'sstSen', x.amt) order by x.rate_bp)
+        from (select grp.rate_bp, sum(grp.base) as base, sum(grp.amt) as amt from grp group by grp.rate_bp) x), '[]'::jsonb),
+    'exemptSen', coalesce((select sum(ex.exempt) from ex), 0),
+    'months', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'month', m.ym,
+               'rates', coalesce((
+                 select jsonb_agg(jsonb_build_object('rateBp', x.rate_bp, 'baseSen', x.base, 'sstSen', x.amt) order by x.rate_bp)
+                   from (select grp.rate_bp, sum(grp.base) as base, sum(grp.amt) as amt
+                           from grp where grp.ym = m.ym group by grp.rate_bp) x), '[]'::jsonb),
+               'exemptSen', coalesce((select ex.exempt from ex where ex.ym = m.ym), 0))
+             order by m.ym)
+        from months m), '[]'::jsonb))
+    into v_out;
+  return v_out;
+end $$;
+revoke all on function pos_report_sst(uuid[], date, date) from public, anon;
+grant execute on function pos_report_sst(uuid[], date, date) to authenticated;
+
 notify pgrst, 'reload schema';
 select 'pos reports applied' as result;
