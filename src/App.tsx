@@ -24,6 +24,7 @@ import MenuRoutes from './features/pos/menu/MenuRoutes'
 import PosPage from './features/pos/order/PosPage'
 import PosSettingsPage from './features/pos/order/PosSettingsPage'
 import DevicesPage from './features/pos/devices/DevicesPage'
+import ReportsPage from './features/pos/reports/ReportsPage'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
@@ -252,6 +253,15 @@ function AppRoutes() {
       />
 
       <Route path="/pos" element={<ProtectedRoute><PosPage /></ProtectedRoute>} />
+
+      <Route
+        path="/pos/reports"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><ReportsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
 
       <Route
         path="/pos/settings"

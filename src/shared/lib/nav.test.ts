@@ -51,15 +51,15 @@ describe('visibleNav', () => {
     expect(ids(visibleNav(canWith('access_settings')))).toEqual(['profile', 'time-pay', 'pos', 'settings'])
   })
 
-  it('POS groups the register, menu, POS settings and devices; staff see only the register', () => {
+  it('POS groups the register, reports, menu, POS settings and devices; staff see only the register', () => {
     const pos = (can: (c: Capability) => boolean) => {
       const g = visibleNav(can).find(e => e.id === 'pos')
       return g && isGroup(g) ? g.children.map(c => c.id) : []
     }
     expect(pos(canWith())).toEqual(['pos-register'])
-    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'pos-settings', 'pos-devices'])
+    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'pos-reports', 'pos-settings', 'pos-devices'])
     expect(pos(canWith('manage_menu'))).toEqual(['pos-register', 'menu'])
-    expect(pos(canWith('access_settings', 'manage_menu'))).toEqual(['pos-register', 'menu', 'pos-settings', 'pos-devices'])
+    expect(pos(canWith('access_settings', 'manage_menu'))).toEqual(['pos-register', 'pos-reports', 'menu', 'pos-settings', 'pos-devices'])
   })
 
   it('不修改原始 NAV', () => {
@@ -93,6 +93,10 @@ describe('activeEntry', () => {
     // 靠 activeEntry 取最长前缀才分得开。少了这条,新增任何 /team/xxx
     // 路由都会让侧栏把 Directory 标成当前页。
     expect(activeEntry(full, '/team/projects')).toEqual({ leafId: 'team-projects', groupId: 'team' })
+  })
+
+  it('/pos/reports lights Reports, not the Register (longest prefix wins)', () => {
+    expect(activeEntry(full, '/pos/reports')).toEqual({ leafId: 'pos-reports', groupId: 'pos' })
   })
 
   it('专案详情页 /team/projects/:id 一样归 Projects', () => {
