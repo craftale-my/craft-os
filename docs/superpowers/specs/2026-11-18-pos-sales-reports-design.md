@@ -62,23 +62,31 @@ Every table has **Download CSV** (UTF-8 with BOM, comma, ringgit with two decima
 5. **Products** — per product: category, quantity, gross (unit price × qty), discounts, net. Under it
    **Add-ons** (per option name: count, value) and **Categories** (quantity, net).
 6. **Payments** — per method: count, amount, refunds, net; part payments are payments like any other.
-7. **SST** — per rate (6%, 8%, …): taxable base and SST, from `totals.sstGroups`; **Exempt**: the net
-   of 0% lines; then one row per calendar month (for the SST-02 return): taxable at each rate, SST at each
-   rate, exempt. Service charge carries no SST (as the bills do).
+7. **SST** — per rate (6%, 8%, …): taxable base and SST, from `totals.sstGroups`; **Exempt**: the SST
+   base of the 0% lines (net, plus a takeaway line's fee, so taxable + exempt reconcile); the totals cover
+   the business-day range. Then one row per calendar month (for the SST-02 return): taxable at each rate,
+   SST at each rate, exempt. The months follow the CALENDAR month of each bill's `closed_at` in Malaysia
+   time (the SST tax point), not its business day: a bill closed at 01:30 on the 1st counts in that month.
+   The tab says so. A range with sales at 0% only shows "This outlet may not be SST registered."
+   Service charge carries no SST (as the bills do).
 8. **Discounts** — every discount set and cleared (`pos_discount_log`): time, bill, item or bill, kind
    and value, reason, by, approved by; and the discount totals by kind from the bills.
-9. **Voids** — voided items (time, bill, item, qty, value, reason, by, approved by) and voided bills.
+9. **Voids** — voided items (time, bill, item, qty, value, reason, by, approved by) and voided bills. A voided bill is valued at the items voided together with it (not items voided
+   earlier); its items are also listed under voided items, and the tab says so.
 10. **Refunds** — time, bill, method, amount, reason, approved by.
 11. **Cash drawer** — one row per shift whose close (or open, for a shift still open) falls in the range:
     outlet, opened, closed, by, float, cash sales, cash refunds, pay in, pay out, expected, counted,
     variance, reason.
 12. **Ledger export** — three CSV files for the range, for the accountant and the future Accounting
-    module: `bills.csv` (one row per paid bill: outlet, business date, closed at, bill no, order type,
-    table, pax, gross, discounts, service charge, SST, rounding, total, refunded), `lines.csv` (one row
-    per live line of those bills: bill no, item, qty, unit price, catalog / item / bill-share discounts,
-    net, SST rate, SST amount — the line's share of its rate group, largest-remainder so they add up to
-    the bill's group), `payments.csv` (bill no, part no, method, kind, amount, tendered, change,
-    reference, taken at).
+    module, every file starting with the **Outlet** column (bill numbers are unique per outlet only):
+    `bills.csv` (one row per paid bill: outlet, business date, closed at, bill no, order type, table, pax,
+    gross, discounts, takeaway fee, service charge, SST, rounding, total, refunded to date), `lines.csv`
+    (one row per live line of those bills: outlet, bill no, item, qty, unit price, catalog / item /
+    bill-share discounts, net, SST rate, SST amount — the line's share of its rate group,
+    largest-remainder so they add up to the bill's group), `payments.csv` (outlet, bill no, part no,
+    method, kind, amount, tendered, change, reference, taken at). Saved as `ledger-bills_<from>_<to>.csv`,
+    `ledger-lines_…`, `ledger-payments_…`. At most **92 days** at a time: the server refuses a longer
+    range with "Export at most 92 days at a time." and the tab says so without asking.
 
 ## 6. Design
 
