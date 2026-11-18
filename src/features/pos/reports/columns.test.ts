@@ -20,7 +20,15 @@ describe('columns', () => {
     expect(cols.map((x) => x.show(empty))).toEqual(['—', 'Tue 6 Jan 2026', 'Still open', '—', '—'])
     expect(cols.map((x) => x.csv(empty))).toEqual([null, '2026-01-06', null, null, null])
   })
+  it('a text cell that starts like a formula is made safe in the CSV only; money and counts are not', () => {
+    const evil: Row = { name: '=HYPERLINK("x")', day: '2026-01-06', at: null, n: -3, sen: -2 }
+    expect(cols[0].csv(evil)).toBe('\'=HYPERLINK("x")')
+    expect(cols[0].show(evil)).toBe('=HYPERLINK("x")')
+    expect(cols[3].csv(evil)).toBe(-3)
+    expect(cols[4].csv(evil)).toBe('-0.02')
+    expect(tableCsv(cols, [evil])).toContain('\r\n"\'=HYPERLINK(""x"")",')
+  })
   it('tableCsv: the labels, then one row per row', () => {
-    expect(tableCsv(cols, [row, empty])).toBe('﻿Name,Day,At,N,Sen\r\nLatte,2026-01-05,2026-01-05 12:00,3,-0.80\r\n,2026-01-06,,,\r\n')
+    expect(tableCsv(cols, [row, empty])).toBe('\uFEFFName,Day,At,N,Sen\r\nLatte,2026-01-05,2026-01-05 12:00,3,-0.80\r\n,2026-01-06,,,\r\n')
   })
 })

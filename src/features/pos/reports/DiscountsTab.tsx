@@ -2,15 +2,21 @@ import ReportBody from './ReportBody'
 import ReportTable from './ReportTable'
 import { columnsFor } from './columns'
 import { csvFileName } from './csv'
-import { DISCOUNT_ACTION_LABELS, discountValueText } from './reportView'
+import { DISCOUNT_ACTION_LABELS, discountCsvValue, discountValueText } from './reportView'
+import type { Column } from './columns'
 import { fetchAuditReport, type DiscountLogRow, type DiscountTotals, type ReportQuery } from './reportsApi'
 import { useReport } from './useReport'
 
 const d = columnsFor<DiscountLogRow>()
+// on screen RM 2.00 or 10%; the CSV holds a plain number (ringgit for an amount, the percent for a percent)
+const VALUE_COLUMN: Column<DiscountLogRow> = {
+  label: 'Value', numeric: true, show: (r) => discountValueText(r.kind, r.value), csv: (r) => discountCsvValue(r.kind, r.value),
+}
 const LOG_COLUMNS = [
   d.time('Time', (r) => r.at), d.text('Outlet', (r) => r.outlet), d.text('Bill', (r) => r.billNo),
   d.text('On', (r) => r.item ?? 'Bill'), d.text('Action', (r) => DISCOUNT_ACTION_LABELS[r.action] ?? r.action),
-  d.text('Discount', (r) => discountValueText(r.kind, r.value)), d.text('Reason', (r) => r.reason),
+  d.text('Kind', (r) => (r.kind === 'amount' ? 'Amount' : r.kind === 'percent' ? 'Percent' : null)), VALUE_COLUMN,
+  d.text('Reason', (r) => r.reason),
   d.text('By', (r) => r.by), d.text('Approved by', (r) => r.approvedBy),
 ]
 

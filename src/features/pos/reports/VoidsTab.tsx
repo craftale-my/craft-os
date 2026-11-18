@@ -30,6 +30,7 @@ export default function VoidsTab({ query }: { query: ReportQuery }) {
                        empty="No voided items in this range." />
           <ReportTable title="Voided bills" columns={BILL_COLUMNS} rows={r.voidBills} fileName={file('voided-bills')}
                        empty="No voided bills in this range." />
+          <p className="text-xs text-brown-muted">A voided bill's items are also listed under Voided items.</p>
         </div>
       )}
     </ReportBody>

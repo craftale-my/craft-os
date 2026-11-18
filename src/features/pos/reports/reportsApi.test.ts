@@ -36,6 +36,11 @@ describe('report RPCs', () => {
     h.rpc.mockResolvedValueOnce({ data: null, error: { message: 'You cannot see reports for this outlet.' } })
     await expect(fetchSalesReport(Q)).rejects.toThrow('You cannot see reports for this outlet.')
   })
+
+  it('an error with an empty message still says something', async () => {
+    h.rpc.mockResolvedValueOnce({ data: null, error: { message: '' } })
+    await expect(fetchSalesReport(Q)).rejects.toThrow('Unknown error')
+  })
 })
 
 describe('parsers', () => {

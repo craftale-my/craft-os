@@ -64,11 +64,25 @@ describe('OverviewTab', () => {
   })
 
   it('no bills: No sales in this range.', async () => {
-    h.sales.mockResolvedValue({ ...SALES, current: { ...SALES.current, nettSen: 0, bills: 0, pax: 0 } })
+    h.sales.mockResolvedValue({ ...SALES, current: { ...SALES.current, nettSen: 0, bills: 0, pax: 0, discountSen: 0, voidSen: 0, refundSen: 0 } })
     render(<OverviewTab query={Q} />)
     await settle()
     expect(screen.getByText('No sales in this range.')).toBeTruthy()
     expect(screen.queryByRole('list', { name: 'Totals' })).toBeNull()
+  })
+
+  it('no bills but a refund or a void: the cards still show (a refund-only range)', async () => {
+    h.sales.mockResolvedValue({ ...SALES, current: { ...SALES.current, nettSen: 0, bills: 0, pax: 0, discountSen: 0, voidSen: 0, refundSen: 300 } })
+    render(<OverviewTab query={Q} />)
+    await settle()
+    expect(screen.queryByText('No sales in this range.')).toBeNull()
+    expect(card('Refunds').getByText('RM 3.00')).toBeTruthy()
+    expect(card('Nett after refunds').getByText('RM -3.00')).toBeTruthy()
+    h.sales.mockResolvedValue({ ...SALES, current: { ...SALES.current, nettSen: 0, bills: 0, pax: 0, discountSen: 0, voidSen: 400, refundSen: 0 } })
+    cleanup()
+    render(<OverviewTab query={Q} />)
+    await settle()
+    expect(card('Voids').getByText('RM 4.00')).toBeTruthy()
   })
 
   it('a failed read shows the reason; Retry reads again', async () => {

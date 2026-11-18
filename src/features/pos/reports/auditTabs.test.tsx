@@ -16,7 +16,7 @@ import DrawerTab from './DrawerTab'
 import LedgerTab from './LedgerTab'
 import RefundsTab from './RefundsTab'
 import VoidsTab from './VoidsTab'
-import { billsCsv, linesCsv } from './ledgerCsv'
+import { billsCsv, linesCsv, paymentsCsv } from './ledgerCsv'
 
 const settle = async () => {
   for (let i = 0; i < 3; i++) await act(async () => { await Promise.resolve(); await Promise.resolve() })
@@ -39,11 +39,22 @@ describe('DiscountsTab', () => {
     await settle()
     const log = bodyRows(section('Discounts'))
     expect(log).toHaveLength(4)
-    expect(log[1]).toEqual(['5 Jan 2026, 11:45', 'Cheras', 'CH-0001', 'Bill', 'Cleared', 'RM 1.00', 'Regular', 'Aina', '—'])
-    expect(log[2]).toEqual(['5 Jan 2026, 11:50', 'Cheras', 'CH-0001', 'Cake', 'Set', '10%', 'Regular', 'Aina', 'Ben'])
+    expect(log[1]).toEqual(['5 Jan 2026, 11:45', 'Cheras', 'CH-0001', 'Bill', 'Cleared', 'Amount', 'RM 1.00', 'Regular', 'Aina', '—'])
+    expect(log[2]).toEqual(['5 Jan 2026, 11:50', 'Cheras', 'CH-0001', 'Cake', 'Set', 'Percent', '10%', 'Regular', 'Aina', 'Ben'])
     expect(bodyRows(section('Discount totals'))).toEqual([
       ['Staff Meal', '0', 'RM 0.00'], ['Item discounts', '1', 'RM 0.80'], ['Bill discounts', '1', 'RM 2.00'],
     ])
+  })
+  it('the CSV has a Kind and a Value column: ringgit for an amount, a percent number for a percent, no RM', async () => {
+    render(<DiscountsTab query={Q} />)
+    await settle()
+    fireEvent.click(within(section('Discounts')).getByRole('button', { name: 'Download CSV' }))
+    const [name, text] = h.download.mock.calls[0] as [string, string]
+    expect(name).toBe('discounts_2026-01-05_2026-01-06.csv')
+    const lines = text.split('\r\n')
+    expect(lines[0]).toBe('\uFEFFTime,Outlet,Bill,On,Action,Kind,Value,Reason,By,Approved by')
+    expect(lines[2]).toBe('2026-01-05 11:45,Cheras,CH-0001,Bill,Cleared,Amount,1.00,Regular,Aina,')
+    expect(lines[3]).toBe('2026-01-05 11:50,Cheras,CH-0001,Cake,Set,Percent,10,Regular,Aina,Ben')
   })
   it('none in the range: says so', async () => {
     h.audit.mockResolvedValue(EMPTY_AUDIT)
@@ -61,6 +72,11 @@ describe('VoidsTab', () => {
       .toEqual(['5 Jan 2026, 13:00', 'Cheras', 'CH-0002', 'Water', '1', 'RM 2.00', 'Wrong item keyed', 'Aina', 'Ben'])
     expect(bodyRows(section('Voided bills')))
       .toEqual([['6 Jan 2026, 15:00', 'Cheras', 'CH-0008', 'RM 2.00', 'Guest left', 'Aina', 'Ben']])
+  })
+  it('notes that a voided bill\'s items are also listed under Voided items', async () => {
+    render(<VoidsTab query={Q} />)
+    await settle()
+    expect(screen.getByText('A voided bill\'s items are also listed under Voided items.')).toBeTruthy()
   })
   it('none: says so for each', async () => {
     h.audit.mockResolvedValue(EMPTY_AUDIT)
@@ -110,10 +126,23 @@ describe('LedgerTab', () => {
     await settle()
     expect(screen.getByText('bills.csv').parentElement?.textContent).toContain('2 rows')
     fireEvent.click(screen.getByRole('button', { name: 'Download lines.csv' }))
-    expect(h.download).toHaveBeenLastCalledWith('lines_2026-01-05_2026-01-06.csv', linesCsv(LEDGER.lines))
+    expect(h.download).toHaveBeenLastCalledWith('ledger-lines_2026-01-05_2026-01-06.csv', linesCsv(LEDGER.lines))
     fireEvent.click(screen.getByRole('button', { name: 'Download bills.csv' }))
-    expect(h.download).toHaveBeenLastCalledWith('bills_2026-01-05_2026-01-06.csv', billsCsv(LEDGER.bills))
-    expect(screen.getByRole('button', { name: 'Download payments.csv' })).toBeTruthy()
+    expect(h.download).toHaveBeenLastCalledWith('ledger-bills_2026-01-05_2026-01-06.csv', billsCsv(LEDGER.bills))
+    fireEvent.click(screen.getByRole('button', { name: 'Download payments.csv' }))
+    expect(h.download).toHaveBeenLastCalledWith('ledger-payments_2026-01-05_2026-01-06.csv', paymentsCsv(LEDGER.payments))
+  })
+  it('92 days are read; more than 92 days say so and make no request', async () => {
+    render(<LedgerTab query={{ outlets: ['b1'], from: '2026-01-05', to: '2026-04-06' }} />)         // 92 days
+    await settle()
+    expect(h.ledger).toHaveBeenCalledTimes(1)
+    cleanup()
+    h.ledger.mockClear()
+    render(<LedgerTab query={{ outlets: ['b1'], from: '2026-01-05', to: '2026-04-07' }} />)         // 93 days
+    await settle()
+    expect(screen.getByText('Export at most 92 days at a time.')).toBeTruthy()
+    expect(h.ledger).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /Download/ })).toBeNull()
   })
   it('no paid bills: No sales in this range.', async () => {
     h.ledger.mockResolvedValue({ bills: [], lines: [], payments: [] })

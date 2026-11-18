@@ -1,8 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import {
   average, barPercents, changeText, dailySeries, dayLabel, dayShort, discountValueText, hourLabel, rangeText,
-  rateLabel, reportTime,
+  rateLabel, reportTime, discountCsvValue, signedSen,
 } from './reportView'
+
+describe('signedSen and discountCsvValue', () => {
+  it('a negative amount reads -RM 0.80; zero and positive as formatSen', () => {
+    expect(signedSen(-80)).toBe('-RM 0.80')
+    expect(signedSen(0)).toBe('RM 0.00')
+    expect(signedSen(9560)).toBe('RM 95.60')
+  })
+  it('the CSV value of a discount: ringgit for an amount, the percent number for a percent', () => {
+    expect(discountCsvValue('amount', 200)).toBe('2.00')
+    expect(discountCsvValue('percent', 1000)).toBe(10)
+    expect(discountCsvValue('percent', 1250)).toBe(12.5)
+    expect(discountCsvValue(null, null)).toBeNull()
+    expect(discountCsvValue('amount', null)).toBeNull()
+  })
+})
 
 describe('changeText', () => {
   it('against the previous period: +12%, -10%, 0%, — when the previous period is 0', () => {

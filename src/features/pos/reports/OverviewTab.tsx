@@ -41,7 +41,7 @@ export default function OverviewTab({ query }: { query: ReportQuery }) {
   const { load, retry } = useReport(fetchSalesReport, query)
   return (
     <ReportBody load={load} retry={retry}>
-      {(r) => (r.current.bills === 0 ? <NoSales /> : (
+      {(r) => (r.current.bills === 0 && r.current.refundSen === 0 && r.current.voidSen === 0 ? <NoSales /> : (
         <div className="space-y-4">
           <p className="text-xs text-brown-muted">Change against {rangeText(previousRange(query))}.</p>
           <ul aria-label="Totals" className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">

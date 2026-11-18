@@ -1,7 +1,7 @@
 // One column of a report table: what the screen shows and what the CSV holds (spec §5: ringgit without
 // "RM", dates YYYY-MM-DD, times in Malaysia time).
 import { formatSen } from '../order/cart'
-import { csvTime, ringgit, toCsv, type Cell } from './csv'
+import { csvTime, ringgit, safeText, toCsv, type Cell } from './csv'
 import { dayLabel, reportTime } from './reportView'
 
 export interface Column<R> {
@@ -15,7 +15,10 @@ export interface Column<R> {
 export function columnsFor<R>() {
   return {
     text: (label: string, get: (r: R) => string | null): Column<R> => ({
-      label, numeric: false, show: (r) => get(r) ?? '—', csv: get,
+      label, numeric: false, show: (r) => get(r) ?? '—', csv: (r) => {
+        const v = get(r)
+        return v === null ? null : safeText(v)
+      },
     }),
     day: (label: string, get: (r: R) => string): Column<R> => ({
       label, numeric: false, show: (r) => dayLabel(get(r)), csv: get,

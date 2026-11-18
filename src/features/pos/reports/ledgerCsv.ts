@@ -12,7 +12,7 @@ const BILL_COLUMNS = [
   b.text('Table', (r) => r.table), b.count('Pax', (r) => r.pax), b.money('Gross', (r) => r.grossSen),
   b.money('Discounts', (r) => r.discountSen), b.money('Takeaway fee', (r) => r.takeawayFeeSen),
   b.money('Service charge', (r) => r.serviceChargeSen), b.money('SST', (r) => r.sstSen), b.money('Rounding', (r) => r.roundingSen),
-  b.money('Total', (r) => r.totalSen), b.money('Refunded', (r) => r.refundedSen),
+  b.money('Total', (r) => r.totalSen), b.money('Refunded to date', (r) => r.refundedSen),
 ]
 
 const l = columnsFor<LedgerLine>()

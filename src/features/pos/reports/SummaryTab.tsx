@@ -1,8 +1,8 @@
 import ReportBody, { NoSales } from './ReportBody'
 import ReportTable from './ReportTable'
-import { columnsFor } from './columns'
-import { csvFileName } from './csv'
-import { ORDER_TYPE_LABELS, SOURCE_LABELS } from './reportView'
+import { columnsFor, type Column } from './columns'
+import { csvFileName, ringgit } from './csv'
+import { ORDER_TYPE_LABELS, SOURCE_LABELS, signedSen } from './reportView'
 import { fetchSalesReport, type OrderTypeRow, type ReportQuery, type SalesSummary, type SourceRow } from './reportsApi'
 import { useReport } from './useReport'
 
@@ -28,7 +28,9 @@ function summaryLines(s: SalesSummary): Line[] {
 }
 
 const l = columnsFor<Line>()
-const LINE_COLUMNS = [l.text('Item', (r) => r.label), l.money('Amount', (r) => r.sen)]
+// on screen the minus comes before RM (-RM 0.80); the CSV holds -0.80
+const AMOUNT_COLUMN: Column<Line> = { label: 'Amount', numeric: true, show: (r) => signedSen(r.sen), csv: (r) => ringgit(r.sen) }
+const LINE_COLUMNS = [l.text('Item', (r) => r.label), AMOUNT_COLUMN]
 const t = columnsFor<OrderTypeRow>()
 const TYPE_COLUMNS = [
   t.text('Order type', (r) => ORDER_TYPE_LABELS[r.orderType] ?? r.orderType), t.count('Bills', (r) => r.bills),

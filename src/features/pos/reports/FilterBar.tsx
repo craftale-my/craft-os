@@ -29,7 +29,7 @@ export default function FilterBar({ outlets, filter, now, onChange }: {
   const choose = (p: Preset) => {
     setCustomOpen(false)
     setProblem(null)
-    onChange({ ...filter, ...presetRange(p, now) })
+    onChange({ ...filter, ...presetRange(p, new Date()) })        // the clock now, not when the page opened
   }
   const show = () => {
     const why = rangeProblem(draft)

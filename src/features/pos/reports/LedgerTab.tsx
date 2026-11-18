@@ -1,21 +1,29 @@
 import ReportBody, { NoSales } from './ReportBody'
 import { csvFileName, downloadCsv } from './csv'
 import { billsCsv, linesCsv, paymentsCsv } from './ledgerCsv'
+import { MAX_LEDGER_DAYS, dayCount } from './reportRange'
 import { fetchLedgerReport, type ReportQuery } from './reportsApi'
 import { useReport } from './useReport'
 
-/** Spec §5.12: bills.csv, lines.csv and payments.csv for the range. */
+/** Spec §5.12: bills.csv, lines.csv and payments.csv for the range, at most 92 days at a time. */
 export default function LedgerTab({ query }: { query: ReportQuery }) {
+  if (dayCount(query) > MAX_LEDGER_DAYS) {
+    return <p role="alert" className="text-sm text-red-700">Export at most {MAX_LEDGER_DAYS} days at a time.</p>
+  }
+  return <LedgerFiles query={query} />
+}
+
+function LedgerFiles({ query }: { query: ReportQuery }) {
   const { load, retry } = useReport(fetchLedgerReport, query)
   return (
     <ReportBody load={load} retry={retry}>
       {(r) => {
         if (r.bills.length === 0) return <NoSales />
         const files = [
-          { name: 'bills.csv', rows: r.bills.length, save: () => downloadCsv(csvFileName('bills', query.from, query.to), billsCsv(r.bills)) },
-          { name: 'lines.csv', rows: r.lines.length, save: () => downloadCsv(csvFileName('lines', query.from, query.to), linesCsv(r.lines)) },
+          { name: 'bills.csv', rows: r.bills.length, save: () => downloadCsv(csvFileName('ledger-bills', query.from, query.to), billsCsv(r.bills)) },
+          { name: 'lines.csv', rows: r.lines.length, save: () => downloadCsv(csvFileName('ledger-lines', query.from, query.to), linesCsv(r.lines)) },
           { name: 'payments.csv', rows: r.payments.length,
-            save: () => downloadCsv(csvFileName('payments', query.from, query.to), paymentsCsv(r.payments)) },
+            save: () => downloadCsv(csvFileName('ledger-payments', query.from, query.to), paymentsCsv(r.payments)) },
         ]
         return (
           <section className="rounded-xl border border-border bg-card p-4">

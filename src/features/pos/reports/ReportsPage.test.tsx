@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { Outlet } from '../outlets/outlet'
 import { AUDIT, DRAWER, LEDGER, PAYMENTS, PRODUCTS, SALES, SST } from './testReports'
@@ -129,17 +129,37 @@ describe('ReportsPage', () => {
     await settle()
     expect(screen.getByText('You have no outlets to report on.')).toBeTruthy()
   })
-  it('every tab opens and reads its own report', async () => {
-    renderAt('/pos/reports?outlets=b1&from=2026-01-05&to=2026-01-06')
+
+  it('Today follows the clock: a preset clicked after 06:00 the next morning is the new business day', async () => {
+    renderAt('/pos/reports')
     await settle()
-    for (const t of TABS) {
-      fireEvent.click(screen.getByRole('tab', { name: t.label }))
-      await settle()
-      expect(screen.getByRole('tab', { name: t.label }).getAttribute('aria-selected')).toBe('true')
-      expect(screen.queryByRole('alert')).toBeNull()
-      expect(screen.getByRole('tabpanel').textContent).not.toBe('')
-    }
-    const q = { outlets: ['b1'], from: '2026-01-05', to: '2026-01-06' }
-    for (const f of [h.sales, h.products, h.payments, h.sst, h.audit, h.drawer, h.ledger]) expect(f).toHaveBeenCalledWith(q)
+    expect(h.sales).toHaveBeenLastCalledWith({ outlets: ['b1'], from: '2026-01-06', to: '2026-01-06' })
+    vi.setSystemTime(new Date('2026-01-06T22:30:00Z'))                 // Wed 7 Jan, 06:30 in Malaysia
+    fireEvent.click(screen.getByRole('button', { name: 'Today' }))
+    await settle()
+    expect(where()).toBe('?outlets=b1&from=2026-01-07&to=2026-01-07&tab=overview')
+    expect(h.sales).toHaveBeenLastCalledWith({ outlets: ['b1'], from: '2026-01-07', to: '2026-01-07' })
+    fireEvent.click(screen.getByRole('button', { name: 'Yesterday' }))
+    await settle()
+    expect(where()).toBe('?outlets=b1&from=2026-01-06&to=2026-01-06&tab=overview')
   })
+
+  // the first heading (or table title) of each tab, and the report it reads
+  const FIRST_HEADING: Record<string, [string, () => ReturnType<typeof vi.fn>]> = {
+    overview: ['Daily nett sales', () => h.sales], summary: ['Sales summary', () => h.sales],
+    daily: ['Daily sales', () => h.sales], hourly: ['Hourly sales', () => h.sales],
+    products: ['Products', () => h.products], payments: ['Payments', () => h.payments],
+    sst: ['SST by rate', () => h.sst], discounts: ['Discounts', () => h.audit],
+    voids: ['Voided items', () => h.audit], refunds: ['Refunds', () => h.audit],
+    drawer: ['Cash drawer', () => h.drawer], ledger: ['Ledger export', () => h.ledger],
+  }
+  it.each(TABS.map((t) => [t.id, t.label] as const))('the %s tab opens at ?tab= and shows its own report', async (id, label) => {
+    renderAt(`/pos/reports?outlets=b1&from=2026-01-05&to=2026-01-06&tab=${id}`)
+    await settle()
+    const [heading, reader] = FIRST_HEADING[id]
+    expect(screen.getByRole('tab', { name: label }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(within(screen.getByRole('tabpanel')).getByRole('heading', { name: heading })).toBeTruthy()
+    expect(reader()).toHaveBeenCalledWith({ outlets: ['b1'], from: '2026-01-05', to: '2026-01-06' })
+  }, 15000)
 })

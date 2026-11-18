@@ -29,7 +29,6 @@ export default function ReportsPage() {
   const [params, setParams] = useSearchParams()
   const [outlets, setOutlets] = useState<Outlet[] | null>(null)        // null while loading
   const [error, setError] = useState<string | null>(null)
-  const [now] = useState(() => new Date())
   const loadOutlets = useCallback(() => {
     setError(null)
     fetchMyOutlets().then(setOutlets, (e: unknown) => setError(readableError(e)))
@@ -49,6 +48,7 @@ export default function ReportsPage() {
   } else if (outlets.length === 0) {
     body = <p className="text-sm text-brown-muted">You have no outlets to report on.</p>
   } else {
+    const now = new Date()                                            // read each time, so Today follows the clock
     const filter = readFilter(params, outlets, isHq, now)
     const change = (f: ReportFilter) => setParams(filterParams(f), { replace: true })
     const query: ReportQuery = { outlets: filter.outlets, from: filter.from, to: filter.to }

@@ -50,7 +50,7 @@ describe('SummaryTab', () => {
       'Service charge', 'SST', 'Rounding', 'Nett sales',
     ])
     expect(rowOf(s, 'Gross before discounts')).toEqual(['Gross before discounts', 'RM 98.40'])
-    expect(rowOf(s, 'Item discounts')).toEqual(['Item discounts', 'RM -0.80'])
+    expect(rowOf(s, 'Item discounts')).toEqual(['Item discounts', '-RM 0.80'])
     expect(rowOf(s, 'Gross sales')).toEqual(['Gross sales', 'RM 95.60'])
     expect(rowOf(s, 'Rounding')).toEqual(['Rounding', 'RM 0.03'])
     expect(rowOf(s, 'Nett sales')).toEqual(['Nett sales', 'RM 102.00'])
@@ -75,7 +75,7 @@ describe('DailyTab', () => {
       'RM 2.26', 'RM 0.04', 'RM 39.50', 'RM 0.00'])
     fireEvent.click(within(s).getByRole('button', { name: 'Download CSV' }))
     expect(h.download).toHaveBeenCalledWith('daily-sales_2026-01-05_2026-01-06.csv',
-      '﻿Outlet,Business day,Bills,Pax,Gross before discounts,Discounts,Takeaway fee,Service charge,SST,Rounding,Nett,Refunds\r\n'
+      '\uFEFFOutlet,Business day,Bills,Pax,Gross before discounts,Discounts,Takeaway fee,Service charge,SST,Rounding,Nett,Refunds\r\n'
       + 'Cheras,2026-01-05,2,3,40.00,2.80,0.00,0.00,2.26,0.04,39.50,0.00\r\n'
       + 'Cheras,2026-01-06,4,4,58.40,0.00,0.00,0.00,4.11,-0.01,62.50,3.00\r\n')
   })
@@ -137,5 +137,24 @@ describe('SstTab', () => {
     expect(headers(months)).toEqual(['Month', 'Taxable 6%', 'SST 6%', 'Taxable 8%', 'SST 8%', 'Exempt'])
     expect(rowOf(months, '2025-12')).toEqual(['2025-12', 'RM 10.00', 'RM 0.60', 'RM 0.00', 'RM 0.00', 'RM 0.00'])
     expect(rowOf(months, '2026-01')).toEqual(['2026-01', 'RM 38.00', 'RM 2.28', 'RM 43.60', 'RM 3.49', 'RM 4.00'])
+  })
+  it('notes that months follow the calendar date of each bill; no registration line when there are SST rates', async () => {
+    render(<SstTab query={Q} />)
+    await settle()
+    expect(screen.getByText('Months follow the calendar date of each bill (Malaysia time).')).toBeTruthy()
+    expect(screen.queryByText('This outlet may not be SST registered.')).toBeNull()
+  })
+  it('sales but no SST rates (all exempt): this outlet may not be SST registered', async () => {
+    h.sst.mockResolvedValue({ rates: [], exemptSen: 400, months: [{ month: '2026-01', rates: [], exemptSen: 400 }] })
+    render(<SstTab query={Q} />)
+    await settle()
+    expect(screen.getByText('This outlet may not be SST registered.')).toBeTruthy()
+  })
+  it('nothing at all: No sales in this range.', async () => {
+    h.sst.mockResolvedValue({ rates: [], exemptSen: 0, months: [] })
+    render(<SstTab query={Q} />)
+    await settle()
+    expect(screen.getByText('No sales in this range.')).toBeTruthy()
+    expect(screen.queryByText('This outlet may not be SST registered.')).toBeNull()
   })
 })

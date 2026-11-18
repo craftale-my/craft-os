@@ -1,5 +1,6 @@
 // POS → Reports: words and numbers as the screen shows them (spec §5). Pure.
 import { formatSen } from '../order/cart'
+import { ringgit, type Cell } from './csv'
 import { daysIn, type DateRange } from './reportRange'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -35,6 +36,19 @@ export function discountValueText(kind: string | null, value: number | null): st
   if (kind === 'percent') return rateLabel(value)
   if (kind === 'amount') return formatSen(value)
   return '—'
+}
+
+/** The CSV value of a discount: ringgit for an amount, the percent as a number (1250 bp → 12.5), else empty. */
+export function discountCsvValue(kind: string | null, value: number | null): Cell {
+  if (value === null) return null
+  if (kind === 'amount') return ringgit(value)
+  if (kind === 'percent') return value / 100
+  return null
+}
+
+/** Money with the minus before RM: -80 → '-RM 0.80' (the Sales summary's discount lines). */
+export function signedSen(sen: number): string {
+  return sen < 0 ? `-${formatSen(-sen)}` : formatSen(sen)
 }
 
 /** '2026-01-05' → 'Mon 5 Jan 2026'. */

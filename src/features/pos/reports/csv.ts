@@ -9,8 +9,13 @@ export function csvCell(c: Cell): string {
   return /[",\r\n]/.test(s) || s !== s.trim() ? `"${s.replace(/"/g, '""')}"` : s
 }
 
+/** A text cell that Excel could read as a formula (first character = + - @ tab or CR) gets a leading apostrophe. */
+export function safeText(s: string): string {
+  return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s
+}
+
 export function toCsv(header: string[], rows: Cell[][]): string {
-  return '﻿' + [header, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n'
+  return '\uFEFF' + [header.map(safeText), ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n'
 }
 
 /** 1230 → '12.30', -2 → '-0.02'. Integer arithmetic: exact for every sen. */

@@ -23,6 +23,8 @@ export interface OutletChoice {
 }
 
 export const MAX_DAYS = 366
+/** The Ledger export reads at most this many business days at a time. */
+export const MAX_LEDGER_DAYS = 92
 
 export const PRESETS: { id: Preset; label: string }[] = [
   { id: 'today', label: 'Today' },

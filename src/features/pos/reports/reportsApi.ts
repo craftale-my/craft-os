@@ -374,7 +374,7 @@ export function parseLedgerReport(data: unknown): LedgerReport {
 
 // ── the RPCs ─────────────────────────────────────────────────────────────────
 function fail(error: { message: string } | null): never {
-  throw new Error(error?.message ?? 'Unknown error')
+  throw new Error(error?.message || 'Unknown error')
 }
 
 async function report(fn: string, q: ReportQuery): Promise<unknown> {
