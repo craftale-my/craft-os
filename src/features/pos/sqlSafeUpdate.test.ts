@@ -272,6 +272,30 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(sql).toMatch(/raise exception 'STOP: /)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
   })
+  it('scans the sales reports: read-only reports for authenticated only, internal helpers closed, a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-18-pos-reports.sql', SUPABASE), 'utf8')
+    const internal = ['pos_business_day', 'pos_report_scope', 'pos_report_paid_bills', 'pos_report_cards']
+    const reports = ['pos_report_sales']
+    const bodies = functionBodies(sql)
+    expect(bodies.map((b) => b.name).sort()).toEqual([...internal, ...reports].sort())
+    for (const { name, body } of bodies) {
+      expect(body, name).not.toMatch(/\b(insert\s+into|update\s+\w+\s+set|delete\s+from)\b/i)   // reports never write
+    }
+    for (const f of internal) {
+      expect(sql).toMatch(new RegExp(`revoke all on function ${f}\\([^)]*\\) from public, anon, authenticated;`))
+    }
+    for (const f of reports) {
+      expect(sql).toMatch(new RegExp(`revoke all on function ${f}\\(uuid\\[\\], date, date\\) from public, anon;`))
+      expect(sql).toMatch(new RegExp(`grant execute on function ${f}\\(uuid\\[\\], date, date\\) to authenticated;`))
+    }
+    expect([...sql.matchAll(/grant execute on function (\w+)\(/g)].map((m) => m[1]).sort()).toEqual([...reports].sort())
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-17-menu-picks\.sql first/)
+    expect(sql).toMatch(/create index if not exists pos_discount_log_branch_created_idx on pos_discount_log\(branch_id, created_at\);/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-11-18-pos-reports-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
 })
 
 describe('the discount RPCs act as the POS session, never auth.uid()', () => {
