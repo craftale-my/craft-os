@@ -67,7 +67,7 @@ Every table has **Download CSV** (UTF-8 with BOM, comma, ringgit with two decima
    the business-day range. Then one row per calendar month (for the SST-02 return): taxable at each rate,
    SST at each rate, exempt. The months follow the CALENDAR month of each bill's `closed_at` in Malaysia
    time (the SST tax point), not its business day: a bill closed at 01:30 on the 1st counts in that month.
-   The tab says so. A range with sales at 0% only shows "This outlet may not be SST registered."
+   The tab says so. A range with sales at 0% only shows "No SST was charged in this range: every sale was at 0% (exempt)." The first and last month may be partial (the range is in business days); the tab says so.
    Service charge carries no SST (as the bills do).
 8. **Discounts** — every discount set and cleared (`pos_discount_log`): time, bill, item or bill, kind
    and value, reason, by, approved by; and the discount totals by kind from the bills.

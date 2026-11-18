@@ -46,9 +46,9 @@ export default function SstTab({ query }: { query: ReportQuery }) {
             <ReportTable title="SST by rate" columns={RATE_COLUMNS} rows={rows} fileName={file('sst-by-rate')} />
             <ReportTable title="SST by month" columns={monthColumns(rates)} rows={r.months} fileName={file('sst-by-month')} />
             {r.rates.length === 0 && r.exemptSen > 0 && (
-              <p className="text-sm">This outlet may not be SST registered.</p>
+              <p className="text-sm">No SST was charged in this range: every sale was at 0% (exempt).</p>
             )}
-            <p className="text-xs text-brown-muted">Months follow the calendar date of each bill (Malaysia time).</p>
+            <p className="text-xs text-brown-muted">Months follow the calendar date of each bill (Malaysia time). The first and last month may be partial: include the day before and after the month for a full return.</p>
             <p className="text-xs text-brown-muted">
               SST as charged on the bills. Service charge carries no SST. Refunds are not taken off (see Refunds).
             </p>

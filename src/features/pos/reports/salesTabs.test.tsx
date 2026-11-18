@@ -141,20 +141,20 @@ describe('SstTab', () => {
   it('notes that months follow the calendar date of each bill; no registration line when there are SST rates', async () => {
     render(<SstTab query={Q} />)
     await settle()
-    expect(screen.getByText('Months follow the calendar date of each bill (Malaysia time).')).toBeTruthy()
-    expect(screen.queryByText('This outlet may not be SST registered.')).toBeNull()
+    expect(screen.getByText('Months follow the calendar date of each bill (Malaysia time). The first and last month may be partial: include the day before and after the month for a full return.')).toBeTruthy()
+    expect(screen.queryByText('No SST was charged in this range: every sale was at 0% (exempt).')).toBeNull()
   })
-  it('sales but no SST rates (all exempt): this outlet may not be SST registered', async () => {
+  it('sales but no SST rates (all exempt): says no SST was charged, every sale at 0%', async () => {
     h.sst.mockResolvedValue({ rates: [], exemptSen: 400, months: [{ month: '2026-01', rates: [], exemptSen: 400 }] })
     render(<SstTab query={Q} />)
     await settle()
-    expect(screen.getByText('This outlet may not be SST registered.')).toBeTruthy()
+    expect(screen.getByText('No SST was charged in this range: every sale was at 0% (exempt).')).toBeTruthy()
   })
   it('nothing at all: No sales in this range.', async () => {
     h.sst.mockResolvedValue({ rates: [], exemptSen: 0, months: [] })
     render(<SstTab query={Q} />)
     await settle()
     expect(screen.getByText('No sales in this range.')).toBeTruthy()
-    expect(screen.queryByText('This outlet may not be SST registered.')).toBeNull()
+    expect(screen.queryByText('No SST was charged in this range: every sale was at 0% (exempt).')).toBeNull()
   })
 })
