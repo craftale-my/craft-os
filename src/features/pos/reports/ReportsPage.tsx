@@ -5,7 +5,13 @@ import { readableError } from '../checkout/rpcResult'
 import type { Outlet } from '../outlets/outlet'
 import { fetchMyOutlets } from '../outlets/outletsApi'
 import FilterBar from './FilterBar'
+import DailyTab from './DailyTab'
+import HourlyTab from './HourlyTab'
 import OverviewTab from './OverviewTab'
+import PaymentsTab from './PaymentsTab'
+import ProductsTab from './ProductsTab'
+import SstTab from './SstTab'
+import SummaryTab from './SummaryTab'
 import { TABS, filterParams, readFilter, type ReportFilter, type ReportTab } from './reportRange'
 import type { ReportQuery } from './reportsApi'
 
@@ -67,6 +73,12 @@ export default function ReportsPage() {
 function TabBody({ tab, query }: { tab: ReportTab; query: ReportQuery }) {
   switch (tab) {
     case 'overview': return <OverviewTab query={query} />
+    case 'summary': return <SummaryTab query={query} />
+    case 'daily': return <DailyTab query={query} />
+    case 'hourly': return <HourlyTab query={query} />
+    case 'products': return <ProductsTab query={query} />
+    case 'payments': return <PaymentsTab query={query} />
+    case 'sst': return <SstTab query={query} />
     default: return null
   }
 }
