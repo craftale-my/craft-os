@@ -23,6 +23,7 @@ vi.mock('./reportsApi', () => ({
 }))
 
 import ReportsPage from './ReportsPage'
+import { TABS } from './reportRange'
 
 const OUTLETS: Outlet[] = [
   { id: 'b1', name: 'Cheras', kind: 'branch', opensOn: null, closesOn: null, billPrefix: 'CH', isActive: true, isHome: true, openNow: true },
@@ -127,5 +128,18 @@ describe('ReportsPage', () => {
     renderAt('/pos/reports')
     await settle()
     expect(screen.getByText('You have no outlets to report on.')).toBeTruthy()
+  })
+  it('every tab opens and reads its own report', async () => {
+    renderAt('/pos/reports?outlets=b1&from=2026-01-05&to=2026-01-06')
+    await settle()
+    for (const t of TABS) {
+      fireEvent.click(screen.getByRole('tab', { name: t.label }))
+      await settle()
+      expect(screen.getByRole('tab', { name: t.label }).getAttribute('aria-selected')).toBe('true')
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.getByRole('tabpanel').textContent).not.toBe('')
+    }
+    const q = { outlets: ['b1'], from: '2026-01-05', to: '2026-01-06' }
+    for (const f of [h.sales, h.products, h.payments, h.sst, h.audit, h.drawer, h.ledger]) expect(f).toHaveBeenCalledWith(q)
   })
 })

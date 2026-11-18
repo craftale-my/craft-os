@@ -6,12 +6,17 @@ import type { Outlet } from '../outlets/outlet'
 import { fetchMyOutlets } from '../outlets/outletsApi'
 import FilterBar from './FilterBar'
 import DailyTab from './DailyTab'
+import DiscountsTab from './DiscountsTab'
+import DrawerTab from './DrawerTab'
 import HourlyTab from './HourlyTab'
+import LedgerTab from './LedgerTab'
 import OverviewTab from './OverviewTab'
 import PaymentsTab from './PaymentsTab'
 import ProductsTab from './ProductsTab'
+import RefundsTab from './RefundsTab'
 import SstTab from './SstTab'
 import SummaryTab from './SummaryTab'
+import VoidsTab from './VoidsTab'
 import { TABS, filterParams, readFilter, type ReportFilter, type ReportTab } from './reportRange'
 import type { ReportQuery } from './reportsApi'
 
@@ -79,6 +84,10 @@ function TabBody({ tab, query }: { tab: ReportTab; query: ReportQuery }) {
     case 'products': return <ProductsTab query={query} />
     case 'payments': return <PaymentsTab query={query} />
     case 'sst': return <SstTab query={query} />
-    default: return null
+    case 'discounts': return <DiscountsTab query={query} />
+    case 'voids': return <VoidsTab query={query} />
+    case 'refunds': return <RefundsTab query={query} />
+    case 'drawer': return <DrawerTab query={query} />
+    case 'ledger': return <LedgerTab query={query} />
   }
 }
