@@ -16,7 +16,7 @@ import {
   percentChipSen, shareLabel, splitIntoLabel, type BillPart, type PartDone, type PartMode, type PartQuote,
 } from './partSplit'
 import { CHECKED_OPEN, UNSURE, checkoutIds, linesLocked, newPaySession, nextPay, type PayEvent, type PaySession } from './paySession'
-import { looksOffline } from './rpcResult'
+import { looksOffline, readableError } from './rpcResult'
 import {
   changeSen, lineProblem, parseRinggit, payProblem, quickTenders, remainingSen, toPayments,
   type TenderLine, type TenderMethod,
@@ -390,7 +390,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
         else step({ type: 'checkEnded' })
       }
     } catch (e) {
-      step({ type: 'checkEnded' }); setError(`Could not check the bill: ${msg(e)}`)
+      step({ type: 'checkEnded' }); setError(`Could not check the bill: ${readableError(e)}`)
     }
     void follow()
   }

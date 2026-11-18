@@ -27,6 +27,14 @@ export interface RefundResult {
  *  refusal of the server has other words. */
 export const looksOffline = (m: string) => /load failed|fetch|network|timeout|abort|signal/i.test(m)
 
+export const NO_REPLY = 'No reply from the server. Check the internet connection and try again.'
+/** What a POS screen shows for a failure: plain words for a request with no reply (never the
+ *  browser's "AbortError: signal is aborted without reason"), the server's own words otherwise. */
+export function readableError(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e)
+  return looksOffline(m) ? NO_REPLY : m
+}
+
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x)
 
 /** Throws the server's words when the action was refused; returns the reply otherwise. */

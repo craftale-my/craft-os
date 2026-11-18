@@ -73,8 +73,9 @@ then testing and cut-over. Check items off as they land.
 - [ ] **W7 Smaller Feedme habits** — customer item remark on QR orders; last-order time before closing; takeaway
       line inside a dine-in bill (Feedme "Takeaway 1.06" add-on); adults / children pax; "Serve" marking;
       member lookup (only if D2 = c).
-- [ ] **W8 Known defects** — order pad opened while offline shows no menu and no Retry; a stalled "Check bill"
-      shows the raw "AbortError" text.
+- [x] **W8 Known defects** — order pad opened while offline shows no menu and no Retry; a stalled "Check bill"
+      shows the raw "AbortError" text. Fixed 2026-11-18: the pad says "Could not load the menu" with Retry and
+      reads the menu again when the iPad is back online; no-reply errors read as plain words.
 
 ## 3. Data and setup (per outlet)
 

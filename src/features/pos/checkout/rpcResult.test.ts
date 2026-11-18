@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { looksOffline, parseCheckoutResult, parseRefundResult, unwrapAction } from './rpcResult'
+import { NO_REPLY, looksOffline, parseCheckoutResult, parseRefundResult, readableError, unwrapAction } from './rpcResult'
 
 describe('unwrapAction', () => {
   it('returns an approved reply', () => {
@@ -51,5 +51,18 @@ describe('looksOffline — a request with no reply, in every browser', () => {
       "This payment was already recorded with other amounts — check Today's bills", 'Wrong PIN — 4 tries left']) {
       expect(looksOffline(m), m).toBe(false)
     }
+  })
+})
+
+describe('readableError — no raw browser words on screen (readiness W8)', () => {
+  it('a request with no reply reads as a connection problem', () => {
+    expect(readableError(new Error('AbortError: signal is aborted without reason'))).toBe(NO_REPLY)
+    expect(readableError(new Error('TimeoutError: The operation was aborted due to timeout'))).toBe(NO_REPLY)
+    expect(readableError(new Error('TypeError: Load failed'))).toBe(NO_REPLY)
+    expect(NO_REPLY).toBe('No reply from the server. Check the internet connection and try again.')
+  })
+  it('the server\'s own words pass through', () => {
+    expect(readableError(new Error('The bill changed. Check the items again.'))).toBe('The bill changed. Check the items again.')
+    expect(readableError('plain')).toBe('plain')
   })
 })

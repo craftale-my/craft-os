@@ -206,6 +206,20 @@ describe('PaymentScreen', () => {
     expect(api.checkoutBill.mock.calls[1][2]).not.toBe(api.checkoutBill.mock.calls[0][2])
   })
 
+  it('a Check bill that gets no reply says so in plain words, never the browser\'s AbortError', async () => {
+    api.checkoutBill.mockRejectedValueOnce(new Error('Failed to fetch'))
+    renderScreen()
+    await flush()
+    press('Cash')
+    press('Pay RM 106.70')
+    await flush()
+    api.fetchCheckoutState.mockRejectedValueOnce(new Error('AbortError: signal is aborted without reason'))
+    press('Check bill')
+    await flush()
+    expect(screen.getByText('Could not check the bill: No reply from the server. Check the internet connection and try again.')).toBeTruthy()
+    expect(screen.queryByText(/AbortError/)).toBeNull()
+  })
+
   it('split: a cash part records the cash received above its amount, with change', async () => {
     api.checkoutBill.mockResolvedValue({ billId: 'b1', billNo: bill.bill_no, totalSen: 10670, changeSen: 5000, receiptQueued: true })
     renderScreen()

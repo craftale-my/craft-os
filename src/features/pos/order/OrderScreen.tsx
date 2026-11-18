@@ -2,13 +2,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Search } from 'lucide-react'
 import {
-  fetchBillItems, fetchBranchCatalogs, fetchMenuPicks, fetchPadProductInfo, fetchPosMenu, setSoldOut, setTablePaused,
+  fetchBillItems, fetchBranchCatalogs, fetchMenuPicks, fetchPadProductInfo, setSoldOut, setTablePaused,
   type BillItemRow, type OpenBillRow, type TableRow,
 } from './posApi'
-import { defaultLine, findProduct, formatSen, validateLine, type OrderLine, type PosMenu, type PosProduct } from './cart'
+import { defaultLine, findProduct, formatSen, validateLine, type OrderLine, type PosProduct } from './cart'
 import { defaultCatalogProblem, noCatalogMessage, selectableCatalogs, SWITCH_CATALOG_CONFIRM, type BranchCatalogs } from './catalogs'
 import { newQueuedOrder, type QueuedOrder } from '../offline/orderQueue'
 import type { SubmitResult } from './useOrderQueue'
+import { usePadMenu } from './usePadMenu'
 import { usePadWindows } from './usePadWindows'
 import ProductTiles from './ProductTiles'
 import ModifierSheet from './ModifierSheet'
@@ -122,7 +123,6 @@ export default function OrderScreen({
 
   // ── the menu and the cart (OrderPad's state, unchanged) ──
   const [catalogId, setCatalogId] = useState<string | null>(initialCatalogId ?? null)
-  const [menu, setMenu] = useState<PosMenu | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [category, setCategory] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -134,9 +134,6 @@ export default function OrderScreen({
   const [carry, setCarry] = useState<{ lines: OrderLine[]; to: string } | null>(null)
   const [notice, setNotice] = useState<string | null>(initialNotice)
   const [info, setInfo] = useState<ReadonlyMap<string, PadProductInfo>>(new Map())
-  const loadSeq = useRef(0)
-  const catalogIdRef = useRef(catalogId)
-  useEffect(() => { catalogIdRef.current = catalogId }, [catalogId])
   const slots = usePadWindows(catalogId)
   useEffect(() => { setError(null) }, [lines])
   useEffect(() => {
@@ -166,18 +163,8 @@ export default function OrderScreen({
     if (catalogId === null && def) setCatalogId(def.id)
   }, [catalogs, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const load = async () => {
-    const seq = ++loadSeq.current
-    const id = catalogIdRef.current
-    if (!id) { setMenu(null); return }
-    try {
-      const m = await fetchPosMenu(id)
-      if (seq === loadSeq.current) { setMenu(m); setError(null) }
-    } catch (e) {
-      if (seq === loadSeq.current) setError(msg(e))
-    }
-  }
-  useEffect(() => { void load() }, [branchId, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
+  // readiness W8: the menu read has its own error with Retry, and reads again when back online
+  const { menu, error: menuError, reload: load } = usePadMenu(catalogId)
 
   const current = catalogs?.find((c) => c.id === catalogId) ?? null
   const noCatalog = catalogs !== null && catalogId === null && !catalogs.some((c) => c.isDefault)
@@ -185,7 +172,7 @@ export default function OrderScreen({
   const doSwitch = (id: string, carrying: boolean) => {
     setCarry(carrying ? { lines, to: id } : null)
     if (!carrying) setLines([])
-    setSheet(null); setMenu(null); setCategory(null); setNotice(null); setGoesWellFor(null); setCatalogId(id)
+    setSheet(null); setCategory(null); setNotice(null); setGoesWellFor(null); setCatalogId(id)
   }
   // One order = one catalog: switching starts the cart again (asked first, in the POS's own dialog).
   const switchCatalog = (id: string) => {
@@ -474,7 +461,13 @@ export default function OrderScreen({
                   {catalogs.length > 0 && ' — or choose a catalog on the bill for this order.'}
                 </p>
               )}
-              {!menu && !error && !noCatalog && !(catalogs === null && catalogsError) && <p className="col-span-4 text-brown-muted">Loading menu…</p>}
+              {menuError && (
+                <p role="alert" className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">
+                  {menu ? 'Could not refresh the menu' : 'Could not load the menu'}: {menuError}{' '}
+                  <button type="button" className="min-h-11 px-3 underline" onClick={() => void load()}>Retry</button>
+                </p>
+              )}
+              {!menu && !menuError && !noCatalog && !(catalogs === null && catalogsError) && <p className="col-span-4 text-brown-muted">Loading menu…</p>}
               <ProductTiles products={products} windows={slots.windows} now={slots.now} soldOutMode={soldOutMode}
                 popular={popularIds} onTap={(p, outOfSlot) => void tap(p, outOfSlot)} />
             </div>
