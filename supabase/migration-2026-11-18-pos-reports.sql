@@ -33,11 +33,13 @@ end $$;
 -- The Discounts tab reads the log by outlet and time. The paid bills already have theirs
 -- (bills_branch_paid_closed_idx, migration-2026-11-17-menu-picks.sql).
 create index if not exists pos_discount_log_branch_created_idx on pos_discount_log(branch_id, created_at);
+-- The voids read order_items by voided_at (Overview card, Voids tab).
+create index if not exists order_items_voided_idx on order_items(voided_at) where voided_at is not null;
 
 -- ── R1. The business day, the scope, the sales of a scope ───────────────────
 -- 06:00 to 05:59 the next morning, Malaysia time: a bill closed at 01:30 belongs to the day before.
 create or replace function pos_business_day(p_at timestamptz) returns date
-language sql immutable security definer set search_path = public, pg_temp as $$
+language sql immutable set search_path = public, pg_temp as $$
   select ((p_at at time zone 'Asia/Kuala_Lumpur') - interval '6 hours')::date
 $$;
 revoke all on function pos_business_day(timestamptz) from public, anon, authenticated;
@@ -325,7 +327,9 @@ grant execute on function pos_report_payments(uuid[], date, date) to authenticat
 
 -- ── R3. SST (spec §5.7) ─────────────────────────────────────────────────────
 -- Per rate: taxable base and SST from the bills' totals.sstGroups (as charged; service charge carries no
--- SST). Exempt: the net of the 0% lines. Then one row per month of the business days (SST-02).
+-- SST). Exempt: the SST base of the 0% lines (net, plus a takeaway line's fee), so taxable + exempt
+-- reconcile. The totals keep the business-day range; the month rows (SST-02) follow the CALENDAR month
+-- of closed_at in Malaysia time (the SST tax point), not the business day.
 create or replace function pos_report_sst(p_branch_ids uuid[], p_from date, p_to date) returns jsonb
 language plpgsql stable security definer set search_path = public, pg_temp as $$
 declare
@@ -334,15 +338,16 @@ declare
 begin
   select * into s from pos_report_scope(p_branch_ids, p_from, p_to);
   with grp as (
-    select to_char(pos_business_day(b.closed_at), 'YYYY-MM') as ym, (g.v->>'rateBp')::integer as rate_bp,
+    select to_char(b.closed_at at time zone 'Asia/Kuala_Lumpur', 'YYYY-MM') as ym, (g.v->>'rateBp')::integer as rate_bp,
            (g.v->>'baseSen')::bigint as base, (g.v->>'amountSen')::bigint as amt
       from pos_report_paid_bills(p_branch_ids, s.start_at, s.end_at) b
       cross join jsonb_array_elements(coalesce(b.totals->'sstGroups', '[]'::jsonb)) as g(v)),
   ex as (
-    select to_char(ln.bday, 'YYYY-MM') as ym, sum(ln.net_sen) as exempt
+    select to_char(b.closed_at at time zone 'Asia/Kuala_Lumpur', 'YYYY-MM') as ym, sum(ln.sst_base_sen) as exempt
       from pos_report_lines(p_branch_ids, s.start_at, s.end_at) ln
+      join bills b on b.id = ln.bill_id
      where ln.sst_rate_bp = 0
-     group by to_char(ln.bday, 'YYYY-MM')),
+     group by to_char(b.closed_at at time zone 'Asia/Kuala_Lumpur', 'YYYY-MM')),
   months as (select grp.ym from grp union select ex.ym from ex)
   select jsonb_build_object(
     'rates', coalesce((
@@ -369,7 +374,7 @@ grant execute on function pos_report_sst(uuid[], date, date) to authenticated;
 -- discounts: every row of pos_discount_log in the range (set, clear — which keeps what it cleared —
 -- and split), oldest first; discountTotals: the discounts of the bills sold, as the Z report counts them.
 -- voidItems: items voided in the range (a voided bill's items too); voidBills: bills voided in the range,
--- valued at their items. refunds: by their own time.
+-- valued at the items voided together with the bill (void_bill stamps both with one now()). refunds: by their own time.
 create or replace function pos_report_audit(p_branch_ids uuid[], p_from date, p_to date) returns jsonb
 language plpgsql stable security definer set search_path = public, pg_temp as $$
 declare
@@ -428,7 +433,8 @@ begin
                'at', to_char(vb.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
                'outlet', (select br.name from branches br where br.id = vb.branch_id),
                'billNo', vb.bill_no,
-               'valueSen', (select coalesce(sum(oi.unit_price_sen * oi.qty), 0) from order_items oi where oi.bill_id = vb.id),
+               'valueSen', (select coalesce(sum(oi.unit_price_sen * oi.qty), 0) from order_items oi
+                                    where oi.bill_id = vb.id and oi.voided_at = vb.closed_at),
                'reason', vb.void_reason,
                'by', (select st.name from staff st where st.id = vb.closed_by),
                'approvedBy', (select st.name from staff st where st.id = vb.void_approved_by))
@@ -499,6 +505,9 @@ declare
   v_out jsonb;
 begin
   select * into s from pos_report_scope(p_branch_ids, p_from, p_to);
+  if p_to - p_from + 1 > 92 then
+    raise exception 'Export at most 92 days at a time.';
+  end if;
   with pb as (select b.* from pos_report_paid_bills(p_branch_ids, s.start_at, s.end_at) b),
   grp as (
     select pb.id as bill_id, (g.v->>'rateBp')::integer as rate_bp, (g.v->>'amountSen')::bigint as amt

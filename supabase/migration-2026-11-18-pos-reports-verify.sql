@@ -248,6 +248,14 @@ begin
   if to_regclass('public.pos_discount_log_branch_created_idx') is null then
     raise exception 'FAIL R1: index pos_discount_log_branch_created_idx is missing';
   end if;
+  if to_regclass('public.order_items_voided_idx') is null then
+    raise exception 'FAIL R1: index order_items_voided_idx is missing';
+  end if;
+  -- pos_business_day is a plain immutable function (not security definer) so the planner can inline it
+  if (select p.prosecdef from pg_proc p where p.oid = 'pos_business_day(timestamptz)'::regprocedure)
+     or (select p.provolatile from pg_proc p where p.oid = 'pos_business_day(timestamptz)'::regprocedure) <> 'i' then
+    raise exception 'FAIL R1: pos_business_day must be immutable and not security definer';
+  end if;
   -- the business day: 06:00 to 05:59 the next morning, Malaysia time
   if pos_business_day('2026-01-06 01:30+08') <> date '2026-01-05'
      or pos_business_day('2026-01-05 06:00+08') <> date '2026-01-05'
@@ -403,7 +411,7 @@ begin
   end if;
 
   -- SST from the bills' sstGroups: 6% on 10.00 + 18.00 + 10.00 + 10.00; 8% on 7.20 + 28.40 + 8.00;
-  -- exempt = the 0% lines' net (the Water of A and of D')
+  -- exempt = the 0% lines' SST base, no fee here (the Water of A and of D': 2.00 + 2.00)
   v := pos_report_sst(array[v_a], '2026-01-05', '2026-01-06');
   if v <> '{"rates": [{"rateBp": 600, "baseSen": 4800, "sstSen": 288}, {"rateBp": 800, "baseSen": 4360, "sstSen": 349}],
             "exemptSen": 400,
@@ -566,6 +574,64 @@ begin
      or pos_report_ledger(array[pg_temp.id('other')], '2026-01-05', '2026-01-06') <> '{"bills": [], "lines": [], "payments": []}'::jsonb then
     raise exception 'FAIL R4 an outlet with no sales';
   end if;
+end $$;
+
+-- ── R5. Fix-pass cases (run last: they change the fixture, the earlier sections are already checked) ──
+do $$
+declare
+  v_a     uuid := pg_temp.id('branch');
+  v       jsonb;
+  v_h     uuid;
+  v_water uuid;
+  v_no_h  text;
+begin
+  perform pg_temp.act(pg_temp.id('owner'));
+
+  -- SST exempt is the 0% lines' SST base: D' (Water 2.00, 0%) becomes a takeaway line with a 0.50 fee, so its
+  -- base is 2.00 + 0.50 = 2.50. And SST months follow the CALENDAR month of closed_at in Malaysia time:
+  -- A is moved to 1 Feb 01:30 (business day 31 Jan, inside the range 5 Jan to 1 Feb; the bounds are
+  -- 5 Jan 06:00 up to 2 Feb 06:00). F (7 Jan 06:00, Water 2.00, 0%) is inside this wider range; P (5 Jan 05:59) is not.
+  --   A (moved)  6%: base 10.00, SST 0.60;  8%: base 7.20, SST 0.58;  exempt 2.00   → February
+  --   rest of January: 6%: 18.00 + 10.00 + 10.00 = 38.00, SST 1.08 + 0.60 + 0.60 = 2.28
+  --                    8%: 43.60 − 7.20 = 36.40, SST 3.49 − 0.58 = 2.91
+  --                    exempt: D' 2.50 + F 2.00 = 4.50
+  --   totals: 6% 48.00 / 2.88, 8% 43.60 / 3.49, exempt 2.50 + 2.00 (A) + 2.00 (F) = 6.50
+  update order_items set order_type = 'takeaway', takeaway_fee_sen = 50 where bill_id = pg_temp.id('Dpart');
+  update bills set closed_at = '2026-02-01 01:30+08'::timestamptz where id = pg_temp.id('A');
+  v := pos_report_sst(array[v_a], '2026-01-05', '2026-02-01');
+  if v <> '{"rates": [{"rateBp": 600, "baseSen": 4800, "sstSen": 288}, {"rateBp": 800, "baseSen": 4360, "sstSen": 349}],
+            "exemptSen": 650,
+            "months": [{"month": "2026-01",
+                        "rates": [{"rateBp": 600, "baseSen": 3800, "sstSen": 228}, {"rateBp": 800, "baseSen": 3640, "sstSen": 291}],
+                        "exemptSen": 450},
+                       {"month": "2026-02",
+                        "rates": [{"rateBp": 600, "baseSen": 1000, "sstSen": 60}, {"rateBp": 800, "baseSen": 720, "sstSen": 58}],
+                        "exemptSen": 200}]}'::jsonb then
+    raise exception 'FAIL R5 SST exempt base and calendar months: %', v;
+  end if;
+
+  -- voidBills value = only the items voided together with the bill. H: Latte 10.00 + Water 2.00; the Water is
+  -- voided at 15:30, then the bill at 16:00 (void_bill stamps the Latte and the bill with one time) → 10.00, not 12.00
+  perform pg_temp.act(pg_temp.id('dev'));
+  v_h := pg_temp.bill_of(pg_temp.order_on('r7', 1, array['latte', 'water']));
+  v_water := (select id from order_items where bill_id = v_h and product_id = pg_temp.id('water'));
+  perform pg_temp.ok(void_order_item(v_water, 'Wrong item keyed', pg_temp.id('sup'), '2222'), 'R5 H item void');
+  perform pg_temp.ok(void_bill(v_h, 'Guest left', pg_temp.id('sup'), '2222'), 'R5 H void');
+  update bills set closed_at = '2026-01-06 16:00+08'::timestamptz where id = v_h;
+  update order_items set voided_at = case when id = v_water then '2026-01-06 15:30+08'::timestamptz
+                                          else '2026-01-06 16:00+08'::timestamptz end
+   where bill_id = v_h;
+  perform pg_temp.act(pg_temp.id('owner'));
+  v_no_h := (select bill_no from bills where id = v_h);
+  v := pos_report_audit(array[v_a], '2026-01-05', '2026-01-06');
+  if (select x->>'valueSen' from jsonb_array_elements(v->'voidBills') x where x->>'billNo' = v_no_h) is distinct from '1000' then
+    raise exception 'FAIL R5 voided bill value should exclude the earlier voided item: %', v->'voidBills';
+  end if;
+
+  -- the ledger export: 92 days pass, 93 do not (5 Jan to 6 Apr is 27 + 28 + 31 + 6 = 92 days)
+  perform pos_report_ledger(array[v_a], '2026-01-05', '2026-04-06');
+  perform pg_temp.expect_error(format('select pos_report_ledger(%L, %L, %L)', array[v_a], '2026-01-05', '2026-04-07'),
+    'Export at most 92 days at a time.', 'R5 ledger 93 days');
 end $$;
 
 select 'VERIFY OK' as result;

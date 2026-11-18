@@ -292,6 +292,8 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect([...sql.matchAll(/grant execute on function (\w+)\(/g)].map((m) => m[1]).sort()).toEqual([...reports].sort())
     expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-17-menu-picks\.sql first/)
     expect(sql).toMatch(/create index if not exists pos_discount_log_branch_created_idx on pos_discount_log\(branch_id, created_at\);/)
+    expect(sql).toMatch(/create index if not exists order_items_voided_idx on order_items\(voided_at\) where voided_at is not null;/)
+    expect(sql).toMatch(/create or replace function pos_business_day\(p_at timestamptz\) returns date\s+language sql immutable set search_path/)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
     const verify = readFileSync(new URL('migration-2026-11-18-pos-reports-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)
