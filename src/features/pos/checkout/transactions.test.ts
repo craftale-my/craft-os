@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { filterTransactions, mytDateLabel, splitFromNote, txKind, txPaymentLabel, txStatusLabel, txWhere } from './transactions'
+import { filterTransactions, mytDateLabel, splitFromNote, txKind, txPaymentLabel, txPaymentLabels, txStatusLabel, txWhere } from './transactions'
 
 const b = (bill_no: string, status: 'paid' | 'voided' | 'merged', refunded_sen = 0, label: string | null = 'T3') => ({
   bill_no, status, refunded_sen, order_type: label ? 'dine_in' as const : 'takeaway' as const,
@@ -40,6 +40,11 @@ describe('txPaymentLabel and splitFromNote: a bill paid in parts or split from a
   })
   it('the final payment of the bill is labelled as before', () => {
     expect(txPaymentLabel(pay)).toBe('Cash · received RM 50.00, change RM 26.80')
+  })
+  it('on a bill paid in parts, the final payment says it paid the balance', () => {
+    const rows = [{ ...pay, method_name: 'Card', tendered_sen: null, part: { partNo: 1, ways: 2 } }, { ...pay, method_name: 'Card', tendered_sen: null }]
+    expect(txPaymentLabels(rows)).toEqual(['Part 1 of 2 · Card', 'Balance · Card'])
+    expect(txPaymentLabels([pay])).toEqual(['Cash · received RM 50.00, change RM 26.80'])
   })
   it('a part paid by item names its table bill', () => {
     expect(splitFromNote('261117-001')).toBe('Split from bill 261117-001.')

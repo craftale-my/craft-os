@@ -48,5 +48,11 @@ export function txPaymentLabel(p: Pick<PaymentRow, 'method_name' | 'reference' |
     + (p.tendered_sen !== null ? ` · received ${formatSen(p.tendered_sen)}, change ${formatSen(p.change_sen)}` : '')
 }
 
+/** The labels of a bill's payments: on a bill paid in parts, a final payment says "Balance · …". */
+export function txPaymentLabels(payments: Pick<PaymentRow, 'method_name' | 'reference' | 'tendered_sen' | 'change_sen' | 'part'>[]): string[] {
+  const inParts = payments.some((p) => p.part)
+  return payments.map((p) => (inParts && !p.part ? `Balance · ${txPaymentLabel(p)}` : txPaymentLabel(p)))
+}
+
 /** A part paid by item is its own bill: it names the table bill it came from. */
 export const splitFromNote = (billNo: string): string => `Split from bill ${billNo}.`

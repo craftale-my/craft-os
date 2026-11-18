@@ -12,7 +12,7 @@ import CheckoutTotals from './CheckoutTotals'
 import DiscountRows from './DiscountRows'
 import { catalogTag, discountLabel, lineDiscountRows, linesById } from './discounts'
 import { mytDayStartIso, refundChoices, refundDoneNote, refundableSen, type RefundChoice } from './todayBills'
-import { filterTransactions, mytDateLabel, splitFromNote, TX_FILTERS, txPaymentLabel, txStatusLabel, txWhere, type TxFilter } from './transactions'
+import { filterTransactions, mytDateLabel, splitFromNote, TX_FILTERS, txPaymentLabels, txStatusLabel, txWhere, type TxFilter } from './transactions'
 import { parseRinggit } from './tender'
 import type { RefundResult } from './rpcResult'
 
@@ -103,6 +103,7 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
   const selected = bills?.find((b) => b.id === selectedId) ?? null
   const detailLines = linesById(detail?.d.totals)
   const detailTag = detail ? catalogTag(detail.items) : null
+  const paymentLabels = detail ? txPaymentLabels(detail.d.payments) : []
   return (
     <div className="flex min-h-0 flex-1">
       <section aria-label="Bills" className="flex w-[440px] shrink-0 flex-col border-r border-border bg-card">
@@ -187,9 +188,9 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
                   {detail.d.payments.length > 0 && (
                     <div className="border-t border-border pt-3">
                       <div className="mb-1 text-xs font-semibold uppercase text-brown-muted">Payments</div>
-                      {detail.d.payments.map((p) => (
+                      {detail.d.payments.map((p, k) => (
                         <div key={p.id} className="flex justify-between">
-                          <span>{txPaymentLabel(p)}</span>
+                          <span>{paymentLabels[k]}</span>
                           <span className="tabular-nums">{formatSen(p.amount_sen)}</span>
                         </div>
                       ))}
