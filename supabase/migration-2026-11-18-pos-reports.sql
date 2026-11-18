@@ -365,5 +365,202 @@ end $$;
 revoke all on function pos_report_sst(uuid[], date, date) from public, anon;
 grant execute on function pos_report_sst(uuid[], date, date) to authenticated;
 
+-- ── R4. Discounts, voids and refunds (spec §5.8–5.10) ───────────────────────
+-- discounts: every row of pos_discount_log in the range (set, clear — which keeps what it cleared —
+-- and split), oldest first; discountTotals: the discounts of the bills sold, as the Z report counts them.
+-- voidItems: items voided in the range (a voided bill's items too); voidBills: bills voided in the range,
+-- valued at their items. refunds: by their own time.
+create or replace function pos_report_audit(p_branch_ids uuid[], p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  s     record;
+  v_out jsonb;
+begin
+  select * into s from pos_report_scope(p_branch_ids, p_from, p_to);
+  with pb as (select b.* from pos_report_paid_bills(p_branch_ids, s.start_at, s.end_at) b),
+  dl as (
+    select d.* from pos_discount_log d
+     where d.branch_id = any (p_branch_ids) and d.created_at >= s.start_at and d.created_at < s.end_at),
+  vi as (
+    select oi.*, b.bill_no, b.branch_id from order_items oi join bills b on b.id = oi.bill_id
+     where b.branch_id = any (p_branch_ids) and oi.voided_at >= s.start_at and oi.voided_at < s.end_at),
+  vb as (
+    select b.* from bills b
+     where b.branch_id = any (p_branch_ids) and b.status = 'voided' and b.closed_at >= s.start_at and b.closed_at < s.end_at),
+  rf as (
+    select r.* from refunds r
+     where r.branch_id = any (p_branch_ids) and r.created_at >= s.start_at and r.created_at < s.end_at)
+  select jsonb_build_object(
+    'discounts', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'at', to_char(dl.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'outlet', (select br.name from branches br where br.id = dl.branch_id),
+               'billNo', (select b.bill_no from bills b where b.id = dl.bill_id),
+               'item', (select oi.name_snapshot from order_items oi where oi.id = dl.order_item_id),
+               'action', dl.action, 'kind', dl.kind, 'value', dl.value, 'reason', dl.reason,
+               'by', (select st.name from staff st where st.id = dl.actor),
+               'approvedBy', (select st.name from staff st where st.id = dl.approved_by))
+             order by dl.created_at, dl.id)
+        from dl), '[]'::jsonb),
+    'discountTotals', (
+      select jsonb_build_object(
+               'catalogSen', coalesce(sum(coalesce((pb.totals->>'catalogDiscountSen')::integer, 0)), 0),
+               'catalogBills', (count(*) filter (where coalesce((pb.totals->>'catalogDiscountSen')::integer, 0) > 0))::integer,
+               'itemSen', coalesce(sum(coalesce((pb.totals->>'itemDiscountSen')::integer, 0)), 0),
+               'itemCount', (select count(*)::integer
+                               from pb p2, jsonb_array_elements(coalesce(p2.totals->'lines', '[]'::jsonb)) as x(l)
+                              where coalesce((x.l->>'itemDiscountSen')::integer, 0) > 0),
+               'billSen', coalesce(sum(coalesce((pb.totals->>'billDiscountSen')::integer, 0)), 0),
+               'billCount', (count(*) filter (where coalesce((pb.totals->>'billDiscountSen')::integer, 0) > 0))::integer)
+        from pb),
+    'voidItems', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'at', to_char(vi.voided_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'outlet', (select br.name from branches br where br.id = vi.branch_id),
+               'billNo', vi.bill_no, 'name', vi.name_snapshot, 'qty', vi.qty,
+               'valueSen', vi.unit_price_sen * vi.qty, 'reason', vi.void_reason,
+               'by', (select st.name from staff st where st.id = vi.voided_by),
+               'approvedBy', (select st.name from staff st where st.id = vi.void_approved_by))
+             order by vi.voided_at, vi.id)
+        from vi), '[]'::jsonb),
+    'voidBills', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'at', to_char(vb.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'outlet', (select br.name from branches br where br.id = vb.branch_id),
+               'billNo', vb.bill_no,
+               'valueSen', (select coalesce(sum(oi.unit_price_sen * oi.qty), 0) from order_items oi where oi.bill_id = vb.id),
+               'reason', vb.void_reason,
+               'by', (select st.name from staff st where st.id = vb.closed_by),
+               'approvedBy', (select st.name from staff st where st.id = vb.void_approved_by))
+             order by vb.closed_at, vb.id)
+        from vb), '[]'::jsonb),
+    'refunds', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'at', to_char(rf.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'outlet', (select br.name from branches br where br.id = rf.branch_id),
+               'billNo', (select b.bill_no from bills b where b.id = rf.bill_id),
+               'method', rf.method_name, 'amountSen', rf.amount_sen, 'reason', rf.reason,
+               'approvedBy', (select st.name from staff st where st.id = rf.approved_by))
+             order by rf.created_at, rf.id)
+        from rf), '[]'::jsonb))
+    into v_out;
+  return v_out;
+end $$;
+revoke all on function pos_report_audit(uuid[], date, date) from public, anon;
+grant execute on function pos_report_audit(uuid[], date, date) to authenticated;
+
+-- ── R4. Cash drawer (spec §5.11) ────────────────────────────────────────────
+-- One row per shift whose close (or open, for a shift still open) falls in the range; the cash as the
+-- Z report counts it; expected = the frozen figure, or the live one for an open shift.
+create or replace function pos_report_drawer(p_branch_ids uuid[], p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  s     record;
+  v_out jsonb;
+begin
+  select * into s from pos_report_scope(p_branch_ids, p_from, p_to);
+  select jsonb_build_object('shifts', coalesce((
+    select jsonb_agg(jsonb_build_object(
+             'outlet', br.name,
+             'openedAt', to_char(sh.opened_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+             'closedAt', to_char(sh.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+             'openedBy', (select st.name from staff st where st.id = sh.opened_by),
+             'closedBy', (select st.name from staff st where st.id = sh.closed_by),
+             'floatSen', sh.opening_float_sen,
+             'cashSalesSen', coalesce((select sum(p.amount_sen) from payments p where p.shift_id = sh.id and p.kind = 'cash'), 0),
+             'cashRefundSen', coalesce((select sum(r.amount_sen) from refunds r where r.shift_id = sh.id and r.kind = 'cash'), 0),
+             'payInSen', coalesce((select sum(m.amount_sen) from pos_cash_moves m where m.shift_id = sh.id and m.kind = 'pay_in'), 0),
+             'payOutSen', coalesce((select sum(m.amount_sen) from pos_cash_moves m where m.shift_id = sh.id and m.kind = 'pay_out'), 0),
+             'expectedSen', coalesce(sh.expected_cash_sen, pos_shift_expected_cash(sh.id)),
+             'countedSen', sh.counted_cash_sen,
+             'varianceSen', sh.variance_sen,
+             'reason', sh.variance_reason)
+           order by sh.opened_at, sh.id)
+      from pos_shifts sh
+      join branches br on br.id = sh.branch_id
+     where sh.branch_id = any (p_branch_ids)
+       and coalesce(sh.closed_at, sh.opened_at) >= s.start_at
+       and coalesce(sh.closed_at, sh.opened_at) < s.end_at), '[]'::jsonb))
+    into v_out;
+  return v_out;
+end $$;
+revoke all on function pos_report_drawer(uuid[], date, date) from public, anon;
+grant execute on function pos_report_drawer(uuid[], date, date) to authenticated;
+
+-- ── R4. Ledger export (spec §5.12) ──────────────────────────────────────────
+-- bills: one row per paid bill. lines: one row per live line; its SST is its share of the bill's group
+-- of the same rate, by largest remainder on the SST base (floors first, the sen left to the largest
+-- remainders, ties by order item id), so the lines add up to the bill's group. payments: one row per
+-- payment of those bills, with the part number of a part payment.
+create or replace function pos_report_ledger(p_branch_ids uuid[], p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare
+  s     record;
+  v_out jsonb;
+begin
+  select * into s from pos_report_scope(p_branch_ids, p_from, p_to);
+  with pb as (select b.* from pos_report_paid_bills(p_branch_ids, s.start_at, s.end_at) b),
+  grp as (
+    select pb.id as bill_id, (g.v->>'rateBp')::integer as rate_bp, (g.v->>'amountSen')::bigint as amt
+      from pb cross join jsonb_array_elements(coalesce(pb.totals->'sstGroups', '[]'::jsonb)) as g(v)),
+  w as (
+    select ln.*, coalesce(grp.amt, 0) as amt,
+           sum(ln.sst_base_sen) over (partition by ln.bill_id, ln.sst_rate_bp) as base_total
+      from pos_report_lines(p_branch_ids, s.start_at, s.end_at) ln
+      left join grp on grp.bill_id = ln.bill_id and grp.rate_bp = ln.sst_rate_bp),
+  fl as (
+    select w.*,
+           case when w.amt > 0 and w.base_total > 0 then (w.amt * w.sst_base_sen) / w.base_total else 0 end as floor_sst,
+           case when w.amt > 0 and w.base_total > 0 then (w.amt * w.sst_base_sen) % w.base_total else 0 end as rem
+      from w),
+  shares as (
+    select fl.*,
+           fl.amt - sum(fl.floor_sst) over (partition by fl.bill_id, fl.sst_rate_bp) as left_over,
+           row_number() over (partition by fl.bill_id, fl.sst_rate_bp order by fl.rem desc, fl.item_id) as rk
+      from fl)
+  select jsonb_build_object(
+    'bills', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'outlet', br.name, 'businessDate', to_char(pos_business_day(pb.closed_at), 'YYYY-MM-DD'),
+               'closedAt', to_char(pb.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'billNo', pb.bill_no, 'orderType', pb.order_type, 'table', t.label, 'pax', pb.pax,
+               'grossSen', coalesce((pb.totals->>'grossSen')::integer, pb.subtotal_sen),
+               'discountSen', coalesce((pb.totals->>'catalogDiscountSen')::integer, 0)
+                              + coalesce((pb.totals->>'itemDiscountSen')::integer, 0)
+                              + coalesce((pb.totals->>'billDiscountSen')::integer, 0),
+               'takeawayFeeSen', pb.takeaway_fee_sen, 'serviceChargeSen', pb.service_charge_sen,
+               'sstSen', pb.sst_sen, 'roundingSen', pb.rounding_sen, 'totalSen', pb.total_sen,
+               'refundedSen', pb.refunded_sen)
+             order by pb.closed_at, pb.id)
+        from pb
+        join branches br on br.id = pb.branch_id
+        left join dining_tables t on t.id = pb.table_id), '[]'::jsonb),
+    'lines', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'outlet', br.name, 'billNo', x.bill_no, 'item', x.name, 'qty', x.qty, 'unitPriceSen', x.unit_price_sen,
+               'catalogDiscountSen', x.catalog_discount_sen, 'itemDiscountSen', x.item_discount_sen,
+               'billShareSen', x.bill_share_sen, 'netSen', x.net_sen, 'sstRateBp', x.sst_rate_bp,
+               'sstSen', x.floor_sst + case when x.rk <= x.left_over then 1 else 0 end)
+             order by pb.closed_at, x.bill_id, x.item_id)
+        from shares x
+        join pb on pb.id = x.bill_id
+        join branches br on br.id = x.branch_id), '[]'::jsonb),
+    'payments', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'outlet', br.name, 'billNo', pb.bill_no, 'partNo', bp.part_no, 'method', p.method_name, 'kind', p.kind,
+               'amountSen', p.amount_sen, 'tenderedSen', p.tendered_sen, 'changeSen', p.change_sen,
+               'reference', p.reference,
+               'takenAt', to_char(p.taken_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+             order by pb.closed_at, pb.id, p.taken_at, p.line_no, p.id)
+        from payments p
+        join pb on pb.id = p.bill_id
+        join branches br on br.id = pb.branch_id
+        left join bill_parts bp on bp.id = p.part_id), '[]'::jsonb))
+    into v_out;
+  return v_out;
+end $$;
+revoke all on function pos_report_ledger(uuid[], date, date) from public, anon;
+grant execute on function pos_report_ledger(uuid[], date, date) to authenticated;
+
 notify pgrst, 'reload schema';
 select 'pos reports applied' as result;

@@ -421,5 +421,152 @@ begin
   end if;
 end $$;
 
+-- ── R4. Discounts, voids, refunds, the cash drawer and the ledger (spec §5.8–5.12) ─
+do $$
+declare
+  v_a    uuid := pg_temp.id('branch');
+  v_no_a text := (select bill_no from bills where id = pg_temp.id('A'));
+  v_no_b text := (select bill_no from bills where id = pg_temp.id('B'));
+  v_no_c text := (select bill_no from bills where id = pg_temp.id('C'));
+  v_no_e text := (select bill_no from bills where id = pg_temp.id('E'));
+  v_no_g text := (select bill_no from bills where id = pg_temp.id('G'));
+  v      jsonb;
+  r      record;
+begin
+  for r in select f from unnest(array['pos_report_audit(uuid[],date,date)', 'pos_report_drawer(uuid[],date,date)',
+                                      'pos_report_ledger(uuid[],date,date)']) f loop
+    if not has_function_privilege('authenticated', r.f, 'execute') or has_function_privilege('anon', r.f, 'execute') then
+      raise exception 'FAIL R4 grants: %', r.f;
+    end if;
+  end loop;
+  perform pg_temp.act(pg_temp.id('mgr'));
+  for r in select f from unnest(array['pos_report_audit', 'pos_report_drawer', 'pos_report_ledger']) f loop
+    perform pg_temp.expect_error(format('select %s(%L, %L, %L)', r.f, array[v_a], '2026-01-05', '2026-01-06'),
+      'You cannot see reports for this outlet.', 'R4 ' || r.f || ' of another outlet');
+  end loop;
+  perform pg_temp.act(pg_temp.id('owner'));
+
+  -- discounts: every one set and cleared, oldest first; a clear keeps what it cleared and has no approver
+  v := pos_report_audit(array[v_a], '2026-01-05', '2026-01-06');
+  if v->'discounts' <> jsonb_build_array(
+       jsonb_build_object('at', '2026-01-05T03:40:00.000Z', 'outlet', 'VERIFY R', 'billNo', v_no_a, 'item', null,
+                          'action', 'set', 'kind', 'amount', 'value', 100, 'reason', 'Regular',
+                          'by', 'Verify R Cashier', 'approvedBy', 'Verify R Supervisor'),
+       jsonb_build_object('at', '2026-01-05T03:45:00.000Z', 'outlet', 'VERIFY R', 'billNo', v_no_a, 'item', null,
+                          'action', 'clear', 'kind', 'amount', 'value', 100, 'reason', 'Regular',
+                          'by', 'Verify R Cashier', 'approvedBy', null),
+       jsonb_build_object('at', '2026-01-05T03:50:00.000Z', 'outlet', 'VERIFY R', 'billNo', v_no_a, 'item', 'Verify R Cake',
+                          'action', 'set', 'kind', 'percent', 'value', 1000, 'reason', 'Regular',
+                          'by', 'Verify R Cashier', 'approvedBy', 'Verify R Supervisor'),
+       jsonb_build_object('at', '2026-01-05T05:05:00.000Z', 'outlet', 'VERIFY R', 'billNo', v_no_b, 'item', null,
+                          'action', 'set', 'kind', 'amount', 'value', 200, 'reason', 'Regular',
+                          'by', 'Verify R Cashier', 'approvedBy', 'Verify R Supervisor')) then
+    raise exception 'FAIL R4 discounts: %', v->'discounts';
+  end if;
+  if v->'discountTotals' <> '{"catalogSen": 0, "catalogBills": 0, "itemSen": 80, "itemCount": 1, "billSen": 200, "billCount": 1}'::jsonb then
+    raise exception 'FAIL R4 discount totals: %', v->'discountTotals';
+  end if;
+  -- voids: B's Water, and G's Water voided with its bill
+  if v->'voidItems' <> jsonb_build_array(
+       jsonb_build_object('at', '2026-01-05T05:00:00.000Z', 'outlet', 'VERIFY R', 'billNo', v_no_b, 'name', 'Verify R Water',
+                          'qty', 1, 'valueSen', 200, 'reason', 'Wrong item keyed',
+                          'by', 'Verify R Cashier', 'approvedBy', 'Verify R Supervisor'),
+       jsonb_build_object('at', '2026-01-06T07:00:00.000Z', 'outlet', 'VERIFY R', 'billNo', v_no_g, 'name', 'Verify R Water',
+                          'qty', 1, 'valueSen', 200, 'reason', 'Guest left',
+                          'by', 'Verify R Cashier', 'approvedBy', 'Verify R Supervisor'))
+     or v->'voidBills' <> jsonb_build_array(
+       jsonb_build_object('at', '2026-01-06T07:00:00.000Z', 'outlet', 'VERIFY R', 'billNo', v_no_g, 'valueSen', 200,
+                          'reason', 'Guest left', 'by', 'Verify R Cashier', 'approvedBy', 'Verify R Supervisor')) then
+    raise exception 'FAIL R4 voids: % %', v->'voidItems', v->'voidBills';
+  end if;
+  if v->'refunds' <> jsonb_build_array(
+       jsonb_build_object('at', '2026-01-06T02:30:00.000Z', 'outlet', 'VERIFY R', 'billNo', v_no_c, 'method', 'R Cash',
+                          'amountSen', 300, 'reason', 'Cold cake', 'approvedBy', 'Verify R Supervisor')) then
+    raise exception 'FAIL R4 refunds: %', v->'refunds';
+  end if;
+
+  -- the cash drawer: S1 by its close (D2 22:00), the open shift by its open (D2 20:00)
+  v := pos_report_drawer(array[v_a], '2026-01-05', '2026-01-06');
+  if v <> jsonb_build_object('shifts', jsonb_build_array(
+       jsonb_build_object('outlet', 'VERIFY R', 'openedAt', '2026-01-06T00:00:00.000Z', 'closedAt', '2026-01-06T14:00:00.000Z',
+                          'openedBy', 'Verify R Cashier', 'closedBy', 'Verify R Cashier', 'floatSen', 10000,
+                          'cashSalesSen', 3990, 'cashRefundSen', 300, 'payInSen', 2000, 'payOutSen', 500,
+                          'expectedSen', 15190, 'countedSen', 15150, 'varianceSen', -40, 'reason', 'Short at close'),
+       jsonb_build_object('outlet', 'VERIFY R', 'openedAt', '2026-01-06T12:00:00.000Z', 'closedAt', null,
+                          'openedBy', 'Verify R Cashier', 'closedBy', null, 'floatSen', 10000,
+                          'cashSalesSen', 1910, 'cashRefundSen', 0, 'payInSen', 0, 'payOutSen', 0,
+                          'expectedSen', 11910, 'countedSen', null, 'varianceSen', null, 'reason', null))) then
+    raise exception 'FAIL R4 drawer: %', v;
+  end if;
+
+  -- the ledger
+  v := pos_report_ledger(array[v_a], '2026-01-05', '2026-01-06');
+  -- bills.csv: the six paid bills by closing time
+  if (select jsonb_agg(x.b->>'billNo' order by x.o) from jsonb_array_elements(v->'bills') with ordinality as x(b, o))
+     <> (select jsonb_agg(bill_no order by closed_at) from bills
+          where id in (pg_temp.id('A'), pg_temp.id('B'), pg_temp.id('C'), pg_temp.id('Dpart'), pg_temp.id('D'), pg_temp.id('E')))
+     or v->'bills'->0 <> jsonb_build_object('outlet', 'VERIFY R', 'businessDate', '2026-01-05', 'closedAt', '2026-01-05T04:00:00.000Z',
+                          'billNo', v_no_a, 'orderType', 'dine_in', 'table', 'R1', 'pax', 2, 'grossSen', 2000, 'discountSen', 80,
+                          'takeawayFeeSen', 0, 'serviceChargeSen', 0, 'sstSen', 118, 'roundingSen', 2, 'totalSen', 2040,
+                          'refundedSen', 0)
+     or v->'bills'->2 <> jsonb_build_object('outlet', 'VERIFY R', 'businessDate', '2026-01-06', 'closedAt', '2026-01-06T02:00:00.000Z',
+                          'billNo', v_no_c, 'orderType', 'takeaway', 'table', null, 'pax', null, 'grossSen', 2840, 'discountSen', 0,
+                          'takeawayFeeSen', 0, 'serviceChargeSen', 0, 'sstSen', 227, 'roundingSen', -2, 'totalSen', 3065,
+                          'refundedSen', 300) then
+    raise exception 'FAIL R4 ledger bills: %', v->'bills';
+  end if;
+  -- lines.csv: 11 live lines; each bill's line SST adds up to its rate group
+  if jsonb_array_length(v->'lines') <> 11
+     or (select sum((l->>'sstSen')::int) from jsonb_array_elements(v->'lines') l) <> 637
+     or exists (
+          select 1
+            from (select l->>'billNo' as bill_no, (l->>'sstRateBp')::int as rate_bp, sum((l->>'sstSen')::int) as sst
+                    from jsonb_array_elements(v->'lines') l group by 1, 2) x
+            join bills b on b.branch_id = v_a and b.bill_no = x.bill_no
+            left join lateral (select (g->>'amountSen')::int as amt from jsonb_array_elements(b.totals->'sstGroups') g
+                                where (g->>'rateBp')::int = x.rate_bp) g on true
+           where x.sst <> coalesce(g.amt, 0)) then
+    raise exception 'FAIL R4 ledger lines do not add up: %', v->'lines';
+  end if;
+  -- largest remainder: C's 8% group of 227 sen on 8.00 + 10.20 + 10.20 is 63.94 / 81.53 / 81.53 sen → 64, 82, 81
+  -- (rounding each line would give 64 + 82 + 82 = 228)
+  if (select jsonb_agg((l->>'sstSen')::int order by (l->>'sstSen')::int) from jsonb_array_elements(v->'lines') l
+       where l->>'billNo' = v_no_c) <> '[64, 81, 82]'::jsonb then
+    raise exception 'FAIL R4 ledger largest remainder';
+  end if;
+  if (select l from jsonb_array_elements(v->'lines') l where l->>'billNo' = v_no_a and l->>'item' = 'Verify R Cake')
+       <> jsonb_build_object('outlet', 'VERIFY R', 'billNo', v_no_a, 'item', 'Verify R Cake', 'qty', 1, 'unitPriceSen', 800,
+                             'catalogDiscountSen', 0, 'itemDiscountSen', 80, 'billShareSen', 0, 'netSen', 720,
+                             'sstRateBp', 800, 'sstSen', 58)
+     or (select l from jsonb_array_elements(v->'lines') l where l->>'billNo' = v_no_b)
+       <> jsonb_build_object('outlet', 'VERIFY R', 'billNo', v_no_b, 'item', 'Verify R Latte', 'qty', 2, 'unitPriceSen', 1000,
+                             'catalogDiscountSen', 0, 'itemDiscountSen', 0, 'billShareSen', 200, 'netSen', 1800,
+                             'sstRateBp', 600, 'sstSen', 108) then
+    raise exception 'FAIL R4 ledger line values';
+  end if;
+  -- payments.csv: 7 payments adding up to Nett sales; E's part keeps its part number
+  if jsonb_array_length(v->'payments') <> 7
+     or (select sum((p->>'amountSen')::int) from jsonb_array_elements(v->'payments') p) <> 10200
+     or (select jsonb_agg(p) from jsonb_array_elements(v->'payments') p where p->'partNo' <> 'null'::jsonb)
+        <> jsonb_build_array(jsonb_build_object('outlet', 'VERIFY R', 'billNo', v_no_e, 'partNo', 1, 'method', 'R Card',
+                             'kind', 'card', 'amountSen', 1000, 'tenderedSen', null, 'changeSen', 0, 'reference', null,
+                             'takenAt', '2026-01-06T05:50:00.000Z'))
+     or (select p from jsonb_array_elements(v->'payments') p where p->>'billNo' = v_no_c)
+        <> jsonb_build_object('outlet', 'VERIFY R', 'billNo', v_no_c, 'partNo', null, 'method', 'R Cash', 'kind', 'cash',
+                              'amountSen', 3065, 'tenderedSen', 5000, 'changeSen', 1935, 'reference', null,
+                              'takenAt', '2026-01-06T02:00:00.000Z') then
+    raise exception 'FAIL R4 ledger payments: %', v->'payments';
+  end if;
+
+  -- an outlet with no sales
+  if pos_report_audit(array[pg_temp.id('other')], '2026-01-05', '2026-01-06')
+       <> '{"discounts": [], "discountTotals": {"catalogSen": 0, "catalogBills": 0, "itemSen": 0, "itemCount": 0, "billSen": 0, "billCount": 0},
+            "voidItems": [], "voidBills": [], "refunds": []}'::jsonb
+     or pos_report_drawer(array[pg_temp.id('other')], '2026-01-05', '2026-01-06') <> '{"shifts": []}'::jsonb
+     or pos_report_ledger(array[pg_temp.id('other')], '2026-01-05', '2026-01-06') <> '{"bills": [], "lines": [], "payments": []}'::jsonb then
+    raise exception 'FAIL R4 an outlet with no sales';
+  end if;
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;
