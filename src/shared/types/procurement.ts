@@ -80,6 +80,8 @@ export interface Item {
   latest_price: number | null
   /** Low-stock threshold, in base units. */
   min_stock_alert: number
+  /** Key item: counted in the weekly stock count. */
+  count_weekly: boolean
   status: ProcurementStatus
   created_at: string
   supplier?: Supplier | null
@@ -273,10 +275,10 @@ export interface ShipLineInput {
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 
-/** Phase 2 will add sales / stocktake. */
+/** Sales depletion comes with the POS. */
 export type InventoryTransactionType =
   | 'stock_in' | 'adjustment' | 'wastage' | 'transfer_out' | 'transfer_in'
-  | 'production_out' | 'production_in'
+  | 'production_out' | 'production_in' | 'stocktake'
 
 export const TRANSACTION_TYPE_LABELS: Record<InventoryTransactionType, string> = {
   stock_in:       'Stock In',
@@ -286,6 +288,7 @@ export const TRANSACTION_TYPE_LABELS: Record<InventoryTransactionType, string> =
   transfer_in:    'Transfer in',
   production_out: 'Used in production',
   production_in:  'Produced',
+  stocktake:      'Stock Count',
 }
 
 export interface InventoryTransaction {
@@ -502,4 +505,69 @@ export interface ProductionPreview {
   /** An ingredient has no cost at the branch; produce_batch refuses it. */
   missing_cost: boolean
   can_produce: boolean
+}
+
+// ── Stocktake ────────────────────────────────────────────────────────────────
+
+export interface StorageLocation {
+  id: string
+  branch_id: string
+  name: string
+  sort_order: number
+  is_active: boolean
+  created_at: string
+}
+
+export interface ItemLocation {
+  item_id: string
+  location_id: string
+  sort_order: number
+}
+
+export type StockCountKind = 'weekly' | 'full'
+export type StockCountStatus = 'in_progress' | 'submitted' | 'cancelled'
+
+export const STOCK_COUNT_KIND_LABELS: Record<StockCountKind, string> = {
+  weekly: 'Weekly',
+  full:   'Full',
+}
+
+export interface StockCount {
+  id: string
+  branch_id: string
+  kind: StockCountKind
+  status: StockCountStatus
+  started_by: string | null
+  started_at: string
+  submitted_by: string | null
+  submitted_at: string | null
+  business_date: string | null
+  notes: string | null
+  item_count: number | null
+  gain_value: number | null
+  loss_value: number | null
+  net_value: number | null
+}
+
+export interface StockCountEntry {
+  id: string
+  count_id: string
+  item_id: string
+  /** null = Unassigned. */
+  location_id: string | null
+  /** Base units. */
+  counted_base: number
+  counted_by: string | null
+  counted_at: string
+}
+
+export interface StockCountItem {
+  count_id: string
+  item_id: string
+  counted_base: number
+  expected_base: number
+  variance_base: number
+  unit_cost: number | null
+  variance_value: number
+  transaction_id: string | null
 }

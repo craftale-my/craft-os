@@ -27,6 +27,7 @@ function makeItem(overrides: Partial<Item> & Pick<Item, 'id' | 'name'>): Item {
     conversion_rate: 1000,
     latest_price: null,
     min_stock_alert: 0,
+    count_weekly: false,
     status: 'active',
     created_at: '2026-10-01T00:00:00Z',
     ...overrides,
