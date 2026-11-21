@@ -22,6 +22,13 @@ export function grayscale(rgba: ArrayLike<number>, width: number, height: number
   return out
 }
 
+/** Light backgrounds print as clean paper and dark ink as solid black: values at or above 215 become
+ *  white, at or below 40 black, the rest stretched between — without it a cream or grey logo background
+ *  dithers into a field of stray dots. */
+export function levels(gray: Float32Array): Float32Array {
+  return gray.map((v) => (v >= 215 ? 255 : v <= 40 ? 0 : ((v - 40) * 255) / 175))
+}
+
 /** Floyd–Steinberg: each dot black (1) below 128, its error spread 7/16 right, 3/16 down-left, 5/16 down,
  *  1/16 down-right. */
 export function ditherFloydSteinberg(gray: Float32Array, width: number, height: number): Uint8Array {
@@ -69,6 +76,6 @@ export function unpackBits(bytes: Uint8Array, width: number, height: number): Ui
 
 /** RGBA pixels already at the printed size (fitLogoSize) → the logo as save_receipt_settings takes it. */
 export function makeLogo(rgba: ArrayLike<number>, width: number, height: number): ReceiptLogo {
-  const bits = ditherFloydSteinberg(grayscale(rgba, width, height), width, height)
+  const bits = ditherFloydSteinberg(levels(grayscale(rgba, width, height)), width, height)
   return { width, height, data: toBase64(packBits(bits, width, height)) }
 }

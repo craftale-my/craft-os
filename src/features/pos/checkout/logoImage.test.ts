@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ditherFloydSteinberg, fitLogoSize, grayscale, makeLogo, packBits, unpackBits } from './logoImage'
+import { ditherFloydSteinberg, fitLogoSize, grayscale, levels, makeLogo, packBits, unpackBits } from './logoImage'
 
 describe('fitLogoSize: at most 384 × 240 dots, the width a multiple of 8, never enlarged', () => {
   it('scales down to fit, keeping the shape', () => {
@@ -49,5 +49,16 @@ describe('makeLogo', () => {
   it('an all-black 8 × 1 image is one 0xff byte', () => {
     const black = new Uint8ClampedArray(32).map((_, i) => (i % 4 === 3 ? 255 : 0))
     expect(makeLogo(black, 8, 1)).toEqual({ width: 8, height: 1, data: '/w==' })
+  })
+})
+
+describe('levels: a light background prints as clean paper', () => {
+  it('whitens 215 and above, blackens 40 and below, stretches the middle', () => {
+    expect(Array.from(levels(Float32Array.from([250, 215, 214, 127.5, 40, 10])))).toEqual([255, 255, expect.closeTo(254, 0), expect.closeTo(127.5, 0), 0, 0])
+  })
+
+  it('a cream background (RGB 235, 228, 215) leaves no dots', () => {
+    const cream = new Array(16 * 2).fill(0).flatMap(() => [235, 228, 215, 255])
+    expect(makeLogo(cream, 16, 2).data).toBe(makeLogo(new Array(16 * 2).fill(0).flatMap(() => [255, 255, 255, 255]), 16, 2).data)
   })
 })
