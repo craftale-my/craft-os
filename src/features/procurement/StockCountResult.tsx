@@ -14,6 +14,7 @@ function signed(n: number, fmt: (v: number) => string): string {
 export default function StockCountResult({ count, branchName }: { count: StockCount; branchName: string }) {
   const [lines, setLines] = useState<Line[]>([])
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
   const [showAll, setShowAll] = useState(false)
 
   useEffect(() => {
@@ -24,6 +25,7 @@ export default function StockCountResult({ count, branchName }: { count: StockCo
       .then(({ data, error: err }) => {
         if (err) setError(err.message)
         setLines((data as Line[]) ?? [])
+        setLoading(false)
       })
   }, [count.id])
 
@@ -59,7 +61,9 @@ export default function StockCountResult({ count, branchName }: { count: StockCo
 
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-bold text-brown-dark">
-          {showAll ? 'All items' : `${changed.length} item${changed.length === 1 ? '' : 's'} with a difference`}
+          {loading ? 'Loading…'
+            : error ? ''
+            : showAll ? 'All items' : `${changed.length} item${changed.length === 1 ? '' : 's'} with a difference`}
         </h2>
         <button type="button" onClick={() => setShowAll(v => !v)} className="text-xs font-semibold text-[#C4813A]">
           {showAll ? 'Only differences' : 'Show all'}
@@ -81,7 +85,7 @@ export default function StockCountResult({ count, branchName }: { count: StockCo
                 Counted {qty(Number(l.counted_base))} {l.item.base_unit} · Expected {qty(Number(l.expected_base))} {l.item.base_unit} ·{' '}
                 <span className={v < 0 ? 'text-red-700' : v > 0 ? 'text-green-700' : ''}>
                   {signed(v, n => `${qty(n)} ${l.item.base_unit}`)}
-                  {l.item.conversion_rate !== 1 && ` (${signed(v, n => `${packs(n, l.item.conversion_rate)} ${l.item.purchase_unit}`)})`}
+                  {Number(l.item.conversion_rate) !== 1 && ` (${signed(v, n => `${packs(n, l.item.conversion_rate)} ${l.item.purchase_unit}`)})`}
                 </span>
               </p>
             </li>

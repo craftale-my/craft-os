@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
@@ -31,21 +31,33 @@ function CountRow({ item, locationId, saved, onSave }: {
   const start = saved == null ? null : baseToPacksLoose(saved, rate)
   const [packsText, setPacksText] = useState(start ? String(start.packs) : '')
   const [looseText, setLooseText] = useState(start && start.loose ? String(start.loose) : '')
-  const [state, setState] = useState<'idle' | 'saving' | 'error'>('idle')
+  const [state, setState] = useState<'idle' | 'error'>('idle')
+  const [pending, setPending] = useState(0)
+  // Latest text and last successfully saved base live in refs so queued saves never read stale closures.
+  const packsRef = useRef(packsText)
+  const looseRef = useRef(looseText)
+  const lastSaved = useRef<number | null>(saved ?? null)
+  const chain = useRef<Promise<void>>(Promise.resolve())
 
-  async function commit() {
-    const p = parse(packsText)
-    const l = single ? null : parse(looseText)
+  async function run() {
+    const p = parse(packsRef.current)
+    const l = single ? null : parse(looseRef.current)
     if (Number.isNaN(p) || Number.isNaN(l)) { setState('error'); return }
     const base = packsLooseToBase(p, l, rate)
-    if (base === (saved ?? null)) return
-    setState('saving')
+    if (base === lastSaved.current) { setState('idle'); return }
     try {
       await onSave(item.id, locationId, base)
+      lastSaved.current = base
       setState('idle')
     } catch {
       setState('error')
     }
+  }
+
+  /** Saves on one row run strictly one after another, each from the current text. */
+  function commit() {
+    setPending(n => n + 1)
+    chain.current = chain.current.then(run).finally(() => setPending(n => n - 1))
   }
 
   return (
@@ -58,7 +70,7 @@ function CountRow({ item, locationId, saved, onSave }: {
           </p>
         </div>
         <span className="text-xs font-semibold whitespace-nowrap">
-          {state === 'saving' ? <span className="text-brown-faint">Saving…</span>
+          {pending > 0 ? <span className="text-brown-faint">Saving…</span>
             : state === 'error' ? <span className="text-red-700">Not saved</span>
             : saved != null ? <span className="text-green-700">✓ {qty(saved)} {item.base_unit}</span>
             : null}
@@ -68,7 +80,7 @@ function CountRow({ item, locationId, saved, onSave }: {
         <input
           type="text" inputMode="decimal" className={numCls} value={packsText}
           aria-label={`${item.name} ${single ? item.base_unit : item.purchase_unit}`}
-          onChange={e => setPacksText(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
+          onChange={e => { packsRef.current = e.target.value; setPacksText(e.target.value) }} onBlur={commit} onFocus={e => e.target.select()}
         />
         <span className="text-xs text-brown-muted">{single ? item.base_unit : item.purchase_unit}</span>
         {!single && (
@@ -77,7 +89,7 @@ function CountRow({ item, locationId, saved, onSave }: {
             <input
               type="text" inputMode="decimal" className={numCls} value={looseText}
               aria-label={`${item.name} loose ${item.base_unit}`}
-              onChange={e => setLooseText(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
+              onChange={e => { looseRef.current = e.target.value; setLooseText(e.target.value) }} onBlur={commit} onFocus={e => e.target.select()}
             />
             <span className="text-xs text-brown-muted">{item.base_unit}</span>
           </>
@@ -99,6 +111,9 @@ export default function StockCountSessionPage() {
   const [entries, setEntries] = useState<StockCountEntry[]>([])
   const [tab, setTab] = useState<string>('')
   const [onlyGaps, setOnlyGaps] = useState(false)
+  // Keys uncounted at the moment "Not counted only" was switched on or the tab changed; rows stay put while being filled.
+  const [gapSnap, setGapSnap] = useState<Set<string> | null>(null)
+  const cancelling = useRef(false)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -125,7 +140,9 @@ export default function StockCountSessionPage() {
     setLocations(locs)
     setLinks((linkRes.data as ItemLocation[]) ?? [])
     setEntries((eRes.data as StockCountEntry[]) ?? [])
-    setError(iRes.error?.message ?? eRes.error?.message ?? '')
+    const loadErr = bRes.error?.message ?? iRes.error?.message ?? lRes.error?.message
+      ?? linkRes.error?.message ?? eRes.error?.message
+    if (loadErr) setError(loadErr)
     setLoading(false)
   }, [id])
 
@@ -164,10 +181,27 @@ export default function StockCountSessionPage() {
     setCount(data as StockCount)
   }
 
+  function snapshotGaps(g: typeof group) {
+    return new Set(g ? g.items.filter(i => !entryMap.has(entryKey(i.id, g.locationId))).map(i => entryKey(i.id, g.locationId)) : [])
+  }
+
+  function selectTab(key: string) {
+    setTab(key)
+    if (onlyGaps) setGapSnap(snapshotGaps(groups.find(g => g.key === key)))
+  }
+
+  function toggleGaps(on: boolean) {
+    setOnlyGaps(on)
+    setGapSnap(on ? snapshotGaps(group) : null)
+  }
+
   async function cancel() {
+    if (cancelling.current) return
     if (!window.confirm('Cancel this count? Numbers entered so far are discarded and stock is not changed.')) return
+    cancelling.current = true
+    setError('')
     const { error: err } = await supabase.rpc('cancel_stock_count', { p_count_id: id })
-    if (err) { setError(err.message); return }
+    if (err) { cancelling.current = false; setError(err.message); return }
     navigate('/procurement/stock-counts')
   }
 
@@ -196,7 +230,7 @@ export default function StockCountSessionPage() {
 
   const done = countItems.length - missing.length
   const shownItems = group
-    ? (onlyGaps ? group.items.filter(i => !entryMap.has(entryKey(i.id, group.locationId))) : group.items)
+    ? (onlyGaps && gapSnap ? group.items.filter(i => gapSnap.has(entryKey(i.id, group.locationId))) : group.items)
     : []
 
   return (
@@ -222,7 +256,7 @@ export default function StockCountSessionPage() {
                 const on = g.key === activeTab
                 return (
                   <button
-                    key={g.key} type="button" onClick={() => setTab(g.key)}
+                    key={g.key} type="button" onClick={() => selectTab(g.key)}
                     className={`px-3 py-2 rounded-full text-xs font-semibold whitespace-nowrap border ${
                       on ? 'bg-[#C4813A] border-[#C4813A] text-white' : 'bg-white border-[#D4C5B0] text-brown-medium'}`}
                   >
@@ -232,7 +266,7 @@ export default function StockCountSessionPage() {
               })}
             </div>
             <label className="flex items-center gap-2 text-xs text-brown-muted">
-              <input type="checkbox" checked={onlyGaps} onChange={e => setOnlyGaps(e.target.checked)} />
+              <input type="checkbox" checked={onlyGaps} onChange={e => toggleGaps(e.target.checked)} />
               Not counted only
             </label>
             <div className="space-y-2">
