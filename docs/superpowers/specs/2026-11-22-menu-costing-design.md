@@ -29,12 +29,12 @@ New tables (RLS on; read and write need `manage_procurement`; writes only throug
 
 - `menu_variant_recipe_lines` — `variant_id` → `menu_variants`, `item_id` → `items`, `qty_base numeric > 0` (base units of the item), `sort_order`. Primary key (`variant_id`, `item_id`). A variant with no lines has no recipe.
 - `modifier_recipe_lines` — `option_id` → `modifier_options`, `item_id` → `items`, `qty_base numeric <> 0` (positive = adds, negative = removes, for swaps), `sort_order`. Primary key (`option_id`, `item_id`).
-- `menu_categories.target_food_cost_bp integer null check (between 0 and 10000)` — target in basis points (2500 = 25%).
+- `menu_category_targets` — `category_id` primary key → `menu_categories`, `target_food_cost_bp integer not null check (between 0 and 10000)` (2500 = 25%). A separate table, not a column on `menu_categories`, because the menu tables are readable by the QR ordering page and targets are internal.
 - `menu_recipe_meta` — `variant_id` primary key, `updated_at`, `updated_by` (who last saved the recipe). Kept out of `menu_variants` so the POS tables stay unchanged.
 
 Functions and views:
 
-- `item_standard_cost(item_id) returns numeric` (RM per base unit; null when unknown). Any other item: `latest_price / conversion_rate`. Item with a current recipe (`recipes` row with status `active` and the latest `effective_from` on or before today, as the prep screens use; normally `semi_finished`): sum(line qty × standard cost) ÷ `yield_qty`, recursively (prep inside prep), depth-limited to 5; null if any line's cost is null.
+- `item_standard_cost(item_id) returns numeric` (RM per base unit; null when unknown; raises for callers without `manage_procurement`). Any other item: `latest_price / conversion_rate`. Item with a current recipe (`recipes` row with status `active` and the latest `effective_from` on or before today, as the prep screens use; normally `semi_finished`): sum(line qty × standard cost) ÷ `yield_qty`, recursively (prep inside prep), depth-limited to 5; null if any line's cost is null.
 - `menu_variant_costs` view (security_invoker): `variant_id`, `product_id`, `category_id`, `price_sen`, `line_count`, `cost_rm` (null when any line has no cost), `missing_cost_items` (count), `food_cost_bp` (= cost ÷ price, null when no recipe/cost/price), `target_food_cost_bp`, `over_target` boolean.
 - `modifier_option_costs` view: `option_id`, `cost_delta_rm` (may be negative), `price_delta_sen`, `missing_cost_items`.
 
@@ -44,6 +44,7 @@ RPCs (SECURITY DEFINER, `set search_path = public, pg_temp`, `manage_procurement
 - `save_modifier_recipe(p_option_id uuid, p_lines jsonb)` — same for an add-on; qty may be negative but not zero.
 - `copy_variant_recipe(p_from_variant uuid, p_to_variant uuid)` — overwrites the target with the source's lines.
 - `set_category_target(p_category_id uuid, p_target_bp integer)` — null clears.
+- `item_standard_costs(p_item_ids uuid[])` returns `(item_id, unit_cost)` — for the editor's live cost.
 
 ## Screens (Craft OS back office, English copy, `manage_procurement`)
 
