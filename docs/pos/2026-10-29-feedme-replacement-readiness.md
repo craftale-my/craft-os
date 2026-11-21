@@ -102,7 +102,8 @@ then testing and cut-over. Check items off as they land.
       (`migration-2026-10-30-pos-app.sql`) → discounts (`migration-2026-10-30-pos-discounts.sql`) → split bill
       (`migration-2026-11-16-pos-split-bill.sql`) → bill parts (`migration-2026-11-17-pos-bill-parts.sql`) → menu
       picks (`migration-2026-11-17-menu-picks.sql`, which drops and re-creates `pos_picks_rules()` on a re-run) →
-      sales reports (`migration-2026-11-18-pos-reports.sql`)),
+      sales reports (`migration-2026-11-18-pos-reports.sql`) → QR table cart
+      (`migration-2026-11-22-qr-table-cart.sql`, which re-creates `pos_insert_order` and `qr_table_state`)),
       each with its `-verify.sql`, after the prod menu import.
 - [ ] Split bill (11-16) and bill parts (11-17) run as a pair, 11-16 then 11-17; never re-run 11-16 alone once 11-17
       is installed (it reverts `checkout_bill` and other functions Part B re-creates).
