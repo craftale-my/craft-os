@@ -3,6 +3,7 @@
 // pos_cash_moves have no RLS policy: everything goes through these RPCs.
 import { supabase } from '../../../shared/lib/supabase'
 import type { Approval } from '../checkout/checkoutApi'
+import { readableError, unwrapAction } from '../checkout/rpcResult'
 import type { ZReport } from '../print/zreport'
 import {
   parseCashMoveResult, parseCloseResult, parseShiftList, parseShiftStatus, parseZReport,
@@ -40,6 +41,17 @@ export async function recordCashMove(m: CashMoveInput): Promise<CashMoveResult> 
     .abortSignal(AbortSignal.timeout(MONEY_TIMEOUT_MS))
   if (error) fail(error)
   return parseCashMoveResult(data)
+}
+
+/** Open drawer (W4 spec §5): logged with its reason and kicked on the receipt printer; needs an open shift.
+ *  Idempotent on `id`: a resend after a lost reply logs and kicks nothing twice. A request with no reply
+ *  reads as plain words (readableError); the server's refusals keep their own. */
+export async function openDrawer(id: string, reason: string): Promise<void> {
+  const { data, error } = await supabase
+    .rpc('pos_open_drawer', { p_id: id, p_reason: reason })
+    .abortSignal(AbortSignal.timeout(MONEY_TIMEOUT_MS))
+  if (error) throw new Error(readableError(error.message))
+  unwrapAction(data)
 }
 
 /** The blind count. Without `approval` the server answers "needs approval" above the limit (or

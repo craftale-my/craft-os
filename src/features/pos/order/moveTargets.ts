@@ -39,9 +39,9 @@ export function moveTargets(
   const toTakeaways = bills
     .filter((b) => b.table_id === null && b.id !== from.id)
     .map((b): MoveTarget => hasBillDiscount
-      ? { tableId: null, label: billTitle(null, b.bill_no, tables), kind: 'refused', reason: MERGE_NEEDS_NO_BILL_DISCOUNT }
+      ? { tableId: null, label: billTitle(null, b.bill_no, tables, b.call_no), kind: 'refused', reason: MERGE_NEEDS_NO_BILL_DISCOUNT }
       : {
-        tableId: null, label: billTitle(null, b.bill_no, tables), kind: 'merge',
+        tableId: null, label: billTitle(null, b.bill_no, tables, b.call_no), kind: 'merge',
         intoBillId: b.id, intoBillNo: b.bill_no, totalSen: summaries.get(b.id)?.totalSen ?? null,
       })
   return [...toTables, ...toTakeaways]

@@ -2,6 +2,7 @@
 /** What the order screen is open on (spec §2). */
 import type { OrderType } from '../offline/orderQueue'
 import type { OpenBillRow, TableRow } from './posApi'
+import { takeawayLabel } from './callNo'
 
 /** A table: its open bill when it has one; with none yet, `pax` is what the cashier chose in
  *  Select pax and goes with the first order (no bill exists before that, as today). A takeaway:
@@ -31,11 +32,14 @@ export const TAKEAWAY_ONE_ORDER = 'A takeaway bill takes one order. For more ite
 export const shownPax = (t: OrderTarget, bill: OpenBillRow | null): number | null =>
   bill?.pax ?? (t.kind === 'table' ? t.pax : null)
 
-/** "Table T3", "Takeaway 261026-004" or "New takeaway". */
-export function billTitle(tableId: string | null, billNo: string | null, tables: Pick<TableRow, 'id' | 'label'>[]): string {
+/** "Table T3", "TA012 · Takeaway" (W4: a takeaway's call number), "Takeaway 261026-004" (a bill before W4)
+ *  or "New takeaway". */
+export function billTitle(tableId: string | null, billNo: string | null, tables: Pick<TableRow, 'id' | 'label'>[],
+                          callNo?: string | null): string {
   if (tableId) return `Table ${tables.find((t) => t.id === tableId)?.label ?? '?'}`
+  if (callNo) return takeawayLabel(callNo)
   return billNo ? `Takeaway ${billNo}` : 'New takeaway'
 }
 
 export const targetTitle = (t: OrderTarget, bill: OpenBillRow | null, tables: Pick<TableRow, 'id' | 'label'>[]): string =>
-  billTitle(t.kind === 'table' ? t.tableId : null, bill?.bill_no ?? null, tables)
+  billTitle(t.kind === 'table' ? t.tableId : null, bill?.bill_no ?? null, tables, bill?.call_no)

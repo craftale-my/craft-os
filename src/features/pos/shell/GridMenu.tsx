@@ -1,10 +1,10 @@
 // src/features/pos/shell/GridMenu.tsx
 import type { ComponentType } from 'react'
-import { ClipboardList, LayoutGrid, Receipt, Settings, UtensilsCrossed } from 'lucide-react'
+import { Banknote, ClipboardList, LayoutGrid, Receipt, Settings, UtensilsCrossed } from 'lucide-react'
 import { MENU_LABEL, type MenuItem } from './shellMenu'
 
 const ICON: Record<MenuItem, ComponentType<{ size?: number }>> = {
-  order: LayoutGrid, menu: UtensilsCrossed, transaction: Receipt, report: ClipboardList, setting: Settings,
+  order: LayoutGrid, menu: UtensilsCrossed, transaction: Receipt, drawer: Banknote, report: ClipboardList, setting: Settings,
 }
 
 /** The sheet the bottom bar's grid button opens (spec §1). */

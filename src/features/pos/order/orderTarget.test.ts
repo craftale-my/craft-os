@@ -33,6 +33,10 @@ describe('order targets', () => {
     expect(billTitle(null, '261026-002', tables)).toBe('Takeaway 261026-002')
     expect(targetTitle({ kind: 'takeaway', billId: null }, null, tables)).toBe('New takeaway')
     expect(targetTitle({ kind: 'table', tableId: 't2', pax: 3 }, null, tables)).toBe('Table T2')
+    expect(billTitle(null, '261026-002', tables, 'TA012')).toBe('TA012 · Takeaway')
+    expect(billTitle('t1', '261026-001', tables, null)).toBe('Table T1')
+    expect(billTitle(null, '261026-002', tables, null)).toBe('Takeaway 261026-002')
+    expect(targetTitle({ kind: 'takeaway', billId: '002' }, { ...bills[1], call_no: 'TA003' }, tables)).toBe('TA003 · Takeaway')
   })
   it('a key per table or takeaway bill: the pax chosen does not change it, a move or merge does', () => {
     expect(targetKey({ kind: 'table', tableId: 't1', pax: null })).toBe(targetKey({ kind: 'table', tableId: 't1', pax: 3 }))

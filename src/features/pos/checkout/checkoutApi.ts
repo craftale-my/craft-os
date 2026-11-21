@@ -10,6 +10,8 @@ import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResu
 import { parseCheckoutState, type CheckoutState } from './follow'
 import type { SplitItem } from '../order/splitSelection'
 import { parsePartQuote, parsePartResult, type PartQuote, type PartResult } from './partSplit'
+import type { FontSize } from '../print/doc'
+import type { ReceiptLogo } from '../print/logo'
 
 const CHECKOUT_TIMEOUT_MS = 10_000
 const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
@@ -29,9 +31,14 @@ export interface PosSettings {
   receiptRoute: string | null
   receiptFooter: string
   qrRequiresOpenBill: boolean
+  receiptLogo: ReceiptLogo | null   // W4 receipt template
+  footerQr: string
+  fontSize: FontSize
+  hideFreeMods: boolean
 }
 export const DEFAULT_POS_SETTINGS: PosSettings = {
   sstRegistered: true, cashRounding: 'nearest_5_sen', receiptRoute: null, receiptFooter: DEFAULT_FOOTER, qrRequiresOpenBill: false,
+  receiptLogo: null, footerQr: '', fontSize: 'normal', hideFreeMods: false,
 }
 
 export interface PaymentMethodRow {
@@ -42,6 +49,7 @@ export interface PaymentMethodRow {
   needs_reference: boolean
   sort_order: number
   is_active: boolean
+  opens_drawer: boolean   // W4: a payment, part or refund with it kicks the cash drawer
 }
 
 export interface ServiceChargeRuleRow {
@@ -76,6 +84,10 @@ export interface ReceiptDetails {
   sstRegistered: boolean
   cashRounding: CashRounding
   qrRequiresOpenBill: boolean
+  receiptLogo: ReceiptLogo | null   // W4: null = no logo
+  footerQr: string                  // W4: '' = no QR code
+  fontSize: FontSize                // W4
+  hideFreeMods: boolean             // W4
 }
 
 export interface BillingConfig { settings: PosSettings; rules: ServiceChargeRuleInput[] }
@@ -91,19 +103,25 @@ export interface ClosedBillRow {
   total_sen: number | null
   refunded_sen: number
   merged_into: string | null
+  call_no?: string | null   // W4: TA012 on a takeaway bill; null for dine-in and bills made before W4
   dining_tables: { label: string } | null
 }
 export type { CheckoutResult }
 
-interface SettingsRow { sst_registered: boolean; cash_rounding: CashRounding; receipt_route: string | null; receipt_footer: string; qr_requires_open_bill: boolean }
+interface SettingsRow {
+  sst_registered: boolean; cash_rounding: CashRounding; receipt_route: string | null; receipt_footer: string; qr_requires_open_bill: boolean
+  receipt_logo: ReceiptLogo | null; receipt_footer_qr: string | null; receipt_font_size: FontSize; receipt_hide_free_mods: boolean
+}
 const toSettings = (r: SettingsRow | null): PosSettings => (r ? {
   sstRegistered: r.sst_registered, cashRounding: r.cash_rounding, receiptRoute: r.receipt_route,
   receiptFooter: r.receipt_footer, qrRequiresOpenBill: r.qr_requires_open_bill,
+  receiptLogo: r.receipt_logo, footerQr: r.receipt_footer_qr ?? '', fontSize: r.receipt_font_size ?? 'normal',
+  hideFreeMods: r.receipt_hide_free_mods ?? false,
 } : DEFAULT_POS_SETTINGS)
 
 export async function fetchPosSettings(branchId: string): Promise<PosSettings> {
   const { data, error } = await supabase.from('branch_pos_settings')
-    .select('sst_registered, cash_rounding, receipt_route, receipt_footer, qr_requires_open_bill')
+    .select('sst_registered, cash_rounding, receipt_route, receipt_footer, qr_requires_open_bill, receipt_logo, receipt_footer_qr, receipt_font_size, receipt_hide_free_mods')
     .eq('branch_id', branchId).maybeSingle()
   if (error) fail(error)
   return toSettings(data as SettingsRow | null)
@@ -127,7 +145,7 @@ export async function fetchBillingConfig(branchId: string): Promise<BillingConfi
 }
 
 export async function fetchPaymentMethods(branchId: string, activeOnly: boolean): Promise<PaymentMethodRow[]> {
-  let q = supabase.from('payment_methods').select('id, branch_id, name, kind, needs_reference, sort_order, is_active').eq('branch_id', branchId)
+  let q = supabase.from('payment_methods').select('id, branch_id, name, kind, needs_reference, sort_order, is_active, opens_drawer').eq('branch_id', branchId)
   if (activeOnly) q = q.eq('is_active', true)
   const { data, error } = await q.order('sort_order').order('name')
   if (error) fail(error)
@@ -159,6 +177,7 @@ export async function fetchReceiptDetails(branchId: string): Promise<ReceiptDeta
     sstNo: r.sst_no ?? '', address: r.address ?? '', phone: r.phone ?? '', email: r.email ?? '',
     footer: s.receiptFooter, receiptRoute: s.receiptRoute, sstRegistered: s.sstRegistered,
     cashRounding: s.cashRounding, qrRequiresOpenBill: s.qrRequiresOpenBill,
+    receiptLogo: s.receiptLogo, footerQr: s.footerQr, fontSize: s.fontSize, hideFreeMods: s.hideFreeMods,
   }
 }
 
@@ -349,7 +368,7 @@ export async function openTable(tableId: string, pax: number | null): Promise<st
 /** Paid, voided and merged bills of the branch closed since `sinceIso` (newest first). */
 export async function fetchClosedBillsSince(branchId: string, sinceIso: string): Promise<ClosedBillRow[]> {
   const { data, error } = await supabase.from('bills')
-    .select('id, bill_no, table_id, order_type, status, closed_at, total_sen, refunded_sen, merged_into, dining_tables(label)')
+    .select('id, bill_no, table_id, order_type, status, closed_at, total_sen, refunded_sen, merged_into, call_no, dining_tables(label)')
     .eq('branch_id', branchId).in('status', ['paid', 'voided', 'merged']).gte('closed_at', sinceIso)
     .order('closed_at', { ascending: false })
   if (error) fail(error)

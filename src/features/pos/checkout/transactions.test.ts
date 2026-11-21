@@ -25,6 +25,19 @@ describe('transactions', () => {
     expect(filterTransactions(bills, 'all', ' -004').map((x) => x.bill_no)).toEqual(['261026-004'])
     expect(filterTransactions(bills, 'voided', 'takeaway')).toEqual([])
   })
+  it('a short number matches the call number or the bill serial, not the date part of the bill number', () => {
+    const c = (bill_no: string, label: string | null, call_no: string | null) => ({ ...b(bill_no, 'paid', 0, label), call_no })
+    const day = [c('PJ-261122-001', 'T3', null), c('PJ-261122-002', null, 'TA012'), c('PJ-261122-003', '12', null), c('PJ-261122-004', null, 'TA112')]
+    const nos = (q: string) => filterTransactions(day, 'all', q).map((x) => x.bill_no)
+    expect(nos('12')).toEqual(['PJ-261122-002', 'PJ-261122-003'])
+    expect(nos('012')).toEqual(['PJ-261122-002'])
+    expect(nos('2')).toEqual(['PJ-261122-002'])
+    expect(nos('003')).toEqual(['PJ-261122-003'])
+    expect(nos('261122-002')).toEqual(['PJ-261122-002'])
+    expect(nos('TA12')).toEqual(['PJ-261122-002'])
+    expect(nos('ta 012')).toEqual(['PJ-261122-002'])
+    expect(nos('P12')).toEqual([])
+  })
   it('today\'s date in Malaysia', () => {
     expect(mytDateLabel(Date.parse('2026-10-26T15:59:00Z'))).toBe('26 Oct 2026')
     expect(mytDateLabel(Date.parse('2026-10-26T16:00:00Z'))).toBe('27 Oct 2026')
@@ -48,5 +61,23 @@ describe('txPaymentLabel and splitFromNote: a bill paid in parts or split from a
   })
   it('a part paid by item names its table bill', () => {
     expect(splitFromNote('261117-001')).toBe('Split from bill 261117-001.')
+  })
+})
+
+describe('call numbers in Transactions (W4 spec §2)', () => {
+  const withCall = [
+    { ...b('261026-001', 'paid', 0, null), call_no: 'TA012' },
+    { ...b('261026-002', 'paid', 0, null), call_no: 'TA013' },
+    b('261026-012', 'paid'),
+  ]
+  it('a takeaway bill with a number says it', () => {
+    expect(txWhere(withCall[0])).toBe('TA012 · Takeaway')
+    expect(txWhere(withCall[2])).toBe('Table T3')
+  })
+  it('"TA12", "ta012" and "12" find TA012 (and "12" the bill numbers with 12)', () => {
+    expect(filterTransactions(withCall, 'all', 'TA12').map((x) => x.bill_no)).toEqual(['261026-001'])
+    expect(filterTransactions(withCall, 'all', 'ta012').map((x) => x.bill_no)).toEqual(['261026-001'])
+    expect(filterTransactions(withCall, 'all', '12').map((x) => x.bill_no)).toEqual(['261026-001', '261026-012'])
+    expect(filterTransactions(withCall, 'all', 'ta 13').map((x) => x.bill_no)).toEqual(['261026-002'])
   })
 })

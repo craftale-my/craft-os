@@ -30,3 +30,18 @@ describe('HomeScreen part payments (split spec §3.5)', () => {
     expect(screen.queryByText(/Part paid/)).toBeNull()
   })
 })
+
+describe('HomeScreen call numbers (W4 spec §2)', () => {
+  it('a takeaway with a call number: "TA012 · Takeaway", its bill number under it', () => {
+    render(<HomeScreen tables={[table]} bills={[{ ...open('b2', null), call_no: 'TA012' }]} summaries={new Map()} newBillIds={new Set()}
+      banners={null} onRefresh={() => {}} onPickTable={() => {}} onPickBill={() => {}} onNewTakeaway={() => {}} />)
+    expect(screen.getByText('TA012 · Takeaway')).toBeTruthy()
+    expect(screen.getByText(/^261117-002 · \d+m$/)).toBeTruthy()
+  })
+  it('a takeaway from before W4: its bill number, "Takeaway" under it', () => {
+    render(<HomeScreen tables={[table]} bills={[open('b2', null)]} summaries={new Map()} newBillIds={new Set()}
+      banners={null} onRefresh={() => {}} onPickTable={() => {}} onPickBill={() => {}} onNewTakeaway={() => {}} />)
+    expect(screen.getByText('261117-002')).toBeTruthy()
+    expect(screen.getByText(/^Takeaway · \d+m$/)).toBeTruthy()
+  })
+})

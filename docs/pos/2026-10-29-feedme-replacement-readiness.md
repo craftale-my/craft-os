@@ -65,9 +65,16 @@ then testing and cut-over. Check items off as they land.
       methods, discounts, voids, refunds, cash drawer, SST by rate (6% / 8% / exempt), per outlet and date range.
       Built 2026-11-18: Craft OS → POS → Reports (12 tabs, CSV, ledger export of bills / lines / payments up to
       92 days); spec docs/superpowers/specs/2026-11-18-pos-sales-reports-design.md; dev SQL + verify OK, browser-checked.
-- [ ] **W4 Receipt and numbers** — receipt template (logo, header, address, phone, email, hide zero-price add-ons,
+- [x] **W4 Receipt and numbers** — receipt template (logo, header, address, phone, email, hide zero-price add-ons,
       footer text, footer QR, font size); order numbers per channel (takeaway TA001–TA999, pickup P001–P999) with
       auto reset; an "open drawer" button and per-payment-method drawer pulse.
+      Built on dev 2026-11-22 (plan docs/superpowers/plans/2026-11-22-pos-receipt-numbers.md): TA001–TA999 per outlet
+      and business day on the open bills, bill header, tickets, receipts and Transactions; logo, footer QR, font size
+      and hide-free-add-ons in POS Settings → Receipt (ZyWell / print agent; Epson and Star print the text);
+      "Opens the cash drawer" per payment method, Open drawer with a reason, no-sale opens on the Z report and in
+      Reports → Cash drawer. Pickup numbers wait for a pickup channel. Order on rollout: SQL first, then the POS
+      and Craft OS builds, then restart the print agent. Still to check with the owner: the till flow (takeaway
+      numbers, Open drawer, Z report line) and a real receipt + drawer kick on the office ZyWell.
 - [ ] **W5 E-invoice** — merge `feature/einvoice` into this branch, add MyInvois sandbox secrets and company
       details, then production credentials.
 - [ ] **W6 Print agent pairing, Part D** — the agent pairs like a device instead of an email/password login; one
@@ -102,9 +109,11 @@ then testing and cut-over. Check items off as they land.
       (`migration-2026-10-30-pos-app.sql`) → discounts (`migration-2026-10-30-pos-discounts.sql`) → split bill
       (`migration-2026-11-16-pos-split-bill.sql`) → bill parts (`migration-2026-11-17-pos-bill-parts.sql`) → menu
       picks (`migration-2026-11-17-menu-picks.sql`, which drops and re-creates `pos_picks_rules()` on a re-run) →
-      sales reports (`migration-2026-11-18-pos-reports.sql`) → QR table cart
-      (`migration-2026-11-22-qr-table-cart.sql`, which re-creates `pos_insert_order` and `qr_table_state`)),
-      each with its `-verify.sql`, after the prod menu import. After it, never re-run
+      sales reports (`migration-2026-11-18-pos-reports.sql`) → receipt numbers and cash drawer
+      (`migration-2026-11-22-pos-receipt-numbers.sql`, then the POS builds, then restart the print agent) →
+      QR table cart (`migration-2026-11-22-qr-table-cart.sql`, which re-creates `pos_insert_order` and
+      `qr_table_state`; SQL before the front end)),
+      each with its `-verify.sql`, after the prod menu import. After the QR table cart file, never re-run
       `migration-2026-10-24-pos-slots-photos-fn.sql` or `migration-2026-10-30-pos-discounts.sql`: they would
       silently put back `pos_insert_order` and `qr_table_state` without the guest fields (the verify script
       checks for this).

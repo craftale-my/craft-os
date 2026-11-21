@@ -21,6 +21,12 @@ always-on computer next to its printers.
    ```
 
 Routes are read at start: restart the agent after changing a route in POS settings.
+
+The agent prints with this repo's print code (`src/features/pos/print/`): after a POS update that changes
+receipts, tickets or the drawer, pull the branch and restart the agent — and run that update's SQL first
+(since W4 the agent reads `print_jobs.seq`, so a drawer kick goes out before its receipt). A drawer kick
+older than 2 minutes is not sent: the server marks it failed ("Too late to open the drawer.") so the drawer
+never opens with nobody at the till. Keep the agent computer's clock synced.
 Tickets older than `MAX_AGE_MIN` minutes are left pending (the iPad shows them as
 waiting) instead of printed on start. `TICKET_COLS` is the paper width in characters
 (48 on the ZyWell ZY301).

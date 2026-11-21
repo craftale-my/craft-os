@@ -2,6 +2,7 @@
 /** The Transaction screen's list (spec §5): today's closed bills, filtered and searched. */
 import { formatSen } from '../order/cart'
 import { partLabel } from '../print/receipt'
+import { callNoMatches, takeawayLabel } from '../order/callNo'
 import type { ClosedBillRow, PaymentRow } from './checkoutApi'
 
 export type TxFilter = 'all' | 'paid' | 'voided' | 'refunded' | 'merged'
@@ -10,11 +11,11 @@ export const TX_FILTERS: { id: TxFilter; label: string }[] = [
   { id: 'refunded', label: 'Refunded' }, { id: 'merged', label: 'Merged' },
 ]
 
-type TxBill = Pick<ClosedBillRow, 'bill_no' | 'status' | 'refunded_sen' | 'order_type' | 'dining_tables'>
+type TxBill = Pick<ClosedBillRow, 'bill_no' | 'status' | 'refunded_sen' | 'order_type' | 'dining_tables' | 'call_no'>
 
-/** "Table T3", "Takeaway", or "—" for a dine-in bill whose table is gone. */
-export function txWhere(b: Pick<ClosedBillRow, 'order_type' | 'dining_tables'>): string {
-  return b.dining_tables ? `Table ${b.dining_tables.label}` : b.order_type === 'takeaway' ? 'Takeaway' : '—'
+/** "Table T3", "TA012 · Takeaway" (W4), "Takeaway" (before W4), or "—" for a dine-in bill whose table is gone. */
+export function txWhere(b: Pick<ClosedBillRow, 'order_type' | 'dining_tables' | 'call_no'>): string {
+  return b.dining_tables ? `Table ${b.dining_tables.label}` : b.order_type === 'takeaway' ? takeawayLabel(b.call_no) : '—'
 }
 
 /** A paid bill with any refund counts as Refunded, not Paid. */
@@ -22,11 +23,21 @@ export function txKind(b: Pick<ClosedBillRow, 'status' | 'refunded_sen'>): Exclu
   return b.status === 'paid' ? (b.refunded_sen > 0 ? 'refunded' : 'paid') : b.status
 }
 
-/** The filter, then the search on the bill number or the table / Takeaway (any case). */
+/** The filter, then the search. One to three digits ("12", "003") match by value only: the call number (TA012) or
+ *  the bill's serial after the last "-" (PJ-261122-003), or a table labelled exactly that, never the date inside
+ *  the bill number. Anything else: the bill number or the table / Takeaway (any case), or the call number
+ *  ("TA12", "ta012" find TA012). */
 export function filterTransactions<T extends TxBill>(bills: T[], filter: TxFilter, search: string): T[] {
   const q = search.trim().toLowerCase()
-  return bills.filter((b) => (filter === 'all' || txKind(b) === filter)
-    && (!q || b.bill_no.toLowerCase().includes(q) || txWhere(b).toLowerCase().includes(q)))
+  const short = /^\d{1,3}$/.test(q.replace(/\s+/g, ''))
+  const n = Number(q.replace(/\s+/g, ''))
+  const matches = (b: T) => {
+    if (!q) return true
+    if (!short) return b.bill_no.toLowerCase().includes(q) || txWhere(b).toLowerCase().includes(q) || callNoMatches(b.call_no, q)
+    const serial = /-(\d+)$/.exec(b.bill_no)
+    return callNoMatches(b.call_no, q) || (!!serial && Number(serial[1]) === n) || b.dining_tables?.label.toLowerCase() === q
+  }
+  return bills.filter((b) => (filter === 'all' || txKind(b) === filter) && matches(b))
 }
 
 export function txStatusLabel(b: Pick<ClosedBillRow, 'status' | 'refunded_sen'>): string {

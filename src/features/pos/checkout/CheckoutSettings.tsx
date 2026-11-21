@@ -7,13 +7,15 @@ import {
   saveServiceChargeRule, type Approver, type PaymentMethodRow, type ReceiptDetails, type ServiceChargeRuleRow,
 } from './checkoutApi'
 import { fetchOutletApprovers } from '../outlets/outletsApi'
-import { ACTION_TITLES, type ReasonAction } from './reasons'
-import { bpToPercentText, parsePercentBp, parseReasons, receiptDetailsProblem, scopeLabel } from './settingsForm'
+import { ACTION_TITLES, OPEN_DRAWER_REASONS, type ReasonAction } from './reasons'
+import { bpToPercentText, methodKindPatch, parsePercentBp, parseReasons, receiptDetailsProblem, scopeLabel } from './settingsForm'
 import type { PaymentKind } from './tender'
+import type { FontSize } from '../print/doc'
+import ReceiptLogoField from './ReceiptLogoField'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const KINDS: PaymentKind[] = ['cash', 'card', 'duitnow', 'ewallet', 'other']
-const ACTIONS: ReasonAction[] = ['void_item', 'void_bill', 'refund', 'discount']
+const ACTIONS: ReasonAction[] = ['void_item', 'void_bill', 'refund', 'discount', 'open_drawer']
 const ORDER_TYPES: { key: BillOrderType; label: string }[] = [{ key: 'dine_in', label: 'Dine-in' }, { key: 'takeaway', label: 'Takeaway' }]
 const box = 'rounded-xl border border-border bg-card p-4'
 const input = 'rounded border border-border p-1'
@@ -72,7 +74,7 @@ function ReceiptSection({ branchId, routes, run, onError, outcome }: { branchId:
   return (
     <section className={box}>
       <h2 className="font-semibold">Receipt</h2>
-      <p className="text-xs text-brown-muted">Printed at the top and bottom of every customer receipt. ASCII only for now: Chinese prints as "?".</p>
+      <p className="text-xs text-brown-muted">Printed at the top and bottom of every customer receipt. ASCII only for now: Chinese prints as "?". The logo, the QR code and the font size print on the shop's own printers (print agent); Epson and Star printers print the text only.</p>
       <div className="mt-2 grid grid-cols-2 gap-3">
         {text('receiptTitle', 'Title (shop name)')}
         {text('legalName', 'Company name')}
@@ -90,6 +92,22 @@ function ReceiptSection({ branchId, routes, run, onError, outcome }: { branchId:
         <label className="col-span-2 block text-sm">Footer
           <input className={`${input} mt-1 w-full`} value={d.footer} onChange={(e) => setD({ ...d, footer: e.target.value })} />
         </label>
+        <div className="col-span-2">
+          <ReceiptLogoField logo={d.receiptLogo} onChange={(receiptLogo) => setD({ ...d, receiptLogo })} />
+        </div>
+        <label className="col-span-2 block text-sm">QR code under the footer
+          <input className={`${input} mt-1 w-full`} value={d.footerQr} maxLength={300} placeholder="A review link, Instagram, anything"
+            onChange={(e) => setD({ ...d, footerQr: e.target.value })} />
+          <span className="mt-1 block text-xs text-brown-muted">Up to 300 characters. Leave it empty for no QR code.</span>
+        </label>
+        <label className="text-sm">Font size
+          <select className={`${input} ml-2`} value={d.fontSize} onChange={(e) => setD({ ...d, fontSize: e.target.value as FontSize })}>
+            <option value="small">Small</option>
+            <option value="normal">Normal</option>
+            <option value="large">Large</option>
+          </select>
+        </label>
+        <label className="text-sm"><input type="checkbox" checked={d.hideFreeMods} onChange={(e) => setD({ ...d, hideFreeMods: e.target.checked })} /> Hide free add-ons on the receipt</label>
         <label className="text-sm"><input type="checkbox" checked={d.sstRegistered} onChange={(e) => setD({ ...d, sstRegistered: e.target.checked })} /> SST registered (charge SST)</label>
         <label className="text-sm">Rounding
           <select className={`${input} ml-2`} value={d.cashRounding} onChange={(e) => setD({ ...d, cashRounding: e.target.value as CashRounding })}>
@@ -248,21 +266,22 @@ function PaymentMethodsSection({ branchId, run, onError, outcome }: { branchId: 
   return (
     <section className={box}>
       <h2 className="font-semibold">Payment methods</h2>
-      <p className="text-xs text-brown-muted">Only cash gives change. "Needs reference" makes the cashier type the terminal or transfer reference. Turn a method off instead of deleting it: old bills keep its name.</p>
+      <p className="text-xs text-brown-muted">Only cash gives change. "Needs reference" makes the cashier type the terminal or transfer reference. "Opens the cash drawer" kicks the drawer open on the receipt printer when this method takes or pays back money. Turn a method off instead of deleting it: old bills keep its name.</p>
       {rows.map((r, i) => (
         <div key={rowKey(r, i)} className="mt-2 flex flex-wrap items-center gap-2 text-sm">
           <input className={`${input} w-44`} value={r.name} onChange={(e) => set(i, { name: e.target.value })} />
-          <select className={input} value={r.kind} onChange={(e) => set(i, { kind: e.target.value as PaymentKind })}>
+          <select className={input} value={r.kind} onChange={(e) => set(i, methodKindPatch(!r.id, e.target.value as PaymentKind))}>
             {KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
           </select>
           <label><input type="checkbox" checked={r.needs_reference} onChange={(e) => set(i, { needs_reference: e.target.checked })} /> Needs reference</label>
+          <label><input type="checkbox" checked={r.opens_drawer} onChange={(e) => set(i, { opens_drawer: e.target.checked })} /> Opens the cash drawer</label>
           <label><input type="checkbox" checked={r.is_active} onChange={(e) => set(i, { is_active: e.target.checked })} /> Active</label>
           <label>Order <input type="number" className={`${input} w-14`} value={r.sort_order} onChange={(e) => set(i, { sort_order: Number(e.target.value) || 0 })} /></label>
           <button onClick={() => void save(i)} disabled={saving.includes(rowKey(r, i))} className="rounded bg-brown-btn px-2 py-1 text-xs text-white disabled:opacity-50">Save</button>
         </div>
       ))}
       <OutcomeBanner outcome={outcome} />
-      <button onClick={() => setRows((rs) => [...rs, { branch_id: branchId, name: '', kind: 'other', needs_reference: false, sort_order: rs.length + 1, is_active: true }])}
+      <button onClick={() => setRows((rs) => [...rs, { branch_id: branchId, name: '', kind: 'other', needs_reference: false, sort_order: rs.length + 1, is_active: true, opens_drawer: false }])}
         className="mt-2 rounded border border-border px-3 py-1 text-sm">Add payment method</button>
     </section>
   )
@@ -274,6 +293,7 @@ function ReasonsSection({ branchId, run, onError, outcome }: { branchId: string 
     void_bill: { text: '', compulsory: true, allowOther: true },
     refund: { text: '', compulsory: true, allowOther: true },
     discount: { text: '', compulsory: true, allowOther: true },
+    open_drawer: { text: OPEN_DRAWER_REASONS.join('\n'), compulsory: true, allowOther: true },   // W4: the defaults until saved
   })
   useEffect(() => {
     fetchReasonTemplates(branchId).then((rows) => setDrafts((d) => {
@@ -290,8 +310,8 @@ function ReasonsSection({ branchId, run, onError, outcome }: { branchId: string 
   }, `${ACTION_TITLES[a]} reasons saved`)
   return (
     <section className={box}>
-      <h2 className="font-semibold">Reasons for voids, refunds and discounts</h2>
-      <div className="mt-2 grid grid-cols-4 gap-3 text-sm">
+      <h2 className="font-semibold">Reasons for voids, refunds, discounts and opening the drawer</h2>
+      <div className="mt-2 grid grid-cols-5 gap-3 text-sm">
         {ACTIONS.map((a) => (
           <div key={a}>
             <div className="font-medium">{ACTION_TITLES[a]}</div>

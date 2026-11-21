@@ -29,3 +29,6 @@ export function loginBranchProblem(staffBranchId: string | null, branchId: strin
   }
   return null
 }
+
+// staleMinutes / DRAWER_MAX_AGE_MIN live in src so the iPad print host shares one definition.
+export { DRAWER_MAX_AGE_MIN, staleMinutes } from '../../src/features/pos/print/stale.ts'

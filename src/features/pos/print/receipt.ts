@@ -1,5 +1,7 @@
 // Explicit .ts extension: the Node print agent loads this file directly (no bundler).
 import { formatMyt, wrap } from './ticket.ts'
+import type { FontSize } from './doc.ts'
+import type { ReceiptLogo } from './logo.ts'
 
 /** The customer receipt. pos_receipt_payload (supabase/migration-2026-10-24-
  *  pos-checkout-fn.sql) builds exactly this shape into print_jobs.payload, so
@@ -12,6 +14,7 @@ export interface ReceiptHeader {
   address: string | null
   phone: string | null
   email: string | null
+  logo?: ReceiptLogo | null // W4: the outlet's logo, printed by the print agent only; absent on receipts queued before W4
 }
 
 export interface ReceiptItem {
@@ -47,6 +50,9 @@ export interface ReceiptPayload {
   kind: 'receipt'
   route: string
   reprint: boolean
+  callNo?: string | null    // W4: the takeaway call number (TA012), big at the top; null for dine-in, absent before W4
+  fontSize?: FontSize       // W4: small = Font B, large = double height; absent before W4 (= normal)
+  footerQr?: string | null  // W4: printed as a QR code under the footer; absent before W4
   header: ReceiptHeader
   billNo: string
   splitFrom?: { billNo: string; table: string | null } | null // a paid part of a split bill: its table bill (absent before split bill)

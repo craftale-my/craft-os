@@ -10,7 +10,8 @@ const COLUMNS = [
   c.text('Outlet', (r) => r.outlet), c.time('Opened', (r) => r.openedAt), c.time('Closed', (r) => r.closedAt, 'Still open'),
   c.text('Opened by', (r) => r.openedBy), c.text('Closed by', (r) => r.closedBy), c.money('Float', (r) => r.floatSen),
   c.money('Cash sales', (r) => r.cashSalesSen), c.money('Cash refunds', (r) => r.cashRefundSen), c.money('Pay in', (r) => r.payInSen),
-  c.money('Pay out', (r) => r.payOutSen), c.money('Expected', (r) => r.expectedSen), c.money('Counted', (r) => r.countedSen),
+  c.money('Pay out', (r) => r.payOutSen), c.count('No-sale opens', (r) => r.noSaleOpens), c.money('Expected', (r) => r.expectedSen),
+  c.money('Counted', (r) => r.countedSen),
   c.money('Variance', (r) => r.varianceSen), c.text('Reason', (r) => r.reason),
 ]
 
