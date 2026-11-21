@@ -234,7 +234,7 @@ export default function InventoryDetailPage() {
                             to={`/procurement/stock-counts/${t.reference_id}`}
                             className="text-xs text-[#2E6E9E] font-normal ml-2 hover:underline"
                           >
-                            Stock count
+                            Open count
                           </Link>
                         )
                       ) : t.reference_type && t.reference_type !== t.transaction_type && (

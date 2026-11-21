@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   packsLooseToBase, baseToPacksLoose, itemsForCount, groupForCounting, groupProgress,
-  uncountedItems, sortResultLines, entryKey, strayEntries, UNASSIGNED,
+  uncountedItems, uncountedSpots, countSpotTotal, sortResultLines, entryKey, strayEntries, UNASSIGNED,
 } from './stocktake'
 import type { Item, StorageLocation, ItemLocation, StockCountEntry } from '../types'
 
@@ -96,6 +96,37 @@ describe('uncountedItems', () => {
   it('returns items with no entry anywhere', () => {
     const entries = [{ item_id: 'a', location_id: 'bar', counted_base: 0 }] as StockCountEntry[]
     expect(uncountedItems([item('a'), item('b')], entries).map(i => i.id)).toEqual(['b'])
+  })
+})
+
+describe('uncountedSpots', () => {
+  const e = (item_id: string, location_id: string | null, counted_base = 1) =>
+    ({ item_id, location_id, counted_base }) as StockCountEntry
+  const milk = item('milk'), tea = item('tea')
+  const groups = groupForCounting(
+    [milk, tea], [loc('bar', 0), loc('back', 1)],
+    [{ item_id: 'milk', location_id: 'bar', sort_order: 0 }, { item_id: 'milk', location_id: 'back', sort_order: 0 },
+     { item_id: 'tea', location_id: 'bar', sort_order: 1 }] as ItemLocation[],
+  )
+  it('counts one spot per linked location', () => {
+    expect(countSpotTotal(groups)).toBe(3)
+  })
+  it('lists every linked location with no entry', () => {
+    const r = uncountedSpots(groups, [e('milk', 'bar', 4)])
+    expect(r.map(s => `${s.item.id}@${s.locationId}`)).toEqual(['tea@bar', 'milk@back'])
+  })
+  it('accepts 0 as counted', () => {
+    expect(uncountedSpots(groups, [e('milk', 'bar', 4), e('milk', 'back', 0), e('tea', 'bar', 0)])).toEqual([])
+  })
+  it('an entry at an unlinked location does not cover a linked spot', () => {
+    const r = uncountedSpots(groups, [e('milk', 'bar'), e('milk', null), e('tea', 'bar')])
+    expect(r.map(s => `${s.item.id}@${s.locationId}`)).toEqual(['milk@back'])
+  })
+  it('an item linked to no active location needs an entry anywhere', () => {
+    const g = groupForCounting([item('x')], [loc('bar', 0)], [])
+    expect(uncountedSpots(g, [])).toHaveLength(1)
+    expect(uncountedSpots(g, [e('x', null, 0)])).toEqual([])
+    expect(uncountedSpots(g, [e('x', 'bar')])).toEqual([])
   })
 })
 

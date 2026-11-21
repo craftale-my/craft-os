@@ -80,6 +80,32 @@ export function uncountedItems(items: Item[], entries: StockCountEntry[]): Item[
   return items.filter(i => !counted.has(i.id))
 }
 
+export interface UncountedSpot { item: Item; locationId: string | null; label: string }
+
+/** Total spots on the count list: one per (item, group location) pair. */
+export function countSpotTotal(groups: CountGroup[]): number {
+  return groups.reduce((n, g) => n + g.items.length, 0)
+}
+
+/**
+ * Spots still to count — submit is blocked while any remain. An item needs a number
+ * (0 is valid) at EVERY active location it is linked to; an item in the Unassigned
+ * group needs an entry anywhere (tolerant of layout changes mid-count). Same rule as
+ * the server's submit_stock_count.
+ */
+export function uncountedSpots(groups: CountGroup[], entries: StockCountEntry[]): UncountedSpot[] {
+  const have = new Set(entries.map(e => entryKey(e.item_id, e.location_id)))
+  const anywhere = new Set(entries.map(e => e.item_id))
+  const out: UncountedSpot[] = []
+  for (const g of groups) {
+    for (const item of g.items) {
+      const counted = g.locationId === null ? anywhere.has(item.id) : have.has(entryKey(item.id, g.locationId))
+      if (!counted) out.push({ item, locationId: g.locationId, label: g.label })
+    }
+  }
+  return out
+}
+
 /** Biggest RM difference first (loss or gain), then by name. */
 export function sortResultLines<T extends { variance_value: number; name: string }>(lines: T[]): T[] {
   return [...lines].sort((a, b) =>

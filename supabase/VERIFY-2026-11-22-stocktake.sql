@@ -116,6 +116,42 @@ begin
   v_out := v_out || format(E'%s  submit refused while an item is uncounted\n', case when v_ok then 'PASS' else 'FAIL' end);
   v_fail := v_fail or not v_ok;
 
+  -- 4a. Every linked location needs a number: item B linked to Front and Back,
+  --     entry at Front only -> refused; 0 at Back -> allowed (checked via the
+  --     message of the refusal, then the count is left as before).
+  execute 'reset role';
+  insert into item_locations (item_id, location_id) values (v_b, v_loc1), (v_b, v_loc2);
+  delete from stock_count_entries where count_id = v_count.id and item_id = v_b;
+  execute 'set local role authenticated';
+  perform save_count_entry(v_count.id, v_b, v_loc1, 6);
+  perform save_count_entry(v_count.id, v_c, null, 5);   -- so only B can be the blocker
+  begin
+    perform submit_stock_count(v_count.id);
+    v_ok := false;
+  exception when others then v_ok := sqlerrm like '1 spot(s) not counted yet%';
+  end;
+  v_out := v_out || format(E'%s  linked item with one of two locations counted is refused\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+  perform save_count_entry(v_count.id, v_b, v_loc2, 0);
+  -- A's removed-location entry (Old, 1 g) is still there; with B complete the
+  -- only other thing that could block is nothing, so submit would now pass.
+  -- Prove it without submitting: re-run the same check inside a savepoint-like block.
+  begin
+    perform submit_stock_count(v_count.id);
+    raise exception 'SUBMIT_PASSED_ROLLBACK';
+  exception when others then v_ok := sqlerrm = 'SUBMIT_PASSED_ROLLBACK';
+  end;
+  v_out := v_out || format(E'%s  entering 0 at the other linked location allows submit\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+  -- Restore: unlink B, clear its entries and C's, so the later checks run as before.
+  perform save_count_entry(v_count.id, v_b, v_loc1, null);
+  perform save_count_entry(v_count.id, v_b, v_loc2, null);
+  perform save_count_entry(v_count.id, v_c, null, null);
+  execute 'reset role';
+  delete from item_locations where item_id = v_b;
+  execute 'set local role authenticated';
+  perform save_count_entry(v_count.id, v_b, null, 6);
+
   -- 4b. A removed location takes no numbers; its old entry can still be cleared
   execute 'reset role';
   update storage_locations set is_active = false where id = v_loc3;

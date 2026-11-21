@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import {
-  itemsForCount, groupForCounting, groupProgress, entryKey, packsLooseToBase, baseToPacksLoose, uncountedItems,
+  itemsForCount, groupForCounting, groupProgress, entryKey, packsLooseToBase, baseToPacksLoose, uncountedSpots, countSpotTotal,
   strayEntries,
 } from '../../shared/lib/stocktake'
 import { qty } from '../../shared/lib/procurement'
@@ -161,7 +161,7 @@ export default function StockCountSessionPage() {
   const groups = useMemo(() => groupForCounting(countItems, locations, links), [countItems, locations, links])
   const entryMap = useMemo(
     () => new Map(entries.map(e => [entryKey(e.item_id, e.location_id), Number(e.counted_base)])), [entries])
-  const missing = useMemo(() => uncountedItems(countItems, entries), [countItems, entries])
+  const missing = useMemo(() => uncountedSpots(groups, entries), [groups, entries])
   // Saved numbers on rows the list no longer shows; they still count at submit.
   const others = useMemo(() => strayEntries(countItems, groups, entries), [countItems, groups, entries])
   const itemById = useMemo(() => new Map(countItems.map(i => [i.id, i])), [countItems])
@@ -254,7 +254,8 @@ export default function StockCountSessionPage() {
     )
   }
 
-  const done = countItems.length - missing.length
+  const spotTotal = countSpotTotal(groups)
+  const done = spotTotal - missing.length
   const onOther = activeTab === OTHER
   const shownItems = group
     ? (onlyGaps && gapSnap ? group.items.filter(i => gapSnap.has(entryKey(i.id, group.locationId))) : group.items)
@@ -369,7 +370,7 @@ export default function StockCountSessionPage() {
             ) : (
               <>
                 <div className="flex justify-between text-xs text-brown-muted mb-2">
-                  <span>{done} of {countItems.length} items counted</span>
+                  <span>{done} of {spotTotal} spots counted</span>
                   {missing.length > 0 && <span>{missing.length} to go</span>}
                 </div>
                 <button

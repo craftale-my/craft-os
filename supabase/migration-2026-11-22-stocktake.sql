@@ -371,14 +371,34 @@ begin
     raise exception 'This count is no longer open';
   end if;
 
-  select count(*) into v_missing
-    from items i
-   where i.status = 'active'
-     and (v_count.kind = 'full' or i.count_weekly)
-     and not exists (select 1 from stock_count_entries e
-                      where e.count_id = p_count_id and e.item_id = i.id);
+  -- Every active location an item is linked to at this branch needs its own
+  -- number (0 is valid). An item linked to no active location here needs an
+  -- entry at all (Unassigned, or anywhere, so a layout change mid-count is tolerated).
+  select
+    (select count(*)
+       from items i
+       join item_locations il on il.item_id = i.id
+       join storage_locations sl on sl.id = il.location_id
+            and sl.branch_id = v_count.branch_id and sl.is_active
+      where i.status = 'active'
+        and (v_count.kind = 'full' or i.count_weekly)
+        and not exists (select 1 from stock_count_entries e
+                         where e.count_id = p_count_id and e.item_id = i.id
+                           and e.location_id = sl.id))
+    +
+    (select count(*)
+       from items i
+      where i.status = 'active'
+        and (v_count.kind = 'full' or i.count_weekly)
+        and not exists (select 1 from item_locations il
+                          join storage_locations sl on sl.id = il.location_id
+                               and sl.branch_id = v_count.branch_id and sl.is_active
+                         where il.item_id = i.id)
+        and not exists (select 1 from stock_count_entries e
+                         where e.count_id = p_count_id and e.item_id = i.id))
+    into v_missing;
   if v_missing > 0 then
-    raise exception '% item(s) not counted yet', v_missing;
+    raise exception '% spot(s) not counted yet', v_missing;
   end if;
 
   for r in
