@@ -213,6 +213,16 @@ export function validateLine(p: PosProduct, line: OrderLine): string | null {
   return null
 }
 
+/** A tap on option `id` of a group (its option ids and max): a one-of group (max 1) picks it in place of
+ *  the group's other one, or clears it when it was the chosen one; a several-of group adds or removes it.
+ *  Other groups' options are kept. Shared by the counter's item sheet and the QR item page. */
+export function toggleOption(optionIds: string[], groupOptionIds: string[], groupMax: number, id: string): string[] {
+  const inGroup = optionIds.filter((x) => groupOptionIds.includes(x))
+  const others = optionIds.filter((x) => !groupOptionIds.includes(x))
+  if (groupMax === 1) return inGroup[0] === id ? others : [...others, id]
+  return inGroup.includes(id) ? [...others, ...inGroup.filter((x) => x !== id)] : [...others, ...inGroup, id]
+}
+
 export function lineLabel(p: PosProduct, line: OrderLine): { name: string; mods: string[] } {
   const variant = p.variants.find((v) => v.id === line.variantId)
   return {
