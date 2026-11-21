@@ -355,8 +355,12 @@ describe('pg-safeupdate guard: POS migrations', () => {
     const internal: [string, string][] = [
       ['pos_orders_open', 'uuid, timestamptz'], ['pos_orders_closed_message', 'uuid'], ['order_items_order_type', ''],
       ['pos_insert_order', 'uuid, uuid, text, integer, text, uuid, jsonb, uuid, uuid'], ['pos_queue_void_tickets', 'uuid[]'],
+      ['pos_receipt_payload', 'uuid, boolean'], ['pos_part_receipt_payload', 'uuid'],
     ]
-    const staff: [string, string][] = [['save_receipt_settings', 'uuid, jsonb']]
+    const staff: [string, string][] = [
+      ['save_receipt_settings', 'uuid, jsonb'], ['place_counter_order', 'uuid, text, integer, jsonb, uuid, uuid, uuid, integer'],
+      ['pos_set_bill_pax', 'uuid, integer, integer'], ['open_table', 'uuid, integer, integer'], ['set_items_served', 'uuid[], boolean'],
+    ]
     const guests: [string, string][] = [
       ['qr_menu', 'text'], ['qr_cart_put', 'text, jsonb, jsonb, uuid'], ['qr_cart_send', 'text, integer, text, uuid[], uuid'],
     ]
@@ -381,6 +385,15 @@ describe('pg-safeupdate guard: POS migrations', () => {
     for (const f of ['qr_cart_put', 'qr_cart_send', 'pos_insert_order']) expect(body(f), f).toContain('pos_orders_open(')
     expect(body('pos_insert_order')).toContain('guest_label')                            // still the QR table cart's version
     expect(body('order_items_order_type')).toContain("if new.order_type = '' then return new; end if;")   // bodies have their strings emptied
+    // H3: the old signatures go first, so PostgREST has one candidate each
+    for (const d of ['place_counter_order(uuid, text, integer, jsonb, uuid, uuid, uuid)', 'pos_set_bill_pax(uuid, integer)', 'open_table(uuid, integer)']) {
+      expect(sql).toContain(`drop function if exists ${d};`)
+    }
+    expect(sql).toContain('alter table bills add column if not exists pax_children integer;')
+    expect(sql).toContain('alter table order_items add column if not exists served_at timestamptz;')
+    expect(body('set_items_served')).toContain('pos_ctx()')
+    // least() skips a null: every clamp of p_children sits inside a case that handles null first
+    expect(sql).not.toMatch(/least\(p_children, p_pax\)(?! end)/)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
     const verify = readFileSync(new URL('migration-2026-11-22-pos-feedme-habits-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)

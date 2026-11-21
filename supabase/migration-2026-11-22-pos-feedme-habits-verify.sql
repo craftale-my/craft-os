@@ -276,5 +276,120 @@ begin
   delete from order_items where id = v_copy;
 end $$;
 
+-- ── V3. Children (spec §5) and the receipts: the first order sets them, a later order keeps them, Pax changes
+--    and clamps them, bad values refused, the table check, Open for QR, none from QR; the receipt carries
+--    paxChildren and names the takeaway line ──
+do $$
+declare
+  v_b    uuid;
+  v_q    uuid;
+  v_r    jsonb;
+  v_pax  integer;
+  v_kids integer;
+  v_item jsonb := jsonb_build_array(jsonb_build_object('productId', pg_temp.id('cake'), 'variantId', pg_temp.id('cake_v'), 'qty', 1));
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- an empty table: 4 pax, 1 child, with its first order
+  v_b := pg_temp.bill_of(place_counter_order(pg_temp.id('w2'), 'dine_in', 4, v_item, gen_random_uuid(), null, null, 1));
+  select pax, pax_children into v_pax, v_kids from bills where id = v_b;
+  if v_pax is distinct from 4 or v_kids is distinct from 1 then raise exception 'FAIL V3 the first order: % pax, % children', v_pax, v_kids; end if;
+  -- a later order (with another count) keeps them
+  perform place_counter_order(pg_temp.id('w2'), 'dine_in', null, v_item, gen_random_uuid(), null, null, 3);
+  select pax, pax_children into v_pax, v_kids from bills where id = v_b;
+  if v_pax is distinct from 4 or v_kids is distinct from 1 then raise exception 'FAIL V3 a later order: % pax, % children', v_pax, v_kids; end if;
+  -- Pax: 3 with 2 children; 2 with 5 asked → 2; null clears; a two-argument call (an older till) clears too
+  perform pos_set_bill_pax(v_b, 3, 2);
+  select pax, pax_children into v_pax, v_kids from bills where id = v_b;
+  if v_pax is distinct from 3 or v_kids is distinct from 2 then raise exception 'FAIL V3 3 with 2: % / %', v_pax, v_kids; end if;
+  perform pos_set_bill_pax(v_b, 2, 5);
+  select pax, pax_children into v_pax, v_kids from bills where id = v_b;
+  if v_pax is distinct from 2 or v_kids is distinct from 2 then raise exception 'FAIL V3 clamped: % / %', v_pax, v_kids; end if;
+  perform pos_set_bill_pax(v_b, 2, null);
+  if (select pax_children from bills where id = v_b) is not null then raise exception 'FAIL V3 null did not clear'; end if;
+  perform pos_set_bill_pax(v_b, 2, 1);
+  perform pos_set_bill_pax(v_b, 5);
+  select pax, pax_children into v_pax, v_kids from bills where id = v_b;
+  if v_pax is distinct from 5 or v_kids is not null then raise exception 'FAIL V3 two arguments: % / %', v_pax, v_kids; end if;
+  perform pg_temp.expect_error(format('select pos_set_bill_pax(%L, 2, -1)', v_b), 'Invalid number of children', 'V3 children below 0');
+  perform pg_temp.expect_error(format('select place_counter_order(%L, %L, 2, %L::jsonb, %L, null, null, 100)',
+    pg_temp.id('w5'), 'dine_in', v_item, gen_random_uuid()), 'Invalid number of children', 'V3 children above 99');
+  perform pg_temp.expect_error(format('update bills set pax_children = 9 where id = %L', v_b),
+    'new row for relation "bills" violates check constraint "bills_pax_children_check"', 'V3 the table check');
+  -- Open for QR: 2 pax, 1 child
+  v_q := open_table(pg_temp.id('w5'), 2, 1);
+  select pax, pax_children into v_pax, v_kids from bills where id = v_q;
+  if v_pax is distinct from 2 or v_kids is distinct from 1 then raise exception 'FAIL V3 open_table: % / %', v_pax, v_kids; end if;
+  -- a QR order (W3, sent in V1) brings none
+  if (select pax_children from bills where table_id = pg_temp.id('w3') and status = 'open') is not null then
+    raise exception 'FAIL V3 a QR bill has children';
+  end if;
+  -- the receipt: paxChildren; a takeaway bill has none
+  perform pos_set_bill_pax(v_b, 3, 1);
+  if (pos_receipt_payload(v_b, false)->>'paxChildren')::integer is distinct from 1 then
+    raise exception 'FAIL V3 the receipt''s paxChildren: %', pos_receipt_payload(v_b, false)->'paxChildren';
+  end if;
+  if (pos_receipt_payload(pg_temp.id('T1'), false)->'paxChildren') is distinct from 'null'::jsonb then
+    raise exception 'FAIL V3 a takeaway receipt''s paxChildren: %', pos_receipt_payload(pg_temp.id('T1'), false)->'paxChildren';
+  end if;
+  -- the receipt names D1's takeaway line "(Takeaway)" and not its other line; a takeaway bill's lines keep their names
+  v_r := pos_receipt_payload(pg_temp.id('D1'), false);
+  if (select count(*) from jsonb_array_elements(v_r->'items') i where i->>'name' = 'Verify W7 Latte (Takeaway)') <> 1
+     or (select count(*) from jsonb_array_elements(v_r->'items') i where i->>'name' = 'Verify W7 Latte') <> 1 then
+    raise exception 'FAIL V3 the receipt''s names: %', v_r->'items';
+  end if;
+  if exists (select 1 from jsonb_array_elements(pos_receipt_payload(pg_temp.id('T1'), false)->'items') i
+              where i->>'name' like '%(Takeaway)') then
+    raise exception 'FAIL V3 a takeaway bill''s receipt marks its lines';
+  end if;
+  -- the part receipt is built the same way
+  if pg_get_functiondef('pos_part_receipt_payload(uuid)'::regprocedure) not like '%(Takeaway)%'
+     or pg_get_functiondef('pos_part_receipt_payload(uuid)'::regprocedure) not like '%paxChildren%' then
+    raise exception 'FAIL V3 the part receipt is not the W7 version';
+  end if;
+end $$;
+
+-- ── V4. Serve (spec §6): serve, again (0), not served, Mark all served, money and printing unchanged, a voided
+--    line never served, the refusals ──
+do $$
+declare
+  v_d    uuid := pg_temp.id('D1');
+  v_ids  uuid[];
+  v_one  uuid;
+  v_tot  jsonb;
+  v_jobs integer := (select count(*) from print_jobs where branch_id = pg_temp.id('branch'));
+  v_n    integer;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  select array_agg(id order by id) into v_ids from order_items where bill_id = v_d and voided_at is null;
+  v_one := v_ids[1];
+  v_tot := pos_bill_totals(v_d);
+  v_n := set_items_served(array[v_one], true);
+  if v_n <> 1 or (select served_at is null or served_by is distinct from pg_temp.id('cashier') from order_items where id = v_one) then
+    raise exception 'FAIL V4 serve: % changed, %', v_n, (select row(served_at, served_by) from order_items where id = v_one);
+  end if;
+  v_n := set_items_served(array[v_one], true);
+  if v_n <> 0 then raise exception 'FAIL V4 serving a served line again changed %', v_n; end if;
+  v_n := set_items_served(array[v_one], false);
+  if v_n <> 1 or (select served_at is not null or served_by is not null from order_items where id = v_one) then
+    raise exception 'FAIL V4 not served: % changed, %', v_n, (select row(served_at, served_by) from order_items where id = v_one);
+  end if;
+  -- Mark all served: every live line of the bill
+  v_n := set_items_served(v_ids, true);
+  if v_n <> cardinality(v_ids) then raise exception 'FAIL V4 mark all: % of %', v_n, cardinality(v_ids); end if;
+  if pos_bill_totals(v_d) is distinct from v_tot then raise exception 'FAIL V4 serving changed the money'; end if;
+  if (select count(*) from print_jobs where branch_id = pg_temp.id('branch')) <> v_jobs then raise exception 'FAIL V4 serving printed'; end if;
+  -- a voided line is never served
+  update order_items set voided_at = now(), served_at = null, served_by = null where id = pg_temp.id('TA1');
+  v_n := set_items_served(array[pg_temp.id('TA1')], true);
+  if v_n <> 0 or (select served_at from order_items where id = pg_temp.id('TA1')) is not null then
+    raise exception 'FAIL V4 a voided line was served';
+  end if;
+  -- the refusals
+  perform pg_temp.expect_error('select set_items_served(''{}''::uuid[], true)', 'Choose the items first.', 'V4 no items');
+  perform pg_temp.expect_error(format('select set_items_served(%L::uuid[], true)', array[gen_random_uuid()]), 'Item not found', 'V4 an unknown item');
+  perform pg_temp.expect_error(format('select set_items_served(%L::uuid[], true)',
+    array[v_one, (select id from order_items where bill_id = pg_temp.id('T1') limit 1)]), 'The items must be on one bill.', 'V4 two bills');
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;

@@ -700,6 +700,309 @@ language sql security definer set search_path = public, pg_temp as $$
 $$;
 revoke all on function pos_queue_void_tickets(uuid[]) from public, anon, authenticated;
 
+-- ── H3. Children in the pax (spec §5) ───────────────────────────────────────
+alter table bills add column if not exists pax_children integer;                                 -- H3: null = not given
+alter table bills drop constraint if exists bills_pax_children_check;
+alter table bills add constraint bills_pax_children_check
+  check (pax_children is null or (pax is not null and pax_children between 0 and pax));
+
+-- place_counter_order: the live text of migration-2026-10-29-pos-device-till.sql (T5) with the lines marked H3
+-- changed — p_pax_children: the children of the pax chosen for an empty table, set with its first order
+-- (clamped to the pax; a bill that already has them keeps them, so a resend changes nothing). The
+-- seven-argument version is dropped first: PostgREST cannot choose between two candidates.
+drop function if exists place_counter_order(uuid, text, integer, jsonb, uuid, uuid, uuid);                -- H3
+create or replace function place_counter_order(p_table_id uuid, p_order_type text, p_pax integer, p_items jsonb,
+                                               p_client_order_id uuid, p_catalog_id uuid default null,
+                                               p_staff_id uuid default null,
+                                               p_pax_children integer default null) returns uuid          -- H3
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_ctx record;
+  v_by  uuid;
+  v_order uuid;                                                                                   -- H3
+begin
+  if p_pax_children is not null and (p_pax_children < 0 or p_pax_children > 99) then            -- H3
+    raise exception 'Invalid number of children';                                                 -- H3
+  end if;                                                                                         -- H3
+  select * into v_ctx from pos_ctx();
+  -- an order sent from this tablet's offline queue is placed by whoever queued it: someone who has
+  -- signed in on this tablet and may still work here; anyone else, or a staff login, is ignored
+  v_by := case when p_staff_id is not null and v_ctx.device_id is not null
+                    and exists (select 1 from pos_staff_sessions s where s.device_id = v_ctx.device_id and s.staff_id = p_staff_id)
+                    and pos_staff_may_work(p_staff_id, v_ctx.branch_id) then p_staff_id
+               else v_ctx.staff_id end;
+  v_order := pos_insert_order(v_ctx.branch_id, p_table_id, p_order_type, p_pax, 'counter', v_by, p_items,   -- H3
+                              p_client_order_id, p_catalog_id);                                              -- H3
+  if p_pax_children is not null then                                                                         -- H3
+    update bills b set pax_children = least(p_pax_children, b.pax), updated_at = now()                      -- H3
+     where b.id = (select o.bill_id from orders o where o.id = v_order)                                      -- H3
+       and b.status = 'open' and b.pax is not null and b.pax_children is null;                               -- H3
+  end if;                                                                                                    -- H3
+  return v_order;                                                                                            -- H3
+end $$;
+revoke all on function place_counter_order(uuid, text, integer, jsonb, uuid, uuid, uuid, integer) from public, anon;   -- H3
+grant execute on function place_counter_order(uuid, text, integer, jsonb, uuid, uuid, uuid, integer) to authenticated;  -- H3
+
+-- pos_set_bill_pax: the live text of migration-2026-10-26-pos-frontend.sql (F3) with the lines marked H3 changed
+-- — p_children: of which children (null = not given; above the pax = the pax). The two-argument version is
+-- dropped first; a two-argument call (an older till) now clears the children.
+drop function if exists pos_set_bill_pax(uuid, integer);                                                   -- H3
+create or replace function pos_set_bill_pax(p_bill_id uuid, p_pax integer, p_children integer default null) returns void   -- H3
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid := pos_my_branch();
+begin
+  if p_pax is null or p_pax < 1 or p_pax > 99 then raise exception 'Invalid number of guests'; end if;
+  if p_children is not null and (p_children < 0 or p_children > 99) then raise exception 'Invalid number of children'; end if;   -- H3
+  update bills set pax = p_pax,                                                                              -- H3
+                   pax_children = case when p_children is null then null else least(p_children, p_pax) end,   -- H3
+                   updated_at = now()                                                                         -- H3
+   where id = p_bill_id and branch_id = v_branch and status = 'open' and order_type = 'dine_in';
+  if not found then raise exception 'Bill not found'; end if;
+end $$;
+revoke all on function pos_set_bill_pax(uuid, integer, integer) from public, anon;                          -- H3
+grant execute on function pos_set_bill_pax(uuid, integer, integer) to authenticated;                        -- H3
+
+-- open_table: the live text of migration-2026-10-24-pos-bill-actions-fn.sql with the lines marked H3 changed —
+-- p_children with the pax (Open for QR). The two-argument version is dropped first.
+drop function if exists open_table(uuid, integer);                                                          -- H3
+create or replace function open_table(p_table_id uuid, p_pax integer, p_children integer default null) returns uuid   -- H3
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch  uuid := pos_my_branch();
+  v_bill_id uuid;
+  v_kids    integer := case when p_pax is null or p_children is null then null else least(p_children, p_pax) end;   -- H3
+begin
+  if p_pax is not null and (p_pax < 1 or p_pax > 99) then raise exception 'Invalid number of guests'; end if;
+  if p_children is not null and (p_children < 0 or p_children > 99) then raise exception 'Invalid number of children'; end if;   -- H3
+  if not exists (select 1 from dining_tables where id = p_table_id and branch_id = v_branch and is_active) then
+    raise exception 'Invalid table';
+  end if;
+  select id into v_bill_id from bills where table_id = p_table_id and status = 'open';
+  if v_bill_id is null then
+    insert into bills(branch_id, bill_no, table_id, order_type, pax, pax_children)                          -- H3
+    values (v_branch, pos_next_bill_no(v_branch), p_table_id, 'dine_in', p_pax, v_kids)                     -- H3
+    on conflict (table_id) where status = 'open' and table_id is not null do nothing
+    returning id into v_bill_id;
+    if v_bill_id is null then                       -- lost the race: the table was just opened
+      select id into v_bill_id from bills where table_id = p_table_id and status = 'open';
+    end if;
+  elsif p_pax is not null then
+    update bills set pax = p_pax, pax_children = v_kids where id = v_bill_id and pax is null;               -- H3
+  end if;
+  return v_bill_id;
+end $$;
+revoke all on function open_table(uuid, integer, integer) from public, anon;                                -- H3
+grant execute on function open_table(uuid, integer, integer) to authenticated;                              -- H3
+
+-- ── H2 / H3. The receipts ──────────────────────────────────────────────────
+-- pos_receipt_payload and pos_part_receipt_payload: the live texts of migration-2026-11-22-pos-receipt-numbers.sql
+-- (C2) with the lines marked H2 / H3 changed — a takeaway line of a dine-in bill is named "<name> (Takeaway)";
+-- paxChildren. Exactly ReceiptPayload / PartReceiptPayload (src/features/pos/print/receipt.ts). Internal.
+create or replace function pos_receipt_payload(p_bill_id uuid, p_reprint boolean) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'kind', 'receipt',
+    'route', s.receipt_route,
+    'reprint', p_reprint,
+    'header', jsonb_build_object(
+      'title', coalesce(nullif(trim(br.receipt_title), ''), br.name),
+      'legalName', nullif(trim(br.legal_name), ''),
+      'registrationNo', nullif(trim(br.registration_no), ''),
+      'sstNo', nullif(trim(br.sst_no), ''),
+      'address', nullif(trim(br.address), ''),
+      'phone', nullif(trim(br.phone), ''),
+      'email', nullif(trim(br.email), ''),
+      'logo', s.receipt_logo),                                                                          -- C2
+    'callNo', b.call_no,                                                                                -- C2
+    'fontSize', coalesce(s.receipt_font_size, 'normal'),                                               -- C2
+    'footerQr', nullif(trim(s.receipt_footer_qr), ''),                                                 -- C2
+    'billNo', b.bill_no,
+    'splitFrom', (select jsonb_build_object('billNo', sf.bill_no, 'table', t.label)
+                    from bills sf where sf.id = b.split_from),
+    'closedAt', to_char(b.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'cashier', (select st.name from staff st where st.id = b.closed_by),
+    'tableLabel', t.label,
+    'pax', b.pax,
+    'paxChildren', b.pax_children,                                                                       -- H3
+    'items', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'qty', oi.qty,                                                                                     -- H2
+               'name', oi.name_snapshot                                                                           -- H2
+                       || case when oi.order_type = 'takeaway' and b.order_type = 'dine_in' then ' (Takeaway)' else '' end,   -- H2
+               'unitSen', oi.unit_price_sen,                                                                      -- H2
+               'amountSen', oi.unit_price_sen * oi.qty,
+               'mods', (select coalesce(jsonb_agg(m->>'name' order by ord), '[]'::jsonb)
+                          from jsonb_array_elements(oi.modifiers_snapshot) with ordinality as x(m, ord)
+                         where not coalesce(s.receipt_hide_free_mods, false)                           -- C2
+                            or case when jsonb_typeof(m->'priceDeltaSen') = 'number'                   -- C2
+                                    then (m->>'priceDeltaSen')::numeric <> 0 else true end),           -- C2
+               'discounts', (select coalesce(jsonb_agg(d.j order by d.k), '[]'::jsonb) from (
+                   select 1 as k, jsonb_build_object(
+                            'label', coalesce(oi.catalog_discount_name, 'Catalog') || ' ' || (oi.catalog_discount_bp / 100) || '%',
+                            'amountSen', (ln.l->>'catalogDiscountSen')::integer) as j
+                    where coalesce((ln.l->>'catalogDiscountSen')::integer, 0) > 0
+                   union all
+                   select 2, jsonb_build_object(
+                            'label', case when oi.discount_kind = 'percent' then 'Discount ' || (oi.discount_value / 100) || '%'
+                                          else 'Discount' end,
+                            'amountSen', (ln.l->>'itemDiscountSen')::integer)
+                    where coalesce((ln.l->>'itemDiscountSen')::integer, 0) > 0) d))
+             order by o.placed_at, oi.name_snapshot, oi.id)
+        from order_items oi join orders o on o.id = oi.order_id
+        left join lateral (select x.l from jsonb_array_elements(coalesce(b.totals->'lines', '[]'::jsonb)) as x(l)
+                            where x.l->>'id' = oi.id::text) ln on true
+       where oi.bill_id = b.id and oi.voided_at is null), '[]'::jsonb),
+    'itemCount', (select coalesce(sum(oi.qty), 0) from order_items oi where oi.bill_id = b.id and oi.voided_at is null),
+    'subtotalSen', b.subtotal_sen,
+    'billDiscountSen', coalesce((b.totals->>'billDiscountSen')::integer, 0),
+    'sstGroups', coalesce(b.totals->'sstGroups', '[]'::jsonb),
+    'serviceChargeGroups', coalesce(b.totals->'serviceChargeGroups', '[]'::jsonb),
+    'takeawayFeeSen', b.takeaway_fee_sen,
+    'roundingSen', b.rounding_sen,
+    'totalSen', b.total_sen,
+    'payments', coalesce((
+      select jsonb_agg(jsonb_build_object('name', p.method_name, 'kind', p.kind, 'amountSen', p.amount_sen,
+                                          'tenderedSen', case when p.part_id is null then p.tendered_sen end,
+                                          'reference', p.reference,
+                                          'part', bp.part_no)
+                       order by bp.part_no nulls last, p.line_no, p.id)
+        from payments p left join bill_parts bp on bp.id = p.part_id
+       where p.bill_id = b.id), '[]'::jsonb),
+    'changeSen', (select coalesce(sum(p.change_sen), 0) from payments p where p.bill_id = b.id and p.part_id is null),
+    'footer', coalesce(s.receipt_footer, 'This is an official receipt. Thank you for visiting us.'))
+  from bills b
+  join branches br on br.id = b.branch_id
+  left join branch_pos_settings s on s.branch_id = b.branch_id
+  left join dining_tables t on t.id = b.table_id
+  where b.id = p_bill_id
+$$;
+revoke all on function pos_receipt_payload(uuid, boolean) from public, anon, authenticated;
+
+create or replace function pos_part_receipt_payload(p_part_id uuid) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'kind', 'part',
+    'route', s.receipt_route,
+    'reprint', false,
+    'header', jsonb_build_object(
+      'title', coalesce(nullif(trim(br.receipt_title), ''), br.name),
+      'legalName', nullif(trim(br.legal_name), ''),
+      'registrationNo', nullif(trim(br.registration_no), ''),
+      'sstNo', nullif(trim(br.sst_no), ''),
+      'address', nullif(trim(br.address), ''),
+      'phone', nullif(trim(br.phone), ''),
+      'email', nullif(trim(br.email), ''),
+      'logo', s.receipt_logo),                                                                          -- C2
+    'callNo', b.call_no,                                                                                -- C2
+    'fontSize', coalesce(s.receipt_font_size, 'normal'),                                               -- C2
+    'footerQr', nullif(trim(s.receipt_footer_qr), ''),                                                 -- C2
+    'billNo', b.bill_no,
+    'closedAt', to_char(bp.taken_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    'cashier', (select st.name from staff st where st.id = bp.taken_by),
+    'tableLabel', t.label,
+    'pax', b.pax,
+    'paxChildren', b.pax_children,                                                                       -- H3
+    'items', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'qty', oi.qty,                                                                                     -- H2
+               'name', oi.name_snapshot                                                                           -- H2
+                       || case when oi.order_type = 'takeaway' and b.order_type = 'dine_in' then ' (Takeaway)' else '' end,   -- H2
+               'unitSen', oi.unit_price_sen,                                                                      -- H2
+               'amountSen', oi.unit_price_sen * oi.qty,
+               'mods', (select coalesce(jsonb_agg(m->>'name' order by ord), '[]'::jsonb)
+                          from jsonb_array_elements(oi.modifiers_snapshot) with ordinality as x(m, ord)
+                         where not coalesce(s.receipt_hide_free_mods, false)                           -- C2
+                            or case when jsonb_typeof(m->'priceDeltaSen') = 'number'                   -- C2
+                                    then (m->>'priceDeltaSen')::numeric <> 0 else true end),           -- C2
+               'discounts', (select coalesce(jsonb_agg(d.j order by d.k), '[]'::jsonb) from (
+                   select 1 as k, jsonb_build_object(
+                            'label', coalesce(oi.catalog_discount_name, 'Catalog') || ' ' || (oi.catalog_discount_bp / 100) || '%',
+                            'amountSen', (ln.l->>'catalogDiscountSen')::integer) as j
+                    where coalesce((ln.l->>'catalogDiscountSen')::integer, 0) > 0
+                   union all
+                   select 2, jsonb_build_object(
+                            'label', case when oi.discount_kind = 'percent' then 'Discount ' || (oi.discount_value / 100) || '%'
+                                          else 'Discount' end,
+                            'amountSen', (ln.l->>'itemDiscountSen')::integer)
+                    where coalesce((ln.l->>'itemDiscountSen')::integer, 0) > 0) d))
+             order by o.placed_at, oi.name_snapshot, oi.id)
+        from order_items oi join orders o on o.id = oi.order_id
+        left join lateral (select x.l from jsonb_array_elements(coalesce(tot.t->'lines', '[]'::jsonb)) as x(l)
+                            where x.l->>'id' = oi.id::text) ln on true
+       where oi.bill_id = b.id and oi.voided_at is null), '[]'::jsonb),
+    'itemCount', (select coalesce(sum(oi.qty), 0) from order_items oi where oi.bill_id = b.id and oi.voided_at is null),
+    'subtotalSen', (tot.t->>'subtotalSen')::integer,
+    'billDiscountSen', coalesce((tot.t->>'billDiscountSen')::integer, 0),
+    'sstGroups', coalesce(tot.t->'sstGroups', '[]'::jsonb),
+    'serviceChargeGroups', coalesce(tot.t->'serviceChargeGroups', '[]'::jsonb),
+    'takeawayFeeSen', (tot.t->>'takeawayFeeSen')::integer,
+    'roundingSen', (tot.t->>'roundingSen')::integer,
+    'totalSen', (tot.t->>'totalSen')::integer,
+    'partNo', bp.part_no,
+    'ways', bp.ways,
+    'amountSen', bp.amount_sen,
+    'payments', coalesce((
+      select jsonb_agg(jsonb_build_object('name', p.method_name, 'kind', p.kind, 'amountSen', p.amount_sen,
+                                          'tenderedSen', p.tendered_sen, 'reference', p.reference)
+                       order by p.line_no, p.id)
+        from payments p where p.part_id = bp.id), '[]'::jsonb),
+    'changeSen', (select coalesce(sum(p.change_sen), 0) from payments p where p.part_id = bp.id),
+    'paidBeforeSen', (select coalesce(sum(x.amount_sen), 0) from bill_parts x where x.bill_id = b.id and x.part_no < bp.part_no),
+    'balanceSen', (tot.t->>'totalSen')::integer
+                  - (select coalesce(sum(x.amount_sen), 0) from bill_parts x where x.bill_id = b.id and x.part_no <= bp.part_no),
+    'footer', 'Part payment — the official receipt prints when the bill is paid in full.')
+  from bill_parts bp
+  join bills b on b.id = bp.bill_id
+  join branches br on br.id = b.branch_id
+  left join branch_pos_settings s on s.branch_id = b.branch_id
+  left join dining_tables t on t.id = b.table_id
+  cross join lateral (select pos_bill_totals(b.id) as t) tot
+  where bp.id = p_part_id
+$$;
+revoke all on function pos_part_receipt_payload(uuid) from public, anon, authenticated;
+
+-- ── H4. Serve (spec §6) ─────────────────────────────────────────────────────
+alter table order_items add column if not exists served_at timestamptz;                           -- H4: null = not served
+alter table order_items add column if not exists served_by uuid references staff(id);             -- H4
+
+-- Mark sent lines of one open bill of the caller's outlet served (p_served true) or not served. A voided
+-- line is left as it is and not counted. No PIN; money and printing unchanged. Returns how many lines
+-- changed; a change stamps the bill, so the other iPads hear of it (a bills event).
+create or replace function set_items_served(p_item_ids uuid[], p_served boolean) returns integer
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_ctx    record;
+  v_ids    uuid[];
+  v_bill   uuid;
+  v_status text;
+  v_n      integer;
+begin
+  select * into v_ctx from pos_ctx();
+  if p_served is null then raise exception 'Invalid served state'; end if;
+  select coalesce(array_agg(distinct x), '{}') into v_ids from unnest(coalesce(p_item_ids, '{}'::uuid[])) as u(x) where x is not null;
+  if cardinality(v_ids) = 0 then raise exception 'Choose the items first.'; end if;
+  if (select count(*) from order_items oi where oi.id = any (v_ids)) <> cardinality(v_ids) then
+    raise exception 'Item not found';
+  end if;
+  if (select count(distinct oi.bill_id) from order_items oi where oi.id = any (v_ids)) > 1 then
+    raise exception 'The items must be on one bill.';
+  end if;
+  select oi.bill_id into v_bill from order_items oi where oi.id = v_ids[1];
+  select b.status into v_status from bills b where b.id = v_bill and b.branch_id = v_ctx.branch_id for update;
+  if not found then raise exception 'Item not found'; end if;
+  if v_status <> 'open' then raise exception 'This bill is no longer open.'; end if;
+  update order_items
+     set served_at = case when p_served then now() end,
+         served_by = case when p_served then v_ctx.staff_id end
+   where id = any (v_ids) and bill_id = v_bill and voided_at is null and (served_at is null) = p_served;
+  get diagnostics v_n = row_count;
+  if v_n > 0 then update bills set updated_at = now() where id = v_bill; end if;
+  return v_n;
+end $$;
+revoke all on function set_items_served(uuid[], boolean) from public, anon;
+grant execute on function set_items_served(uuid[], boolean) to authenticated;
+
 -- PostgREST picks up the new and changed functions now, not at its next poll
 notify pgrst, 'reload schema';
 select 'pos feedme habits applied' as result;
