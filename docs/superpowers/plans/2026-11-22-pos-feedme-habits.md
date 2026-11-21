@@ -66,7 +66,7 @@ POS RPCs find the outlet and the person through `pos_ctx()` (device session; dur
 - SQL functions: `security definer set search_path = public, pg_temp`; explicit grants like their neighbours — a staff RPC: `revoke all on function f(args) from public, anon;` + `grant execute on function f(args) to authenticated;`; a guest (QR) RPC: `revoke all on function f(args) from public;` + `grant execute on function f(args) to anon, authenticated;`; an internal function or trigger function: `revoke all on function f(args) from public, anon, authenticated;` and no grant. A re-created function keeps its live text except the lines marked with this plan's markers (`-- H1` … `-- H4`; a line that already carried a marker keeps it: `-- G, H2`). Every DELETE / UPDATE has a WHERE (pg-safeupdate). The migration ends with `notify pgrst, 'reload schema';` and one result row.
 - Print files imported by the Node print agent (`src/features/pos/print/{doc,logo,escpos,printJob,ticket,receipt,zreport,printHost}.ts`, `tools/print-agent/*.ts`) use explicit `.ts` import extensions, no enums, no parameter properties (Node strips types, it does not compile).
 - Old print payloads still print as before: the new payload fields (`TicketLine.takeaway`, `ReceiptPayload.paxChildren`) are optional in TypeScript and a payload without them renders exactly the old lines.
-- Component tests mock every module that reaches Supabase (`./checkoutApi`, `../checkout/checkoutApi`, `./posApi`, `../qr/qrClient`, …): vitest loads `.env.local`, and an unmocked import builds a real client. The components this plan tests (`LineSheet`, `CartRow`, `ModifierSheet`, `PaxDialog`, `BillColumn`) import no such module; keep it that way.
+- Component tests mock every module that reaches Supabase (`./checkoutApi`, `../checkout/checkoutApi`, `./posApi`, `../qr/qrClient`, …): vitest loads `.env.local`, and an unmocked import builds a real client. The components this plan tests (`LineSheet`, `CartPage`, `ModifierSheet`, `PaxDialog`, `BillColumn`) import no such module; keep it that way.
 - Commands: tests `npx vitest run <files>`; type check `npx tsc -b` (package.json has no separate typecheck script; `npm run build` = `tsc -b && vite build`); builds `npm run build` and `npm run build:pos`.
 - Every commit message ends with a blank line and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Do not push (Task 8 pushes).
 
@@ -82,8 +82,8 @@ The contract between tasks (column, function, key and TypeScript names) is in `.
 | `src/features/pos/order/orderWindow.ts` (+ test) | 3 | Create. The window rule, the words, the settings check. Pure |
 | `src/features/pos/order/cart.ts` | 3, 5 | Modify. `QrMenuJson` times (3); `OrderLine.takeaway` (5) |
 | `src/features/pos/order/LineSheet.tsx` (+ test) | 3 | Modify. `Remark (optional)` field; `closed` |
-| `src/qr/CartRow.tsx` (+ test) | 3 | Create. The cart line, moved out of QrApp, with `Remark: …` |
-| `src/qr/QrApp.tsx` | 3 | Modify. Banner, Add / Place order off, CartRow import |
+| `src/qr/CartPage.tsx` (+ test) | 3 | Modify. `Remark: …`; `closed` (the sentence, Place order off) |
+| `src/qr/QrApp.tsx` | 3 | Modify. Minute clock, banner on the menu view, `closed` to CartPage and LineSheet |
 | `src/features/pos/checkout/checkoutApi.ts` | 4, 6, 7 | Modify. Times in settings (4); `setBillPax` / `openTable` children (6); `setItemsServed` (7) |
 | `src/features/pos/checkout/settingsForm.ts` (+ test) | 4 | Modify. The window check |
 | `src/features/pos/checkout/CheckoutSettings.tsx` | 4 | Modify. Two time fields and the help text |
@@ -1283,17 +1283,17 @@ EOF
 
 **Files:**
 - Create: `src/features/pos/order/orderWindow.ts`, `src/features/pos/order/orderWindow.test.ts`
-- Create: `src/qr/CartRow.tsx`, `src/qr/CartRow.test.tsx`
 - Modify: `src/features/pos/order/LineSheet.tsx`, `src/features/pos/order/LineSheet.test.tsx`
 - Modify: `src/features/pos/order/cart.ts` (`QrMenuJson` only)
-- Modify: `src/qr/QrApp.tsx`
+- Modify: `src/qr/CartPage.tsx`, `src/qr/CartPage.test.tsx`
+- Modify: `src/qr/QrApp.tsx` (as restructured by efe6650 / 33a657b: menu, cart, sent and orders views)
 
 **Interfaces:**
 - Consumes (Task 1): `qr_menu` keys `ordersOpenAt`, `lastOrderAt`; the QR cart line's `note` (already stored and sent by `qr_cart_put` / `qr_cart_send`); the refusal sentence from `qr_cart_put` / `qr_cart_send` (shown as `Not added: …` / `Not sent: …` by the existing error paths).
 - Produces (Tasks 4 and later use these):
   - `orderWindow.ts`: `WINDOW_HELP`, `SET_BOTH`, `SAME_TIMES`; `minutesOf(hhmm: string | null | undefined): number | null`; `myMinuteOfDay(at: Date): number`; `ordersOpen(openAt: string | null, lastAt: string | null, at: Date): boolean`; `lastOrderMessage(openAt: string, lastAt: string): string`; `pastLastOrder(lastAt: string): string`; `qrClosedMessage(openAt, lastAt, at): string | null`; `padPastLastOrder(openAt, lastAt, at): string | null`; `orderWindowProblem(openAt: string | null, lastAt: string | null): string | null`; `hhmm(t: string | null | undefined): string | null`.
   - `QrMenuJson.ordersOpenAt?: string | null`, `lastOrderAt?: string | null`.
-  - `LineSheet` prop `closed?: string | null`; `src/qr/CartRow.tsx` default export `CartRow({ menu, line, onEdit?, onRemove? })`.
+  - `LineSheet` prop `closed?: string | null`; `CartPage` prop `closed?: string | null`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1370,44 +1370,24 @@ describe('the ordering window (W7 spec §3)', () => {
 })
 ```
 
-Create `src/qr/CartRow.test.tsx`:
+In `src/qr/CartPage.test.tsx`, add at the end of the file:
 
 ```tsx
-// @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import CartRow from './CartRow'
-import type { PosMenu } from '../features/pos/order/cart'
-import type { CartLine } from './qrCart'
-
-afterEach(cleanup)
-
-const menu: PosMenu = { categories: [{ name: 'Coffee', products: [{
-  id: 'p1', name: 'Latte', description: null, soldOut: false,
-  variants: [{ id: 'v1', name: 'Regular', priceSen: 900, isBase: true }], groups: [],
-}] }] }
-const line = (note: string | null): CartLine => ({
-  id: 'l1', guestId: 'g1', guestLabel: 'Mei', guestAvatar: 'a2', productId: 'p1', variantId: 'v1', qty: 2, note, optionIds: [],
-})
-
-describe('CartRow remark (W7 spec §2)', () => {
-  it('shows the remark under the line', () => {
-    render(<CartRow menu={menu} line={line('less sweet')} />)
-    expect(screen.getByText('Remark: less sweet')).toBeTruthy()
-    expect(screen.getByText('RM 18.00')).toBeTruthy()
+describe('CartPage remark and last orders (W7 spec §2, §3)', () => {
+  it('a line\'s remark reads "Remark: …", mine and the others\'', () => {
+    render(<CartPage {...make([mineLine, L('3', 'mei', { note: 'no sugar' })])} />)
+    expect(screen.getByRole('region', { name: 'Your items' }).textContent).toContain('Remark: less ice')
+    expect(screen.getByRole('region', { name: 'Others at this table' }).textContent).toContain('Remark: no sugar')
   })
-  it('no remark, no Remark line', () => {
-    render(<CartRow menu={menu} line={line(null)} />)
-    expect(screen.queryByText(/Remark:/)).toBeNull()
+  it('past the last-order time: the sentence shows and Place order is off', () => {
+    render(<CartPage {...make([mineLine], { closed: 'Last orders were at 21:30. Ordering opens again at 09:00.' })} />)
+    expect(screen.getByRole('status').textContent).toBe('Last orders were at 21:30. Ordering opens again at 09:00.')
+    expect((screen.getByRole('button', { name: /^Place order/ }) as HTMLButtonElement).disabled).toBe(true)
   })
-  it('the guest\'s own line opens for editing and can be removed', () => {
-    const onEdit = vi.fn()
-    const onRemove = vi.fn()
-    render(<CartRow menu={menu} line={line('less sweet')} onEdit={onEdit} onRemove={onRemove} />)
-    fireEvent.click(screen.getByRole('button', { name: /2 × Latte/ }))
-    expect(onEdit).toHaveBeenCalledWith(menu.categories[0].products[0])
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Latte' }))
-    expect(onRemove).toHaveBeenCalledOnce()
+  it('inside the window nothing changes', () => {
+    render(<CartPage {...make([mineLine], { closed: null })} />)
+    expect(screen.queryByRole('status')).toBeNull()
+    expect((screen.getByRole('button', { name: /^Place order/ }) as HTMLButtonElement).disabled).toBe(false)
   })
 })
 ```
@@ -1458,8 +1438,8 @@ describe('LineSheet remark and last orders (W7 spec §2, §3)', () => {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npx vitest run src/features/pos/order/orderWindow.test.ts src/qr/CartRow.test.tsx src/features/pos/order/LineSheet.test.tsx`
-Expected: FAIL — `./orderWindow` and `./CartRow` do not exist; no field labelled `Remark (optional)`; `closed` does nothing.
+Run: `npx vitest run src/features/pos/order/orderWindow.test.ts src/qr/CartPage.test.tsx src/features/pos/order/LineSheet.test.tsx`
+Expected: FAIL — `./orderWindow` does not exist; the cart shows the bare note; no field labelled `Remark (optional)`; `closed` does nothing.
 
 - [ ] **Step 3: orderWindow.ts**
 
@@ -1630,99 +1610,140 @@ with:
           <button disabled={!!problem || busy || !!closed} onClick={() => onDone(line)}
 ```
 
-- [ ] **Step 5: CartRow, moved out of QrApp, with the remark**
+- [ ] **Step 5: CartPage — `Remark: …`, the sentence, Place order off**
 
-Create `src/qr/CartRow.tsx`:
+In `src/qr/CartPage.tsx`:
+
+1. Replace:
 
 ```tsx
-// src/qr/CartRow.tsx
-import { findProduct, formatSen, lineLabel, linePriceSen, type PosMenu, type PosProduct } from '../features/pos/order/cart'
-import { lineAvailable, type CartLine } from './qrCart'
-
-/** One line of the table's cart. With onEdit / onRemove it is the guest's own; without, someone else's
- *  (read-only). A line the menu no longer offers is struck through and says so. W7 spec §2: the guest's
- *  remark shows under it ("Remark: less sweet"). */
-export default function CartRow({ menu, line, onEdit, onRemove }: {
-  menu: PosMenu
-  line: CartLine
-  onEdit?: (product: PosProduct) => void
-  onRemove?: () => void
-}) {
-  const p = findProduct(menu, line.productId)
-  const ok = lineAvailable(menu, line)
-  const label = p && ok ? lineLabel(p, line) : { name: p?.name ?? 'Unavailable item', mods: [] as string[] }
-  const text = <>{line.qty} × {label.name}{label.mods.length > 0 && <span className="text-brown-muted"> · {label.mods.join(', ')}</span>}</>
-  return (
-    <div className="flex justify-between gap-2 py-1">
-      <span>
-        {onEdit && p && ok
-          ? <button type="button" className="text-left" onClick={() => onEdit(p)}>{text}</button>
-          : <span className={ok ? '' : 'line-through opacity-60'}>{text}</span>}
-        {line.note && <span className="block text-xs text-brown-muted">Remark: {line.note}</span>}
-        {!ok && <span className="block text-xs text-red-700">Not available now</span>}
-      </span>
-      <span className="shrink-0">
-        {p && ok ? formatSen((linePriceSen(p, line) ?? 0) * line.qty) : ''}
-        {onRemove && <button type="button" aria-label={`Remove ${label.name}`} className="ml-2 text-red-700" onClick={onRemove}>✕</button>}
-      </span>
-    </div>
-  )
-}
+export default function CartPage({ menu, mine, others, pairs, subtotalSen, sendable, status, error, onBack, onEdit, onRemove, onOpenProduct, onPlace }: {
 ```
 
-- [ ] **Step 6: QrApp — the banner, Add and Place order off, CartRow**
-
-In `src/qr/QrApp.tsx`:
-
-1. Replace `  findProduct, formatSen, lineLabel, linePriceSen, posMenuFromQr,` with `  findProduct, formatSen, posMenuFromQr,`.
-2. Replace `  additionsToast, cartChannel, cartTotalSen, groupCart, groupOrdered, isNetworkError, lineAvailable, orderWasSent, sendGroups, sentKey, skipIds,` with `  additionsToast, cartChannel, cartTotalSen, groupCart, groupOrdered, isNetworkError, orderWasSent, sendGroups, sentKey, skipIds,`.
-3. Replace `import SendSheet from './SendSheet'` with:
+with:
 
 ```tsx
-import SendSheet from './SendSheet'
-import CartRow from './CartRow'
+export default function CartPage({ menu, mine, others, pairs, subtotalSen, sendable, status, error, closed = null, onBack, onEdit, onRemove, onOpenProduct, onPlace }: {
+```
+
+2. Replace:
+
+```tsx
+  /** a removal that failed */
+  error: string | null
+```
+
+with:
+
+```tsx
+  /** a removal that failed */
+  error: string | null
+  /** W7 spec §3: past the outlet's last-order time — this sentence shows and Place order is off */
+  closed?: string | null
+```
+
+3. Replace:
+
+```tsx
+        {error && <p role="alert" className="mt-2 text-red-700">{error}</p>}
+```
+
+with:
+
+```tsx
+        {error && <p role="alert" className="mt-2 text-red-700">{error}</p>}
+        {closed && <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 text-amber-900">{closed}</p>}
+```
+
+4. Replace:
+
+```tsx
+        <button type="button" disabled={!sendable || status !== 'ready'} onClick={onPlace}
+```
+
+with:
+
+```tsx
+        <button type="button" disabled={!sendable || status !== 'ready' || !!closed} onClick={onPlace}
+```
+
+5. Replace (in `Row`):
+
+```tsx
+        {ok && line.note && <div className="text-xs text-brown-muted">{line.note}</div>}
+```
+
+with:
+
+```tsx
+        {ok && line.note && <div className="text-xs text-brown-muted">Remark: {line.note}</div>}
+```
+
+- [ ] **Step 6: QrApp — the clock, the banner on the menu, `closed` to the cart and the item sheet**
+
+In `src/qr/QrApp.tsx` (each "find" text appears once):
+
+1. Replace `import { PickCard, Shell } from './qrParts'` with:
+
+```tsx
+import { PickCard, Shell } from './qrParts'
 import { useMinuteClock } from '../features/pos/order/useMinuteClock'
 import { qrClosedMessage } from '../features/pos/order/orderWindow'
 ```
 
-4. After the line `  const pairsShown = useRef(new Set<string>())                           // Goes well with: once per product per visit` insert:
+2. Replace `  const picksLoaded = useRef(false)` with:
 
 ```tsx
-  const clock = useMinuteClock()                                         // W7: the last-order banner turns on and off on the minute
+  const picksLoaded = useRef(false)
+  const clock = useMinuteClock()                                     // W7: the last-order banner turns on and off on the minute
 ```
 
-5. After the line `  const showGoesWell = goesWell.length > 0 && goesWellName !== null && goesWellVisible(goesWellFor, cartLines)` insert:
+(It sits with the other hooks, before the first early `return`.)
+
+3. Replace `  const popularIds = new Set(popular.map((p) => p.id))` with:
 
 ```tsx
+  const popularIds = new Set(popular.map((p) => p.id))
   // W7 spec §3: outside the outlet's window the page says when ordering opens again; Add and Place order are
   // off (the server refuses them anyway — its clock decides)
   const closedMsg = qrClosedMessage(info.ordersOpenAt ?? null, info.lastOrderAt ?? null, new Date(clock))
 ```
 
-6. Replace `      {placed && (` with:
+4. Replace:
 
 ```tsx
-      {closedMsg && <div role="status" className="m-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{closedMsg}</div>}
-      {placed && (
+      {view === 'menu' && (
+        <>
+          {placed && (
 ```
 
-7. Replace `        <button disabled={sendable.length === 0 || table.status !== 'ready'}` with `        <button disabled={sendable.length === 0 || table.status !== 'ready' || closedMsg !== null}`.
-8. Replace `          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError} confirmLabel={sheet.lineId === null ? undefined : 'Save'}` with `          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError} confirmLabel={sheet.lineId === null ? undefined : 'Save'} closed={closedMsg}`.
-9. Delete the whole `CartRow` function at the bottom — from the line `/** One line of the table's cart. With onEdit / onRemove it is the guest's own; without, someone else's` through the `}` that closes `function CartRow(…)` (the line before `/** A card of Popular here and Goes well with: photo, name, price; a tap opens the item sheet. */`). The two `<CartRow …>` uses in the cart panel now use the import and stay as they are.
+with:
+
+```tsx
+      {view === 'menu' && (
+        <>
+          {closedMsg && <div role="status" className="m-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{closedMsg}</div>}
+          {placed && (
+```
+
+5. Replace `          sendable={sendable.length > 0} status={table.status} error={error} onBack={goMenu}` with `          sendable={sendable.length > 0} status={table.status} error={error} closed={closedMsg} onBack={goMenu}`.
+6. Replace `          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError} confirmLabel={sheet.lineId === null ? undefined : 'Save'}` with `          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError} confirmLabel={sheet.lineId === null ? undefined : 'Save'} closed={closedMsg}`.
+
+The send sheet opens only from Place order, which is now off outside the window; a send already open when the minute turns is refused by the server and shows `Not sent: Last orders were at …`.
 
 - [ ] **Step 7: Run the tests and the type check**
 
-Run: `npx vitest run src/features/pos/order/orderWindow.test.ts src/qr/CartRow.test.tsx src/features/pos/order/LineSheet.test.tsx src/qr`
+Run: `npx vitest run src/features/pos/order/orderWindow.test.ts src/features/pos/order/LineSheet.test.tsx src/qr`
 Expected: PASS.
 Run: `npx tsc -b`
-Expected: exits 0 (no unused imports left in QrApp).
+Expected: exits 0.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/features/pos/order/orderWindow.ts src/features/pos/order/orderWindow.test.ts src/qr/CartRow.tsx src/qr/CartRow.test.tsx src/features/pos/order/LineSheet.tsx src/features/pos/order/LineSheet.test.tsx src/features/pos/order/cart.ts src/qr/QrApp.tsx
+git add src/features/pos/order/orderWindow.ts src/features/pos/order/orderWindow.test.ts src/features/pos/order/LineSheet.tsx src/features/pos/order/LineSheet.test.tsx src/features/pos/order/cart.ts src/qr/CartPage.tsx src/qr/CartPage.test.tsx src/qr/QrApp.tsx
 git commit -m "$(cat <<'EOF'
-feat(qr): W7 Remark on QR items, shown in the table cart; the last-order banner turns Add and Place order off
+feat(qr): W7 Remark on QR items, shown in the cart; the last-order banner turns Add and Place order off
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
@@ -3448,7 +3469,7 @@ Expected: the push succeeds. Report: the test count, both builds, `pos feedme ha
 | Spec | Task |
 |---|---|
 | §1 five habits; out of scope (member lookup, QR takeaway, children in reports, KDS, printing served) | 1–7; none built: QR's takeaway flag is ignored (V1), reports keep `pax`, `set_items_served` queues nothing (V4) |
-| §2 `Remark (optional)` ≤ 120 under the options; travels in `note`; ticket and POS bill like a staff note; cart `Remark: …`; editing one's line edits it | 3 (LineSheet, CartRow); V1 the remark lands on `order_items.note` (tickets and the bill already show `note`) |
+| §2 `Remark (optional)` ≤ 120 under the options; travels in `note`; ticket and POS bill like a staff note; cart `Remark: …`; editing one's line edits it | 3 (LineSheet, CartPage); V1 the remark lands on `order_items.note` (tickets and the bill already show `note`) |
 | §3 `orders_open_at` / `last_order_at`, both or neither (`Set both times or neither.`), crossing midnight, saved through `save_receipt_settings` keys | 1 (H1; Spec note 1), 4 (fields, help text, client check); V1 rule, sentence, validation, table check |
 | §3 QR banner + Add / Send off; QR add and send RPCs refuse with the sentence (server time) | 1 (`qr_cart_put`, `qr_cart_send`, `pos_insert_order` for QR — Spec conflict 2), 3 (banner, `closed`, Place order); V1 refused inside / outside / across midnight |
 | §3 POS thin banner `Past last order (21:30)`, ordering not blocked | 4 (`padPastLastOrder` on the pad's server clock); V1 the POS orders outside |
