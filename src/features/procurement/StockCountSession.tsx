@@ -224,6 +224,12 @@ export default function StockCountSessionPage() {
     // Commit a field still being edited (its blur saves) before the sheet can be confirmed.
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
     setConfirming(true)
+    // Items may have entered the scope mid-count: re-read it so they show before submit.
+    // On failure keep the last good scope and show the error.
+    supabase.rpc('stock_count_scope', { p_count_id: id }).then(({ data, error: sErr }) => {
+      if (sErr) { setError(sErr.message); return }
+      setScope(new Set((data as string[] | null) ?? []))
+    })
   }
 
   async function cancel() {
@@ -278,7 +284,9 @@ export default function StockCountSessionPage() {
         {scope === null ? null : countItems.length === 0 ? (
           <p className="text-sm text-brown-muted bg-white rounded-xl border border-[#E8DDD0] p-4">
             {count.kind === 'weekly'
-              ? 'No key items yet. A manager marks key items under Locations & key items.'
+              ? (items.some(i => i.count_weekly)
+                ? 'No key items are carried at this branch yet. Give them a location here under Locations & key items.'
+                : 'No key items yet. A manager marks key items under Locations & key items.')
               : 'No items to count at this branch yet. Give items a storage location under Locations & key items.'}
           </p>
         ) : (

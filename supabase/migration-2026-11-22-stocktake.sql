@@ -239,8 +239,28 @@ as $$
           or exists (select 1 from on_hand h where h.item_id = i.id))
 $$;
 
--- The in-scope item ids of a count (its branch and kind), for the counting
--- screen. Ids only: the screen stays blind (no balances leave the server).
+-- The items a count covers: its scope (stock_count_scope_for) PLUS any active
+-- item with at least one entry in this count, so a number that was typed is
+-- never dropped (decided 2026-11-22). Internal; stock_count_scope (client) and
+-- submit_stock_count both read it, so they always see the identical set.
+create or replace function stock_count_items_for(p_count_id uuid)
+returns setof uuid
+language sql stable security definer
+set search_path = public, pg_temp
+as $$
+  select s.id
+    from stock_counts c
+    cross join lateral stock_count_scope_for(c.branch_id, c.kind) as s(id)
+   where c.id = p_count_id
+  union
+  select e.item_id
+    from stock_count_entries e
+    join items i on i.id = e.item_id and i.status = 'active'
+   where e.count_id = p_count_id
+$$;
+
+-- The item ids of a count, for the counting screen. Ids only: the screen
+-- stays blind (no balances leave the server).
 create or replace function stock_count_scope(p_count_id uuid)
 returns setof uuid
 language plpgsql stable security definer
@@ -259,7 +279,7 @@ begin
   if not can_access_branch(v_count.branch_id) then
     raise exception 'Not authorised to count stock at this branch';
   end if;
-  return query select s.id from stock_count_scope_for(v_count.branch_id, v_count.kind) as s(id);
+  return query select s.id from stock_count_items_for(p_count_id) as s(id);
 end;
 $$;
 
@@ -288,6 +308,9 @@ begin
   -- Scope = items this branch carries (see stock_count_scope_for).
   if not exists (select 1 from stock_count_scope_for(p_branch_id, p_kind)) then
     if p_kind = 'weekly' then
+      if exists (select 1 from items where status = 'active' and count_weekly) then
+        raise exception 'No key items are carried at this branch yet. Give them a location here under Locations & key items.';
+      end if;
       raise exception 'No key items yet. A manager marks key items under Locations & key items.';
     else
       raise exception 'No items to count at this branch yet. Give items a storage location under Locations & key items.';
@@ -403,6 +426,7 @@ as $$
 declare
   v_count    stock_counts%rowtype;
   v_scope    uuid[];
+  v_items    uuid[];
   v_missing  int;
   r          record;
   v_expected numeric;
@@ -429,7 +453,11 @@ begin
   end if;
 
   -- Scope: the items this branch carries (stock_count_scope_for), computed once.
+  -- The missing-spots check uses it alone; the write loop uses v_items = scope
+  -- plus every active item entered in this count (stock_count_items_for, the
+  -- same set the client sees), so a counted number is never dropped.
   v_scope := array(select s.id from stock_count_scope_for(v_count.branch_id, v_count.kind) as s(id));
+  v_items := array(select s.id from stock_count_items_for(p_count_id) as s(id));
 
   -- Every active location an item is linked to at this branch needs its own
   -- number (0 is valid). An item linked to no active location here needs an
@@ -459,7 +487,7 @@ begin
 
   for r in
     select sc.item_id, sum(e.counted_base) as counted
-      from unnest(v_scope) as sc(item_id)
+      from unnest(v_items) as sc(item_id)
       join stock_count_entries e on e.item_id = sc.item_id and e.count_id = p_count_id
      group by sc.item_id
      order by sc.item_id
@@ -512,6 +540,7 @@ revoke all on function cancel_stock_count(uuid) from public, anon;
 revoke all on function submit_stock_count(uuid) from public, anon;
 revoke all on function stock_count_scope(uuid) from public, anon;
 revoke all on function stock_count_scope_for(uuid, text) from public, anon, authenticated;
+revoke all on function stock_count_items_for(uuid) from public, anon, authenticated;
 grant execute on function save_storage_location(uuid, uuid, text, int, boolean) to authenticated;
 grant execute on function set_location_items(uuid, uuid[]) to authenticated;
 grant execute on function set_item_count_weekly(uuid, boolean) to authenticated;

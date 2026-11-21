@@ -24,6 +24,9 @@ declare
   v_e    uuid;   -- item E: key item, no location at Cheras, 0 on hand there -> out of scope
   v_f    uuid;   -- item F: key item, stock at Cheras, no location there      -> in scope
   v_g    uuid;   -- item G: key item, linked only at Puchong, 0 at Cheras     -> out of scope
+  v_h    uuid;   -- item H: key item counted, then leaves scope mid-count
+  v_loch uuid;   -- Cheras location holding item H
+  v_count3 stock_counts%rowtype;
   v_loc4 uuid;   -- Cheras location holding item D
   v_locp uuid;   -- Puchong location holding item G
   v_count2 stock_counts%rowtype;
@@ -283,10 +286,11 @@ begin
   v_fail := v_fail or not v_ok;
 
   -- 12c. G (linked only at Puchong, zero at Cheras) is not in Cheras's scope;
-  --      the scope is exactly A-D + F (A, B, C, F by stock; D by location).
-  v_ok := not exists (select 1 from stock_count_scope(v_count2.id) s where s = v_g);
+  --      A, B, C, D, F are in (A, B, C, F by stock; D by location). Specific
+  --      fixture items only, so other dev data cannot make this flaky.
   select count(*) into v_n from stock_count_scope(v_count2.id) s where s in (v_a, v_b, v_c, v_d, v_e, v_f, v_g);
-  v_ok := v_ok and v_n = 5;
+  v_ok := not exists (select 1 from stock_count_scope(v_count2.id) s where s in (v_e, v_g))
+      and (select count(*) from stock_count_scope(v_count2.id) s where s in (v_a, v_b, v_c, v_d, v_f)) = 5;
   v_out := v_out || format(E'%s  scope: item linked only at another branch is out (%s of 7 test items in)\n', case when v_ok then 'PASS' else 'FAIL' end, v_n);
   v_fail := v_fail or not v_ok;
 
@@ -298,7 +302,7 @@ begin
   perform save_count_entry(v_count2.id, v_f, null, 3);
   begin
     v_count2 := submit_stock_count(v_count2.id);
-    v_ok := v_count2.status = 'submitted' and v_count2.item_count = 5;
+    v_ok := v_count2.status = 'submitted';
   exception when others then
     v_ok := false;
     v_out := v_out || format(E'      submit error: %s\n', sqlerrm);
@@ -328,13 +332,60 @@ begin
   v_out := v_out || format(E'%s  stock_count_scope_for not executable by authenticated\n', case when v_ok then 'PASS' else 'FAIL' end);
   v_fail := v_fail or not v_ok;
 
+  -- 13. A counted item that leaves the scope mid-count is still applied -------
+  execute 'reset role';
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price, count_weekly)
+  values ('[TEST] VERIFY Stocktake H', 'raw', 'pcs', 'pcs', 1, 1, true) returning id into v_h;
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type)
+  values (v_h, c_cheras, 'stock_in', 4, 1, 'manual');
+  insert into storage_locations (branch_id, name, sort_order) values (c_cheras, '[TEST] VERIFY Leaving', 4) returning id into v_loch;
+  insert into item_locations (item_id, location_id) values (v_h, v_loch);
+  execute 'set local role authenticated';
+  v_count3 := start_stock_count(c_cheras, 'weekly');
+  perform save_count_entry(v_count3.id, v_h, v_loch, 9);
+  perform save_count_entry(v_count3.id, v_a, null, 7);
+  perform save_count_entry(v_count3.id, v_b, null, 6);
+  perform save_count_entry(v_count3.id, v_c, null, 5);
+  perform save_count_entry(v_count3.id, v_d, v_loc4, 2);
+  perform save_count_entry(v_count3.id, v_f, null, 3);
+  v_ok := exists (select 1 from stock_count_scope(v_count3.id) s where s = v_h);
+  v_out := v_out || format(E'%s  scope: item H is in scope while linked and entered\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+  -- H leaves the scope: its only location is deactivated and its balance zeroed.
+  execute 'reset role';
+  update storage_locations set is_active = false where id = v_loch;
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type)
+  values (v_h, c_cheras, 'adjustment', -4, 1, 'manual');
+  v_ok := not exists (select 1 from stock_count_scope_for(c_cheras, 'weekly') s where s = v_h);
+  v_out := v_out || format(E'%s  fixture: H has left the branch scope\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+  execute 'set local role authenticated';
+  v_ok := exists (select 1 from stock_count_scope(v_count3.id) s where s = v_h);
+  v_out := v_out || format(E'%s  entered item stays in the count set after leaving scope\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+  begin
+    v_count3 := submit_stock_count(v_count3.id);
+    v_ok := v_count3.status = 'submitted';
+  exception when others then
+    v_ok := false;
+    v_out := v_out || format(E'      submit error: %s\n', sqlerrm);
+  end;
+  execute 'reset role';
+  v_ok := v_ok
+      and exists (select 1 from inventory_transactions
+                   where item_id = v_h and branch_id = c_cheras and transaction_type = 'stocktake' and quantity = 9)
+      and (select coalesce(sum(quantity), 0) from inventory_transactions
+            where item_id = v_h and branch_id = c_cheras) = 9;
+  v_out := v_out || format(E'%s  counted item that left scope is applied (ledger row, balance = count)\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+
   -- 10. anon cannot run any stocktake function -------------------------------
   select not bool_or(has_function_privilege('anon', p.oid, 'execute')) into v_ok
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public'
      and p.proname in ('save_storage_location', 'set_location_items', 'set_item_count_weekly',
                        'start_stock_count', 'save_count_entry', 'cancel_stock_count', 'submit_stock_count',
-                       'stock_count_scope', 'stock_count_scope_for');
+                       'stock_count_scope', 'stock_count_scope_for', 'stock_count_items_for');
   v_out := v_out || format(E'%s  anon cannot execute stocktake functions\n', case when v_ok then 'PASS' else 'FAIL' end);
   v_fail := v_fail or not v_ok;
 

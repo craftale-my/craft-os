@@ -11,6 +11,7 @@ Inventory v2 (live since 2026-10-30) records stock in, wastage, transfers and pr
 
 1. **Cadence:** key items weekly, every item monthly. A count is either `weekly` (carried items flagged as key items) or `full` (every carried item).
    **Scope (decided 2026-11-22):** items are global (one catalogue for all branches), so a count at a branch covers only the items that branch *carries*: active AND (linked to an active storage location of that branch OR its stock balance there — sum of `inventory_transactions.quantity` for item + branch — is not zero). This replaced the earlier "every active item" / "every active key item". The rule lives in one SQL helper, `stock_count_scope_for(branch, kind)`, used by `start_stock_count`, `submit_stock_count` and `stock_count_scope`.
+   **Nothing counted is lost (decided 2026-11-22):** a count covers its scope PLUS any active item with at least one entry in that count (`stock_count_items_for`, used by `stock_count_scope` and the submit write loop); the missing-spots check uses the scope alone.
 2. **No approval step:** submitting a count adjusts stock immediately. Managers review the variance afterwards.
 3. **Blind count:** the counting screen never shows the system quantity. Expected quantity and variance appear only after submit.
 4. **Ordered by storage location:** each branch has its own locations (Chiller 1, Freezer, Dry Store, Bar …); the count list is grouped by location in walking order.
