@@ -31,7 +31,7 @@ export interface ModifierOptionCost {
 }
 
 /** A recipe line as saved: base units of the item. */
-export interface RecipeLine {
+export interface MenuRecipeLine {
   item_id: string
   qty_base: number
 }
