@@ -123,3 +123,21 @@ describe('CartPage', () => {
     expect(onBack).toHaveBeenCalled()
   })
 })
+
+describe('CartPage remark and last orders (W7 spec §2, §3)', () => {
+  it('a line\'s remark reads "Remark: …", mine and the others\'', () => {
+    render(<CartPage {...make([mineLine, L('3', 'mei', { note: 'no sugar' })])} />)
+    expect(screen.getByRole('region', { name: 'Your items' }).textContent).toContain('Remark: less ice')
+    expect(screen.getByRole('region', { name: 'Others at this table' }).textContent).toContain('Remark: no sugar')
+  })
+  it('past the last-order time: the sentence shows and Place order is off', () => {
+    render(<CartPage {...make([mineLine], { closed: 'Last orders were at 21:30. Ordering opens again at 09:00.' })} />)
+    expect(screen.getByRole('status').textContent).toBe('Last orders were at 21:30. Ordering opens again at 09:00.')
+    expect((screen.getByRole('button', { name: /^Place order/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+  it('inside the window nothing changes', () => {
+    render(<CartPage {...make([mineLine], { closed: null })} />)
+    expect(screen.queryByRole('status')).toBeNull()
+    expect((screen.getByRole('button', { name: /^Place order/ }) as HTMLButtonElement).disabled).toBe(false)
+  })
+})

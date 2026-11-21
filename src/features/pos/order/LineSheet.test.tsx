@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import LineSheet from './LineSheet'
 import type { PosProduct } from './cart'
 
@@ -53,5 +53,31 @@ describe('LineSheet busy and error (QR table cart)', () => {
     cleanup()
     render(<LineSheet product={one} confirmLabel="Save" busy onCancel={() => {}} onDone={() => {}} />)
     expect(screen.getByRole('button', { name: 'Saving…' })).toBeTruthy()
+  })
+})
+
+describe('LineSheet remark and last orders (W7 spec §2, §3)', () => {
+  const tea: PosProduct = {
+    id: 'p2', name: 'Tea', description: null, soldOut: false,
+    variants: [{ id: 't', name: 'Regular', priceSen: 500, isBase: true }], groups: [],
+  }
+  it('a Remark (optional) field, up to 120 characters, goes into the line', () => {
+    const onDone = vi.fn()
+    render(<LineSheet product={tea} onCancel={() => {}} onDone={onDone} />)
+    const box = screen.getByLabelText('Remark (optional)') as HTMLInputElement
+    expect(box.maxLength).toBe(120)
+    fireEvent.change(box, { target: { value: 'less sweet' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Add/ }))
+    expect(onDone).toHaveBeenCalledWith({ productId: 'p2', variantId: 't', qty: 1, note: 'less sweet', optionIds: [] })
+  })
+  it('editing a line shows its remark', () => {
+    render(<LineSheet product={tea} initial={{ productId: 'p2', variantId: 't', qty: 1, note: 'no sugar', optionIds: [] }}
+      confirmLabel="Save" onCancel={() => {}} onDone={() => {}} />)
+    expect((screen.getByLabelText('Remark (optional)') as HTMLInputElement).value).toBe('no sugar')
+  })
+  it('past the last-order time: Add is off and the sentence shows', () => {
+    render(<LineSheet product={tea} closed="Last orders were at 21:30. Ordering opens again at 09:00." onCancel={() => {}} onDone={() => {}} />)
+    expect((screen.getByRole('button', { name: /^Add/ }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('alert').textContent).toBe('Last orders were at 21:30. Ordering opens again at 09:00.')
   })
 })

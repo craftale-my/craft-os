@@ -128,6 +128,9 @@ export interface QrMenuJson {
   tableLabel: string
   paused: boolean
   needsPax: boolean
+  /** W7: the outlet's ordering window, "HH:MM" Malaysia time; null (or absent from an older server) = no limit */
+  ordersOpenAt?: string | null
+  lastOrderAt?: string | null
   categories: {
     name: string
     products: {

@@ -18,6 +18,8 @@ import CartPage from './CartPage'
 import SentPage from './SentPage'
 import OrdersPage from './OrdersPage'
 import { PickCard, Shell } from './qrParts'
+import { useMinuteClock } from '../features/pos/order/useMinuteClock'
+import { qrClosedMessage } from '../features/pos/order/orderWindow'
 
 interface TableState {
   tableLabel: string
@@ -78,6 +80,7 @@ export default function QrApp() {
   const picksAt = useRef(0)                                          // when picks last LOADED; 0 until they have
   const picksSeq = useRef(0)                                         // an older reply never overwrites a newer one
   const picksLoaded = useRef(false)
+  const clock = useMinuteClock()                                     // W7: the last-order banner turns on and off on the minute
   const [view, setView] = useState<View>('menu')
   const [sentGroups, setSentGroups] = useState<GuestGroup[]>([])         // what the send sheet showed when the order went: the "Order placed" view
 
@@ -265,6 +268,9 @@ export default function QrApp() {
   // picks, filtered to what this menu offers now; "in the cart" = anywhere in the table's cart
   const popular = visiblePopular(menu, picks)
   const popularIds = new Set(popular.map((p) => p.id))
+  // W7 spec §3: outside the outlet's window the page says when ordering opens again; Add and Place order are
+  // off (the server refuses them anyway — its clock decides)
+  const closedMsg = qrClosedMessage(info.ordersOpenAt ?? null, info.lastOrderAt ?? null, new Date(clock))
 
   /** The sheet's Add: the line goes to the table's cart on the server. */
   const done = async (line: OrderLine) => {
@@ -339,6 +345,7 @@ export default function QrApp() {
       {toast && <div role="status" className="fixed inset-x-3 top-3 z-30 rounded-xl bg-brown-dark px-4 py-3 text-sm text-white shadow-lg">{toast.text}</div>}
       {view === 'menu' && (
         <>
+          {closedMsg && <div role="status" className="m-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{closedMsg}</div>}
           {placed && (
             <div className="m-3 rounded-xl bg-green-50 p-3 text-sm text-green-800">
               Order placed — it is on its way. You can add more below.
@@ -370,7 +377,7 @@ export default function QrApp() {
       )}
       {view === 'cart' && (
         <CartPage menu={menu} mine={mine} others={others} pairs={cartPairs(menu, picks, mine, cartLines)} subtotalSen={subtotal}
-          sendable={sendable.length > 0} status={table.status} error={error} onBack={goMenu}
+          sendable={sendable.length > 0} status={table.status} error={error} closed={closedMsg} onBack={goMenu}
           onEdit={(p, lineId) => { setSheetError(null); setSheet({ product: p, lineId }) }} onRemove={(id) => void remove(id)}
           onOpenProduct={openProduct}
           onPlace={() => {
@@ -386,7 +393,7 @@ export default function QrApp() {
 
       {sheet && (
         <LineSheet product={sheet.product} initial={sheet.lineId === null ? undefined : mine.find((l) => l.id === sheet.lineId)}
-          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError} confirmLabel={sheet.lineId === null ? undefined : 'Save'}
+          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError} confirmLabel={sheet.lineId === null ? undefined : 'Save'} closed={closedMsg}
           onCancel={() => { if (!sheetBusy) setSheet(null) }}
           onDone={(line) => void done(line)} />
       )}

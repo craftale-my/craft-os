@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { defaultLine, formatSen, linePriceSen, validateLine, type OrderLine, type PosProduct } from './cart'
 import PickPill from './PickPill'
 
-export default function LineSheet({ product, initial, mostPicked, busy, error, confirmLabel, onCancel, onDone }: {
+export default function LineSheet({ product, initial, mostPicked, busy, error, confirmLabel, closed, onCancel, onDone }: {
   product: PosProduct
   initial?: OrderLine
   /** Most picked (menu picks): group id → option id, marked with a pill — never chosen for the guest */
@@ -13,6 +13,8 @@ export default function LineSheet({ product, initial, mostPicked, busy, error, c
   error?: string | null
   /** the confirm button's word: 'Add' (default) or 'Save' when an existing line is edited */
   confirmLabel?: string
+  /** QR (W7): past the outlet's last-order time — Add / Save is off and this sentence shows */
+  closed?: string | null
   onCancel: () => void
   onDone: (line: OrderLine) => void
 }) {
@@ -71,20 +73,25 @@ export default function LineSheet({ product, initial, mostPicked, busy, error, c
           )
         })}
 
+        <label className="mt-3 block">
+          <span className="text-sm font-medium">Remark (optional)</span>
+          <input className="mt-1 w-full rounded-lg border border-border p-2 text-base" maxLength={120}
+            value={line.note ?? ''} onChange={(e) => setLine({ ...line, note: e.target.value || null })} />
+        </label>
+
         <div className="mt-3 flex items-center gap-3">
           <span className="text-sm">Qty</span>
           <button className="h-10 w-10 rounded-lg border border-border text-xl" onClick={() => setLine({ ...line, qty: Math.max(1, line.qty - 1) })}>−</button>
           <span className="w-8 text-center text-lg">{line.qty}</span>
           <button className="h-10 w-10 rounded-lg border border-border text-xl" onClick={() => setLine({ ...line, qty: Math.min(20, line.qty + 1) })}>+</button>
         </div>
-        <input className="mt-3 w-full rounded-lg border border-border p-2 text-base" placeholder="Note for the kitchen (optional)"
-          value={line.note ?? ''} onChange={(e) => setLine({ ...line, note: e.target.value || null })} maxLength={120} />
 
         {touched && problem && <p className="mt-2 text-sm text-red-700">{problem}</p>}
+        {closed && <p role="alert" className="mt-2 text-sm text-amber-800">{closed}</p>}
         {error && <p role="alert" className="mt-2 text-sm text-red-700">{error}</p>}
         <div className="mt-4 flex gap-2">
           <button onClick={onCancel} className="flex-1 rounded-xl border border-border py-3">Cancel</button>
-          <button disabled={!!problem || busy} onClick={() => onDone(line)}
+          <button disabled={!!problem || busy || !!closed} onClick={() => onDone(line)}
             className="flex-1 rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover disabled:opacity-40">
             {busy ? (confirmLabel === 'Save' ? 'Saving…' : 'Adding…') : <>{confirmLabel ?? 'Add'} · {price === null ? '—' : formatSen(price * line.qty)}</>}
           </button>

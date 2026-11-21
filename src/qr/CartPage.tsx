@@ -4,7 +4,7 @@ import { avatarEmoji } from './qrGuest'
 import { PageHeader, PickCard } from './qrParts'
 
 /** The table's cart, on its own page. No fetching in here: the page that owns the state passes it in. */
-export default function CartPage({ menu, mine, others, pairs, subtotalSen, sendable, status, error, onBack, onEdit, onRemove, onOpenProduct, onPlace }: {
+export default function CartPage({ menu, mine, others, pairs, subtotalSen, sendable, status, error, closed = null, onBack, onEdit, onRemove, onOpenProduct, onPlace }: {
   menu: PosMenu
   mine: CartLine[]
   others: GuestGroup[]
@@ -16,6 +16,8 @@ export default function CartPage({ menu, mine, others, pairs, subtotalSen, senda
   status: 'loading' | 'ready' | 'offline'
   /** a removal that failed */
   error: string | null
+  /** W7 spec §3: past the outlet's last-order time — this sentence shows and Place order is off */
+  closed?: string | null
   onBack: () => void
   onEdit: (product: PosProduct, lineId: string) => void
   onRemove: (lineId: string) => void
@@ -58,6 +60,7 @@ export default function CartPage({ menu, mine, others, pairs, subtotalSen, senda
           </section>
         )}
         {error && <p role="alert" className="mt-2 text-red-700">{error}</p>}
+        {closed && <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 text-amber-900">{closed}</p>}
         {pairs.length > 0 && (
           <section aria-label="Goes well with your order" className="mt-4">
             <h2 className="text-sm font-semibold text-brown-dark">Goes well with your order</h2>
@@ -72,7 +75,7 @@ export default function CartPage({ menu, mine, others, pairs, subtotalSen, senda
         </div>
       </div>
       <div className="fixed inset-x-0 bottom-0 border-t border-border bg-card p-3 shadow-lg">
-        <button type="button" disabled={!sendable || status !== 'ready'} onClick={onPlace}
+        <button type="button" disabled={!sendable || status !== 'ready' || !!closed} onClick={onPlace}
           className="min-h-12 w-full rounded-xl bg-brown-btn py-3 text-white disabled:opacity-40">{placeLabel}</button>
       </div>
     </div>
@@ -95,7 +98,7 @@ function Row({ menu, line, onEdit, onRemove }: {
       <div className="min-w-0">
         <div className={ok ? '' : 'line-through opacity-60'}>{line.qty} × {label.name}</div>
         {label.mods.length > 0 && <div className="text-xs text-brown-muted">{label.mods.join(', ')}</div>}
-        {ok && line.note && <div className="text-xs text-brown-muted">{line.note}</div>}
+        {ok && line.note && <div className="text-xs text-brown-muted">Remark: {line.note}</div>}
         {!ok && <div className="text-xs text-red-700">Not available now</div>}
         {onRemove && (
           <div className="mt-1 flex gap-4">
