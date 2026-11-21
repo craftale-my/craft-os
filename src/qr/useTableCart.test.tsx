@@ -100,6 +100,17 @@ describe('useTableCart', () => {
     expect(api.send).toHaveBeenCalledWith(2, 'v7', ['l9'], 'order-1')
   })
 
+  it('send with a version sends that version, not the newer cart the hook holds', async () => {
+    const { api, signal, server } = fakes(cart('v1', 'l1'))
+    const { result } = renderHook(() => useTableCart(api, signal))
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    server.cart = cart('v2', 'l1', 'l2')
+    await act(() => result.current.refresh())
+    expect(result.current.cart?.version).toBe('v2')
+    await act(async () => { await result.current.send(2, [], 'order-1', 'v-old') })
+    expect(api.send).toHaveBeenCalledWith(2, 'v-old', [], 'order-1')
+  })
+
   it('a failed write throws and changes nothing', async () => {
     const { api, signal } = fakes(cart('v1', 'l1'))
     vi.mocked(api.put).mockRejectedValueOnce(new Error('Failed to fetch'))
@@ -232,6 +243,18 @@ describe('useTableCart', () => {
     await act(() => result.current.refresh())
     expect(onChange).toHaveBeenCalledTimes(2)
     expect(result.current.cart?.version).toBe('v2')
+  })
+
+  it('an empty cart whose lastOrder moved still reports, so the phone can say Order placed', async () => {
+    const { api, signal, server } = fakes({ version: 'empty', lines: [], lastOrder: null })
+    const onChange = vi.fn()
+    const { result } = renderHook(() => useTableCart(api, signal, onChange))
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    server.cart = { version: 'empty', lines: [], lastOrder: 'o1' }
+    await act(() => result.current.refresh())
+    expect(onChange).toHaveBeenCalledTimes(2)
+    expect(onChange).toHaveBeenLastCalledWith(
+      { version: 'empty', lines: [], lastOrder: null }, { version: 'empty', lines: [], lastOrder: 'o1' })
   })
 
   it('a same-version read recovers from offline', async () => {

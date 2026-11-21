@@ -49,14 +49,17 @@ cart that the server does not hold.
 
 **Live changes** — when another guest adds a line, a toast shows for 4 seconds:
 `<avatar> Eric added 1 × Latte`. Several additions inside one refresh collapse into
-`<avatar> Eric added 3 items`. Removals and edits make no toast. The `Place order` total follows the
+`<avatar> Eric added 3 items`. When several guests add within one refresh the toast is
+`Others at this table added N items`; N counts units. Removals and edits make no toast. The `Place order` total follows the
 table's cart.
 
 **Cart** (the bottom panel) — two groups:
 
-- `Your items` — as today: tap a line to edit it, `✕` to remove it.
+- `Your items` — as today: tap a line to edit it (the sheet's button then reads `Save · RM …`), `✕` to
+  remove it.
 - `Others at this table` — one sub-heading per guest (`<avatar> Mei`), lines read-only.
-- A line whose product can no longer be ordered (left its time slot, switched off, sold out) is struck
+- A line that the item sheet's own validation would refuse (`validateLine`: left its time slot, switched
+  off, sold out, a variant or add-on gone, a required choice missing, too many choices in a group) is struck
   through with `Not available now` under it and is left out of the total. Its owner can remove it.
 
 **Sending** — `Place order · RM 42.00` opens a sheet:
@@ -67,10 +70,12 @@ table's cart.
 - Button `Send order for the table`, and `Not yet`.
 - If the cart changed between opening the sheet and sending, nothing is sent: the sheet shows
   `The order changed — please check again.` with the fresh lines. What is sent is always what the sender
-  saw.
+  saw. The first tap after the cart changed (a change this phone has already read) sends nothing and shows
+  that notice; the next tap sends.
 
 **After sending** — every phone at the table empties its cart and shows the existing
-`Order placed — it is on its way. You can add more below.` `Ordered so far` groups its lines by guest.
+`Order placed — it is on its way. You can add more below.` A phone shows it when `qr_cart_state`'s
+`lastOrder` (the id of the newest QR order from this table) moves. `Ordered so far` groups its lines by guest.
 
 **A guest with nothing in the cart** may still send the table's cart (assumed: the person holding the
 phone is often not the one who ordered).
@@ -97,7 +102,9 @@ phone is often not the one who ordered).
     (`scripts/qr-broadcast-check.mjs`). The fallback read stays at 15 s.
 - **Stale carts.** A line is deleted on the next read when it is older than 2 hours (assumed), or when
   it was created before the table's most recent bill was closed (paid or voided) — whether or not the
-  next party's bill is already open. A paid part of a split bill is not the table closing.
+  next party's bill is already open. A paid part of a split bill is not the table closing. A cart whose
+  table has no open bill is dropped after 30 minutes without any change (no line added, edited or
+  renamed): the guest who scanned, added items and left must not hand them to the next party.
   The next party never inherits the last party's cart.
 - **Limits.** 50 lines per table cart and quantity 1–20 per line (both are `pos_insert_order`'s own
   limits for one order); note 200 characters (as today); name
@@ -144,17 +151,22 @@ the messages `place_table_order` uses today.
   ```json
   { "version": "<text>",
     "lines": [ { "id": "…", "guestId": "…", "guestLabel": "Eric", "guestAvatar": "a3",
-                 "productId": "…", "variantId": "…", "optionIds": ["…"], "qty": 1, "note": null } ] }
+                 "productId": "…", "variantId": "…", "optionIds": ["…"], "qty": 1, "note": null } ],
+    "lastOrder": "<order id, or null>" }
   ```
+
+  `lastOrder` is the id of the newest QR order from this table; a phone that sees it move shows
+  `Order placed…`.
 
   ordered by `created_at`. `version` is a hash of the lines' ids and `updated_at`; the client sends it
   back when it sends the cart. **Whether a line is available is judged on the phone** from the menu it
   already holds (`qr_menu`, read again every minute): product on the menu, not sold out, variant and
-  options still offered — the test the page applies to its own cart today. Every phone holds the same
+  options still offered, and the item sheet's own validation (`validateLine`) passes. Every phone holds the same
   menu, so they agree. The server stays the judge at Send (below).
 - **`qr_cart_put(p_token, p_guest jsonb, p_line jsonb, p_line_id uuid) returns uuid`** — `p_guest` is
   `{id, name, avatar}`; `p_line` is today's `OrderLine`. With `p_line_id` null it inserts (refused at
-  50 lines: `This table's order is full. Please send it first.`). With `p_line_id` it replaces that
+  50 lines: `This table's order is full. Please send it first.`; duplicate add-on ids are refused with
+  `Invalid add-ons`). With `p_line_id` it replaces that
   line, only when the line is on this table and its `guest_id` equals `p_guest.id`; otherwise
   `You can only change your own items.` It checks the line's shape and that the product and variant
   exist; whether it can be ordered is checked by the item sheet before and by `pos_insert_order` at Send.
@@ -188,10 +200,11 @@ the messages `place_table_order` uses today.
   for counter items, which the page lists under `Ordered at the counter`).
 - **The POS's bill items read** (`BillItemRow`'s query) — gains `guest_id`, `guest_label`.
 
-Label rule, in one SQL function `qr_guest_label(p_bill_id, p_guest_id, p_name, p_taken text[])`:
-the label this guest already has on the bill if any; else `p_name` if no other guest on the bill or in
-`p_taken` has it; else `p_name || ' ' || n` for the smallest n ≥ 2 that is free. `qr_cart_state` and
-`qr_cart_send` both use it, walking guests in order of their first line.
+Label rule, in one SQL function `qr_cart_labels(p_table_id) returns jsonb` (guest id → label): the label
+a guest already has on the table's open bill if any; else their name if no other guest on the bill or
+earlier in the walk has it; else `name || ' ' || n` for the smallest n ≥ 2 that is free. Labels compare
+case-insensitively. `qr_cart_state` and `qr_cart_send` both use it, walking guests in order of their
+first line.
 
 ## 5. Client
 
@@ -213,7 +226,9 @@ the label this guest already has on the bill if any; else `p_name` if no other g
   now means anywhere in the table's cart. `qrState.ts` loses `addLine / replaceLine / removeLine /
   leftTheMenu / leftTheMenuNotice / pruneAfterRefresh` and their tests once nothing uses them.
 - **Ticket** — `TicketLine` gains `guest?: string`; the ticket text prints the line as
-  `1 × Latte — Eric` (wrapped by the existing `wrap`). An add-on's own line on another route carries
+  `1 x Latte - Eric` (ASCII hyphen; wrapped by the existing `wrap`). The name is reduced to printable
+  ASCII, and a name with no ASCII letter or digit left (Chinese only, say) prints no name. The QR page and
+  the POS bill show the name as typed. An add-on's own line on another route carries
   the same guest. Void tickets are unchanged (they name the item and the table).
 - **POS bill column** — a sent row with a label shows it in small muted type after the name.
 - **Split items** (`SplitItemsScreen`) — when the bill's live lines carry at least two different guest

@@ -265,7 +265,7 @@ export default function QrApp() {
     let refused = false
     sendingRef.current = true; setSending(true); setSendError(null); setSendMessage(null)
     try {
-      const status = await table.send(paxNum, skip, pending.current.id)
+      const status = await table.send(paxNum, skip, pending.current.id, table.cart.version)
       if (status === 'changed') { adoptSeen.current = true; setSendMessage('The order changed — please check again.'); return }
       pending.current = null
       setSendOpen(false); setPlaced(true); setGoesWellFor(null); setError(null)

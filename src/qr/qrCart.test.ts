@@ -50,6 +50,23 @@ describe('lineAvailable', () => {
     expect(lineAvailable(menu, line('a', ME, { productId: 'cake', variantId: 'slice' }))).toBe(false)   // sold out
     expect(lineAvailable(menu, line('a', ME, { productId: 'tea' }))).toBe(false)       // left the menu
   })
+  it('a line the item sheet would refuse is unavailable: missing required choice, duplicate add-on, too many in a group', () => {
+    const m: PosMenu = { categories: [{ name: 'Drinks', products: [
+      { id: 'mocha', name: 'Mocha', description: null, soldOut: false,
+        variants: [{ id: 'hot', name: 'Hot', priceSen: 900, isBase: true }],
+        groups: [{ id: 'size', name: 'Size', min: 1, max: 1, options: [
+          { id: 's', name: 'Small', priceDeltaSen: 0, isDefault: false, available: true },
+          { id: 'l', name: 'Large', priceDeltaSen: 300, isDefault: false, available: true },
+        ] }, { id: 'extra', name: 'Extra', min: 0, max: 2, options: [
+          { id: 'shot', name: 'Shot', priceDeltaSen: 200, isDefault: false, available: true },
+        ] }] },
+    ] }] }
+    const mocha = (optionIds: string[]) => line('a', ME, { productId: 'mocha', optionIds })
+    expect(lineAvailable(m, mocha(['s']))).toBe(true)
+    expect(lineAvailable(m, mocha([]))).toBe(false)             // required Size missing
+    expect(lineAvailable(m, mocha(['s', 'shot', 'shot']))).toBe(false)   // duplicate add-on
+    expect(lineAvailable(m, mocha(['s', 'l']))).toBe(false)     // two in a max-1 group
+  })
 })
 
 describe('grouping', () => {
@@ -114,6 +131,17 @@ describe('isNetworkError', () => {
     expect(isNetworkError('NetworkError when attempting to fetch resource.')).toBe(true)
     expect(isNetworkError('Load failed')).toBe(true)
     expect(isNetworkError('Sold out: Latte')).toBe(false)
+  })
+  it('knows postgrest-js\'s "name: message" form on every browser', () => {
+    expect(isNetworkError('TypeError: Failed to fetch')).toBe(true)
+    expect(isNetworkError('TypeError: Load failed')).toBe(true)
+    expect(isNetworkError('TypeError: NetworkError when attempting to fetch resource.')).toBe(true)
+    expect(isNetworkError('AbortError: signal is aborted without reason')).toBe(true)
+  })
+  it('is not fooled by the cart\'s own words', () => {
+    expect(isNetworkError('You can only change your own items.')).toBe(false)
+    expect(isNetworkError('This table\'s order is full. Please send it first.')).toBe(false)
+    expect(isNetworkError('The order is still loading.')).toBe(false)
   })
 })
 

@@ -1,6 +1,6 @@
 -- QR guest names and shared table cart (docs/superpowers/specs/2026-11-22-qr-shared-table-cart-design.md).
 -- Run on craft-os-dev after the POS chain up to migration-2026-11-18-pos-reports.sql. Safe to re-run.
---   1 qr_cart_lines: one cart per table, written only through the functions below
+--   1 qr_cart_lines: one cart per table, written only through the functions below (+ an index on bills)
 --   2 order_items.guest_id / guest_label / guest_avatar
 --   3 helpers (not callable by clients) and the five cart RPCs (anon)
 --   4 pos_insert_order re-created: the live text with the lines marked "-- G" changed
@@ -22,6 +22,8 @@ create table if not exists qr_cart_lines (
   updated_at   timestamptz not null default clock_timestamp()
 );
 create index if not exists qr_cart_lines_table on qr_cart_lines(table_id, created_at);
+-- every cart read looks up the table's bills (open one, last close)
+create index if not exists bills_table_closed_idx on bills(table_id, closed_at) where table_id is not null;
 alter table qr_cart_lines enable row level security;   -- no policies: functions only
 revoke all on qr_cart_lines from public, anon, authenticated;
 
@@ -75,16 +77,21 @@ language sql security definer set search_path = public, pg_temp as $$
 $$;
 revoke all on function qr_cart_lock(uuid) from public, anon, authenticated;
 
--- Stale lines go: older than 2 hours, or created before the table's last bill was closed (paid or
--- voided) — the next party never inherits a cart, whether or not their bill is open yet. A paid part
--- of a split bill (split_from set) is not the table closing.
+-- Stale lines go: older than 2 hours; created before the table's last bill was closed (paid or
+-- voided) — the next party never inherits a cart, whether or not their bill is open yet (a paid part
+-- of a split bill, split_from set, is not the table closing); or abandoned — nobody is being served
+-- (no open bill) and no line has been added, edited or renamed for 30 minutes.
 create or replace function qr_cart_purge(p_table_id uuid) returns void
 language sql security definer set search_path = public, pg_temp as $$
   delete from qr_cart_lines l
    where l.table_id = p_table_id
      and (l.created_at < now() - interval '2 hours'
           or l.created_at < (select max(b.closed_at) from bills b
-                              where b.table_id = p_table_id and b.status <> 'open' and b.split_from is null));
+                              where b.table_id = p_table_id and b.status <> 'open' and b.split_from is null)
+          -- nobody is being served here and the cart has sat untouched for 30 minutes: abandoned
+          or (not exists (select 1 from bills b where b.table_id = p_table_id and b.status = 'open')
+              and (select max(x.updated_at) from qr_cart_lines x where x.table_id = p_table_id)
+                  < now() - interval '30 minutes'));
 $$;
 revoke all on function qr_cart_purge(uuid) from public, anon, authenticated;
 
@@ -202,6 +209,9 @@ begin
   end if;
   select coalesce(array_agg(x.v::uuid), '{}') into v_opts
     from jsonb_array_elements_text(coalesce(p_line->'optionIds', '[]'::jsonb)) as x(v);
+  if cardinality(v_opts) <> (select count(distinct u) from unnest(v_opts) u) then
+    raise exception 'Invalid add-ons';
+  end if;
   v_note := nullif(btrim(left(case when jsonb_typeof(p_line->'note') = 'string' then p_line->>'note' end, 200)), '');
 
   perform qr_cart_lock(v_table.id);

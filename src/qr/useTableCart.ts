@@ -21,8 +21,9 @@ export interface TableCart {
   replace(guest: Guest, lineId: string, line: OrderLine): Promise<void>
   remove(guestId: string, lineId: string): Promise<void>
   rename(guest: Guest): Promise<void>
-  /** sends the cart this phone last read; 'changed' = it was not that cart any more, nothing was sent */
-  send(pax: number | null, skip: string[], clientOrderId: string): Promise<'sent' | 'changed'>
+  /** sends the cart `version` (what the sender saw; default: the cart this phone last read);
+   *  'changed' = it was not that cart any more, nothing was sent */
+  send(pax: number | null, skip: string[], clientOrderId: string, version?: string): Promise<'sent' | 'changed'>
 }
 
 /** `api` and `signal` must be stable between renders (e.g. from `useMemo`): the effect that reads and
@@ -56,7 +57,10 @@ export function useTableCart(
     if (mine !== seq.current || bound.current !== api) return
     const held = cartRef.current
     const before = held && held.owner === api ? held.cart : null
-    if (before && before.version === next.version) { patch({ status: 'ready' }); return }   // nothing new: keep the object, say nothing
+    // nothing new (same version and same last order): keep the object, say nothing
+    if (before && before.version === next.version && (before.lastOrder ?? null) === (next.lastOrder ?? null)) {
+      patch({ status: 'ready' }); return
+    }
     cartRef.current = { owner: api, cart: next }
     patch({ cart: next, status: 'ready' })
     // a throwing consumer is its own problem: it must neither read as "offline" nor make the write look failed
@@ -100,9 +104,9 @@ export function useTableCart(
     replace: async (guest, lineId, line) => { await need().put(guest, line, lineId); await wrote() },
     remove: async (guestId, lineId) => { await need().remove(guestId, lineId); await wrote() },
     rename: async (guest) => { await need().rename(guest); await wrote() },
-    send: async (pax, skip, clientOrderId) => {
+    send: async (pax, skip, clientOrderId, seenVersion) => {
       const held = cartRef.current
-      const version = held && held.owner === api ? held.cart.version : undefined
+      const version = seenVersion ?? (held && held.owner === api ? held.cart.version : undefined)
       if (version === undefined) throw new Error('The order is still loading.')
       const result = await need().send(pax, version, skip, clientOrderId)
       await wrote()

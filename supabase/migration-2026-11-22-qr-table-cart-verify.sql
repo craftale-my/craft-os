@@ -1,7 +1,7 @@
 -- Self-check for the QR table cart. Run on craft-os-dev after migration-2026-11-22-qr-table-cart.sql.
 -- Everything is rolled back. Success = a result row "VERIFY OK".
 -- It borrows a real dev table that has no open bill and a product on its QR menu that needs no
--- choices, so it needs no seed of its own. Three guests: A "Mei", B "Mei" (bad avatar), C unnamed.
+-- choices and prints to a station, so it needs no seed of its own. Three guests: A "Mei", B "Mei" (bad avatar), C unnamed.
 begin;
 
 create function pg_temp.expect_error(p_sql text, p_message text, p_label text) returns void
@@ -45,17 +45,21 @@ begin
   perform pg_temp.ok(not has_function_privilege('anon', 'qr_cart_labels(uuid)', 'execute'), 'A5 helpers are closed');
   perform pg_temp.ok(not has_function_privilege('anon', 'pos_insert_order(uuid, uuid, text, integer, text, uuid, jsonb, uuid, uuid)', 'execute'), 'A6 pos_insert_order still closed');
   perform pg_temp.ok(has_column_privilege('authenticated', 'order_items', 'guest_label', 'select'), 'A7 staff read guest_label');
+  -- an older migration file re-run over these two would put back the versions without the guest fields
+  perform pg_temp.ok(pg_get_functiondef('pos_insert_order(uuid,uuid,text,integer,text,uuid,jsonb,uuid,uuid)'::regprocedure) like '%guest_label%', 'A8 pos_insert_order is the guest-aware version');
+  perform pg_temp.ok(pg_get_functiondef('qr_table_state(text)'::regprocedure) like '%guest_label%', 'A9 qr_table_state is the guest-aware version');
 
-  -- ── setup: a free table whose QR menu has a product that needs no choices ──
+  -- ── setup: a free table whose QR menu has a product that needs no choices and prints (the ticket checks need one) ──
   select t.* into v_table from dining_tables t
    where t.is_active
      and not exists (select 1 from bills b where b.table_id = t.id and b.status = 'open')
      and exists (select 1 from jsonb_array_elements(qr_menu(t.qr_token)->'categories') c,
                                jsonb_array_elements(c->'products') p
                   where not (p->>'soldOut')::boolean and jsonb_array_length(p->'variants') > 0
-                    and not exists (select 1 from jsonb_array_elements(p->'groups') g where (g->>'min')::integer > 0))
+                    and not exists (select 1 from jsonb_array_elements(p->'groups') g where (g->>'min')::integer > 0)
+                    and exists (select 1 from menu_products mp where mp.id = (p->>'id')::uuid and mp.print_route is not null))
    order by t.created_at limit 1;
-  if not found then raise exception 'FAIL setup: dev has no free table with a simple product on its QR menu'; end if;
+  if not found then raise exception 'FAIL setup: dev has no product with a print route on a free table''s QR menu'; end if;
   v_tok := v_table.qr_token;
   update dining_tables set qr_paused = false where id = v_table.id;
   update branch_pos_settings set qr_requires_open_bill = false where branch_id = v_table.branch_id;
@@ -63,7 +67,8 @@ begin
   select p into v_prod from jsonb_array_elements(qr_menu(v_tok)->'categories') c, jsonb_array_elements(c->'products') p
    where not (p->>'soldOut')::boolean and jsonb_array_length(p->'variants') > 0
      and not exists (select 1 from jsonb_array_elements(p->'groups') g where (g->>'min')::integer > 0)
-   order by (select mp.print_route is null from menu_products mp where mp.id = (p->>'id')::uuid), p->>'name'
+     and exists (select 1 from menu_products mp where mp.id = (p->>'id')::uuid and mp.print_route is not null)
+   order by p->>'name'
    limit 1;
   v_line := jsonb_build_object('productId', v_prod->>'id', 'variantId', v_prod->'variants'->0->>'id',
                                'qty', 2, 'note', '  no ice  ', 'optionIds', '[]'::jsonb);
@@ -101,6 +106,10 @@ begin
     'Invalid quantity', 'C7 qty 21');
   perform pg_temp.expect_error(format('select qr_cart_put(%L, %L::jsonb, %L::jsonb, null)', v_tok, ga, v_line || jsonb_build_object('productId', gen_random_uuid())),
     'Invalid item', 'C8 unknown product');
+  idx := gen_random_uuid();
+  perform pg_temp.expect_error(format('select qr_cart_put(%L, %L::jsonb, %L::jsonb, null)', v_tok, ga,
+    v_line || jsonb_build_object('optionIds', jsonb_build_array(idx, idx))),
+    'Invalid add-ons', 'C11 the same add-on twice');
   perform pg_temp.expect_error(format('select qr_cart_put(%L, %L::jsonb, %L::jsonb, null)', v_tok, '{"id":"x"}', v_line),
     'Invalid guest', 'C9 bad guest');
   perform pg_temp.expect_error(format('select qr_cart_put(%L, %L::jsonb, %L::jsonb, null)', 'nosuchtoken', ga, v_line),
@@ -135,9 +144,7 @@ begin
   perform pg_temp.ok((select array_agg(guest_label order by guest_label) from order_items where order_id = v_order) = array['Ann', 'Mei'], 'F6 labels on the items');
   perform pg_temp.ok((select guest_avatar from order_items where order_id = v_order and guest_label = 'Ann') = 'a4', 'F7 avatar on the item');
   perform pg_temp.ok((select guest_id from order_items where order_id = v_order and guest_label = 'Mei') = (gb->>'id')::uuid, 'F8 guest id on the item');
-  if (select print_route from menu_products where id = (v_prod->>'id')::uuid) is not null then
-    perform pg_temp.ok(exists (select 1 from print_jobs j where j.order_id = v_order and j.kind = 'ticket'), 'F9a the order made a ticket');
-  end if;
+  perform pg_temp.ok(exists (select 1 from print_jobs j where j.order_id = v_order and j.kind = 'ticket'), 'F9a the order made a ticket');
   perform pg_temp.ok(not exists (select 1 from print_jobs j, jsonb_array_elements(j.payload->'lines') l
                                   where j.order_id = v_order and j.kind = 'ticket' and not (l ? 'guest')), 'F9 every ticket line names its guest');
   r := qr_cart_send(v_tok, 2, 'whatever', '{}', v_coid);
@@ -191,6 +198,37 @@ begin
     from bills b where b.table_id = v_table.id and b.status = 'open';
   s := qr_cart_state(v_tok);
   perform pg_temp.ok(jsonb_array_length(s->'lines') = 1, 'J5 a paid part does not clear the cart');
+
+  -- ── K: an abandoned cart (no open bill, untouched for 30 minutes) goes ──
+  -- every real close on this table moves to 40 minutes ago, so the lines below are "after the last close"
+  update bills set status = case when status = 'open' then 'voided' else status end,
+                   void_reason = case when status = 'open' then 'verify' else void_reason end,
+                   closed_at = least(coalesce(closed_at, now()), now() - interval '40 minutes')
+   where table_id = v_table.id and split_from is null;
+  perform pg_temp.ok(not exists (select 1 from bills b where b.table_id = v_table.id and b.status = 'open'), 'K0 no open bill');
+  delete from qr_cart_lines where table_id = v_table.id;
+  insert into qr_cart_lines(table_id, guest_id, guest_name, guest_avatar, product_id, variant_id, qty, created_at, updated_at)
+  select v_table.id, (ga->>'id')::uuid, 'Mei', 'a3', (v_prod->>'id')::uuid, (v_prod->'variants'->0->>'id')::uuid, 1,
+         now() - interval '31 minutes', now() - interval '31 minutes'
+    from generate_series(1, 2);
+  perform pg_temp.ok(jsonb_array_length(qr_cart_state(v_tok)->'lines') = 0, 'K1 an idle cart with no open bill is dropped');
+  -- K2: one line still moving keeps the whole cart
+  insert into qr_cart_lines(table_id, guest_id, guest_name, guest_avatar, product_id, variant_id, qty, created_at, updated_at)
+  select v_table.id, (ga->>'id')::uuid, 'Mei', 'a3', (v_prod->>'id')::uuid, (v_prod->'variants'->0->>'id')::uuid, 1,
+         now() - interval '31 minutes', now() - interval '31 minutes'
+  union all
+  select v_table.id, (gd->>'id')::uuid, 'Ann', 'a2', (v_prod->>'id')::uuid, (v_prod->'variants'->0->>'id')::uuid, 1,
+         now() - interval '5 minutes', now() - interval '5 minutes';
+  perform pg_temp.ok(jsonb_array_length(qr_cart_state(v_tok)->'lines') = 2, 'K2 a cart with a recent line is not idle');
+  -- K3: with a bill open, someone is being served: old lines stay
+  delete from qr_cart_lines where table_id = v_table.id;
+  perform place_table_order(v_tok, null, jsonb_build_array(v_line), gen_random_uuid());   -- opens a bill
+  perform pg_temp.ok(exists (select 1 from bills b where b.table_id = v_table.id and b.status = 'open'), 'K3a a bill is open');
+  insert into qr_cart_lines(table_id, guest_id, guest_name, guest_avatar, product_id, variant_id, qty, created_at, updated_at)
+  select v_table.id, (ga->>'id')::uuid, 'Mei', 'a3', (v_prod->>'id')::uuid, (v_prod->'variants'->0->>'id')::uuid, 1,
+         now() - interval '31 minutes', now() - interval '31 minutes'
+    from generate_series(1, 2);
+  perform pg_temp.ok(jsonb_array_length(qr_cart_state(v_tok)->'lines') = 2, 'K3 with a bill open an old cart stays');
 end $$;
 
 rollback;
