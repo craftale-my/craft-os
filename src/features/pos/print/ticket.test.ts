@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatMyt, wrap, renderTicketLines, type TicketPayload } from './ticket'
+import { formatMyt, wrap, renderTicketLines, ticketGuest, type TicketPayload } from './ticket'
 
 describe('formatMyt', () => {
   it('shows UTC timestamps in Malaysia time (+8)', () => {
@@ -97,5 +97,44 @@ describe('renderTicketLines', () => {
     const out = renderTicketLines({ ...base, void: true }, 32)
     expect(out[0]).toBe('*** VOID ***')
     expect(out.slice(1)).toEqual(renderTicketLines(base, 32))
+  })
+})
+
+describe('ticketGuest', () => {
+  it('keeps an ASCII name and trims it', () => {
+    expect(ticketGuest('Eric')).toBe('Eric')
+    expect(ticketGuest('  Mei ')).toBe('Mei')
+    expect(ticketGuest('Guest 2')).toBe('Guest 2')
+  })
+
+  it('is empty for no guest', () => {
+    expect(ticketGuest(undefined)).toBe('')
+    expect(ticketGuest('')).toBe('')
+  })
+
+  it('prints nothing when no ASCII letter or digit is left', () => {
+    expect(ticketGuest('美玲')).toBe('')
+    expect(ticketGuest('🙂')).toBe('')
+  })
+
+  it('turns the non-ASCII part into ? and keeps the rest', () => {
+    expect(ticketGuest('美玲 Mei')).toBe('?? Mei')
+  })
+})
+
+describe('renderTicketLines guest names', () => {
+  const base: TicketPayload = {
+    kind: 'ticket', route: 'Bar', tableLabel: 'B5', orderNo: 'AB12CD', source: 'qr',
+    placedAt: '2026-10-22T03:48:00.000Z', lines: [],
+  }
+
+  it('prints no suffix when the guest name has no ASCII letter or digit', () => {
+    const t: TicketPayload = { ...base, lines: [{ qty: 1, name: 'Latte', note: null, guest: '美玲' }] }
+    expect(renderTicketLines(t, 32).slice(5, -1)).toEqual(['1 x Latte'])
+  })
+
+  it('prints the ASCII form of a mixed guest name', () => {
+    const t: TicketPayload = { ...base, lines: [{ qty: 1, name: 'Tea', note: null, guest: '美玲 Mei' }] }
+    expect(renderTicketLines(t, 32).slice(5, -1)).toEqual(['1 x Tea - ?? Mei'])
   })
 })

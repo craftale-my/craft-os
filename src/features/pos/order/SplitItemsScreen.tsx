@@ -156,7 +156,7 @@ export default function SplitItemsScreen({
           className="min-h-11 rounded-xl border border-border-mid px-4 text-sm font-medium text-brown-dark disabled:opacity-40">Clear</button>
       </header>
       {guests.length >= 2 && (
-        <div aria-label="Pick by guest" className="flex gap-2 overflow-x-auto border-b border-border bg-card px-3 py-2">
+        <div role="group" aria-label="Pick by guest" className="flex gap-2 overflow-x-auto border-b border-border bg-card px-3 py-2">
           {guests.map((g) => {
             const on = guestPicked(picked, lines, g)
             return (
