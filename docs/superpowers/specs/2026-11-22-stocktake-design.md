@@ -35,7 +35,7 @@ Changes to existing objects:
 
 ## RPCs (SECURITY DEFINER, `use_procurement` capability, branch checked with `can_access_branch`)
 
-- `save_storage_location(...)`, `set_item_locations(item_id, branch_id, location_ids[])` — manager+ (`manage_procurement`). Locations are deactivated, never deleted, once used in a count.
+- `save_storage_location(id, branch_id, name, sort_order, is_active)`, `set_location_items(location_id, item_ids[])` (replaces that location's item list, in walking order), `set_item_count_weekly(item_id, value)` — manager+ (`manage_procurement`). Locations are deactivated, never deleted.
 - `start_stock_count(branch_id, kind)` → count id. Fails if the branch already has an in-progress count (returns that count's id in the error so the screen can open it).
 - `save_count_entry(count_id, item_id, location_id, counted_base)` — upsert; only while `in_progress`; `counted_base ≥ 0`. A null `counted_base` deletes the entry (clears a mistaken number).
 - `cancel_stock_count(count_id)` — only while `in_progress`; started_by or manager+.
@@ -55,7 +55,7 @@ The existing stock-out guard only checks `adjustment` rows, so it does not block
 - **Procurement → Stock Count** (list): branch picker (`useBranchPicker`), an in-progress count card ("Resume · Weekly · 23/40 counted"), **Start weekly count** / **Start full count**, and history (date, kind, who, items, net RM coloured loss/gain).
 - **Counting screen:** location tabs in `sort_order`, then Unassigned; progress per tab ("Chiller 1 · 12/18") and overall. Each item card shows name, pack size and two inputs, **packs** and **loose** in base units (e.g. 3 pack + 250 g); the total in base units is saved on blur. No system quantity anywhere. A **Not counted** filter jumps to gaps. Sticky bar: overall progress and **Submit count** (disabled until every item has a number; the confirm sheet says stock will be set to these numbers).
 - **Result screen** (after submit, also opened from history): totals (loss, gain, net RM), then items sorted by |variance value| descending: counted, expected, variance in packs + base units, RM.
-- **Setup:** Storage locations per branch (add, rename, reorder, deactivate) for managers; on Item detail, **Key item (count weekly)** toggle and **Locations** per branch.
+- **Setup** (`/procurement/stock-counts/setup`, managers only, one phone screen): per branch, storage locations (add, rename, move up/down, deactivate); tap a location to tick the items kept there; a **Key items** list to tick the items counted weekly.
 
 Supervisors see only their own branch; managers see all branches (same rule as the rest of procurement, `seesAllBranches`).
 
