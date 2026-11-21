@@ -24,6 +24,8 @@ export interface TableCart {
   send(pax: number | null, skip: string[], clientOrderId: string): Promise<'sent' | 'changed'>
 }
 
+/** `api` and `signal` must be stable between renders (e.g. from `useMemo`): the effect that reads and
+ *  listens depends on them, and a new identity is treated as a different table. */
 export function useTableCart(
   api: CartApi | null, signal: CartSignal | null,
   onChange?: (before: CartState | null, after: CartState) => void,
@@ -38,20 +40,28 @@ export function useTableCart(
   const refresh = useCallback(async () => {
     if (!api) return
     const mine = ++seq.current
+    let next: CartState
     try {
-      const next = await api.state()
-      if (mine !== seq.current) return
-      const before = cartRef.current
-      cartRef.current = next
-      setCart(next)
-      setStatus('ready')
-      onChangeRef.current?.(before, next)
+      next = await api.state()
     } catch {
       if (mine === seq.current) setStatus('offline')
+      return
     }
+    if (mine !== seq.current) return
+    const before = cartRef.current
+    setStatus('ready')
+    if (before && before.version === next.version) return   // nothing new: keep the object, say nothing
+    cartRef.current = next
+    setCart(next)
+    // outside the try: a throwing consumer is its own problem and must not read as "offline"
+    onChangeRef.current?.(before, next)
   }, [api])
 
   useEffect(() => {
+    // a different api is a different table: never show the previous one's cart
+    cartRef.current = null
+    setCart(null)
+    setStatus('loading')
     if (!api) return
     void refresh()
     const off = signal?.subscribe(() => { void refresh() })
@@ -59,6 +69,7 @@ export function useTableCart(
     const timer = window.setInterval(tick, CART_SWEEP_MS)
     document.addEventListener('visibilitychange', tick)
     return () => {
+      seq.current++                           // a read in flight now never lands
       off?.()
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', tick)

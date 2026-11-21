@@ -1,5 +1,6 @@
 // src/qr/useTableCart.test.tsx
 // @vitest-environment jsdom
+import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { CartApi, CartSignal } from './qrCartApi'
@@ -23,9 +24,10 @@ function fakes(first: CartState) {
     send: vi.fn(async () => 'sent' as const),
   }
   let onPing: (() => void) | null = null
-  const signal: CartSignal & { fire: () => void; pings: number } = {
+  const signal: CartSignal & { fire: () => void; pings: number; live: number } = {
     pings: 0,
-    subscribe: (h) => { onPing = h; return () => { onPing = null } },
+    live: 0,
+    subscribe(h) { onPing = h; this.live++; return () => { onPing = null; this.live-- } },
     ping() { this.pings++ },
     fire: () => onPing?.(),
   }
@@ -105,6 +107,7 @@ describe('useTableCart', () => {
     await waitFor(() => expect(result.current.status).toBe('ready'))
     await expect(act(() => result.current.add(guest, order))).rejects.toThrow('Failed to fetch')
     expect(signal.pings).toBe(0)
+    expect(api.state).toHaveBeenCalledTimes(1)
     expect(result.current.cart).toEqual(cart('v1', 'l1'))
   })
 
@@ -133,5 +136,138 @@ describe('useTableCart', () => {
     await waitFor(() => expect(result.current.cart?.version).toBe('v3'))
     await act(async () => { slow(cart('v2')) })
     expect(result.current.cart?.version).toBe('v3')
+  })
+
+  it('a read still pending at unmount never lands and never calls onChange', async () => {
+    const { api, signal } = fakes(cart('v1'))
+    let late: (c: CartState) => void = () => {}
+    vi.mocked(api.state).mockImplementationOnce(() => new Promise<CartState>((r) => { late = r }))
+    const onChange = vi.fn()
+    const { unmount } = renderHook(() => useTableCart(api, signal, onChange))
+    unmount()
+    await act(async () => { late(cart('v1', 'l1')) })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('a different api starts clean: no old cart, loading, then (null, newCart)', async () => {
+    const a = fakes(cart('a1', 'l1'))
+    const b = fakes(cart('b1', 'l2'))
+    let release: (c: CartState) => void = () => {}
+    vi.mocked(b.api.state).mockImplementationOnce(() => new Promise<CartState>((r) => { release = r }))
+    const onChange = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ api, signal }) => useTableCart(api, signal, onChange),
+      { initialProps: { api: a.api, signal: a.signal } },
+    )
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    expect(result.current.cart).toEqual(cart('a1', 'l1'))
+    rerender({ api: b.api, signal: b.signal })
+    expect(result.current.cart).toBeNull()
+    expect(result.current.status).toBe('loading')
+    await act(async () => { release(cart('b1', 'l2')) })
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    expect(result.current.cart).toEqual(cart('b1', 'l2'))
+    expect(onChange).toHaveBeenLastCalledWith(null, cart('b1', 'l2'))
+  })
+
+  it('api set to null clears the cart and a late reply from the old api does not land', async () => {
+    const { api, signal } = fakes(cart('v1', 'l1'))
+    const onChange = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ a }: { a: CartApi | null }) => useTableCart(a, signal, onChange),
+      { initialProps: { a: api as CartApi | null } },
+    )
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    let late: (c: CartState) => void = () => {}
+    vi.mocked(api.state).mockImplementationOnce(() => new Promise<CartState>((r) => { late = r }))
+    act(() => signal.fire())
+    rerender({ a: null })
+    expect(result.current.cart).toBeNull()
+    expect(result.current.status).toBe('loading')
+    await act(async () => { late(cart('v2', 'l1', 'l2')) })
+    expect(result.current.cart).toBeNull()
+    expect(result.current.status).toBe('loading')
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('under StrictMode it still ends ready with the cart and one live listener', async () => {
+    const { api, signal } = fakes(cart('v1', 'l1'))
+    const { result } = renderHook(() => useTableCart(api, signal), { wrapper: StrictMode })
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    expect(result.current.cart).toEqual(cart('v1', 'l1'))
+    expect(signal.live).toBe(1)
+  })
+
+  it('an onChange that throws does not mark the cart offline', async () => {
+    const { api, signal, server } = fakes(cart('v1', 'l1'))
+    let calls = 0
+    const onChange = vi.fn(() => { if (++calls === 2) throw new Error('boom') })
+    const { result } = renderHook(() => useTableCart(api, signal, onChange))
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    server.cart = cart('v2', 'l1', 'l2')
+    let failure: unknown
+    await act(async () => { await result.current.refresh().catch((e: unknown) => { failure = e }) })
+    expect(failure).toEqual(new Error('boom'))
+    expect(result.current.cart).toEqual(cart('v2', 'l1', 'l2'))
+    expect(result.current.status).toBe('ready')
+  })
+
+  it('a read with the version it already holds changes nothing and reports nothing', async () => {
+    const { api, signal, server } = fakes(cart('v1', 'l1'))
+    const onChange = vi.fn()
+    const { result } = renderHook(() => useTableCart(api, signal, onChange))
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    const held = result.current.cart
+    server.cart = cart('v1', 'l1')            // a new object, same version
+    await act(() => result.current.refresh())
+    expect(api.state).toHaveBeenCalledTimes(2)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(result.current.cart).toBe(held)
+    expect(result.current.status).toBe('ready')
+    server.cart = cart('v2', 'l1')
+    await act(() => result.current.refresh())
+    expect(onChange).toHaveBeenCalledTimes(2)
+    expect(result.current.cart?.version).toBe('v2')
+  })
+
+  it('a same-version read recovers from offline', async () => {
+    const { api, signal } = fakes(cart('v1', 'l1'))
+    const { result } = renderHook(() => useTableCart(api, signal))
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    vi.mocked(api.state).mockRejectedValueOnce(new Error('Failed to fetch'))
+    await act(() => result.current.refresh())
+    expect(result.current.status).toBe('offline')
+    await act(() => result.current.refresh())
+    expect(result.current.status).toBe('ready')
+  })
+
+  it('reads on visibilitychange only when the page is visible', async () => {
+    vi.useFakeTimers()
+    const vis = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    try {
+      const { api, signal } = fakes(cart('v1'))
+      renderHook(() => useTableCart(api, signal))
+      await act(async () => { await Promise.resolve() })
+      expect(api.state).toHaveBeenCalledTimes(1)
+      await act(async () => { vi.advanceTimersByTime(CART_SWEEP_MS) })
+      expect(api.state).toHaveBeenCalledTimes(1)
+      vis.mockReturnValue('visible')
+      await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+      expect(api.state).toHaveBeenCalledTimes(2)
+    } finally { vis.mockRestore() }
+  })
+
+  it('after unmount a ping or the timer reads nothing', async () => {
+    vi.useFakeTimers()
+    const { api, signal } = fakes(cart('v1'))
+    const { unmount } = renderHook(() => useTableCart(api, signal))
+    await act(async () => { await Promise.resolve() })
+    expect(api.state).toHaveBeenCalledTimes(1)
+    unmount()
+    signal.fire()
+    vi.advanceTimersByTime(CART_SWEEP_MS * 2)
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(api.state).toHaveBeenCalledTimes(1)
+    expect(signal.live).toBe(0)
   })
 })
