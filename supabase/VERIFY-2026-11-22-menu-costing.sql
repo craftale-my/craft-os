@@ -149,7 +149,21 @@ begin
   execute 'set local role authenticated';
   begin perform copy_variant_recipe(v_v1, v_v4); v_ok := false;
   exception when others then v_ok := sqlerrm like '%same menu item%'; end;
+  begin perform copy_variant_recipe(v_v4, v_v1); v_ok := false;
+  exception when others then v_ok := v_ok and sqlerrm like '%same menu item%'; end;
   v_out := v_out || format(E'%s  copy across different menu items refused\n', case when v_ok is true then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or v_ok is not true;
+
+  -- 8c. Copy from a size with no recipe is refused (target keeps its lines) ----
+  execute 'reset role';
+  insert into menu_variants (product_id, feedme_variant_key, name, price_sen)
+  select product_id, 'empty', 'Empty', 900 from menu_variants where id = v_v1 returning id into v_v4;
+  perform set_config('request.jwt.claims', json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  execute 'set local role authenticated';
+  begin perform copy_variant_recipe(v_v4, v_v1); v_ok := false;
+  exception when others then v_ok := sqlerrm like '%has no recipe yet%'; end;
+  v_ok := v_ok is true and (select line_count from menu_variant_costs where variant_id = v_v1) = 2;
+  v_out := v_out || format(E'%s  copy from a size with no recipe refused; target unchanged\n', case when v_ok is true then 'PASS' else 'FAIL' end);
   v_fail := v_fail or v_ok is not true;
 
   -- 9. item_standard_costs batch ------------------------------------------------
@@ -186,6 +200,12 @@ begin
    where n.nspname = 'public' and p.proname in ('item_standard_cost', 'item_standard_costs', 'item_standard_cost_at',
      'save_variant_recipe', 'save_modifier_recipe', 'copy_variant_recipe', 'set_category_target');
   v_out := v_out || format(E'%s  anon cannot execute menu costing functions\n', case when v_ok is true then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or v_ok is not true;
+
+  -- 12. anon cannot read the cost views --------------------------------------------
+  v_ok := not has_table_privilege('anon', 'public.menu_variant_costs', 'select')
+      and not has_table_privilege('anon', 'public.modifier_option_costs', 'select');
+  v_out := v_out || format(E'%s  anon cannot select menu_variant_costs or modifier_option_costs\n', case when v_ok is true then 'PASS' else 'FAIL' end);
   v_fail := v_fail or v_ok is not true;
 
   v_out := v_out || case when v_fail then 'VERIFY FAILED' else 'VERIFY OK' end;

@@ -7,6 +7,16 @@
 -- Additive and idempotent. Dev first.
 -- ============================================================================
 
+-- 0. Needs the POS menu tables (feature/pos-demo migrations) ---------------
+do $$ begin
+  if to_regclass('public.menu_variants') is null
+     or to_regclass('public.modifier_options') is null
+     or to_regclass('public.menu_products') is null
+     or to_regclass('public.menu_categories') is null then
+    raise exception 'Apply the POS menu migrations first';
+  end if;
+end $$;
+
 -- 1. Tables -------------------------------------------------------------------
 create table if not exists menu_variant_recipe_lines (
   variant_id uuid not null references menu_variants(id) on delete cascade,
@@ -133,7 +143,6 @@ end;
 $$;
 
 -- 4. Cost views (invoker rights: recipe rows are manager-only under RLS) -------
-drop view if exists menu_variant_costs;
 create or replace view menu_variant_costs with (security_invoker = true) as
 with lines as (
   select l.variant_id, l.qty_base * item_standard_cost(l.item_id) as line_cost
@@ -292,6 +301,9 @@ begin
   if (select product_id from menu_variants where id = p_from_variant)
      is distinct from (select product_id from menu_variants where id = p_to_variant) then
     raise exception 'You can only copy between sizes of the same menu item';
+  end if;
+  if not exists (select 1 from menu_variant_recipe_lines where variant_id = p_from_variant) then
+    raise exception 'That size has no recipe yet';
   end if;
   delete from menu_variant_recipe_lines where variant_id = p_to_variant;
   insert into menu_variant_recipe_lines (variant_id, item_id, qty_base, sort_order)
