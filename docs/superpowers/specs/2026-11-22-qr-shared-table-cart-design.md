@@ -93,8 +93,8 @@ phone is often not the one who ordered).
   pattern (`usePosRealtime`: events plus a 15 s sweep).
   - The channel name is `qr-` + the first 16 hex characters of SHA-256 of the table token, so the token
     never appears as a channel name.
-  - **To verify first:** that an `anon` client may broadcast on a public channel in the dev project. If
-    it may not, the page reads every 4 s while in view instead, and nothing else in this design changes.
+  - **Verified 2026-11-22:** an `anon` client may broadcast on a public channel in the dev project
+    (`scripts/qr-broadcast-check.mjs`). The fallback read stays at 15 s.
 - **Stale carts.** A line is deleted on the next read when it is older than 2 hours (assumed), or when
   the table has no open bill and the line was created before the table's most recent bill was closed
   (paid or voided).
