@@ -35,6 +35,15 @@ create table if not exists menu_category_targets (
   target_food_cost_bp integer not null check (target_food_cost_bp between 0 and 10000)
 );
 
+do $$ begin
+  if not exists (select 1 from pg_constraint where conname = 'menu_variant_recipe_lines_qty_not_nan') then
+    alter table menu_variant_recipe_lines add constraint menu_variant_recipe_lines_qty_not_nan check (qty_base <> 'NaN');
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'modifier_recipe_lines_qty_not_nan') then
+    alter table modifier_recipe_lines add constraint modifier_recipe_lines_qty_not_nan check (qty_base <> 'NaN');
+  end if;
+end $$;
+
 -- 2. RLS: managers read; writes only through the functions below --------------
 alter table menu_variant_recipe_lines enable row level security;
 alter table modifier_recipe_lines     enable row level security;
@@ -124,6 +133,7 @@ end;
 $$;
 
 -- 4. Cost views (invoker rights: recipe rows are manager-only under RLS) -------
+drop view if exists menu_variant_costs;
 create or replace view menu_variant_costs with (security_invoker = true) as
 with lines as (
   select l.variant_id, l.qty_base * item_standard_cost(l.item_id) as line_cost
@@ -145,12 +155,12 @@ select v.id                         as variant_id,
        (v.is_active and p.is_active) as is_active,
        coalesce(a.line_count, 0)    as line_count,
        coalesce(a.missing, 0)       as missing_cost_items,
-       case when a.missing = 0 then a.total end as cost_rm,
+       case when a.missing = 0 and has_procurement_cap('manage_procurement') then a.total end as cost_rm,
        case when a.missing = 0 and v.price_sen > 0
-            then round(a.total * 1000000 / v.price_sen)::int end as food_cost_bp,
+            then round(a.total * 1000000 / v.price_sen)::bigint end as food_cost_bp,
        t.target_food_cost_bp,
        coalesce(t.target_food_cost_bp is not null and a.missing = 0 and v.price_sen > 0
-                and round(a.total * 1000000 / v.price_sen) > t.target_food_cost_bp, false) as over_target
+                and round(a.total * 1000000 / v.price_sen)::bigint > t.target_food_cost_bp, false) as over_target
   from menu_variants v
   join menu_products p on p.id = v.product_id
   left join menu_categories c on c.id = p.category_id
@@ -168,7 +178,8 @@ select o.id                                              as option_id,
        o.price_delta_sen,
        count(l.option_id)::int                           as line_count,
        count(l.option_id) filter (where l.line_cost is null)::int as missing_cost_items,
-       case when count(l.option_id) filter (where l.line_cost is null) = 0
+       case when has_procurement_cap('manage_procurement')
+             and count(l.option_id) filter (where l.line_cost is null) = 0
             then coalesce(sum(l.line_cost), 0) end       as cost_delta_rm
   from modifier_options o
   left join lines l on l.option_id = o.id
@@ -191,12 +202,21 @@ begin
   if not exists (select 1 from menu_variants where id = p_variant_id) then
     raise exception 'Menu variant not found';
   end if;
+  if jsonb_typeof(coalesce(p_lines, '[]'::jsonb)) <> 'array' then
+    raise exception 'Lines must be a list';
+  end if;
+  if exists (select 1 from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) e
+              where jsonb_typeof(e) <> 'object'
+                 or coalesce(e->>'item_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                 or jsonb_typeof(e->'qty_base') is distinct from 'number') then
+    raise exception 'Each line needs an ingredient and a quantity';
+  end if;
   if exists (select 1 from jsonb_array_elements(coalesce(p_lines, '[]')) e
-              where (e->>'qty_base') is null or (e->>'qty_base')::numeric <= 0) then
+              where (e->>'qty_base')::numeric <= 0) then
     raise exception 'Every quantity must be greater than zero';
   end if;
-  if exists (select e->>'item_id' from jsonb_array_elements(coalesce(p_lines, '[]')) e
-              group by e->>'item_id' having count(*) > 1) then
+  if exists (select 1 from jsonb_array_elements(coalesce(p_lines, '[]')) e
+              group by (e->>'item_id')::uuid having count(*) > 1) then
     raise exception 'An ingredient is listed more than once';
   end if;
   if exists (select 1 from jsonb_array_elements(coalesce(p_lines, '[]')) e
@@ -225,12 +245,21 @@ begin
   if not exists (select 1 from modifier_options where id = p_option_id) then
     raise exception 'Add-on option not found';
   end if;
+  if jsonb_typeof(coalesce(p_lines, '[]'::jsonb)) <> 'array' then
+    raise exception 'Lines must be a list';
+  end if;
+  if exists (select 1 from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) e
+              where jsonb_typeof(e) <> 'object'
+                 or coalesce(e->>'item_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                 or jsonb_typeof(e->'qty_base') is distinct from 'number') then
+    raise exception 'Each line needs an ingredient and a quantity';
+  end if;
   if exists (select 1 from jsonb_array_elements(coalesce(p_lines, '[]')) e
-              where (e->>'qty_base') is null or (e->>'qty_base')::numeric = 0) then
+              where (e->>'qty_base')::numeric = 0) then
     raise exception 'A quantity cannot be zero';
   end if;
-  if exists (select e->>'item_id' from jsonb_array_elements(coalesce(p_lines, '[]')) e
-              group by e->>'item_id' having count(*) > 1) then
+  if exists (select 1 from jsonb_array_elements(coalesce(p_lines, '[]')) e
+              group by (e->>'item_id')::uuid having count(*) > 1) then
     raise exception 'An ingredient is listed more than once';
   end if;
   if exists (select 1 from jsonb_array_elements(coalesce(p_lines, '[]')) e
@@ -259,6 +288,10 @@ begin
   if not exists (select 1 from menu_variants where id = p_to_variant)
      or not exists (select 1 from menu_variants where id = p_from_variant) then
     raise exception 'Menu variant not found';
+  end if;
+  if (select product_id from menu_variants where id = p_from_variant)
+     is distinct from (select product_id from menu_variants where id = p_to_variant) then
+    raise exception 'You can only copy between sizes of the same menu item';
   end if;
   delete from menu_variant_recipe_lines where variant_id = p_to_variant;
   insert into menu_variant_recipe_lines (variant_id, item_id, qty_base, sort_order)
