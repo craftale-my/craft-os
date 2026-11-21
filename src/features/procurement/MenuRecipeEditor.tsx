@@ -40,11 +40,11 @@ export default function MenuRecipeEditorPage() {
     const missing = ids.filter(id => !requested.current.has(id))
     if (missing.length === 0) return
     missing.forEach(id => requested.current.add(id))
-    const req = ++costReq.current
+    const req = costReq.current // bumped only on unmount
     try {
       const { data, error: err } = await supabase.rpc('item_standard_costs', { p_item_ids: missing })
       if (req !== costReq.current) {
-        // A newer request superseded this one; let these ids be fetched again.
+        // Unmounted; a later mount may fetch these again.
         missing.forEach(id => requested.current.delete(id))
         return
       }
