@@ -1,22 +1,23 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { qrClient } from './qrClient'
 import { tokenFromLocation } from './qrState'
-import {
-  findProduct, formatSen, lineLabel, linePriceSen, posMenuFromQr,
-  type OrderLine, type PosMenu, type PosProduct, type QrMenuJson,
-} from '../features/pos/order/cart'
-import { goesWellVisible, mostPickedFor, offerPairs, pairsFor, parsePicks, visiblePopular, type MenuPicks } from '../features/pos/order/picks'
+import { findProduct, formatSen, posMenuFromQr, type OrderLine, type PosMenu, type PosProduct, type QrMenuJson } from '../features/pos/order/cart'
+import { mostPickedFor, parsePicks, visiblePopular, type MenuPicks } from '../features/pos/order/picks'
 import LineSheet from '../features/pos/order/LineSheet'
-import PickPill from '../features/pos/order/PickPill'
 import { avatarEmoji, loadGuest, newGuest, saveGuest, type Guest } from './qrGuest'
 import {
-  additionsToast, cartChannel, cartTotalSen, groupCart, groupOrdered, isNetworkError, lineAvailable, orderWasSent, sendGroups, sentKey, skipIds,
-  type CartLine, type CartState, type OrderedItem,
+  additionsToast, cartChannel, cartPairs, cartTotalSen, cartUnits, groupCart, isNetworkError, orderWasSent, sendGroups, sentKey, skipIds,
+  unitsByProduct, type CartLine, type CartState, type GuestGroup, type OrderedItem,
 } from './qrCart'
 import { makeCartApi, makeCartSignal } from './qrCartApi'
 import { useTableCart } from './useTableCart'
 import GuestCard from './GuestCard'
 import SendSheet from './SendSheet'
+import MenuGrid from './MenuGrid'
+import CartPage from './CartPage'
+import SentPage from './SentPage'
+import OrdersPage from './OrdersPage'
+import { PickCard, Shell } from './qrParts'
 
 interface TableState {
   tableLabel: string
@@ -34,9 +35,8 @@ const REFRESH_MS = 60_000
 const PICKS_REFRESH_MS = 10 * 60_000
 const TOAST_MS = 4_000
 
-/** "RM 9.00", or "from RM 9.00" when the product has several sizes. */
-const priceText = (p: PosProduct) =>
-  p.variants.length > 1 ? `from ${formatSen(Math.min(...p.variants.map((v) => v.priceSen)))}` : formatSen(p.variants[0].priceSen)
+/** The page's views. Cart / sent / orders push one history entry, so the phone's Back returns to the menu. */
+type View = 'menu' | 'cart' | 'sent' | 'orders'
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export default function QrApp() {
@@ -74,8 +74,8 @@ export default function QrApp() {
   const picksAt = useRef(0)                                          // when picks last LOADED; 0 until they have
   const picksSeq = useRef(0)                                         // an older reply never overwrites a newer one
   const picksLoaded = useRef(false)
-  const [goesWellFor, setGoesWellFor] = useState<string | null>(null)   // the product the Goes well with panel is about
-  const pairsShown = useRef(new Set<string>())                           // Goes well with: once per product per visit
+  const [view, setView] = useState<View>('menu')
+  const [sentGroups, setSentGroups] = useState<GuestGroup[]>([])         // what the send sheet showed when the order went: the "Order placed" view
 
   const loadState = async (): Promise<TableState | null> => {
     const { data } = await qrClient.rpc('qr_table_state', { p_token: token })
@@ -186,6 +186,25 @@ export default function QrApp() {
     if (!table.cart.lines.some((l) => l.id === sheet.lineId && l.guestId === guest.id)) setSheet(null)
   }, [sheet, sheetBusy, table.cart, guest])
 
+  // views: opening one pushes a history entry (replaces it when already on one), so Back returns to the menu
+  const openView = (v: View) => {
+    if (v === 'menu') return goMenu()
+    if (history.state?.qrView) history.replaceState({ qrView: v }, ''); else history.pushState({ qrView: v }, '')
+    if (v === 'orders') void loadState()                               // the page reads the table afresh on entry
+    setView(v)
+  }
+  const goMenu = () => { if (history.state?.qrView) history.back(); else setView('menu') }
+  useEffect(() => {
+    if (history.state?.qrView) history.replaceState(null, '')          // a reload lands on the menu
+    const onPop = () => setView((history.state?.qrView as View | undefined) ?? 'menu')
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+  // the cart emptied under the guest because the table's order went from another phone: back to the menu (its banner says so)
+  useEffect(() => {
+    if (view === 'cart' && placed && table.cart && table.cart.lines.length === 0 && !sendingRef.current) goMenu()
+  }) // eslint-disable-line react-hooks/exhaustive-deps
+
   if (screen.kind === 'loading') return <Shell><p className="p-6 text-center text-brown-muted">Loading menu…</p></Shell>
   if (screen.kind === 'error') {
     return (
@@ -216,25 +235,15 @@ export default function QrApp() {
   // picks, filtered to what this menu offers now; "in the cart" = anywhere in the table's cart
   const popular = visiblePopular(menu, picks)
   const popularIds = new Set(popular.map((p) => p.id))
-  const goesWell = goesWellFor ? pairsFor(menu, picks, goesWellFor, cartLines) : []
-  const goesWellName = goesWellFor ? findProduct(menu, goesWellFor)?.name ?? null : null
-  const showGoesWell = goesWell.length > 0 && goesWellName !== null && goesWellVisible(goesWellFor, cartLines)
 
-  /** The sheet's Add: the line goes to the table's cart on the server. A new line may open Goes well
-   *  with (once per product per visit). */
+  /** The sheet's Add: the line goes to the table's cart on the server. */
   const done = async (line: OrderLine) => {
     if (!sheet || sheetBusy) return
-    const isNew = sheet.lineId === null
     setSheetBusy(true); setSheetError(null)
     try {
       if (sheet.lineId === null) await table.add(guest, line)
       else await table.replace(guest, sheet.lineId, line)
       setSheet(null); setPlaced(false); setError(null)
-      if (isNew) {
-        const offer = offerPairs(menu, picks, line.productId, [...cartLines, line], pairsShown.current)
-        if (offer) pairsShown.current.add(line.productId)
-        setGoesWellFor(offer ? line.productId : null)
-      }
     } catch (e) {
       const msg = errorText(e)
       setSheetError(isNetworkError(msg) ? 'Not added — no connection. Tap Add to try again.' : `Not added: ${msg}`)
@@ -268,7 +277,8 @@ export default function QrApp() {
       const status = await table.send(paxNum, skip, pending.current.id, table.cart.version)
       if (status === 'changed') { adoptSeen.current = true; setSendMessage('The order changed — please check again.'); return }
       pending.current = null
-      setSendOpen(false); setPlaced(true); setGoesWellFor(null); setError(null)
+      setSendOpen(false); setPlaced(true); setError(null)
+      setSentGroups(sendable); openView('sent')                         // the groups the sheet showed are exactly what was sent
       await loadState()
     } catch (e) {
       const msg = errorText(e)
@@ -287,104 +297,62 @@ export default function QrApp() {
   }
 
   const products = menu.categories.find((c) => c.name === category)?.products ?? []
-  const ordered = groupOrdered(state?.items ?? [])
-  const placeLabel = table.status === 'offline' ? 'Reconnecting…'
-    : sendable.length === 0 ? 'Tap an item to start' : `Place order · ${formatSen(subtotal)}`
+  const openProduct = (p: PosProduct) => { setSheetError(null); setSheet({ product: p, lineId: null }) }
+  const units = cartUnits(menu, cartLines)
+  const barLabel = table.status === 'offline' ? 'Reconnecting…'
+    : table.status === 'loading' || cartLines.length === 0 ? 'Tap an item to start' : `View cart · ${units} · ${formatSen(subtotal)}`
   return (
     <Shell title={`Table ${info.tableLabel}`} right={
       <button type="button" onClick={() => setGuestEdit(true)} aria-label={`You are ${guest.name}. Change name or avatar`}
         className="min-h-11 rounded-full bg-white/15 px-3 text-sm">{avatarEmoji(guest.avatar)} {guest.name}</button>
     }>
       {toast && <div role="status" className="fixed inset-x-3 top-3 z-30 rounded-xl bg-brown-dark px-4 py-3 text-sm text-white shadow-lg">{toast.text}</div>}
-      {placed && (
-        <div className="m-3 rounded-xl bg-green-50 p-3 text-sm text-green-800">
-          Order placed — it is on its way. You can add more below.
-        </div>
-      )}
-      {state && state.items.length > 0 && (
-        <details className="m-3 rounded-xl border border-border bg-card p-3 text-sm">
-          <summary>Ordered so far · {formatSen(state.subtotalSen)}</summary>
-          {ordered.map((g) => (
-            <div key={g.label ?? '-counter-'} className="mt-2">
-              <div className="text-xs font-semibold text-brown-muted">{g.label === null ? 'Ordered at the counter' : `${avatarEmoji(g.avatar)} ${g.label}`.trim()}</div>
-              {g.items.map((i, k) => (
-                <div key={k} className={`flex justify-between py-1 ${i.voided ? 'line-through opacity-50' : ''}`}>
-                  <span>{i.qty} × {i.name}{i.mods.length > 0 && <span className="text-brown-muted"> · {i.mods.join(', ')}</span>}</span>
-                  <span>{formatSen(i.unitPriceSen * i.qty)}</span>
-                </div>
-              ))}
+      {view === 'menu' && (
+        <>
+          {placed && (
+            <div className="m-3 rounded-xl bg-green-50 p-3 text-sm text-green-800">
+              Order placed — it is on its way. You can add more below.
             </div>
-          ))}
-        </details>
-      )}
-      {popular.length > 0 && (
-        <section aria-label="Popular here" className="px-3 pt-2">
-          <h2 className="text-sm font-semibold text-brown-dark">Popular here</h2>
-          <div className="mt-1 flex gap-2 overflow-x-auto pb-1">
-            {popular.map((p) => <PickCard key={p.id} product={p} onOpen={() => { setSheetError(null); setSheet({ product: p, lineId: null }) }} />)}
-          </div>
-        </section>
-      )}
-      <div className="flex gap-1 overflow-x-auto px-3 py-2">
-        {menu.categories.map((c) => (
-          <button key={c.name} onClick={() => setCategory(c.name)}
-            className={`whitespace-nowrap rounded-full px-3 py-1 text-sm ${category === c.name ? 'bg-brown-btn text-white' : 'border border-border bg-card'}`}>{c.name}</button>
-        ))}
-      </div>
-      <div className={`space-y-2 px-3 ${cartLines.length > 0 ? (showGoesWell ? 'pb-[75vh]' : 'pb-[50vh]') : 'pb-24'}`}>
-        {products.filter((p) => p.variants.length > 0).map((p) => (
-          <button key={p.id} disabled={p.soldOut} onClick={() => { setSheetError(null); setSheet({ product: p, lineId: null }) }}
-            className="flex w-full items-start gap-3 rounded-xl border border-border bg-card p-3 text-left disabled:opacity-50">
-            {p.imageUrl && <img src={p.imageUrl} alt="" loading="lazy" className="h-16 w-16 shrink-0 rounded-lg object-cover" />}
-            <div className="flex-1">
-              <div className="font-medium">
-                {p.name}
-                {popularIds.has(p.id) && <PickPill text="Popular" />}
-                {p.soldOut && <span className="ml-2 text-xs text-red-700">Sold out</span>}
+          )}
+          {popular.length > 0 && (
+            <section aria-label="Popular here" className="px-3 pt-2">
+              <h2 className="text-sm font-semibold text-brown-dark">Popular here</h2>
+              <div className="mt-1 flex gap-2 overflow-x-auto pb-1">
+                {popular.map((p) => <PickCard key={p.id} product={p} onOpen={() => openProduct(p)} />)}
               </div>
-              {p.description && <div className="text-xs text-brown-muted">{p.description}</div>}
-            </div>
-            <div className="text-sm">{priceText(p)}</div>
-          </button>
-        ))}
-      </div>
-
-      <div className="fixed inset-x-0 bottom-0 border-t border-border bg-card p-3 text-sm shadow-lg">
-        {showGoesWell && (
-          <section aria-label="Goes well with" className="mb-2 rounded-xl border border-border bg-cream p-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-semibold text-brown-dark">Goes well with your {goesWellName}</span>
-              <button type="button" aria-label="Close" className="-m-1 h-11 w-11 shrink-0" onClick={() => setGoesWellFor(null)}>✕</button>
-            </div>
-            <div className="mt-1 flex gap-2 overflow-x-auto">
-              {goesWell.map((p) => <PickCard key={p.id} product={p} onOpen={() => { setSheetError(null); setSheet({ product: p, lineId: null }) }} />)}
-            </div>
-          </section>
-        )}
-        <div className="max-h-[40vh] overflow-y-auto">
-          {mine.length > 0 && <div className="text-xs font-semibold uppercase text-brown-muted">Your items</div>}
-          {mine.map((l) => (
-            <CartRow key={l.id} menu={menu} line={l}
-              onEdit={(p) => { setSheetError(null); setSheet({ product: p, lineId: l.id }) }} onRemove={() => void remove(l.id)} />
-          ))}
-          {others.length > 0 && <div className="mt-2 text-xs font-semibold uppercase text-brown-muted">Others at this table</div>}
-          {others.map((g) => (
-            <div key={g.guestId}>
-              <div className="mt-1 text-xs text-brown-muted">{avatarEmoji(g.avatar)} {g.label}</div>
-              {g.lines.map((l) => <CartRow key={l.id} menu={menu} line={l} />)}
-            </div>
-          ))}
-          {error && <p role="alert" className="my-1 text-red-700">{error}</p>}
-        </div>
-        <button disabled={sendable.length === 0 || table.status !== 'ready'}
-          onClick={() => {
+            </section>
+          )}
+          <div className="flex gap-1 overflow-x-auto px-3 py-2">
+            {menu.categories.map((c) => (
+              <button key={c.name} onClick={() => setCategory(c.name)}
+                className={`whitespace-nowrap rounded-full px-3 py-1 text-sm ${category === c.name ? 'bg-brown-btn text-white' : 'border border-border bg-card'}`}>{c.name}</button>
+            ))}
+          </div>
+          <MenuGrid products={products} popularIds={popularIds} units={unitsByProduct(menu, cartLines)} onOpen={openProduct} />
+          <div className="fixed inset-x-0 bottom-0 flex gap-2 border-t border-border bg-card p-3 text-sm shadow-lg">
+            {state && state.items.length > 0 && (
+              <button type="button" onClick={() => openView('orders')} className="min-h-12 rounded-xl border border-border px-4">Orders</button>
+            )}
+            <button type="button" disabled={table.status !== 'ready' || cartLines.length === 0} onClick={() => openView('cart')}
+              className="min-h-12 flex-1 rounded-xl bg-brown-btn py-3 text-white disabled:opacity-40">{barLabel}</button>
+          </div>
+        </>
+      )}
+      {view === 'cart' && (
+        <CartPage menu={menu} mine={mine} others={others} pairs={cartPairs(menu, picks, mine, cartLines)} subtotalSen={subtotal}
+          sendable={sendable.length > 0} status={table.status} error={error} onBack={goMenu}
+          onEdit={(p, lineId) => { setSheetError(null); setSheet({ product: p, lineId }) }} onRemove={(id) => void remove(id)}
+          onOpenProduct={openProduct}
+          onPlace={() => {
             seen.current = table.cart ? sentKey(table.cart, skipIds(menu, cartLines)) : null
             setSendError(null); setSendMessage(null); setSendOpen(true)
-          }}
-          className="mt-1 w-full rounded-xl bg-brown-btn py-3 text-white disabled:opacity-40">
-          {placeLabel}
-        </button>
-      </div>
+          }} />
+      )}
+      {view === 'sent' && (
+        <SentPage menu={menu} groups={sentGroups} tableLabel={info.tableLabel} billNo={state?.billNo ?? null}
+          onAddMore={goMenu} onViewOrders={() => openView('orders')} />
+      )}
+      {view === 'orders' && <OrdersPage items={state?.items ?? []} subtotalSen={state?.subtotalSen ?? 0} onBack={goMenu} />}
 
       {sheet && (
         <LineSheet product={sheet.product} initial={sheet.lineId === null ? undefined : mine.find((l) => l.id === sheet.lineId)}
@@ -405,64 +373,5 @@ export default function QrApp() {
         </div>
       )}
     </Shell>
-  )
-}
-
-/** One line of the table's cart. With onEdit / onRemove it is the guest's own; without, someone else's
- *  (read-only). A line the menu no longer offers is struck through and says so. */
-function CartRow({ menu, line, onEdit, onRemove }: {
-  menu: PosMenu
-  line: CartLine
-  onEdit?: (product: PosProduct) => void
-  onRemove?: () => void
-}) {
-  const p = findProduct(menu, line.productId)
-  const ok = lineAvailable(menu, line)
-  const label = p && ok ? lineLabel(p, line) : { name: p?.name ?? 'Unavailable item', mods: [] as string[] }
-  const text = <>{line.qty} × {label.name}{label.mods.length > 0 && <span className="text-brown-muted"> · {label.mods.join(', ')}</span>}</>
-  return (
-    <div className="flex justify-between gap-2 py-1">
-      <span>
-        {onEdit && p && ok
-          ? <button type="button" className="text-left" onClick={() => onEdit(p)}>{text}</button>
-          : <span className={ok ? '' : 'line-through opacity-60'}>{text}</span>}
-        {!ok && <span className="block text-xs text-red-700">Not available now</span>}
-      </span>
-      <span className="shrink-0">
-        {p && ok ? formatSen((linePriceSen(p, line) ?? 0) * line.qty) : ''}
-        {onRemove && <button type="button" aria-label={`Remove ${label.name}`} className="ml-2 text-red-700" onClick={onRemove}>✕</button>}
-      </span>
-    </div>
-  )
-}
-
-/** A card of Popular here and Goes well with: photo, name, price; a tap opens the item sheet. */
-function PickCard({ product, onOpen }: { product: PosProduct; onOpen: () => void }) {
-  return (
-    <button type="button" onClick={onOpen}
-      className="flex w-28 shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card text-left">
-      {product.imageUrl
-        ? <img src={product.imageUrl} alt="" loading="lazy" className="h-20 w-full object-cover" />
-        : <div className="h-20 w-full bg-border" />}
-      <div className="p-2">
-        <div className="line-clamp-2 text-xs font-medium">{product.name}</div>
-        <div className="mt-0.5 text-xs text-brown-muted">{priceText(product)}</div>
-      </div>
-    </button>
-  )
-}
-
-function Shell({ title, right, children }: { title?: string; right?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="min-h-screen bg-cream">
-      <header className="flex items-center justify-between gap-3 bg-brown-header px-4 py-3 text-white">
-        <div>
-          <div className="text-xs opacity-80">Craft Cafe</div>
-          <div className="text-lg font-semibold">{title ?? 'Order'}</div>
-        </div>
-        {right}
-      </header>
-      {children}
-    </div>
   )
 }

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { PosMenu } from '../features/pos/order/cart'
+import type { MenuPicks } from '../features/pos/order/picks'
 import {
-  additionsToast, cartChannel, cartTotalSen, groupCart, groupOrdered, isNetworkError, lineAvailable, orderWasSent, parseCart,
+  additionsToast, cartChannel, cartPairs, cartTotalSen, cartUnits, unitsByProduct, groupCart, groupOrdered, isNetworkError, lineAvailable, orderWasSent, parseCart,
   sendGroups, sentKey, skipIds, type CartLine, type CartState, type OrderedItem,
 } from './qrCart'
 
@@ -173,5 +174,52 @@ describe('sentKey', () => {
     expect(sentKey(c, ['a', 'b'])).toBe(sentKey({ version: 'v1', lines: [] }, ['a', 'b']))
     expect(sentKey(c, [])).not.toBe(sentKey({ version: 'v2', lines: [] }, []))
     expect(sentKey(c, ['a'])).not.toBe(sentKey(c, ['a', 'b']))
+  })
+})
+
+describe('unitsByProduct / cartUnits', () => {
+  it('adds up the units of each product over available lines only', () => {
+    const lines = [
+      line('a', ME, { qty: 2 }), line('b', MEI, { qty: 1, optionIds: ['oat'] }),
+      line('c', ME, { optionIds: ['soy'], qty: 5 }),                                // option sold out: not counted
+      line('d', ME, { productId: 'cake', variantId: 'slice', qty: 3 }),             // sold out: not counted
+    ]
+    expect(unitsByProduct(menu, lines)).toEqual(new Map([['latte', 3]]))
+    expect(cartUnits(menu, lines)).toBe(3)
+  })
+  it('is empty for an empty cart', () => {
+    expect(unitsByProduct(menu, []).size).toBe(0)
+    expect(cartUnits(menu, [])).toBe(0)
+  })
+})
+
+describe('cartPairs', () => {
+  const mk = (ids: string[]) => ids.map((id) => ({ id, name: id, description: null, soldOut: false,
+    variants: [{ id: 'v', name: 'V', priceSen: 100, isBase: true }], groups: [] }))
+  const big: PosMenu = { categories: [{ name: 'All', products: mk(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']) }] }
+  const picks = (pairs: Record<string, string[]>): MenuPicks => ({ popular: [], pairs, mostPicked: {}, fromSales: true })
+  const ln = (id: string, productId: string): CartLine => line(id, ME, { productId, variantId: 'v' })
+  const ids = (xs: { id: string }[]) => xs.map((x) => x.id)
+
+  it('follows my lines in cart order and drops duplicates', () => {
+    const mine = [ln('1', 'a'), ln('2', 'b')]
+    const r = cartPairs(big, picks({ a: ['c', 'd'], b: ['d', 'e'] }), mine, mine)
+    expect(ids(r)).toEqual(['c', 'd', 'e'])
+  })
+  it('leaves out anything already in the table\'s cart, mine or not', () => {
+    const mine = [ln('1', 'a')]
+    const all = [...mine, ln('2', 'c')]
+    expect(ids(cartPairs(big, picks({ a: ['c', 'd'] }), mine, all))).toEqual(['d'])
+  })
+  it('keeps the first 6', () => {
+    const mine = [ln('1', 'a'), ln('2', 'b'), ln('3', 'c')]
+    const r = cartPairs(big, picks({ a: ['d', 'e', 'f'], b: ['g', 'h', 'i'], c: ['j'] }), mine, mine)
+    expect(ids(r)).toEqual(['d', 'e', 'f', 'g', 'h', 'i'])
+  })
+  it('is empty without picks or without lines of mine', () => {
+    const mine = [ln('1', 'a')]
+    expect(cartPairs(big, null, mine, mine)).toEqual([])
+    expect(cartPairs(big, picks({ a: ['c'] }), [], [])).toEqual([])
+    expect(cartPairs(big, picks({}), mine, mine)).toEqual([])
   })
 })

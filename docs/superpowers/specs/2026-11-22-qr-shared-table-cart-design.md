@@ -50,19 +50,32 @@ cart that the server does not hold.
 **Live changes** — when another guest adds a line, a toast shows for 4 seconds:
 `<avatar> Eric added 1 × Latte`. Several additions inside one refresh collapse into
 `<avatar> Eric added 3 items`. When several guests add within one refresh the toast is
-`Others at this table added N items`; N counts units. Removals and edits make no toast. The `Place order` total follows the
+`Others at this table added N items`; N counts units. Removals and edits make no toast. The cart button and `Place order` total follow the
 table's cart.
 
-**Cart** (the bottom panel) — two groups:
+**Four views** — one page, one `view` state; cart, sent and orders each push one history entry, so the
+phone's Back returns to the menu.
 
-- `Your items` — as today: tap a line to edit it (the sheet's button then reads `Save · RM …`), `✕` to
-  remove it.
-- `Others at this table` — one sub-heading per guest (`<avatar> Mei`), lines read-only.
-- A line that the item sheet's own validation would refuse (`validateLine`: left its time slot, switched
-  off, sold out, a variant or add-on gone, a required choice missing, too many choices in a group) is struck
-  through with `Not available now` under it and is left out of the total. Its owner can remove it.
+- **Menu** — header, toast, and a 2-column grid of square tiles (photo, name, price; `Popular` pill; sold
+  out dimmed with `Sold out`). A round badge on a tile counts the units of that product in the whole
+  table's cart. A fixed bottom bar holds `Orders` (only when the table has ordered items) and the primary
+  button: `View cart · 3 · RM 42.00`, `Tap an item to start` (disabled) or `Reconnecting…` (disabled). The
+  `Order placed — it is on its way. You can add more below.` banner sits on top of it for the phones that
+  did not send.
+- **Cart** — `Your items` (each line with `Edit` and `Remove`; the item sheet's button then reads
+  `Save · RM …`), `Others at this table` (one sub-heading per guest, `<avatar> Mei`, lines read-only),
+  `Goes well with your order` (pairings of my lines, not already in the cart, at most 6), `Subtotal` with
+  `Before service charge and tax.`, and a fixed `Place order · RM 42.00` button. A line that the item
+  sheet's own validation would refuse (`validateLine`: left its time slot, switched off, sold out, a variant
+  or add-on gone, a required choice missing, too many choices in a group) is struck through with
+  `Not available now` under it and is left out of the total; its owner can remove it. An empty cart says
+  `Your cart is empty.`; when the table's order goes from another phone the guest is returned to the menu.
+- **Order placed** — shown to the guest who sent: a check mark, `Order placed`, `Table T3 · Bill <no>`,
+  `It is on its way.`, what was sent by guest, and `Add more` / `View orders`.
+- **Orders** — everything the table has ordered, by guest (the counter last, voided items struck through),
+  `Subtotal` and the tax note; the table state is read afresh on entry. Empty: `Nothing ordered yet.`
 
-**Sending** — `Place order · RM 42.00` opens a sheet:
+**Sending** — `Place order · RM 42.00` on the cart page opens a sheet:
 
 - Title `Has everyone ordered?`
 - The table's lines grouped by guest, with the subtotal. Unavailable lines are not listed.
@@ -73,9 +86,10 @@ table's cart.
   saw. The first tap after the cart changed (a change this phone has already read) sends nothing and shows
   that notice; the next tap sends.
 
-**After sending** — every phone at the table empties its cart and shows the existing
-`Order placed — it is on its way. You can add more below.` A phone shows it when `qr_cart_state`'s
-`lastOrder` (the id of the newest QR order from this table) moves. `Ordered so far` groups its lines by guest.
+**After sending** — the sender sees the `Order placed` view. Every phone at the table empties its cart; the
+others show the existing `Order placed — it is on its way. You can add more below.` banner on the menu. A
+phone shows it when `qr_cart_state`'s `lastOrder` (the id of the newest QR order from this table) moves.
+`Orders` groups its lines by guest.
 
 **A guest with nothing in the cart** may still send the table's cart (assumed: the person holding the
 phone is often not the one who ordered).
@@ -224,10 +238,14 @@ first line.
   drops a reply that arrives after a newer one (the page's existing sequence-counter pattern). Exposes
   `status` (`loading | ready | offline`).
 - **`GuestCard.tsx`**, **`SendSheet.tsx`** (new components) — §2.
-- **`QrApp.tsx`** — `lines` state and `linesRef` go; the cart comes from `useTableCart`. The minute menu
+- **`MenuGrid.tsx`**, **`CartPage.tsx`**, **`SentPage.tsx`**, **`OrdersPage.tsx`**, **`qrParts.tsx`** (new
+  components) — the four views of §2; `qrParts` holds the price text, `PickCard`, the page header and the
+  shell. `qrCart.ts` also has `unitsByProduct`, `cartUnits` and `cartPairs`.
+- **`QrApp.tsx`** — state holder and router of the four views (one `popstate` listener, no router library);
+  `lines` state and `linesRef` go; the cart comes from `useTableCart`. The minute menu
   refresh no longer prunes the cart (the server marks lines unavailable); it still closes an open sheet
-  whose product left the menu. `Goes well with` and `Popular here` keep working: "already in the cart"
-  now means anywhere in the table's cart. `qrState.ts` loses `addLine / replaceLine / removeLine /
+  whose product left the menu. `Popular here` and `Goes well with your order` (cart page) keep working:
+  "already in the cart" means anywhere in the table's cart. `qrState.ts` loses `addLine / replaceLine / removeLine /
   leftTheMenu / leftTheMenuNotice / pruneAfterRefresh` and their tests once nothing uses them.
 - **POS table action `Clear QR cart`** (`billActions.ts`, right after Pause / Resume QR; a dine-in table
   only) — asks `Clear QR cart` / `Remove everything guests have added on their phones for Table <label>
