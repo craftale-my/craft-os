@@ -25,6 +25,7 @@ import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderTyp
 import { withPhotos, type PadProductInfo } from './padInfo'
 import { goesWellVisible, mostPickedFor, pairsFor, visiblePopular, type MenuPicks } from './picks'
 import { tileSlotLabel } from './padSlots'
+import { padPastLastOrder } from './orderWindow'
 import type { BillSummary } from './billSummaries'
 import {
   clearBillDiscount, clearItemDiscount, mergeBills, moveBill, openTable, setBillDiscount, setBillPax, setItemDiscount, voidBill, voidItem,
@@ -423,6 +424,8 @@ export default function OrderScreen({
 
   const title = targetTitle(target, bill, tables)
   const tileNotice = !takesNewItems(target) ? (bill ? TAKEAWAY_ONE_ORDER : BILL_GONE) : null
+  // W7 spec §3: past the outlet's last-order time the pad says so (the pad's server-time clock); the POS still orders
+  const pastLast = billing ? padPastLastOrder(billing.settings.ordersOpenAt, billing.settings.lastOrderAt, slots.now) : null
   return (
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
@@ -452,6 +455,7 @@ export default function OrderScreen({
             })}
           </nav>
           <div className="flex min-w-0 flex-1 flex-col">
+            {pastLast && <p role="status" className="mx-2 mt-2 rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">{pastLast}</p>}
             {soldOutMode && <p className="m-2 rounded bg-red-50 p-2 text-sm text-red-700">Tap items to mark them sold out, or back on sale.</p>}
             {error && <p role="alert" className="m-2 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
             {notice && <p role="status" className="m-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{notice}</p>}

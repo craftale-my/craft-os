@@ -56,3 +56,14 @@ describe('W4: the footer QR and "Opens the cash drawer"', () => {
     expect(methodKindPatch(false, 'cash')).toEqual({ kind: 'cash' })
   })
 })
+
+describe('the ordering window in the receipt settings (W7 spec §3)', () => {
+  const ok = { receiptTitle: 'Craft Cafe - Demo', legalName: '', registrationNo: '', sstNo: '', address: '', phone: '', email: '', footer: 'Thanks' }
+  it('both times or neither, not the same time; a window past midnight is fine', () => {
+    expect(receiptDetailsProblem({ ...ok, ordersOpenAt: null, lastOrderAt: null })).toBeNull()
+    expect(receiptDetailsProblem({ ...ok, ordersOpenAt: '09:00', lastOrderAt: '02:00' })).toBeNull()
+    expect(receiptDetailsProblem({ ...ok, ordersOpenAt: '09:00', lastOrderAt: null })).toBe('Set both times or neither.')
+    expect(receiptDetailsProblem({ ...ok, ordersOpenAt: null, lastOrderAt: '21:30' })).toBe('Set both times or neither.')
+    expect(receiptDetailsProblem({ ...ok, ordersOpenAt: '21:30', lastOrderAt: '21:30' })).toBe('Orders open at and Last order at must be different times.')
+  })
+})

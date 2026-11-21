@@ -12,6 +12,7 @@ import { bpToPercentText, methodKindPatch, parsePercentBp, parseReasons, receipt
 import type { PaymentKind } from './tender'
 import type { FontSize } from '../print/doc'
 import ReceiptLogoField from './ReceiptLogoField'
+import { WINDOW_HELP } from '../order/orderWindow'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const KINDS: PaymentKind[] = ['cash', 'card', 'duitnow', 'ewallet', 'other']
@@ -116,6 +117,15 @@ function ReceiptSection({ branchId, routes, run, onError, outcome }: { branchId:
           </select>
         </label>
         <label className="col-span-2 text-sm"><input type="checkbox" checked={d.qrRequiresOpenBill} onChange={(e) => setD({ ...d, qrRequiresOpenBill: e.target.checked })} /> Staff must open a table before customers can order by QR</label>
+        <label className="text-sm">Orders open at
+          <input type="time" className={`${input} ml-2`} value={d.ordersOpenAt ?? ''}
+            onChange={(e) => setD({ ...d, ordersOpenAt: e.target.value || null })} />
+        </label>
+        <label className="text-sm">Last order at
+          <input type="time" className={`${input} ml-2`} value={d.lastOrderAt ?? ''}
+            onChange={(e) => setD({ ...d, lastOrderAt: e.target.value || null })} />
+        </label>
+        <p className="col-span-2 text-xs text-brown-muted">{WINDOW_HELP}</p>
       </div>
       <OutcomeBanner outcome={outcome} />
       <button onClick={() => void save()} className="mt-3 rounded bg-brown-btn px-3 py-2 text-sm text-white">Save receipt settings</button>

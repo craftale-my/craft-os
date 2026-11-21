@@ -12,6 +12,7 @@ import type { SplitItem } from '../order/splitSelection'
 import { parsePartQuote, parsePartResult, type PartQuote, type PartResult } from './partSplit'
 import type { FontSize } from '../print/doc'
 import type { ReceiptLogo } from '../print/logo'
+import { hhmm } from '../order/orderWindow'
 
 const CHECKOUT_TIMEOUT_MS = 10_000
 const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
@@ -35,10 +36,12 @@ export interface PosSettings {
   footerQr: string
   fontSize: FontSize
   hideFreeMods: boolean
+  ordersOpenAt: string | null       // W7: "HH:MM" Malaysia time; both null = QR orders at any time
+  lastOrderAt: string | null
 }
 export const DEFAULT_POS_SETTINGS: PosSettings = {
   sstRegistered: true, cashRounding: 'nearest_5_sen', receiptRoute: null, receiptFooter: DEFAULT_FOOTER, qrRequiresOpenBill: false,
-  receiptLogo: null, footerQr: '', fontSize: 'normal', hideFreeMods: false,
+  receiptLogo: null, footerQr: '', fontSize: 'normal', hideFreeMods: false, ordersOpenAt: null, lastOrderAt: null,
 }
 
 export interface PaymentMethodRow {
@@ -88,6 +91,8 @@ export interface ReceiptDetails {
   footerQr: string                  // W4: '' = no QR code
   fontSize: FontSize                // W4
   hideFreeMods: boolean             // W4
+  ordersOpenAt: string | null       // W7: "HH:MM"; null with lastOrderAt = no limit
+  lastOrderAt: string | null        // W7
 }
 
 export interface BillingConfig { settings: PosSettings; rules: ServiceChargeRuleInput[] }
@@ -111,17 +116,19 @@ export type { CheckoutResult }
 interface SettingsRow {
   sst_registered: boolean; cash_rounding: CashRounding; receipt_route: string | null; receipt_footer: string; qr_requires_open_bill: boolean
   receipt_logo: ReceiptLogo | null; receipt_footer_qr: string | null; receipt_font_size: FontSize; receipt_hide_free_mods: boolean
+  orders_open_at: string | null; last_order_at: string | null   // W7: Postgres times, "09:00:00"
 }
 const toSettings = (r: SettingsRow | null): PosSettings => (r ? {
   sstRegistered: r.sst_registered, cashRounding: r.cash_rounding, receiptRoute: r.receipt_route,
   receiptFooter: r.receipt_footer, qrRequiresOpenBill: r.qr_requires_open_bill,
   receiptLogo: r.receipt_logo, footerQr: r.receipt_footer_qr ?? '', fontSize: r.receipt_font_size ?? 'normal',
   hideFreeMods: r.receipt_hide_free_mods ?? false,
+  ordersOpenAt: hhmm(r.orders_open_at), lastOrderAt: hhmm(r.last_order_at),
 } : DEFAULT_POS_SETTINGS)
 
 export async function fetchPosSettings(branchId: string): Promise<PosSettings> {
   const { data, error } = await supabase.from('branch_pos_settings')
-    .select('sst_registered, cash_rounding, receipt_route, receipt_footer, qr_requires_open_bill, receipt_logo, receipt_footer_qr, receipt_font_size, receipt_hide_free_mods')
+    .select('sst_registered, cash_rounding, receipt_route, receipt_footer, qr_requires_open_bill, receipt_logo, receipt_footer_qr, receipt_font_size, receipt_hide_free_mods, orders_open_at, last_order_at')
     .eq('branch_id', branchId).maybeSingle()
   if (error) fail(error)
   return toSettings(data as SettingsRow | null)
@@ -178,6 +185,7 @@ export async function fetchReceiptDetails(branchId: string): Promise<ReceiptDeta
     footer: s.receiptFooter, receiptRoute: s.receiptRoute, sstRegistered: s.sstRegistered,
     cashRounding: s.cashRounding, qrRequiresOpenBill: s.qrRequiresOpenBill,
     receiptLogo: s.receiptLogo, footerQr: s.footerQr, fontSize: s.fontSize, hideFreeMods: s.hideFreeMods,
+    ordersOpenAt: s.ordersOpenAt, lastOrderAt: s.lastOrderAt,
   }
 }
 
