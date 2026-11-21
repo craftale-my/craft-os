@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { PosMenu } from '../features/pos/order/cart'
 import { groupCart, type CartLine } from './qrCart'
 import CartPage from './CartPage'
@@ -27,34 +27,55 @@ type Props = Parameters<typeof CartPage>[0]
 const make = (lines: CartLine[], over: Partial<Props> = {}): Props => {
   const { mine, others } = groupCart(lines, 'me')
   return {
-    menu, mine, others, pairs: [], subtotalSen: 1100, sendable: true, status: 'ready', error: null,
-    onBack: () => {}, onEdit: () => {}, onRemove: () => {}, onOpenProduct: () => {}, onPlace: () => {}, ...over,
+    menu, me: { name: 'Eric', avatar: 'a1' }, mine, others, pairs: [], subtotalSen: 1100, sendable: true, status: 'ready', error: null,
+    onBack: () => {}, onEdit: () => {}, onRemove: () => {}, onQty: async () => {}, onOpenProduct: () => {}, onPlace: () => {}, ...over,
   }
 }
 const mineLine = L('1', 'me', { qty: 2, optionIds: ['oat'], note: 'less ice' })
 const meiLine = L('2', 'mei')
 
 describe('CartPage', () => {
-  it('shows my items with Edit and Remove, and the others read-only', () => {
+  it('shows my items with a quantity select, Edit and a bin, and the others read-only', () => {
     render(<CartPage {...make([mineLine, meiLine])} />)
     expect(screen.getByRole('heading', { name: 'Cart' })).toBeTruthy()
     const mineSec = screen.getByRole('region', { name: 'Your items' })
-    expect(mineSec.textContent).toContain('2 × Latte')
+    expect(within(mineSec).getByText('Eric')).toBeTruthy()
+    const qty = within(mineSec).getByRole('combobox', { name: 'Quantity of Latte' }) as HTMLSelectElement
+    expect(qty.value).toBe('2')
+    expect(qty.options.length).toBe(20)
+    expect(within(mineSec).getByText('Latte').className).toContain('font-semibold')
     expect(mineSec.textContent).toContain('Oat')
     expect(mineSec.textContent).toContain('less ice')
-    expect(within(mineSec).getByRole('button', { name: /Edit/ })).toBeTruthy()
-    expect(within(mineSec).getByRole('button', { name: /Remove/ })).toBeTruthy()
+    expect(mineSec.textContent).toContain('RM 22.00')
+    expect(within(mineSec).getByRole('button', { name: 'Edit Latte' })).toBeTruthy()
+    expect(within(mineSec).getByRole('button', { name: 'Remove Latte' })).toBeTruthy()
     const others = screen.getByRole('region', { name: 'Others at this table' })
     expect(others.textContent).toContain('Mei')
-    expect(others.textContent).toContain('1 × Latte')
+    expect(others.textContent).toContain('Latte')
+    expect(within(others).getByTestId('qty-box').textContent).toBe('1')
     expect(within(others).queryByRole('button')).toBeNull()
+    expect(within(others).queryByRole('combobox')).toBeNull()
+  })
+  it('the quantity select changes the quantity directly, showing the new value while it is written', async () => {
+    let finish: () => void = () => {}
+    const onQty = vi.fn(() => new Promise<void>((r) => { finish = r }))
+    render(<CartPage {...make([mineLine], { onQty })} />)
+    const qty = screen.getByRole('combobox', { name: 'Quantity of Latte' }) as HTMLSelectElement
+    fireEvent.change(qty, { target: { value: '5' } })
+    expect(onQty).toHaveBeenCalledWith('1', 5)
+    expect(qty.value).toBe('5')
+    expect(qty.disabled).toBe(true)
+    await act(async () => { finish() })
+    // the write failed or the cart has not moved: the server's value shows again
+    expect(qty.value).toBe('2')
+    expect(qty.disabled).toBe(false)
   })
   it('Edit and Remove call back with the right line', () => {
     const onEdit = vi.fn(), onRemove = vi.fn()
     const second = L('3', 'me', { productId: 'tea', variantId: 'v' })
     render(<CartPage {...make([mineLine, second])} onEdit={onEdit} onRemove={onRemove} />)
     const rows = screen.getAllByRole('listitem')
-    fireEvent.click(within(rows[1]).getByRole('button', { name: /Edit/ }))
+    fireEvent.click(within(rows[1]).getByRole('button', { name: 'Edit Tea' }))
     expect(onEdit).toHaveBeenCalledWith(tea, '3')
     fireEvent.click(within(rows[0]).getByRole('button', { name: /Remove/ }))
     expect(onRemove).toHaveBeenCalledWith('1')
@@ -80,11 +101,11 @@ describe('CartPage', () => {
     render(<CartPage {...make([mineLine])} />)
     expect(screen.queryByText('Goes well with your order')).toBeNull()
   })
-  it('shows the subtotal and the tax note, and Place order with the total', () => {
+  it('shows the subtotal and the tax note, and Place order without an amount', () => {
     render(<CartPage {...make([mineLine])} />)
     expect(screen.getByText('Subtotal').parentElement?.textContent).toContain('RM 11.00')
     expect(screen.getByText('Before service charge and tax.')).toBeTruthy()
-    const place = screen.getByRole('button', { name: 'Place order · RM 11.00' }) as HTMLButtonElement
+    const place = screen.getByRole('button', { name: 'Place order' }) as HTMLButtonElement
     expect(place.disabled).toBe(false)
   })
   it('Place order calls back; it is off when nothing is sendable or the cart is not ready', () => {

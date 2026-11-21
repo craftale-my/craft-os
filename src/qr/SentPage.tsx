@@ -1,8 +1,10 @@
-import { findProduct, formatSen, lineLabel, linePriceSen, type PosMenu } from '../features/pos/order/cart'
+import { Check, ConciergeBell, ReceiptText } from 'lucide-react'
+import { findProduct, lineLabel, linePriceSen, type PosMenu } from '../features/pos/order/cart'
 import type { GuestGroup } from './qrCart'
-import { avatarEmoji } from './qrGuest'
+import { GuestLine, ItemLine, PageHeader } from './qrParts'
 
-/** Shown to the guest who sent the table's order: what was sent (the groups the send sheet showed). */
+/** Order details (reference frames 13, 14), shown to the guest who sent the table's order: what was sent
+ *  (the groups the send sheet showed). */
 export default function SentPage({ menu, groups, tableLabel, billNo, onAddMore, onViewOrders }: {
   menu: PosMenu
   groups: GuestGroup[]
@@ -12,37 +14,52 @@ export default function SentPage({ menu, groups, tableLabel, billNo, onAddMore, 
   onViewOrders: () => void
 }) {
   return (
-    <div className="px-4 pb-8 pt-6 text-sm">
-      <div className="text-center">
-        <div aria-hidden="true" className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-green-100 text-3xl text-green-700">✓</div>
-        <h1 className="mt-3 text-xl font-semibold text-brown-dark">Order placed</h1>
-        <p className="text-brown-muted">Table {tableLabel}{billNo ? ` · Bill ${billNo}` : ''}</p>
-        <p className="mt-1">It is on its way.</p>
+    <div className="pb-28">
+      <PageHeader title="Order details" onClose={onAddMore} />
+      <div className="px-4 pb-6 pt-8 text-center">
+        <div aria-hidden="true" className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-brown-btn text-white">
+          <Check size={34} strokeWidth={3} />
+        </div>
+        <h2 className="mt-4 text-[24px] font-bold text-brown-dark">Order sent</h2>
       </div>
-      <div className="mt-5 rounded-xl border border-border bg-card p-3">
+      <div className="h-1 bg-brown-btn" />
+      <div data-testid="sent-columns" className={`grid py-6 text-center ${billNo ? 'grid-cols-2' : 'grid-cols-1'}`}>
+        <div>
+          <div className="text-[17px] font-semibold text-brown-dark">Table</div>
+          <div className="mt-2 flex items-center justify-center gap-2 text-[26px] text-brown-dark">
+            <ConciergeBell size={22} aria-hidden="true" /><span>{tableLabel}</span>
+          </div>
+        </div>
+        {billNo && (
+          <div>
+            <div className="text-[17px] font-semibold text-brown-dark">Bill no.</div>
+            <div className="mt-2 flex items-center justify-center gap-2 text-[26px] text-brown-dark">
+              <ReceiptText size={22} aria-hidden="true" /><span>{billNo}</span>
+            </div>
+          </div>
+        )}
+      </div>
+      <section aria-labelledby="sent-items" className="border-t-8 border-brown-track px-4 pt-4">
+        <h2 id="sent-items" className="text-[19px] font-bold text-brown-dark">Items</h2>
         {groups.map((g) => (
-          <section key={g.guestId} className="mb-2 last:mb-0">
-            <h2 className="text-xs font-semibold text-brown-muted">{avatarEmoji(g.avatar)} {g.label}</h2>
+          <div key={g.guestId}>
+            <GuestLine avatar={g.avatar} label={g.label} />
             {g.lines.map((l) => {
               const p = findProduct(menu, l.productId)
               if (!p) return null
               const { name, mods } = lineLabel(p, l)
-              return (
-                <div key={l.id} className="flex justify-between gap-2 py-1">
-                  <div>
-                    <div>{l.qty} × {name}</div>
-                    {mods.length > 0 && <div className="text-xs text-brown-muted">{mods.join(', ')}</div>}
-                  </div>
-                  <div className="shrink-0">{formatSen((linePriceSen(p, l) ?? 0) * l.qty)}</div>
-                </div>
-              )
+              return <ItemLine key={l.id} qty={l.qty} name={name} mods={mods} note={l.note} priceSen={(linePriceSen(p, l) ?? 0) * l.qty} />
             })}
-          </section>
+          </div>
         ))}
-      </div>
-      <div className="mt-5 flex gap-2">
-        <button type="button" onClick={onAddMore} className="min-h-12 flex-1 rounded-xl border border-border bg-card py-3">Add more</button>
-        <button type="button" onClick={onViewOrders} className="min-h-12 flex-1 rounded-xl bg-brown-btn py-3 text-white">View orders</button>
+      </section>
+      <div className="fixed inset-x-0 bottom-0 z-10 mx-auto flex max-w-lg gap-3 bg-cream px-4 pb-4 pt-3">
+        <button type="button" onClick={onAddMore}
+          className="min-h-14 flex-1 rounded-xl border-2 border-brown-btn text-[17px] font-semibold text-brown-btn">Add more</button>
+        <button type="button" onClick={onViewOrders}
+          className="flex min-h-14 flex-1 items-center justify-center gap-2 rounded-xl bg-brown-btn text-[17px] font-semibold text-white">
+          <ReceiptText size={20} aria-hidden="true" />Orders
+        </button>
       </div>
     </div>
   )

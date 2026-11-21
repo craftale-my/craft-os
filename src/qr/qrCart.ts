@@ -1,7 +1,7 @@
 // src/qr/qrCart.ts
 /** The table's shared cart, as the QR page reads it (spec 2026-11-22-qr-shared-table-cart-design.md).
  *  Pure: the server holds the lines; this groups them, judges them against the menu and words the toast. */
-import { findProduct, linePriceSen, validateLine, type OrderLine, type PosMenu, type PosProduct } from '../features/pos/order/cart'
+import { defaultLine, findProduct, linePriceSen, validateLine, type OrderLine, type PosMenu, type PosProduct } from '../features/pos/order/cart'
 import { looksOffline } from '../features/pos/checkout/rpcResult'
 import { pairsFor, type MenuPicks } from '../features/pos/order/picks'
 import { avatarEmoji } from './qrGuest'
@@ -115,6 +115,22 @@ export function cartPairs(menu: PosMenu, picks: MenuPicks | null, mine: CartLine
     for (const p of pairsFor(menu, picks, l.productId, all)) if (!out.some((x) => x.id === p.id)) out.push(p)
   }
   return out.slice(0, CART_PAIRS)
+}
+
+/** The item page's "Goes well with": the product's pairs that can be added as they are (no choice to make,
+ *  not sold out — validateLine of the default line passes), not the product itself, nothing already in the
+ *  table's cart; at most ITEM_PAIRS, in the server's order. */
+export const ITEM_PAIRS = 6
+export function itemPairs(menu: PosMenu, picks: MenuPicks | null, productId: string, cart: readonly OrderLine[]): PosProduct[] {
+  if (!picks) return []
+  const inCart = new Set(cart.map((l) => l.productId))
+  const out: PosProduct[] = []
+  for (const id of picks.pairs[productId] ?? []) {
+    if (id === productId || inCart.has(id) || out.some((x) => x.id === id)) continue
+    const p = findProduct(menu, id)
+    if (p && p.variants.length > 0 && validateLine(p, defaultLine(p)) === null) out.push(p)
+  }
+  return out.slice(0, ITEM_PAIRS)
 }
 
 /** What to tell this guest about lines the others added since the last read; null = nothing. */

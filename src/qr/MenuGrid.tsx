@@ -1,9 +1,9 @@
 import type { PosProduct } from '../features/pos/order/cart'
 import PickPill from '../features/pos/order/PickPill'
-import { priceText } from './qrParts'
+import { priceText, productLabel, QtyBadge } from './qrParts'
 
-/** The menu as a grid of square tiles. A tile opens the item sheet; the badge counts the units of that
- *  product in the whole table's cart. */
+/** The menu as a grid of two columns: a soft square photo with the name and price under it, no card box.
+ *  A tile opens the item page; the badge counts the units of that product in the whole table's cart. */
 export default function MenuGrid({ products, popularIds, units, onOpen }: {
   products: PosProduct[]
   popularIds: ReadonlySet<string>
@@ -12,33 +12,22 @@ export default function MenuGrid({ products, popularIds, units, onOpen }: {
   onOpen: (product: PosProduct) => void
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3 px-3 pb-24 sm:grid-cols-3">
+    <div className="grid grid-cols-2 gap-x-3 gap-y-5 px-4 pb-1 pt-1 sm:grid-cols-3">
       {products.filter((p) => p.variants.length > 0).map((p) => {
         const n = units.get(p.id) ?? 0
-        const price = priceText(p)
         const popular = popularIds.has(p.id)
-        const label = p.soldOut ? `${p.name}, ${price}, sold out`
-          : `${p.name}, ${price}${popular ? ', Popular' : ''}${n > 0 ? `, ${n} in the cart` : ''}`
         return (
-          <button key={p.id} type="button" disabled={p.soldOut} aria-label={label} onClick={() => onOpen(p)}
-            className="flex flex-col overflow-hidden rounded-xl border border-border bg-card text-left disabled:opacity-50">
-            <div className="relative">
+          <button key={p.id} type="button" disabled={p.soldOut} aria-label={productLabel(p, popular, n)} onClick={() => onOpen(p)}
+            className="flex flex-col text-left disabled:opacity-50">
+            <div className="relative w-full">
               {p.imageUrl
-                ? <img src={p.imageUrl} alt="" loading="lazy" className="aspect-square w-full object-cover" />
-                : <div className="aspect-square w-full bg-border" />}
-              {n > 0 && (
-                <span data-testid="qty-badge" aria-hidden="true"
-                  className="absolute right-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-brown-btn px-1.5 text-sm font-semibold text-white">{n}</span>
-              )}
-              {p.soldOut && (
-                <span className="absolute inset-x-0 bottom-0 bg-black/60 py-1 text-center text-xs font-semibold text-white">Sold out</span>
-              )}
+                ? <img src={p.imageUrl} alt="" loading="lazy" className="aspect-square w-full rounded-xl object-cover" />
+                : <div className="aspect-square w-full rounded-xl bg-border" />}
+              {n > 0 && <QtyBadge n={n} className="absolute right-2 top-2" />}
             </div>
-            <div className="p-2">
-              {popular && <div className="-ml-1.5 mb-1"><PickPill text="Popular" /></div>}
-              <div data-testid="tile-name" className="line-clamp-2 text-sm font-medium">{p.name}</div>
-              <div className="mt-0.5 text-xs text-brown-muted">{price}</div>
-            </div>
+            {popular && <div className="-ml-1.5 mt-1.5"><PickPill text="Popular" /></div>}
+            <div data-testid="tile-name" className="mt-1.5 line-clamp-2 text-[15px] font-semibold leading-snug text-brown-dark">{p.name}</div>
+            <div className="mt-0.5 text-[15px] text-brown-dark">{p.soldOut ? `Sold out · ${priceText(p)}` : priceText(p)}</div>
           </button>
         )
       })}

@@ -1,34 +1,98 @@
 import type { ReactNode } from 'react'
+import { ChevronLeft, X } from 'lucide-react'
 import { formatSen, type PosProduct } from '../features/pos/order/cart'
+import { avatarEmoji } from './qrGuest'
 
 /** "RM 9.00", or "from RM 9.00" when the product has several sizes. */
 export const priceText = (p: PosProduct) =>
   p.variants.length > 1 ? `from ${formatSen(Math.min(...p.variants.map((v) => v.priceSen)))}` : formatSen(p.variants[0].priceSen)
 
-/** A card of Popular here and Goes well with: photo, name, price; a tap opens the item sheet. */
+/** What a menu row / tile says to a screen reader: name, price, Popular, units in the table's cart. */
+export const productLabel = (p: PosProduct, popular: boolean, units: number) => {
+  const price = priceText(p)
+  return p.soldOut ? `${p.name}, ${price}, sold out`
+    : `${p.name}, ${price}${popular ? ', Popular' : ''}${units > 0 ? `, ${units} in the cart` : ''}`
+}
+
+/** The round count of a product's units in the table's cart, on a menu row or tile. */
+export function QtyBadge({ n, className = '' }: { n: number; className?: string }) {
+  return (
+    <span data-testid="qty-badge" aria-hidden="true"
+      className={`flex h-7 min-w-7 items-center justify-center rounded-full bg-brown-btn px-1.5 text-sm font-semibold text-white ring-2 ring-cream ${className}`}>{n}</span>
+  )
+}
+
+/** A card of Goes well with your order: square photo, name, price; a tap opens the item page. */
 export function PickCard({ product, onOpen }: { product: PosProduct; onOpen: () => void }) {
   return (
-    <button type="button" onClick={onOpen}
-      className="flex w-28 shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card text-left">
+    <button type="button" onClick={onOpen} className="flex w-36 shrink-0 flex-col text-left">
       {product.imageUrl
-        ? <img src={product.imageUrl} alt="" loading="lazy" className="h-20 w-full object-cover" />
-        : <div className="h-20 w-full bg-border" />}
-      <div className="p-2">
-        <div className="line-clamp-2 text-xs font-medium">{product.name}</div>
-        <div className="mt-0.5 text-xs text-brown-muted">{priceText(product)}</div>
-      </div>
+        ? <img src={product.imageUrl} alt="" loading="lazy" className="aspect-square w-full rounded-xl object-cover" />
+        : <div className="aspect-square w-full rounded-xl bg-brown-track" />}
+      <div className="mt-1.5 line-clamp-2 text-[15px] font-semibold leading-snug text-brown-dark">{product.name}</div>
+      <div className="mt-0.5 text-[15px] text-brown-dark">{priceText(product)}</div>
     </button>
   )
 }
 
-/** The sub-header of the cart / sent / orders views: a back button and the title. */
-export function PageHeader({ title, onBack }: { title: string; onBack: () => void }) {
+/** The title row of the cart / sent / orders / item views: a back chevron on the left or a close ✕ on the
+ *  right, the title centred, a hairline under it. */
+export function PageHeader({ title, onBack, backLabel = 'Back to menu', onClose }: {
+  title: string
+  onBack?: () => void
+  backLabel?: string
+  onClose?: () => void
+}) {
   return (
-    <div className="flex items-center gap-1 px-2 py-2">
-      <button type="button" aria-label="Back to menu" onClick={onBack} className="h-11 w-11 shrink-0 text-xl">←</button>
-      <h1 className="text-lg font-semibold text-brown-dark">{title}</h1>
+    <div className="sticky top-0 z-10 grid h-14 grid-cols-[3rem_1fr_3rem] items-center border-b border-border bg-cream px-1">
+      {onBack
+        ? <button type="button" aria-label={backLabel} onClick={onBack} className="flex h-11 w-11 items-center justify-center text-brown-dark"><ChevronLeft size={28} strokeWidth={2} /></button>
+        : <span />}
+      <h1 className="text-center text-lg font-semibold text-brown-dark">{title}</h1>
+      {onClose
+        ? <button type="button" aria-label="Close" onClick={onClose} className="flex h-11 w-11 items-center justify-center justify-self-end text-brown-dark"><X size={24} strokeWidth={2} /></button>
+        : <span />}
     </div>
   )
+}
+
+/** A guest's line above their items: the avatar in a round chip and the name. */
+export function GuestLine({ avatar, label }: { avatar: string | null; label: string }) {
+  return (
+    <div className="flex items-center gap-2.5 py-2">
+      <span aria-hidden="true" className="flex h-9 w-9 items-center justify-center rounded-full bg-brown-track text-lg">{avatarEmoji(avatar) || '🙂'}</span>
+      <span className="text-[15px] font-medium text-brown-muted">{label}</span>
+    </div>
+  )
+}
+
+/** The quantity in a small outlined box (the cart's read-only lines, order details, orders). */
+export function QtyBox({ qty, className = '' }: { qty: number; className?: string }) {
+  return (
+    <span className={`flex h-10 w-12 shrink-0 items-center justify-center rounded-lg border border-border-mid text-base text-brown-dark ${className}`}>{qty}</span>
+  )
+}
+
+/** One sent item (order details, orders): the quantity box, name with its add-ons under it, the price. */
+export function ItemLine({ qty, name, mods, note, priceSen, voided = false }: {
+  qty: number; name: string; mods: string[]; note?: string | null; priceSen: number; voided?: boolean
+}) {
+  return (
+    <div data-testid="item-line" className={`flex items-start gap-3 border-b border-border py-3 last:border-0 ${voided ? 'line-through opacity-50' : ''}`}>
+      <QtyBox qty={qty} />
+      <div className="min-w-0 flex-1 pt-2">
+        <div className="text-[15px] font-semibold leading-snug text-brown-dark">{name}</div>
+        {mods.length > 0 && <div className="mt-0.5 text-sm text-brown-muted">{mods.join(', ')}</div>}
+        {note && <div className="mt-0.5 text-sm text-brown-muted">Remark: {note}</div>}
+      </div>
+      <div className="shrink-0 pt-2 text-[15px] text-brown-dark">{formatSen(priceSen)}</div>
+    </div>
+  )
+}
+
+/** A screen before the menu (loading, a bad or paused table code): one sentence under the brown header. */
+export function Notice({ title, muted = false, children }: { title?: string; muted?: boolean; children: ReactNode }) {
+  return <Shell title={title}><p className={`p-6 text-center ${muted ? 'text-brown-muted' : ''}`}>{children}</p></Shell>
 }
 
 export function Shell({ title, right, children }: { title?: string; right?: ReactNode; children: ReactNode }) {

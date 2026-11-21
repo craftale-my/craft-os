@@ -3,7 +3,7 @@ import type { PosMenu } from '../features/pos/order/cart'
 import type { MenuPicks } from '../features/pos/order/picks'
 import {
   additionsToast, cartChannel, cartPairs, cartTotalSen, cartUnits, unitsByProduct, groupCart, groupOrdered, isNetworkError, lineAvailable, orderWasSent, parseCart,
-  sendGroups, sentKey, skipIds, type CartLine, type CartState, type OrderedItem,
+  itemPairs, sendGroups, sentKey, skipIds, type CartLine, type CartState, type OrderedItem,
 } from './qrCart'
 
 const menu: PosMenu = { categories: [{ name: 'Drinks', products: [
@@ -221,5 +221,33 @@ describe('cartPairs', () => {
     expect(cartPairs(big, null, mine, mine)).toEqual([])
     expect(cartPairs(big, picks({ a: ['c'] }), [], [])).toEqual([])
     expect(cartPairs(big, picks({}), mine, mine)).toEqual([])
+  })
+})
+
+describe('itemPairs (the item page\'s Goes well with)', () => {
+  const mk = (id: string, over: Record<string, unknown> = {}) => ({ id, name: id, description: null, soldOut: false,
+    variants: [{ id: 'v', name: 'V', priceSen: 100, isBase: true }], groups: [], ...over })
+  const needsChoice = { groups: [{ id: 'g', name: 'G', min: 1, max: 1, options: [
+    { id: 'o', name: 'O', priceDeltaSen: 0, isDefault: false, available: true }] }] }
+  const big: PosMenu = { categories: [{ name: 'All', products: [
+    mk('a'), mk('b'), mk('c'), mk('d'), mk('e'), mk('f'), mk('g'), mk('h'),
+    mk('sold', { soldOut: true }), mk('choice', needsChoice),
+  ] }] }
+  const picks = (pairs: Record<string, string[]>): MenuPicks => ({ popular: [], pairs, mostPicked: {}, fromSales: true })
+  const ids = (xs: { id: string }[]) => xs.map((x) => x.id)
+
+  it('lists the product\'s pairs that can be added without a choice, in the server\'s order', () => {
+    expect(ids(itemPairs(big, picks({ a: ['choice', 'c', 'sold', 'b', 'gone'] }), 'a', []))).toEqual(['c', 'b'])
+  })
+  it('leaves out the product itself and anything already in the table\'s cart', () => {
+    const inCart = [line('1', MEI, { productId: 'c', variantId: 'v' })]
+    expect(ids(itemPairs(big, picks({ a: ['a', 'c', 'd'] }), 'a', inCart))).toEqual(['d'])
+  })
+  it('keeps at most 6', () => {
+    expect(itemPairs(big, picks({ a: ['b', 'c', 'd', 'e', 'f', 'g', 'h'] }), 'a', []).length).toBe(6)
+  })
+  it('is empty without picks or pairs', () => {
+    expect(itemPairs(big, null, 'a', [])).toEqual([])
+    expect(itemPairs(big, picks({}), 'a', [])).toEqual([])
   })
 })

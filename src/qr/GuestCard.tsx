@@ -38,3 +38,14 @@ export default function GuestCard({ initial, onDone, onCancel }: {
     </div>
   )
 }
+
+/** The card over the page, reopened from the guest chip to change the name or avatar. */
+export function GuestModal({ guest, onDone, onCancel }: { guest: Guest; onDone: (name: string, avatar: string) => void; onCancel: () => void }) {
+  return (
+    <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/40 sm:items-center" onClick={onCancel}>
+      <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+        <GuestCard initial={guest} onDone={onDone} onCancel={onCancel} />
+      </div>
+    </div>
+  )
+}
