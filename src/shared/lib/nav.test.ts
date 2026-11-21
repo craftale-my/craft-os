@@ -165,7 +165,7 @@ describe('Inventory module', () => {
   it('shows managers (both capabilities) every procurement page', () => {
     expect(childIds(visibleNav(canWith('manage_procurement', 'use_procurement')))).toEqual([
       'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-inventory', 'proc-recipes',
-      'proc-items', 'proc-suppliers',
+      'proc-menu-costing', 'proc-items', 'proc-suppliers',
     ])
   })
 
@@ -178,6 +178,7 @@ describe('Inventory module', () => {
     expect(activeEntry(full, '/procurement/wastage')).toEqual({ leafId: 'proc-wastage', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/transfers/po-1/ship')).toEqual({ leafId: 'proc-transfers', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/recipes/item-1/produce')).toEqual({ leafId: 'proc-recipes', groupId: 'inventory' })
+    expect(activeEntry(full, '/procurement/menu-costing/v-1')).toEqual({ leafId: 'proc-menu-costing', groupId: 'inventory' })
   })
 })
 

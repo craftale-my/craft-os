@@ -48,6 +48,8 @@ import RecipesPage from './features/procurement/Recipes'
 import RecipeNewPage from './features/procurement/RecipeNew'
 import RecipeDetailPage from './features/procurement/RecipeDetail'
 import ProducePage from './features/procurement/Produce'
+import MenuCostingPage from './features/procurement/MenuCosting'
+import MenuRecipeEditorPage from './features/procurement/MenuRecipeEditor'
 import InventoryPage from './features/procurement/Inventory'
 import InventoryDetailPage from './features/procurement/InventoryDetail'
 
@@ -439,6 +441,23 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><RecipesPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/menu-costing"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><MenuCostingPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/procurement/menu-costing/:variantId"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><MenuRecipeEditorPage /></AppLayout>
           </ProtectedRoute>
         }
       />
