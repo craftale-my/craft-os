@@ -230,6 +230,13 @@ begin
   if not exists (select 1 from branches where id = p_branch_id and is_active) then
     raise exception 'Branch not found';
   end if;
+  -- An empty count could never be submitted (nothing to count), so refuse it up front.
+  if p_kind = 'weekly' and not exists (select 1 from items where status = 'active' and count_weekly) then
+    raise exception 'No key items yet. A manager marks key items under Locations & key items.';
+  end if;
+  if p_kind = 'full' and not exists (select 1 from items where status = 'active') then
+    raise exception 'There are no active items to count.';
+  end if;
   select id into v_open from stock_counts where branch_id = p_branch_id and status = 'in_progress';
   if found then
     raise exception 'A count is already in progress at this branch (%)', v_open;
@@ -254,6 +261,7 @@ set search_path = public, pg_temp
 as $$
 declare
   v_count stock_counts%rowtype;
+  v_loc_active boolean;
 begin
   if not has_procurement_cap('use_procurement') then
     raise exception 'Not authorised to count stock';
@@ -272,9 +280,16 @@ begin
   if not exists (select 1 from items where id = p_item_id) then
     raise exception 'Item not found';
   end if;
-  if p_location_id is not null and not exists (
-       select 1 from storage_locations where id = p_location_id and branch_id = v_count.branch_id) then
-    raise exception 'Location not found at this branch';
+  if p_location_id is not null then
+    select is_active into v_loc_active
+      from storage_locations where id = p_location_id and branch_id = v_count.branch_id;
+    if not found then
+      raise exception 'Location not found at this branch';
+    end if;
+    -- A removed location takes no new numbers; clearing an old entry there (null) is still allowed.
+    if not v_loc_active and p_counted_base is not null then
+      raise exception 'This location has been removed. Clear this entry and count the item at its current location.';
+    end if;
   end if;
 
   if p_counted_base is null then
@@ -288,7 +303,7 @@ begin
   end if;
 
   insert into stock_count_entries (count_id, item_id, location_id, counted_base, counted_by, counted_at)
-  values (p_count_id, p_item_id, p_location_id, p_counted_base, auth.uid(), now())
+  values (p_count_id, p_item_id, p_location_id, round(p_counted_base, 3), auth.uid(), now())
   on conflict (count_id, item_id, coalesce(location_id, '00000000-0000-0000-0000-000000000000'::uuid))
   do update set counted_base = excluded.counted_base,
                 counted_by   = excluded.counted_by,
@@ -379,8 +394,10 @@ begin
       from inventory_transactions
      where item_id = r.item_id and branch_id = v_count.branch_id;
     v_variance := r.counted - v_expected;
-    v_cost := coalesce(inventory_avg_unit_cost(r.item_id, v_count.branch_id, null), 0);
-    v_value := round(v_variance * v_cost, 2);
+    -- NULL when no cost is known anywhere: the ledger row keeps unit_cost NULL
+    -- (the stamp trigger's helper also returns NULL) and the line is worth RM 0.
+    v_cost := inventory_avg_unit_cost(r.item_id, v_count.branch_id, null);
+    v_value := coalesce(round(v_variance * v_cost, 2), 0);
     v_tx := null;
     if v_variance <> 0 then
       insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost,
