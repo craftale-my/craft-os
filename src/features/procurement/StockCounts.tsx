@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../shared/lib/supabase'
 import { useCan } from '../../shared/lib/permissions'
@@ -26,9 +26,16 @@ export default function StockCountsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [starting, setStarting] = useState<StockCountKind | null>(null)
+  const loadSeq = useRef(0)
 
   const load = useCallback(async () => {
-    if (!branchId) return
+    const seq = ++loadSeq.current
+    setCounts([])
+    setError('')
+    if (!branchId) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     const { data, error: err } = await supabase
       .from('stock_counts')
@@ -37,6 +44,7 @@ export default function StockCountsPage() {
       .neq('status', 'cancelled')
       .order('started_at', { ascending: false })
       .limit(30)
+    if (seq !== loadSeq.current) return
     if (err) setError(err.message)
     setCounts((data as CountRow[]) ?? [])
     setLoading(false)
