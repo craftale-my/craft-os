@@ -15,5 +15,7 @@ describe('call numbers on screen (W4 spec §2)', () => {
     expect(callNoMatches('TA012', 'P12')).toBe(false)
     expect(callNoMatches('TA012', '  ')).toBe(false)
     expect(callNoMatches(null, '12')).toBe(false)
+    expect(callNoMatches('TA112', '12')).toBe(false)
+    expect(callNoMatches('TA120', '12')).toBe(false)
   })
 })

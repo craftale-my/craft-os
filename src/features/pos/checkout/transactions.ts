@@ -23,12 +23,21 @@ export function txKind(b: Pick<ClosedBillRow, 'status' | 'refunded_sen'>): Exclu
   return b.status === 'paid' ? (b.refunded_sen > 0 ? 'refunded' : 'paid') : b.status
 }
 
-/** The filter, then the search on the bill number, the table / Takeaway (any case) or the call number
- *  ("TA12", "ta012" and "12" find TA012). */
+/** The filter, then the search. One to three digits ("12", "003") match by value only: the call number (TA012) or
+ *  the bill's serial after the last "-" (PJ-261122-003), or a table labelled exactly that, never the date inside
+ *  the bill number. Anything else: the bill number or the table / Takeaway (any case), or the call number
+ *  ("TA12", "ta012" find TA012). */
 export function filterTransactions<T extends TxBill>(bills: T[], filter: TxFilter, search: string): T[] {
   const q = search.trim().toLowerCase()
-  return bills.filter((b) => (filter === 'all' || txKind(b) === filter)
-    && (!q || b.bill_no.toLowerCase().includes(q) || txWhere(b).toLowerCase().includes(q) || callNoMatches(b.call_no, q)))
+  const short = /^\d{1,3}$/.test(q.replace(/\s+/g, ''))
+  const n = Number(q.replace(/\s+/g, ''))
+  const matches = (b: T) => {
+    if (!q) return true
+    if (!short) return b.bill_no.toLowerCase().includes(q) || txWhere(b).toLowerCase().includes(q) || callNoMatches(b.call_no, q)
+    const serial = /-(\d+)$/.exec(b.bill_no)
+    return callNoMatches(b.call_no, q) || (!!serial && Number(serial[1]) === n) || b.dining_tables?.label.toLowerCase() === q
+  }
+  return bills.filter((b) => (filter === 'all' || txKind(b) === filter) && matches(b))
 }
 
 export function txStatusLabel(b: Pick<ClosedBillRow, 'status' | 'refunded_sen'>): string {
