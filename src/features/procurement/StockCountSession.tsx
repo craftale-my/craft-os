@@ -290,7 +290,7 @@ export default function StockCountSessionPage() {
       </div>
 
       {countItems.length > 0 && (
-        <div className="fixed bottom-0 inset-x-0 bg-white border-t border-[#E8DDD0] px-4 py-3">
+        <div className="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-[#E8DDD0] px-4 py-3">
           <div className="max-w-2xl mx-auto">
             {confirming ? (
               <div className="space-y-2">

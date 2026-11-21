@@ -189,7 +189,7 @@ export default function StockCountSetupPage() {
           {error && <p className="text-sm text-red-700">{error}</p>}
         </div>
         {!isKey && (
-          <div className="fixed bottom-0 inset-x-0 bg-white border-t border-[#E8DDD0] px-4 py-3">
+          <div className="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-[#E8DDD0] px-4 py-3">
             <div className="max-w-2xl mx-auto">
               <button type="button" disabled={busy} onClick={saveLocationItems}
                 className="w-full h-12 rounded-xl bg-brown-btn text-white text-sm font-bold disabled:opacity-50">
