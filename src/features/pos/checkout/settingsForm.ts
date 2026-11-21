@@ -1,4 +1,5 @@
 /** Pure helpers for the checkout sections of /pos/settings. */
+import type { PaymentKind } from './tender'
 
 /** "10" → 1000, "6.5" → 650, "0" → 0; null when not a percentage between 0 and 100 with at most two decimals. */
 export function parsePercentBp(text: string): number | null {
@@ -27,13 +28,21 @@ export interface ReceiptDetailsForm {
   phone: string
   email: string
   footer: string
+  footerQr?: string // W4: printed as a QR code under the footer
 }
 
 export function receiptDetailsProblem(f: ReceiptDetailsForm): string | null {
   if (!f.receiptTitle.trim()) return 'Enter the receipt title (the shop name printed at the top)'
   if (f.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) return 'The email address does not look right'
   if (f.footer.length > 300) return 'The footer is too long (300 characters at most)'
+  if ((f.footerQr ?? '').trim().length > 300) return 'The QR text is too long (300 characters at most).'
   return null
+}
+
+/** Choosing a payment method's kind (W4 spec §5): a new (unsaved) method opens the cash drawer when it is
+ *  cash; a saved method keeps its own "Opens the cash drawer". */
+export function methodKindPatch(isNew: boolean, kind: PaymentKind): { kind: PaymentKind; opens_drawer?: boolean } {
+  return isNew ? { kind, opens_drawer: kind === 'cash' } : { kind }
 }
 
 /** "All tables" or "3 tables" for a rule row. */

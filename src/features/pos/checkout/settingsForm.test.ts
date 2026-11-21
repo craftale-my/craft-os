@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { bpToPercentText, parsePercentBp, parseReasons, receiptDetailsProblem, scopeLabel } from './settingsForm'
+import { bpToPercentText, methodKindPatch, parsePercentBp, parseReasons, receiptDetailsProblem, scopeLabel } from './settingsForm'
 
 describe('percent ↔ basis points', () => {
   it('parses a percentage', () => {
@@ -41,5 +41,18 @@ describe('scopeLabel', () => {
     expect(scopeLabel(null, 'table')).toBe('All tables')
     expect(scopeLabel(['a'], 'table')).toBe('1 table')
     expect(scopeLabel(['a', 'b'], 'product')).toBe('2 products')
+  })
+})
+
+describe('W4: the footer QR and "Opens the cash drawer"', () => {
+  const form = { receiptTitle: 'Craft', legalName: '', registrationNo: '', sstNo: '', address: '', phone: '', email: '', footer: '' }
+  it('the QR text is at most 300 characters', () => {
+    expect(receiptDetailsProblem({ ...form, footerQr: 'x'.repeat(300) })).toBeNull()
+    expect(receiptDetailsProblem({ ...form, footerQr: 'x'.repeat(301) })).toBe('The QR text is too long (300 characters at most).')
+  })
+  it('a new cash method opens the drawer, a new other one does not; a saved method keeps its switch', () => {
+    expect(methodKindPatch(true, 'cash')).toEqual({ kind: 'cash', opens_drawer: true })
+    expect(methodKindPatch(true, 'card')).toEqual({ kind: 'card', opens_drawer: false })
+    expect(methodKindPatch(false, 'cash')).toEqual({ kind: 'cash' })
   })
 })
