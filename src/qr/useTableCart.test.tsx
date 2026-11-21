@@ -198,18 +198,22 @@ describe('useTableCart', () => {
     expect(signal.live).toBe(1)
   })
 
-  it('an onChange that throws does not mark the cart offline', async () => {
+  it('an onChange that throws is reported, does not fail the write and does not mark the cart offline', async () => {
     const { api, signal, server } = fakes(cart('v1', 'l1'))
     let calls = 0
-    const onChange = vi.fn(() => { if (++calls === 2) throw new Error('boom') })
-    const { result } = renderHook(() => useTableCart(api, signal, onChange))
-    await waitFor(() => expect(result.current.status).toBe('ready'))
-    server.cart = cart('v2', 'l1', 'l2')
-    let failure: unknown
-    await act(async () => { await result.current.refresh().catch((e: unknown) => { failure = e }) })
-    expect(failure).toEqual(new Error('boom'))
-    expect(result.current.cart).toEqual(cart('v2', 'l1', 'l2'))
-    expect(result.current.status).toBe('ready')
+    const boom = new Error('boom')
+    const onChange = vi.fn(() => { if (++calls === 2) throw boom })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { result } = renderHook(() => useTableCart(api, signal, onChange))
+      await waitFor(() => expect(result.current.status).toBe('ready'))
+      server.cart = cart('v2', 'l1', 'new')
+      await act(() => result.current.add(guest, order))   // resolves: the server took the write
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(spy).toHaveBeenCalledWith(boom)
+      expect(result.current.cart).toEqual(cart('v2', 'l1', 'new'))
+      expect(result.current.status).toBe('ready')
+    } finally { spy.mockRestore() }
   })
 
   it('a read with the version it already holds changes nothing and reports nothing', async () => {
@@ -269,5 +273,86 @@ describe('useTableCart', () => {
     document.dispatchEvent(new Event('visibilitychange'))
     expect(api.state).toHaveBeenCalledTimes(1)
     expect(signal.live).toBe(0)
+  })
+
+  it('no render returns the previous api\'s cart after an api change', async () => {
+    const a = fakes(cart('a1', 'l1'))
+    const b = fakes(cart('b1', 'l2'))
+    const seen: { cart: CartState | null; status: string }[] = []
+    const { result, rerender } = renderHook(
+      ({ api, signal }) => {
+        const r = useTableCart(api, signal)
+        seen.push({ cart: r.cart, status: r.status })
+        return r
+      },
+      { initialProps: { api: a.api, signal: a.signal } },
+    )
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    const mark = seen.length
+    rerender({ api: b.api, signal: b.signal })
+    await waitFor(() => expect(result.current.cart).toEqual(cart('b1', 'l2')))
+    const after = seen.slice(mark)
+    expect(after[0]).toEqual({ cart: null, status: 'loading' })
+    expect(after.some((r) => r.cart?.version === 'a1')).toBe(false)
+  })
+
+  it('a write that completes after unmount reads nothing and calls no onChange', async () => {
+    const { api, signal } = fakes(cart('v1', 'l1'))
+    let release: (id: string) => void = () => {}
+    vi.mocked(api.put).mockImplementationOnce(() => new Promise<string>((r) => { release = r }))
+    const onChange = vi.fn()
+    const { result, unmount } = renderHook(() => useTableCart(api, signal, onChange))
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    let p: Promise<void> = Promise.resolve()
+    act(() => { p = result.current.add(guest, order) })
+    unmount()
+    await act(async () => { release('new'); await p })
+    expect(api.state).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('a write on the old api that completes after an api change never reads or lands', async () => {
+    const a = fakes(cart('a1', 'l1'))
+    const b = fakes(cart('b1', 'l2'))
+    let release: (id: string) => void = () => {}
+    vi.mocked(a.api.put).mockImplementationOnce(() => new Promise<string>((r) => { release = r }))
+    const { result, rerender } = renderHook(
+      ({ api, signal }) => useTableCart(api, signal),
+      { initialProps: { api: a.api, signal: a.signal } },
+    )
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    let p: Promise<void> = Promise.resolve()
+    act(() => { p = result.current.add(guest, order) })
+    rerender({ api: b.api, signal: b.signal })
+    await act(async () => { release('new'); await p })
+    await waitFor(() => expect(result.current.cart).toEqual(cart('b1', 'l2')))
+    expect(a.api.state).toHaveBeenCalledTimes(1)
+    expect(result.current.status).toBe('ready')
+  })
+
+  it('a signal that arrives after the api re-subscribes without blanking the cart', async () => {
+    const { api, signal, server } = fakes(cart('v1', 'l1'))
+    const onChange = vi.fn()
+    const seen: { cart: CartState | null; status: string }[] = []
+    const { result, rerender } = renderHook(
+      ({ s }: { s: CartSignal | null }) => {
+        const r = useTableCart(api, s, onChange)
+        seen.push({ cart: r.cart, status: r.status })
+        return r
+      },
+      { initialProps: { s: null as CartSignal | null } },
+    )
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    const mark = seen.length
+    rerender({ s: signal })
+    await act(async () => { await Promise.resolve() })
+    expect(seen.slice(mark).every((r) => r.cart !== null && r.status !== 'loading')).toBe(true)
+    expect(signal.live).toBe(1)
+    const reads = vi.mocked(api.state).mock.calls.length
+    server.cart = cart('v2', 'l1', 'l2')
+    act(() => signal.fire())
+    await waitFor(() => expect(result.current.cart?.version).toBe('v2'))
+    expect(vi.mocked(api.state).mock.calls.length).toBeGreaterThan(reads)
+    expect(onChange).toHaveBeenLastCalledWith(cart('v1', 'l1'), cart('v2', 'l1', 'l2'))
   })
 })
