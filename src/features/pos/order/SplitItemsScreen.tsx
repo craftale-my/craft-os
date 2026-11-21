@@ -190,7 +190,9 @@ export default function SplitItemsScreen({
                 </div>
               )}
               <div className="min-w-0 flex-1">
-                <div className="font-medium text-brown-dark">{l.qty} × {l.name}</div>
+                <div className="font-medium text-brown-dark">
+                  {l.qty} × {l.name}{l.guest && <span className="ml-1 text-xs font-normal text-brown-muted">· {l.guest}</span>}
+                </div>
                 {l.mods.map((m, i) => <div key={i} className="pl-4 text-xs text-brown-muted">+ {m}</div>)}
                 {l.note && <div className="pl-4 text-xs italic text-brown-muted">{l.note}</div>}
               </div>

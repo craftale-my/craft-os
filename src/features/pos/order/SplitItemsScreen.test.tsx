@@ -198,6 +198,10 @@ describe('pick by guest chips', () => {
     ])
     renderPicker()
     await flush()
+    // each line says whose it is; a counter line names no one
+    expect(screen.getByText('2 × Latte').textContent).toBe('2 × Latte· Eric')
+    expect(screen.getByText('1 × Cake').textContent).toBe('1 × Cake· Mei')
+    expect(screen.getByText('1 × Tea').textContent).toBe('1 × Tea')
     expect(button('Eric').getAttribute('aria-pressed')).toBe('false')
     press('Eric')
     expect(button('Eric').getAttribute('aria-pressed')).toBe('true')
