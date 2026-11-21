@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { processJob, type PrintJob } from '../print/printHost'
 import { printFromBrowser, type PrintRoute } from '../print/adapter'
 import { jobLabel } from '../print/printJob'
+import { staleMinutes } from '../print/stale'
 import { claimJob, fetchMenuRoutes, fetchPrintJobs, fetchRoutes, finishJob, insertTestPrint, requeueJob, type PrintJobRow } from './posApi'
 import { usePosRealtime } from './usePosRealtime'
 import { classifyJobs, formatAge, routesWithoutPrinter, type PrintProblem } from './printProblems'
 
 const STUCK_MS = 2 * 60_000
 const WAIT_MS = 45_000
+const TICKET_MAX_AGE_MIN = 30
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
@@ -49,12 +51,17 @@ export default function PrintHostPanel({ branchId, inline = false, onProblems }:
       setNote(`${job.route}: printed but could not record it — ${msg(e)}`)
     }
   }, [])
-  // One job at a time, in the order they arrive (Realtime: insert order; the sweep: created_at, then seq),
-  // so a drawer kick queued with its receipt opens the drawer before the receipt prints (W4 spec §5).
-  const turn = useRef<Promise<void>>(Promise.resolve())
+  // One job at a time per route, in the order they arrive (Realtime: insert order; the sweep: created_at, then seq),
+  // so a drawer kick queued with its receipt opens the drawer before the receipt prints (W4 spec §5) and a dead
+  // Kitchen printer does not hold Bar receipts or drawer kicks.
+  const turns = useRef(new Map<string, Promise<void>>())
   const handle = useCallback((job: PrintJob): Promise<void> => {
-    const next = turn.current.then(() => printOne(job))
-    turn.current = next.catch(() => undefined)
+    // A late drawer kick would open the drawer with nobody at the till: leave it pending, as the agent does.
+    if (job.payload?.kind === 'drawer' && staleMinutes(job as PrintJob & { created_at?: string; attempts?: number }, Date.now(), TICKET_MAX_AGE_MIN) !== null) {
+      return Promise.resolve()
+    }
+    const next = (turns.current.get(job.route) ?? Promise.resolve()).then(() => printOne(job))
+    turns.current.set(job.route, next.catch(() => undefined))
     return next
   }, [printOne])
 
@@ -122,7 +129,9 @@ export default function PrintHostPanel({ branchId, inline = false, onProblems }:
               ) : (
                 <>
                   <div className="text-xs text-red-700">{kind === 'stuck' ? 'Stuck while printing — check the printer before reprinting' : j.last_error ?? 'Failed'} · {j.attempts} attempt{j.attempts === 1 ? '' : 's'}</div>
-                  <button onClick={() => void reprint(j)} className="mt-1 rounded bg-brown-btn px-2 py-1 text-xs text-white">Reprint</button>
+                  {j.payload?.kind !== 'drawer' && (
+                    <button onClick={() => void reprint(j)} className="mt-1 rounded bg-brown-btn px-2 py-1 text-xs text-white">Reprint</button>
+                  )}
                 </>
               )}
             </div>

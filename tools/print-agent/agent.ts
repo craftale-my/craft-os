@@ -93,7 +93,8 @@ async function main(): Promise<void> {
     // An old job never tried stays pending for staff to decide; a drawer kick is old after 2 minutes.
     const ageMin = staleMinutes(job, Date.now(), maxAgeMin)
     if (ageMin !== null) {
-      console.log(`skipped old ${job.payload.kind === 'drawer' ? 'drawer kick' : 'ticket'} ${job.route} ${id8} (${Math.round(ageMin)} min)`)
+      const kind = job.payload?.kind
+      console.log(`skipped old ${kind === 'drawer' ? 'drawer kick' : kind === 'receipt' ? 'receipt' : 'ticket'} ${job.route} ${id8} (${Math.round(ageMin)} min)`)
       return
     }
     // Per call, so a concurrent handler of the same job cannot mislabel the log.
@@ -129,7 +130,7 @@ async function main(): Promise<void> {
   const routeTurns = new Map<string, Promise<void>>()
   const handleInTurn = (job: AgentJob): Promise<void> => {
     const turn = (routeTurns.get(job.route) ?? Promise.resolve()).then(() => handle(job))
-    routeTurns.set(job.route, turn)
+    routeTurns.set(job.route, turn.catch(() => undefined))
     return turn
   }
 
