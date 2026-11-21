@@ -57,3 +57,41 @@ describe('ModifierSheet', () => {
     expect(screen.queryByText('Most picked')).toBeNull()
   })
 })
+
+describe('ModifierSheet Takeaway switch (W7 spec §4)', () => {
+  const tea: PosProduct = {
+    id: 'p2', name: 'Tea', description: null, soldOut: false,
+    variants: [{ id: 't', name: 'Regular', priceSen: 500, isBase: true }], groups: [],
+  }
+  it('on a dine-in bill: a Takeaway switch, off at first; on, the line is a takeaway line', () => {
+    const onDone = vi.fn()
+    render(<ModifierSheet product={tea} takeawaySwitch onCancel={() => {}} onDone={onDone} />)
+    const sw = screen.getByRole('switch', { name: 'Takeaway' })
+    expect(sw.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(sw)
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm · RM 5.00' }))
+    expect(onDone).toHaveBeenCalledWith({ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [], takeaway: true })
+  })
+  it('switched off again, the line has no takeaway key', () => {
+    const onDone = vi.fn()
+    render(<ModifierSheet product={tea} takeawaySwitch onCancel={() => {}} onDone={onDone} />)
+    fireEvent.click(screen.getByRole('switch', { name: 'Takeaway' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Takeaway' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm · RM 5.00' }))
+    expect(onDone).toHaveBeenCalledWith({ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [] })
+  })
+  it('editing a takeaway draft shows the switch on', () => {
+    render(<ModifierSheet product={tea} takeawaySwitch initial={{ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [], takeaway: true }}
+      onCancel={() => {}} onDone={() => {}} />)
+    expect(screen.getByRole('switch', { name: 'Takeaway' }).getAttribute('aria-checked')).toBe('true')
+  })
+  it('no switch on a takeaway bill, and a line never leaves it with the flag', () => {
+    const onDone = vi.fn()
+    render(<ModifierSheet product={tea} initial={{ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [], takeaway: true }}
+      onCancel={() => {}} onDone={onDone} />)
+    expect(screen.queryByRole('switch')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm · RM 5.00' }))
+    expect(onDone).toHaveBeenCalledWith({ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [] })
+  })
+})

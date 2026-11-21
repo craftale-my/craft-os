@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { groupBadge, tileInitials, toggleOption } from './modifiers'
+import { groupBadge, tileInitials, toggleOption, withTakeaway } from './modifiers'
 
 describe('groupBadge', () => {
   it('required groups say how many to select', () => {
@@ -34,5 +34,14 @@ describe('tileInitials', () => {
     expect(tileInitials('Custom Cake')).toBe('Cus')
     expect(tileInitials('  Iced Latte')).toBe('Ice')
     expect(tileInitials('Te')).toBe('Te')
+  })
+})
+
+describe('withTakeaway (W7 spec §4)', () => {
+  const line = { productId: 'p', variantId: 'v', qty: 1, note: null, optionIds: [] }
+  it('on: the line carries takeaway: true; off: the key is gone, the line as before W7', () => {
+    expect(withTakeaway(line, true)).toEqual({ ...line, takeaway: true })
+    expect(withTakeaway({ ...line, takeaway: true }, false)).toEqual(line)
+    expect('takeaway' in withTakeaway(line, false)).toBe(false)
   })
 })

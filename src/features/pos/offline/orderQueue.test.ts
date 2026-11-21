@@ -169,3 +169,10 @@ describe('toSendResult', () => {
     })
   })
 })
+
+describe('a takeaway line (W7 spec §4)', () => {
+  it('goes to place_counter_order as it is, the flag on the item', () => {
+    const ta = { ...line, takeaway: true as const }
+    expect(counterOrderArgs(newQueuedOrder('dine_in', 't1', 2, [line, ta], 5, 'id')).p_items).toEqual([line, ta])
+  })
+})

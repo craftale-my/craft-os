@@ -518,6 +518,7 @@ export default function OrderScreen({
       {sheet && (
         <ModifierSheet product={sheet.product} initial={sheet.index === null ? undefined : lines[sheet.index]}
           mostPicked={mostPickedFor(picks, sheet.product.id)}
+          takeawaySwitch={orderType === 'dine_in'}
           onCancel={() => setSheet(null)}
           onRemove={sheet.index === null ? undefined : () => { const i = sheet.index; setLines((ls) => ls.filter((_, k) => k !== i)); setSheet(null) }}
           onDone={(line) => {

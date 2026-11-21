@@ -72,6 +72,20 @@ describe('renderTicketLines', () => {
     ])
   })
 
+  it('W7: a takeaway line of a dine-in bill reads TAKEAWAY before the item name; other lines as before', () => {
+    const t: TicketPayload = { ...base, lines: [
+      { qty: 1, name: 'Latte', note: null, takeaway: true },
+      { qty: 2, name: 'Cake', note: 'no nuts', guest: 'Eric', takeaway: true },
+      { qty: 1, name: 'Tea', note: null },
+    ] }
+    expect(renderTicketLines(t, 32).slice(5, -1)).toEqual([
+      '1 x TAKEAWAY Latte',
+      '2 x TAKEAWAY Cake - Eric',
+      '    * no nuts',
+      '1 x Tea',
+    ])
+  })
+
   it('marks takeaway when there is no table', () => {
     const lines = renderTicketLines({ ...base, tableLabel: null, source: 'counter' }, 32)
     expect(lines[1]).toBe('TAKEAWAY')

@@ -23,3 +23,11 @@ export function toggleOption(line: OrderLine, groupMax: number, groupOptionIds: 
 export function tileInitials(name: string): string {
   return name.replace(/\s+/g, '').slice(0, 3)
 }
+
+/** W7 spec §4: the item sheet's Takeaway switch. On: the line carries takeaway: true (a takeaway line inside a
+ *  dine-in bill); off: the key is gone, so the line is exactly what it was before W7. */
+export function withTakeaway(line: OrderLine, on: boolean): OrderLine {
+  const { takeaway: _drop, ...rest } = line
+  void _drop
+  return on ? { ...rest, takeaway: true } : rest
+}
