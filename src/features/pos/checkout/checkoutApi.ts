@@ -6,7 +6,7 @@ import type { BillOrderType, BillTotals, CashRounding, DiscountInput, DiscountKi
 import { storedDiscount, type StoredDiscount } from './discounts'
 import type { PaymentKind } from './tender'
 import type { ReasonAction, ReasonTemplate } from './reasons'
-import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
+import { parseCheckoutResult, parseRefundResult, readableError, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
 import { parseCheckoutState, type CheckoutState } from './follow'
 import type { SplitItem } from '../order/splitSelection'
 import { parsePartQuote, parsePartResult, type PartQuote, type PartResult } from './partSplit'
@@ -18,7 +18,7 @@ const CHECKOUT_TIMEOUT_MS = 10_000
 const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
 
 function fail(error: { message: string } | null): never {
-  throw new Error(error?.message ?? 'Unknown error')
+  throw new Error(error ? readableError(new Error(error.message)) : 'Unknown error')
 }
 
 function saved(res: { data: unknown[] | null; error: { message: string } | null }, what: string): void {

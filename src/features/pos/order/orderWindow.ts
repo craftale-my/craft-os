@@ -45,10 +45,19 @@ export function qrClosedMessage(openAt: string | null, lastAt: string | null, at
   return lastOrderMessage(openAt, lastAt)
 }
 
-/** The POS order pad's banner now: "Past last order (21:30)" outside the window, else null. The POS still orders. */
+/** The POS order pad's banner now; null inside the window or with no window. Outside it the pad says which event is
+ *  nearer on the 24-hour circle: after the last order it reads "Past last order (21:30)", and in the hours before
+ *  the opening time it reads "Orders open at 09:00". Compares the minutes since the last order with the minutes
+ *  until opening; a tie says Past last order. The POS still orders. */
 export function padPastLastOrder(openAt: string | null, lastAt: string | null, at: Date): string | null {
   if (!openAt || !lastAt || ordersOpen(openAt, lastAt, at)) return null
-  return pastLastOrder(lastAt)
+  const o = minutesOf(openAt)
+  const l = minutesOf(lastAt)
+  if (o === null || l === null) return null
+  const m = myMinuteOfDay(at)
+  const sinceLast = (((m - l) % 1440) + 1440) % 1440
+  const untilOpen = (((o - m) % 1440) + 1440) % 1440
+  return untilOpen < sinceLast ? `Orders open at ${openAt}` : pastLastOrder(lastAt)
 }
 
 /** The settings check (save_receipt_settings refuses the same): both times or neither, and not the same time. */

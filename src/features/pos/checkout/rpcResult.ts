@@ -25,7 +25,7 @@ export interface RefundResult {
  *  timeout / abort. The request may still have landed, so the sheet keeps its id and a resend is
  *  safe. The one classifier of the POS sheets (checkout, close shift, pay in / pay out); every
  *  refusal of the server has other words. */
-export const looksOffline = (m: string) => /load failed|fetch|network|timeout|abort|signal/i.test(m)
+export const looksOffline = (m: string) => /load failed|fetch|network|timeout|abort|signal|no reply from the server/i.test(m)
 
 export const NO_REPLY = 'No reply from the server. Check the internet connection and try again.'
 /** What a POS screen shows for a failure: plain words for a request with no reply (never the

@@ -1,7 +1,7 @@
 -- Self-check for the POS smaller Feedme habits (W7). Run on craft-os-dev after
 -- migration-2026-11-22-pos-feedme-habits.sql. Everything is rolled back. Success = a result row "VERIFY OK".
 -- Sections (one DO block each, ids in the temp table fixture): FIXTURE; V1 last-order time; V2 takeaway line;
--- V3 children and the receipts; V4 Serve.
+-- V3 children and the receipts; V4 Serve; V5 a moved served line stays served.
 -- Outlet VERIFY W7: tables W1–W5, a 10% dine-in service charge, receipt route Bar. Latte 10.00 (6%, packaging
 -- 1.00) and Cake 8.00 (8%, packaging 0.50), both printed on Bar; one dine-in / takeaway / QR catalog. A cashier
 -- with a PIN signed in on one tablet; the dev owner login for the settings.
@@ -389,6 +389,34 @@ begin
   perform pg_temp.expect_error(format('select set_items_served(%L::uuid[], true)', array[gen_random_uuid()]), 'Item not found', 'V4 an unknown item');
   perform pg_temp.expect_error(format('select set_items_served(%L::uuid[], true)',
     array[v_one, (select id from order_items where bill_id = pg_temp.id('T1') limit 1)]), 'The items must be on one bill.', 'V4 two bills');
+end $$;
+
+-- ── V5. Moving one unit of a served line (H5): the remaining row and the moved row are both served ──
+do $$
+declare
+  v_order uuid;
+  v_line  uuid;
+  v_res   jsonb;
+  v_cut   order_items;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  v_order := pg_temp.order_on('w1', 2, array['latte:2']);
+  select id into v_line from order_items where order_id = v_order;
+  perform set_items_served(array[v_line], true);
+  v_res := move_items(pg_temp.id('D1'), jsonb_build_array(jsonb_build_object('itemId', v_line, 'qty', 1)), pg_temp.id('w2'));
+  select * into v_cut from order_items where split_from_item = v_line;
+  if v_cut.id is null or v_cut.qty <> 1 or v_cut.bill_id = pg_temp.id('D1') then
+    raise exception 'FAIL V5 the moved unit: %', v_res;
+  end if;
+  if v_cut.served_at is null or v_cut.served_by is distinct from pg_temp.id('cashier') then
+    raise exception 'FAIL V5 the moved unit lost its served state: %', row(v_cut.served_at, v_cut.served_by);
+  end if;
+  if (select qty <> 1 or served_at is null from order_items where id = v_line) then
+    raise exception 'FAIL V5 the remaining row: %', (select row(qty, served_at) from order_items where id = v_line);
+  end if;
+  if pg_get_functiondef('pos_move_units(jsonb, uuid)'::regprocedure) not like '%served_at%' then
+    raise exception 'FAIL V5 pos_move_units is not the W7 version';
+  end if;
 end $$;
 
 select 'VERIFY OK' as result;
