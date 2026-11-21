@@ -996,3 +996,7 @@ export const SKILL_STATUS_ICONS: Record<SkillAssessmentStatus, string> = {
   passed:         '✅',
   failed:         '❌',
 }
+// menuCosting's RecipeLine collides with procurement's RecipeLine (DB row type),
+// so it is imported from './menuCosting' directly rather than star-exported here.
+export type { MenuVariantCost, ModifierOptionCost, CostStatus } from './menuCosting'
+export { COST_STATUS_LABELS } from './menuCosting'
