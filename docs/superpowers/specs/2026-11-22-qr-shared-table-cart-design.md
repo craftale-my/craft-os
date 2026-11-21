@@ -96,8 +96,8 @@ phone is often not the one who ordered).
   - **Verified 2026-11-22:** an `anon` client may broadcast on a public channel in the dev project
     (`scripts/qr-broadcast-check.mjs`). The fallback read stays at 15 s.
 - **Stale carts.** A line is deleted on the next read when it is older than 2 hours (assumed), or when
-  the table has no open bill and the line was created before the table's most recent bill was closed
-  (paid or voided).
+  it was created before the table's most recent bill was closed (paid or voided) — whether or not the
+  next party's bill is already open. A paid part of a split bill is not the table closing.
   The next party never inherits the last party's cart.
 - **Limits.** 50 lines per table cart and quantity 1–20 per line (both are `pos_insert_order`'s own
   limits for one order); note 200 characters (as today); name
@@ -180,7 +180,9 @@ the messages `place_table_order` uses today.
   unavailable and the next Send skips it.
 - **`pos_insert_order`** — re-created from its live text with two changes, marked `-- G`: a QR item may
   carry `guestId`, `guestLabel` and `guestAvatar`, stored on `order_items`; and each ticket line gains
-  `"guest": <label>` when the item has one. Its checks are not touched. Lines from the counter are
+  `"guest": <label>` when the item has one. The guest fields are stored only while `qr_cart_send` is the
+  caller (a transaction-local flag it sets), so the old `place_table_order` cannot name a guest. Its
+  checks are not touched. Lines from the counter are
   byte-for-byte what they are today.
 - **`qr_table_state`** — each item gains `guestLabel` and `guestAvatar` from `order_items` (both null
   for counter items, which the page lists under `Ordered at the counter`).
