@@ -23,7 +23,7 @@ const CategoryBar = forwardRef<HTMLElement, {
 
   const pick = (i: number) => { setOpen(false); onPick(i) }
   return (
-    <nav ref={ref} aria-label="Categories" className="sticky top-0 z-10 bg-cream">
+    <nav ref={ref} aria-label="Categories" className="sticky top-0 z-20 bg-cream">
       <div className="relative">
         <div ref={scroller} className="flex gap-2 overflow-x-auto py-2.5 pl-4 pr-12 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {names.map((n, i) => (

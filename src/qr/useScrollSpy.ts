@@ -14,9 +14,10 @@ export function activeSection(tops: number[], line: number, atBottom = false): n
   return active
 }
 
-/** A jump scrolls smoothly; the spy holds the tapped section for this long instead of flicking
- *  through every section passed on the way. */
-const JUMP_HOLD_MS = 700
+/** A jump scrolls smoothly; the spy holds the tapped section until the page has not scrolled for
+ *  JUMP_IDLE_MS (at most JUMP_MAX_MS) instead of flicking through every section passed on the way. */
+const JUMP_IDLE_MS = 150
+const JUMP_MAX_MS = 3000
 
 export function useScrollSpy(ids: string[], bar: RefObject<HTMLElement | null>): { active: number; jumpTo: (i: number) => void } {
   const [active, setActive] = useState(0)
@@ -61,8 +62,16 @@ export function useScrollSpy(ids: string[], bar: RefObject<HTMLElement | null>):
     const el = document.getElementById(ids[i] ?? '')
     if (!el) return
     setActive(i)
-    holdUntil.current = Date.now() + JUMP_HOLD_MS
-    window.setTimeout(measure, JUMP_HOLD_MS + 50)
+    // hold the tapped pill until the smooth scroll has gone quiet (a long jump takes longer than a short one)
+    holdUntil.current = Date.now() + JUMP_MAX_MS
+    let idle = window.setTimeout(release, JUMP_IDLE_MS * 3)
+    function release() {
+      window.removeEventListener('scroll', onScroll)
+      holdUntil.current = 0
+      measure()
+    }
+    function onScroll() { window.clearTimeout(idle); idle = window.setTimeout(release, JUMP_IDLE_MS) }
+    window.addEventListener('scroll', onScroll, { passive: true })
     const top = el.getBoundingClientRect().top + window.scrollY - (bar.current?.offsetHeight ?? 0)
     if (typeof window.scrollTo === 'function') {
       try { window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' }) } catch { /* jsdom */ }
