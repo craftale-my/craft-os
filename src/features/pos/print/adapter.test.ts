@@ -27,6 +27,13 @@ describe('escapeXml', () => {
 })
 
 describe('Epson ePOS-Print', () => {
+  it('a pulse goes before the text; no paper: the pulse alone, no feed or cut', () => {
+    expect(buildEposXml(['A'], { pulse: true })).toContain('<pulse/><text lang="zh-cn">A&#10;</text><feed line="3"/><cut type="feed"/>')
+    const kick = buildEposXml([], { pulse: true, paper: false })
+    expect(kick).toContain('<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print"><pulse/></epos-print>')
+    expect(kick).not.toContain('<cut')
+    expect(buildEposXml(['A'])).toBe(buildEposXml(['A'], { pulse: false, paper: true }))
+  })
   it('wraps lines in a SOAP epos-print document with feed and cut', () => {
     const xml = buildEposXml(['A & B', 'C'])
     expect(xml).toContain('<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">')
@@ -42,6 +49,13 @@ describe('Epson ePOS-Print', () => {
 })
 
 describe('Star WebPRNT', () => {
+  it('a pulse is <peripheral/> before the text; no paper: the pulse alone', () => {
+    expect(buildStarXml(['A'], { pulse: true })).toContain('&lt;root&gt;&lt;peripheral/&gt;&lt;text&gt;A\n&lt;/text&gt;')
+    const kick = buildStarXml([], { pulse: true, paper: false })
+    expect(kick).toContain('&lt;root&gt;&lt;peripheral/&gt;&lt;/root&gt;')
+    expect(kick).not.toContain('cutpaper')
+    expect(buildStarXml(['A'])).toBe(buildStarXml(['A'], { pulse: false, paper: true }))
+  })
   it('escapes the inner request inside the StarWebPrint envelope', () => {
     const xml = buildStarXml(['A&B'])
     expect(xml.startsWith('<StarWebPrint xmlns="http://www.star-m.jp"')).toBe(true)
