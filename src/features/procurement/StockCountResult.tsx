@@ -32,6 +32,8 @@ export default function StockCountResult({ count, branchName }: { count: StockCo
   const sorted = sortResultLines(lines.map(l => ({ ...l, name: l.item.name, variance_value: Number(l.variance_value) })))
   const changed = sorted.filter(l => Number(l.variance_base) !== 0)
   const shown = showAll ? sorted : changed
+  // Lines with a difference but no cost add nothing to the RM totals, so call them out.
+  const noCost = changed.filter(l => l.unit_cost == null).length
 
   return (
     <div className="space-y-4">
@@ -56,6 +58,11 @@ export default function StockCountResult({ count, branchName }: { count: StockCo
           </div>
         ))}
       </div>
+      {noCost > 0 && (
+        <p className="text-xs text-[#B46309]">
+          {noCost} item{noCost === 1 ? '' : 's'} with a difference had no cost yet, so {noCost === 1 ? 'it is' : 'they are'} not in the RM totals.
+        </p>
+      )}
 
       {error && <p className="text-sm text-red-700">{error}</p>}
 

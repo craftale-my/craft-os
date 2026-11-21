@@ -302,6 +302,8 @@ export default function StockCountSessionPage() {
                 </button>
               )}
             </div>
+            {/* Rows are read-only while the confirm sheet is open, so no edit can race the submit. */}
+            <fieldset disabled={confirming} className="min-w-0 space-y-3 disabled:opacity-60">
             {onOther ? (
               <div className="space-y-2">
                 <p className="text-xs text-brown-faint">
@@ -344,6 +346,7 @@ export default function StockCountSessionPage() {
               </div>
               </>
             )}
+            </fieldset>
           </>
         )}
         <button type="button" onClick={cancel} className="text-xs text-brown-faint underline pt-2">Cancel this count</button>
