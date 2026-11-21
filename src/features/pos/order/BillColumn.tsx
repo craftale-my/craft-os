@@ -5,6 +5,7 @@ import { partPaidTag } from '../checkout/partSplit'
 import { formatRate, type BillTotals } from '../checkout/bill'
 import { itemsWord, type BillView, type DraftRow, type SentRow } from './billView'
 import DiscountRows from '../checkout/DiscountRows'
+import { paxChildrenNote } from '../print/receipt'
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kuala_Lumpur' })
 
@@ -15,6 +16,7 @@ export default function BillColumn(p: {
   title: string                       // "Table T3"
   billNo: string | null               // null = no bill yet
   pax: number | null
+  paxChildren?: number | null         // W7: of which children ("3 pax (1 child)")
   onPax: (() => void) | null          // null = no pax here (takeaway)
   catalogName: string | null
   partPaidSen?: number                 // what the bill's parts paid (split spec §3.5)
@@ -46,7 +48,7 @@ export default function BillColumn(p: {
           <h2 className="truncate text-lg font-semibold text-brown-dark">{p.title}</h2>
           {p.onPax && (
             <button type="button" onClick={p.onPax} className="flex min-h-11 items-center gap-1 rounded-lg border border-border-mid px-3 text-sm">
-              <Users size={16} />{p.pax ?? '—'} pax
+              <Users size={16} />{p.pax ?? '—'} pax{paxChildrenNote(p.paxChildren)}
             </button>
           )}
         </div>

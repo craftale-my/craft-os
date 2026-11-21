@@ -53,3 +53,14 @@ describe('BillColumn part payments', () => {
     expect(screen.queryByText(/Part paid/)).toBeNull()
   })
 })
+
+describe('BillColumn pax with children (W7 spec §5)', () => {
+  it('reads "3 pax (1 child)", "4 pax (2 children)", or just the pax', () => {
+    const { rerender } = render(<BillColumn {...props} pax={3} paxChildren={1} onPax={() => {}} catalogName={null} onCatalog={null} />)
+    expect(screen.getByRole('button', { name: '3 pax (1 child)' })).toBeTruthy()
+    rerender(<BillColumn {...props} pax={4} paxChildren={2} onPax={() => {}} catalogName={null} onCatalog={null} />)
+    expect(screen.getByRole('button', { name: '4 pax (2 children)' })).toBeTruthy()
+    rerender(<BillColumn {...props} pax={4} paxChildren={null} onPax={() => {}} catalogName={null} onCatalog={null} />)
+    expect(screen.getByRole('button', { name: '4 pax' })).toBeTruthy()
+  })
+})

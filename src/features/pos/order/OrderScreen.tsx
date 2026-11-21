@@ -21,7 +21,7 @@ import { billActionNotes, billActions, clearedNotice, itemActionNotes, itemActio
 import { SPLIT_ACTION_LABEL } from './splitSelection'
 import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
 import { moveTargets, type MoveTarget } from './moveTargets'
-import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
+import { shownChildren, shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
 import { withPhotos, type PadProductInfo } from './padInfo'
 import { goesWellVisible, mostPickedFor, pairsFor, visiblePopular, type MenuPicks } from './picks'
 import { tileSlotLabel } from './padSlots'
@@ -293,8 +293,9 @@ export default function OrderScreen({
       if (late) { setError(late); return null }                     // the server would refuse it with the same words
       // the pax chosen for an empty table goes with its first order (the server only fills an empty pax)
       const pax = target.kind === 'table' && !bill?.pax ? target.pax : null
+      const children = target.kind === 'table' && pax !== null ? target.children ?? null : null   // W7: with that pax only
       const res = await submit(newQueuedOrder(orderType, target.kind === 'table' ? target.tableId : null, pax, lines,
-        Date.now(), crypto.randomUUID(), catalogId))
+        Date.now(), crypto.randomUUID(), catalogId, children))
       // the menu is read again first: a successful load clears the error, the rejection must stay
       if (res.rejectedReason) { await load(); setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); return null }
       setLines([]); setError(null); setGoesWellFor(null)
@@ -381,12 +382,12 @@ export default function OrderScreen({
       setConfirm({ title: 'Remove this discount?', confirmLabel: 'Remove discount', onConfirm: () => void run(() => clearItemDiscount(row.item.id)) })
     }
   }
-  const pickPax = (n: number) => {
+  const pickPax = (n: number, children: number | null) => {
     const purpose = dialog?.kind === 'pax' ? dialog.purpose : 'set'
     setDialog(null)
-    if (purpose === 'open_qr' && table) { void run(async () => { await openTable(table.id, n) }); return }
-    if (bill) { void run(() => setBillPax(bill.id, n)); return }
-    if (target.kind === 'table') onTarget({ ...target, pax: n })
+    if (purpose === 'open_qr' && table) { void run(async () => { await openTable(table.id, n, children) }); return }
+    if (bill) { void run(() => setBillPax(bill.id, n, children)); return }
+    if (target.kind === 'table') onTarget({ ...target, pax: n, children })
   }
   const pickMove = (m: MoveTarget) => {
     if (!bill || busyRef.current || m.kind === 'refused') return
@@ -490,6 +491,7 @@ export default function OrderScreen({
         title={title}
         billNo={bill?.bill_no ?? null}
         pax={shownPax(target, bill)}
+        paxChildren={shownChildren(target, bill)}
         onPax={target.kind === 'table' ? () => setDialog({ kind: 'pax', purpose: 'set' }) : null}
         catalogName={current?.name ?? null}
         partPaidSen={partPaid}
@@ -536,7 +538,7 @@ export default function OrderScreen({
           onPick={pickMove} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'pax' && (
-        <PaxDialog title={title} current={shownPax(target, bill)} onPick={pickPax} onClose={() => setDialog(null)} />
+        <PaxDialog title={title} current={shownPax(target, bill)} currentChildren={shownChildren(target, bill)} onPick={pickPax} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'catalog' && (
         <PickerSheet title="Catalog" hint="This order is priced from the catalog you choose."

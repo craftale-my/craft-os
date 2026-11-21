@@ -22,6 +22,8 @@ export interface QueuedOrder {
   /** Who was signed in on this tablet when Send was pressed (the POS app). Absent on a Craft OS
    *  login and on older orders: the server then records the caller. */
   staffId?: string | null
+  /** W7: of which children, with the pax of an empty table's first order. Absent = not given (and on older orders). */
+  paxChildren?: number | null
 }
 
 export interface QueueStore {
@@ -49,11 +51,13 @@ export function newQueuedOrder(
   now: number = Date.now(),
   id: string = crypto.randomUUID(),
   catalogId: string | null = null,
+  paxChildren: number | null = null,
 ): QueuedOrder {
   return {
     clientOrderId: id, orderType, tableId, pax,
     items: items.map((l) => ({ ...l, optionIds: [...l.optionIds] })),
     queuedAt: now, failedReason: null, catalogId,
+    ...(paxChildren !== null ? { paxChildren } : {}),
   }
 }
 
@@ -62,6 +66,7 @@ export function counterOrderArgs(o: QueuedOrder) {
   return {
     p_table_id: o.tableId, p_order_type: o.orderType, p_pax: o.pax, p_items: o.items,
     p_client_order_id: o.clientOrderId, p_catalog_id: o.catalogId ?? null, p_staff_id: o.staffId ?? null,
+    ...(o.paxChildren != null ? { p_pax_children: o.paxChildren } : {}),   // W7: only when given
   }
 }
 

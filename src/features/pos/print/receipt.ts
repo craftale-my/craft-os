@@ -60,6 +60,7 @@ export interface ReceiptPayload {
   cashier: string | null
   tableLabel: string | null // null = takeaway
   pax: number | null
+  paxChildren?: number | null // W7: of which children (null = not given); absent before W7
   items: ReceiptItem[]
   itemCount: number
   subtotalSen: number
@@ -97,6 +98,12 @@ export interface PartReceiptPayload extends Omit<ReceiptPayload, 'kind' | 'split
   amountSen: number         // this part
   paidBeforeSen: number     // the parts before this one
   balanceSen: number        // what is left after this part
+}
+
+/** W7 spec §5: " (1 child)", " (2 children)" after the pax; nothing when not given or 0. */
+export function paxChildrenNote(children: number | null | undefined): string {
+  if (!children || children < 1) return ''
+  return ` (${children} ${children === 1 ? 'child' : 'children'})`
 }
 
 /** "Part 2 of 3"; "Part 2" for a part by amount. */
@@ -168,7 +175,7 @@ function chargeRow(label: string, base: string, amount: string, cols: number): s
   return label.slice(0, w).padEnd(w) + base.padStart(11) + amount.padStart(11)
 }
 
-type HeadInput = Pick<ReceiptPayload, 'reprint' | 'header' | 'billNo' | 'closedAt' | 'cashier' | 'pax' | 'tableLabel' | 'splitFrom'>
+type HeadInput = Pick<ReceiptPayload, 'reprint' | 'header' | 'billNo' | 'closedAt' | 'cashier' | 'pax' | 'paxChildren' | 'tableLabel' | 'splitFrom'>
 type BodyInput = Pick<ReceiptPayload, 'items' | 'itemCount' | 'subtotalSen' | 'billDiscountSen' | 'sstGroups' | 'serviceChargeGroups'
   | 'takeawayFeeSen' | 'roundingSen' | 'totalSen'>
 
@@ -189,7 +196,7 @@ function headLines(r: HeadInput, cols: number): string[] {
     ...(r.splitFrom ? wrap(toAscii(splitFromLine(r.splitFrom)), cols) : []),   // the · added here is not ASCII yet
     ...lr('Date', formatMyt(r.closedAt), cols),
     ...lr('Cashier', r.cashier ?? '-', cols),
-    ...(r.pax !== null ? lr('Table pax', String(r.pax), cols) : []),
+    ...(r.pax !== null ? lr('Table pax', `${r.pax}${paxChildrenNote(r.paxChildren)}`, cols) : []),
     ...center(r.tableLabel ? `ORDER ${r.tableLabel}` : 'TAKEAWAY', cols),
   ]
 }

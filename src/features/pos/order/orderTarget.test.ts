@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { billTitle, shownPax, takesNewItems, targetBill, targetKey, targetOrderType, targetTitle } from './orderTarget'
+import { billTitle, shownChildren, shownPax, takesNewItems, targetBill, targetKey, targetOrderType, targetTitle } from './orderTarget'
 import type { OpenBillRow } from './posApi'
 
 const bill = (id: string, table_id: string | null, pax: number | null = null): OpenBillRow =>
@@ -26,6 +26,13 @@ describe('order targets', () => {
     expect(shownPax({ kind: 'table', tableId: 't1', pax: 2 }, bills[0])).toBe(4)
     expect(shownPax({ kind: 'table', tableId: 't2', pax: 2 }, null)).toBe(2)
     expect(shownPax({ kind: 'takeaway', billId: '002' }, bills[1])).toBeNull()
+  })
+  it('children (W7): the bill\'s once it has a pax, else the ones chosen with the pax', () => {
+    expect(shownChildren({ kind: 'table', tableId: 't1', pax: 2, children: 1 }, { ...bills[0], pax_children: 2 })).toBe(2)
+    expect(shownChildren({ kind: 'table', tableId: 't1', pax: 2, children: 1 }, bills[0])).toBeNull()
+    expect(shownChildren({ kind: 'table', tableId: 't2', pax: 3, children: 1 }, null)).toBe(1)
+    expect(shownChildren({ kind: 'table', tableId: 't2', pax: 3 }, null)).toBeNull()
+    expect(shownChildren({ kind: 'takeaway', billId: '002' }, bills[1])).toBeNull()
   })
   it('titles', () => {
     expect(billTitle('t1', '261026-001', tables)).toBe('Table T1')

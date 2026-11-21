@@ -372,7 +372,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
       {drawerOpen && <OpenDrawerDialog branchId={branchId} onClose={() => setDrawerOpen(false)} />}
       {paxFor && (
         <PaxDialog title={`Table ${paxFor.label}`} current={null} onClose={() => setPaxFor(null)}
-          onPick={(n) => { const t = paxFor; setPaxFor(null); openOrder({ kind: 'table', tableId: t.id, pax: n }) }} />
+          onPick={(n, children) => { const t = paxFor; setPaxFor(null); openOrder({ kind: 'table', tableId: t.id, pax: n, children }) }} />
       )}
       {confirm && (
         <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)}

@@ -8,7 +8,7 @@ import { takeawayLabel } from './callNo'
  *  Select pax and goes with the first order (no bill exists before that, as today). A takeaway:
  *  an open takeaway bill, or `billId` null for a new takeaway order. */
 export type OrderTarget =
-  | { kind: 'table'; tableId: string; pax: number | null }
+  | { kind: 'table'; tableId: string; pax: number | null; children?: number | null }   // W7: of which children, with the pax
   | { kind: 'takeaway'; billId: string | null }
 
 export const targetOrderType = (t: OrderTarget): OrderType => (t.kind === 'table' ? 'dine_in' : 'takeaway')
@@ -31,6 +31,10 @@ export const TAKEAWAY_ONE_ORDER = 'A takeaway bill takes one order. For more ite
 /** The pax to show: the bill's, else what Select pax chose for a table with no bill yet. */
 export const shownPax = (t: OrderTarget, bill: OpenBillRow | null): number | null =>
   bill?.pax ?? (t.kind === 'table' ? t.pax : null)
+
+/** W7 spec §5: the children to show with that pax — the bill's once it has a pax, else what Select pax chose. */
+export const shownChildren = (t: OrderTarget, bill: OpenBillRow | null): number | null =>
+  bill?.pax != null ? bill.pax_children ?? null : t.kind === 'table' ? t.children ?? null : null
 
 /** "Table T3", "TA012 · Takeaway" (W4: a takeaway's call number), "Takeaway 261026-004" (a bill before W4)
  *  or "New takeaway". */

@@ -362,13 +362,14 @@ export async function refundBill(refundId: string, billId: string, amountSen: nu
 }
 
 /** Change the guests of an open dine-in bill (pos_set_bill_pax: 1–99, staff of its branch). */
-export async function setBillPax(billId: string, pax: number): Promise<void> {
-  const { error } = await supabase.rpc('pos_set_bill_pax', { p_bill_id: billId, p_pax: pax })
+/** The pax of an open dine-in bill and, W7, of which children (null = none given; the server clamps to the pax). */
+export async function setBillPax(billId: string, pax: number, children: number | null = null): Promise<void> {
+  const { error } = await supabase.rpc('pos_set_bill_pax', { p_bill_id: billId, p_pax: pax, p_children: children })
   if (error) fail(error)
 }
 
-export async function openTable(tableId: string, pax: number | null): Promise<string> {
-  const { data, error } = await supabase.rpc('open_table', { p_table_id: tableId, p_pax: pax })
+export async function openTable(tableId: string, pax: number | null, children: number | null = null): Promise<string> {
+  const { data, error } = await supabase.rpc('open_table', { p_table_id: tableId, p_pax: pax, p_children: children })
   if (error) fail(error)
   return data as string
 }

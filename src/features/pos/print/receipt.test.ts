@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { money, toAscii, renderReceiptLines, renderRefundSlipLines, splitFromLine, lr, center, partLabel, renderPartReceiptLines, type PartReceiptPayload, type ReceiptPayload, type RefundSlipPayload } from './receipt'
+import { paxChildrenNote, money, toAscii, renderReceiptLines, renderRefundSlipLines, splitFromLine, lr, center, partLabel, renderPartReceiptLines, type PartReceiptPayload, type ReceiptPayload, type RefundSlipPayload } from './receipt'
 
 // Receipt #87846 (Craft Cafe Cheras, 22/10/2026): the four prices, the totals and the
 // payment are the real ones; item names, header numbers and the time are placeholders
@@ -242,5 +242,21 @@ describe('part payments on receipts (split bill §6)', () => {
   it('labels a part with its N, or alone for a part by amount', () => {
     expect(partLabel(2, 3)).toBe('Part 2 of 3')
     expect(partLabel(2, null)).toBe('Part 2')
+  })
+})
+
+describe('children in the pax (W7 spec §5)', () => {
+  it('the words', () => {
+    expect(paxChildrenNote(1)).toBe(' (1 child)')
+    expect(paxChildrenNote(2)).toBe(' (2 children)')
+    expect(paxChildrenNote(0)).toBe('')
+    expect(paxChildrenNote(null)).toBe('')
+    expect(paxChildrenNote(undefined)).toBe('')
+  })
+  it('the Table pax row says them; a receipt without paxChildren prints as before', () => {
+    expect(renderReceiptLines({ ...r87846, paxChildren: 1 }, 48)).toContain(lr('Table pax', '4 (1 child)', 48)[0])
+    expect(renderReceiptLines({ ...r87846, paxChildren: 2 }, 48)).toContain(lr('Table pax', '4 (2 children)', 48)[0])
+    expect(renderReceiptLines({ ...r87846, paxChildren: null }, 48)).toEqual(renderReceiptLines(r87846, 48))
+    expect(renderReceiptLines(r87846, 48)).toContain('Table pax                                      4')
   })
 })
