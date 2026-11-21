@@ -119,7 +119,11 @@ export default function StockCountSetupPage() {
   }
 
   function openLocation(l: StorageLocation) {
-    setPicked(links.filter(x => x.location_id === l.id).sort((x, y) => x.sort_order - y.sort_order).map(x => x.item_id))
+    const activeIds = new Set(items.map(i => i.id))
+    setPicked(links
+      .filter(x => x.location_id === l.id && activeIds.has(x.item_id))
+      .sort((x, y) => x.sort_order - y.sort_order)
+      .map(x => x.item_id))
     setSearch('')
     setPanel({ kind: 'location', location: l })
   }
@@ -205,7 +209,7 @@ export default function StockCountSetupPage() {
         <h1 className="text-xl font-bold text-brown-dark">Locations & key items</h1>
 
         {allBranches && branches.length > 1 && (
-          <select className={inputCls} value={branchId} onChange={e => setBranchId(e.target.value)} aria-label="Branch">
+          <select className={inputCls} value={branchId} disabled={busy} onChange={e => setBranchId(e.target.value)} aria-label="Branch">
             {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
         )}
@@ -260,7 +264,8 @@ export default function StockCountSetupPage() {
               Removed: {inactive.map((l, i) => (
                 <span key={l.id}>
                   {i > 0 && ', '}
-                  <button type="button" className="underline" onClick={() => saveLocation(l, { is_active: true })}>{l.name}</button>
+                  <button type="button" className="underline" disabled={busy} aria-label={`Restore ${l.name}`}
+                    onClick={() => saveLocation(l, { is_active: true })}>{l.name}</button>
                 </span>
               ))} (tap to restore)
             </p>
