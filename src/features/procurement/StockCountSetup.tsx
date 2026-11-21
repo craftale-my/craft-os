@@ -131,7 +131,15 @@ export default function StockCountSetupPage() {
   async function saveLocationItems() {
     if (panel?.kind !== 'location') return
     const locId = panel.location.id
-    const ok = await run(() => call('set_location_items', { p_location_id: locId, p_item_ids: picked }))
+    // set_location_items replaces the whole list; keep links to items that are no
+    // longer active (not shown here) after the picked ones so they are not deleted.
+    const activeIds = new Set(items.map(i => i.id))
+    const kept = links
+      .filter(x => x.location_id === locId && !activeIds.has(x.item_id))
+      .sort((x, y) => x.sort_order - y.sort_order)
+      .map(x => x.item_id)
+    const ids = [...picked, ...kept.filter(i => !picked.includes(i))]
+    const ok = await run(() => call('set_location_items', { p_location_id: locId, p_item_ids: ids }))
     if (ok) {
       setPanel(null)
       load()

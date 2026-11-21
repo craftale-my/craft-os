@@ -4,11 +4,15 @@ import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import {
   itemsForCount, groupForCounting, groupProgress, entryKey, packsLooseToBase, baseToPacksLoose, uncountedItems,
+  strayEntries,
 } from '../../shared/lib/stocktake'
 import { qty } from '../../shared/lib/procurement'
 import type { Item, StorageLocation, ItemLocation, StockCount, StockCountEntry, Branch } from '../../shared/types'
 import { STOCK_COUNT_KIND_LABELS } from '../../shared/types'
 import StockCountResult from './StockCountResult'
+
+/** Tab key of the "Other entries" group (cannot clash with a location uuid or 'unassigned'). */
+const OTHER = 'other'
 
 const numCls =
   'w-20 h-11 px-2 rounded-xl border border-[#E8DDD0] bg-[#FDFAF6] text-center text-base font-bold text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
@@ -20,9 +24,11 @@ function parse(v: string): number | null {
 }
 
 /** One item at one location: packs + loose, saved on blur. Never shows system stock. */
-function CountRow({ item, locationId, saved, onSave }: {
+function CountRow({ item, locationId, place, saved, onSave }: {
   item: Item
   locationId: string | null
+  /** Where this entry was saved — shown on "Other entries" rows. */
+  place?: string
   saved: number | undefined
   onSave: (itemId: string, locationId: string | null, base: number | null) => Promise<void>
 }) {
@@ -66,6 +72,7 @@ function CountRow({ item, locationId, saved, onSave }: {
         <div className="min-w-0">
           <p className="text-sm font-semibold text-brown-dark">{item.name}</p>
           <p className="text-xs text-brown-faint">
+            {place && <span className="font-semibold text-brown-muted">{place} · </span>}
             {single ? item.base_unit : `1 ${item.purchase_unit} = ${qty(rate)} ${item.base_unit}`}
           </p>
         </div>
@@ -116,6 +123,8 @@ export default function StockCountSessionPage() {
   const cancelling = useRef(false)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Row saves still in flight: the confirm sheet waits for them before it can submit.
+  const [saving, setSaving] = useState(0)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -153,13 +162,24 @@ export default function StockCountSessionPage() {
   const entryMap = useMemo(
     () => new Map(entries.map(e => [entryKey(e.item_id, e.location_id), Number(e.counted_base)])), [entries])
   const missing = useMemo(() => uncountedItems(countItems, entries), [countItems, entries])
-  const activeTab = groups.some(g => g.key === tab) ? tab : groups[0]?.key ?? ''
+  // Saved numbers on rows the list no longer shows; they still count at submit.
+  const others = useMemo(() => strayEntries(countItems, groups, entries), [countItems, groups, entries])
+  const itemById = useMemo(() => new Map(countItems.map(i => [i.id, i])), [countItems])
+  const locName = useMemo(() => new Map(locations.map(l => [l.id, l.name])), [locations])
+  const activeTab = groups.some(g => g.key === tab) || (tab === OTHER && others.length > 0)
+    ? tab : groups[0]?.key ?? ''
   const group = groups.find(g => g.key === activeTab)
 
   async function saveEntry(itemId: string, locationId: string | null, base: number | null) {
-    const { error: err } = await supabase.rpc('save_count_entry', {
-      p_count_id: id, p_item_id: itemId, p_location_id: locationId, p_counted_base: base,
-    })
+    setSaving(n => n + 1)
+    let err: { message: string } | null
+    try {
+      ({ error: err } = await supabase.rpc('save_count_entry', {
+        p_count_id: id, p_item_id: itemId, p_location_id: locationId, p_counted_base: base,
+      }))
+    } finally {
+      setSaving(n => n - 1)
+    }
     if (err) { setError(err.message); throw err }
     setEntries(prev => {
       const rest = prev.filter(e => !(e.item_id === itemId && e.location_id === locationId))
@@ -193,6 +213,12 @@ export default function StockCountSessionPage() {
   function toggleGaps(on: boolean) {
     setOnlyGaps(on)
     setGapSnap(on ? snapshotGaps(group) : null)
+  }
+
+  function openConfirm() {
+    // Commit a field still being edited (its blur saves) before the sheet can be confirmed.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    setConfirming(true)
   }
 
   async function cancel() {
@@ -229,6 +255,7 @@ export default function StockCountSessionPage() {
   }
 
   const done = countItems.length - missing.length
+  const onOther = activeTab === OTHER
   const shownItems = group
     ? (onlyGaps && gapSnap ? group.items.filter(i => gapSnap.has(entryKey(i.id, group.locationId))) : group.items)
     : []
@@ -264,28 +291,61 @@ export default function StockCountSessionPage() {
                   </button>
                 )
               })}
-            </div>
-            <label className="flex items-center gap-2 text-xs text-brown-muted">
-              <input type="checkbox" checked={onlyGaps} onChange={e => toggleGaps(e.target.checked)} />
-              Not counted only
-            </label>
-            <div className="space-y-2">
-              {group && shownItems.map(i => (
-                <CountRow
-                  key={entryKey(i.id, group.locationId)}
-                  item={i}
-                  locationId={group.locationId}
-                  saved={entryMap.get(entryKey(i.id, group.locationId))}
-                  onSave={saveEntry}
-                />
-              ))}
-              {group && shownItems.length === 0 && (
-                <p className="text-sm text-brown-faint text-center py-4">Everything here is counted.</p>
+              {others.length > 0 && (
+                <button
+                  type="button" onClick={() => selectTab(OTHER)}
+                  className={`px-3 py-2 rounded-full text-xs font-semibold whitespace-nowrap border ${
+                    onOther ? 'bg-[#C4813A] border-[#C4813A] text-white' : 'bg-white border-[#D4C5B0] text-brown-medium'}`}
+                >
+                  Other entries · {others.length}
+                </button>
               )}
             </div>
-            <button type="button" onClick={cancel} className="text-xs text-brown-faint underline pt-2">Cancel this count</button>
+            {onOther ? (
+              <div className="space-y-2">
+                <p className="text-xs text-brown-faint">
+                  Numbers saved at a place this list no longer shows (a removed location, or an item moved
+                  during the count). They are still added to the item's total. Clear both boxes to remove one.
+                </p>
+                {others.map(e => {
+                  const it = itemById.get(e.item_id)!
+                  return (
+                    <CountRow
+                      key={`${OTHER}:${entryKey(e.item_id, e.location_id)}`}
+                      item={it}
+                      locationId={e.location_id}
+                      place={e.location_id ? locName.get(e.location_id) ?? 'Unknown location' : 'Unassigned'}
+                      saved={Number(e.counted_base)}
+                      onSave={saveEntry}
+                    />
+                  )
+                })}
+              </div>
+            ) : (
+              <>
+              <label className="flex items-center gap-2 text-xs text-brown-muted">
+                <input type="checkbox" checked={onlyGaps} onChange={e => toggleGaps(e.target.checked)} />
+                Not counted only
+              </label>
+              <div className="space-y-2">
+                {group && shownItems.map(i => (
+                  <CountRow
+                    key={entryKey(i.id, group.locationId)}
+                    item={i}
+                    locationId={group.locationId}
+                    saved={entryMap.get(entryKey(i.id, group.locationId))}
+                    onSave={saveEntry}
+                  />
+                ))}
+                {group && shownItems.length === 0 && (
+                  <p className="text-sm text-brown-faint text-center py-4">Everything here is counted.</p>
+                )}
+              </div>
+              </>
+            )}
           </>
         )}
+        <button type="button" onClick={cancel} className="text-xs text-brown-faint underline pt-2">Cancel this count</button>
         {error && <p className="text-sm text-red-700">{error}</p>}
       </div>
 
@@ -301,8 +361,8 @@ export default function StockCountSessionPage() {
                   <button type="button" onClick={() => setConfirming(false)} className="h-12 rounded-xl border border-[#D4C5B0] text-sm font-semibold text-brown-medium">
                     Keep counting
                   </button>
-                  <button type="button" onClick={submit} disabled={busy} className="h-12 rounded-xl bg-brown-btn text-white text-sm font-bold disabled:opacity-50">
-                    {busy ? 'Submitting…' : 'Submit count'}
+                  <button type="button" onClick={submit} disabled={busy || saving > 0} className="h-12 rounded-xl bg-brown-btn text-white text-sm font-bold disabled:opacity-50">
+                    {busy ? 'Submitting…' : saving > 0 ? 'Saving…' : 'Submit count'}
                   </button>
                 </div>
               </div>
@@ -313,7 +373,7 @@ export default function StockCountSessionPage() {
                   {missing.length > 0 && <span>{missing.length} to go</span>}
                 </div>
                 <button
-                  type="button" disabled={missing.length > 0} onClick={() => setConfirming(true)}
+                  type="button" disabled={missing.length > 0} onClick={openConfirm}
                   className="w-full h-12 rounded-xl bg-brown-btn text-white text-sm font-bold disabled:opacity-40"
                 >
                   Submit count

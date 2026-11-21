@@ -13,7 +13,8 @@ export interface CountGroup {
 /** Packs + loose base units → base units. Both blank = not counted (null). */
 export function packsLooseToBase(packs: number | null, loose: number | null, rate: number): number | null {
   if (packs == null && loose == null) return null
-  return (packs ?? 0) * rate + (loose ?? 0)
+  // Round to 3 dp (as the server stores it) so 3 × 1.1 saves as 3.3, not 3.3000000000000003.
+  return Math.round(((packs ?? 0) * rate + (loose ?? 0)) * 1000) / 1000
 }
 
 /** Base units → whole packs and the rest, for showing a saved count. */
@@ -54,6 +55,17 @@ export function groupForCounting(
   const rest = items.filter(i => !placed.has(i.id)).sort((a, b) => a.name.localeCompare(b.name))
   if (rest.length > 0) groups.push({ key: UNASSIGNED, label: 'Unassigned', locationId: null, items: rest })
   return groups
+}
+
+/**
+ * Entries for in-scope items saved at an (item, location) the count list no longer
+ * shows — the location was removed or the item moved during the count. They still
+ * add to the item's total at submit, so the screen lists them to be checked or cleared.
+ */
+export function strayEntries(items: Item[], groups: CountGroup[], entries: StockCountEntry[]): StockCountEntry[] {
+  const inScope = new Set(items.map(i => i.id))
+  const shown = new Set(groups.flatMap(g => g.items.map(i => entryKey(i.id, g.locationId))))
+  return entries.filter(e => inScope.has(e.item_id) && !shown.has(entryKey(e.item_id, e.location_id)))
 }
 
 /** How many items in the group have a number at that location. */

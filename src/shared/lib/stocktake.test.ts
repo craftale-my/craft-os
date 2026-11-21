@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   packsLooseToBase, baseToPacksLoose, itemsForCount, groupForCounting, groupProgress,
-  uncountedItems, sortResultLines, entryKey, UNASSIGNED,
+  uncountedItems, sortResultLines, entryKey, strayEntries, UNASSIGNED,
 } from './stocktake'
 import type { Item, StorageLocation, ItemLocation, StockCountEntry } from '../types'
 
@@ -26,6 +26,11 @@ describe('packsLooseToBase', () => {
   })
   it('returns null when both halves are blank', () => {
     expect(packsLooseToBase(null, null, 1000)).toBeNull()
+  })
+  it('rounds away floating-point noise to 3 dp', () => {
+    expect(packsLooseToBase(3, null, 1.1)).toBe(3.3)
+    expect(packsLooseToBase(0.1, 0.2, 1)).toBe(0.3)
+    expect(packsLooseToBase(null, 1.23456, 1000)).toBe(1.235)
   })
 })
 
@@ -101,5 +106,33 @@ describe('sortResultLines', () => {
       { name: 'c', variance_value: -9 }, { name: 'd', variance_value: 2 },
     ]
     expect(sortResultLines(lines).map(l => l.name)).toEqual(['c', 'a', 'b', 'd'])
+  })
+})
+
+describe('strayEntries', () => {
+  const items = [item('milk'), item('beans'), item('cups')]
+  const locations = [loc('bar', 1), loc('old', 2, false)]
+  const links: ItemLocation[] = [
+    { item_id: 'milk', location_id: 'bar', sort_order: 1 },
+    { item_id: 'beans', location_id: 'bar', sort_order: 2 },
+  ]
+  const groups = groupForCounting(items, locations, links)
+  const e = (item_id: string, location_id: string | null) =>
+    ({ item_id, location_id, counted_base: 1 }) as StockCountEntry
+
+  it('keeps nothing when every entry is on a shown row', () => {
+    expect(strayEntries(items, groups, [e('milk', 'bar'), e('cups', null)])).toEqual([])
+  })
+  it('finds an entry at a removed location', () => {
+    expect(strayEntries(items, groups, [e('milk', 'old')])).toEqual([e('milk', 'old')])
+  })
+  it('finds an Unassigned entry for an item that now has a location', () => {
+    expect(strayEntries(items, groups, [e('beans', null)])).toEqual([e('beans', null)])
+  })
+  it('finds an entry at a location the item was unlinked from', () => {
+    expect(strayEntries(items, groups, [e('cups', 'bar')])).toEqual([e('cups', 'bar')])
+  })
+  it('ignores entries for items outside the count', () => {
+    expect(strayEntries(items, groups, [e('gone', 'old')])).toEqual([])
   })
 })

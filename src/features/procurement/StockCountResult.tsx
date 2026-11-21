@@ -77,9 +77,14 @@ export default function StockCountResult({ count, branchName }: { count: StockCo
             <li key={l.item_id} className="bg-white rounded-xl border border-[#E8DDD0] px-4 py-3">
               <div className="flex items-start justify-between gap-3">
                 <p className="text-sm font-semibold text-brown-dark">{l.item.name}</p>
-                <span className={`text-sm font-bold whitespace-nowrap ${l.variance_value < 0 ? 'text-red-700' : l.variance_value > 0 ? 'text-green-700' : 'text-brown-muted'}`}>
-                  {signed(l.variance_value, money)}
-                </span>
+                {l.unit_cost == null ? (
+                  // No cost known anywhere when submitted: the line carries no RM value.
+                  <span className="text-xs font-semibold whitespace-nowrap text-brown-faint">No cost</span>
+                ) : (
+                  <span className={`text-sm font-bold whitespace-nowrap ${l.variance_value < 0 ? 'text-red-700' : l.variance_value > 0 ? 'text-green-700' : 'text-brown-muted'}`}>
+                    {signed(l.variance_value, money)}
+                  </span>
+                )}
               </div>
               <p className="text-xs text-brown-faint mt-1">
                 Counted {qty(Number(l.counted_base))} {l.item.base_unit} · Expected {qty(Number(l.expected_base))} {l.item.base_unit} ·{' '}
