@@ -1,3 +1,294 @@
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useParams, Link, useNavigate } from 'react-router-dom'
+import { supabase } from '../../shared/lib/supabase'
+import { useAuth } from '../auth/AuthContext'
+import {
+  itemsForCount, groupForCounting, groupProgress, entryKey, packsLooseToBase, baseToPacksLoose, uncountedItems,
+} from '../../shared/lib/stocktake'
+import { qty } from '../../shared/lib/procurement'
+import type { Item, StorageLocation, ItemLocation, StockCount, StockCountEntry, Branch } from '../../shared/types'
+import { STOCK_COUNT_KIND_LABELS } from '../../shared/types'
+import StockCountResult from './StockCountResult'
+
+const numCls =
+  'w-20 h-11 px-2 rounded-xl border border-[#E8DDD0] bg-[#FDFAF6] text-center text-base font-bold text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
+
+function parse(v: string): number | null {
+  if (v.trim() === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 ? n : NaN
+}
+
+/** One item at one location: packs + loose, saved on blur. Never shows system stock. */
+function CountRow({ item, locationId, saved, onSave }: {
+  item: Item
+  locationId: string | null
+  saved: number | undefined
+  onSave: (itemId: string, locationId: string | null, base: number | null) => Promise<void>
+}) {
+  const rate = Number(item.conversion_rate)
+  const single = rate === 1
+  const start = saved == null ? null : baseToPacksLoose(saved, rate)
+  const [packsText, setPacksText] = useState(start ? String(start.packs) : '')
+  const [looseText, setLooseText] = useState(start && start.loose ? String(start.loose) : '')
+  const [state, setState] = useState<'idle' | 'saving' | 'error'>('idle')
+
+  async function commit() {
+    const p = parse(packsText)
+    const l = single ? null : parse(looseText)
+    if (Number.isNaN(p) || Number.isNaN(l)) { setState('error'); return }
+    const base = packsLooseToBase(p, l, rate)
+    if (base === (saved ?? null)) return
+    setState('saving')
+    try {
+      await onSave(item.id, locationId, base)
+      setState('idle')
+    } catch {
+      setState('error')
+    }
+  }
+
+  return (
+    <div className={`bg-white rounded-xl border px-4 py-3 ${saved != null ? 'border-[#B9D7B0]' : 'border-[#E8DDD0]'}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-brown-dark">{item.name}</p>
+          <p className="text-xs text-brown-faint">
+            {single ? item.base_unit : `1 ${item.purchase_unit} = ${qty(rate)} ${item.base_unit}`}
+          </p>
+        </div>
+        <span className="text-xs font-semibold whitespace-nowrap">
+          {state === 'saving' ? <span className="text-brown-faint">Saving…</span>
+            : state === 'error' ? <span className="text-red-700">Not saved</span>
+            : saved != null ? <span className="text-green-700">✓ {qty(saved)} {item.base_unit}</span>
+            : null}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 mt-2">
+        <input
+          type="text" inputMode="decimal" className={numCls} value={packsText}
+          aria-label={`${item.name} ${single ? item.base_unit : item.purchase_unit}`}
+          onChange={e => setPacksText(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
+        />
+        <span className="text-xs text-brown-muted">{single ? item.base_unit : item.purchase_unit}</span>
+        {!single && (
+          <>
+            <span className="text-brown-faint">+</span>
+            <input
+              type="text" inputMode="decimal" className={numCls} value={looseText}
+              aria-label={`${item.name} loose ${item.base_unit}`}
+              onChange={e => setLooseText(e.target.value)} onBlur={commit} onFocus={e => e.target.select()}
+            />
+            <span className="text-xs text-brown-muted">{item.base_unit}</span>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function StockCountSessionPage() {
-  return null
+  const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const { staff } = useAuth()
+  const [count, setCount] = useState<StockCount | null>(null)
+  const [branch, setBranch] = useState<Branch | null>(null)
+  const [items, setItems] = useState<Item[]>([])
+  const [locations, setLocations] = useState<StorageLocation[]>([])
+  const [links, setLinks] = useState<ItemLocation[]>([])
+  const [entries, setEntries] = useState<StockCountEntry[]>([])
+  const [tab, setTab] = useState<string>('')
+  const [onlyGaps, setOnlyGaps] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    if (!id) return
+    const { data: c, error: cErr } = await supabase.from('stock_counts').select('*').eq('id', id).maybeSingle()
+    if (cErr || !c) { setError(cErr?.message ?? 'Count not found'); setLoading(false); return }
+    const sc = c as StockCount
+    const [bRes, iRes, lRes, eRes] = await Promise.all([
+      supabase.from('branches').select('*').eq('id', sc.branch_id).maybeSingle(),
+      supabase.from('items').select('*').eq('status', 'active').order('name'),
+      supabase.from('storage_locations').select('*').eq('branch_id', sc.branch_id),
+      supabase.from('stock_count_entries').select('*').eq('count_id', sc.id),
+    ])
+    const locs = (lRes.data as StorageLocation[]) ?? []
+    const linkRes = locs.length
+      ? await supabase.from('item_locations').select('*').in('location_id', locs.map(l => l.id))
+      : { data: [], error: null }
+    setCount(sc)
+    setBranch((bRes.data as Branch) ?? null)
+    setItems((iRes.data as Item[]) ?? [])
+    setLocations(locs)
+    setLinks((linkRes.data as ItemLocation[]) ?? [])
+    setEntries((eRes.data as StockCountEntry[]) ?? [])
+    setError(iRes.error?.message ?? eRes.error?.message ?? '')
+    setLoading(false)
+  }, [id])
+
+  useEffect(() => { load() }, [load])
+
+  const countItems = useMemo(() => (count ? itemsForCount(items, count.kind) : []), [items, count])
+  const groups = useMemo(() => groupForCounting(countItems, locations, links), [countItems, locations, links])
+  const entryMap = useMemo(
+    () => new Map(entries.map(e => [entryKey(e.item_id, e.location_id), Number(e.counted_base)])), [entries])
+  const missing = useMemo(() => uncountedItems(countItems, entries), [countItems, entries])
+  const activeTab = groups.some(g => g.key === tab) ? tab : groups[0]?.key ?? ''
+  const group = groups.find(g => g.key === activeTab)
+
+  async function saveEntry(itemId: string, locationId: string | null, base: number | null) {
+    const { error: err } = await supabase.rpc('save_count_entry', {
+      p_count_id: id, p_item_id: itemId, p_location_id: locationId, p_counted_base: base,
+    })
+    if (err) { setError(err.message); throw err }
+    setEntries(prev => {
+      const rest = prev.filter(e => !(e.item_id === itemId && e.location_id === locationId))
+      if (base == null) return rest
+      return [...rest, {
+        id: '', count_id: id!, item_id: itemId, location_id: locationId, counted_base: base,
+        counted_by: staff?.id ?? null, counted_at: new Date().toISOString(),
+      }]
+    })
+  }
+
+  async function submit() {
+    setBusy(true)
+    setError('')
+    const { data, error: err } = await supabase.rpc('submit_stock_count', { p_count_id: id })
+    setBusy(false)
+    setConfirming(false)
+    if (err) { setError(err.message); load(); return }
+    setCount(data as StockCount)
+  }
+
+  async function cancel() {
+    if (!window.confirm('Cancel this count? Numbers entered so far are discarded and stock is not changed.')) return
+    const { error: err } = await supabase.rpc('cancel_stock_count', { p_count_id: id })
+    if (err) { setError(err.message); return }
+    navigate('/procurement/stock-counts')
+  }
+
+  if (loading) return <div className="min-h-screen bg-cream-light px-4 py-8 text-center text-sm text-brown-faint">Loading…</div>
+  if (!count) {
+    return (
+      <div className="min-h-screen bg-cream-light px-4 py-8 text-center">
+        <p className="text-sm text-brown-muted">{error || 'Count not found.'}</p>
+        <Link to="/procurement/stock-counts" className="text-sm text-[#C4813A] font-semibold">← Stock Count</Link>
+      </div>
+    )
+  }
+
+  if (count.status !== 'in_progress') {
+    return (
+      <div className="min-h-screen bg-cream-light px-4 py-6">
+        <div className="max-w-2xl mx-auto space-y-3">
+          <Link to="/procurement/stock-counts" className="text-sm text-brown-muted">← Stock Count</Link>
+          {count.status === 'cancelled'
+            ? <p className="text-sm text-brown-muted">This count was cancelled. Stock was not changed.</p>
+            : <StockCountResult count={count} branchName={branch?.name ?? ''} />}
+        </div>
+      </div>
+    )
+  }
+
+  const done = countItems.length - missing.length
+  const shownItems = group
+    ? (onlyGaps ? group.items.filter(i => !entryMap.has(entryKey(i.id, group.locationId))) : group.items)
+    : []
+
+  return (
+    <div className="min-h-screen bg-cream-light pb-36">
+      <div className="max-w-2xl mx-auto px-4 pt-6 space-y-3">
+        <Link to="/procurement/stock-counts" className="text-sm text-brown-muted">← Stock Count</Link>
+        <div>
+          <h1 className="text-xl font-bold text-brown-dark">{STOCK_COUNT_KIND_LABELS[count.kind]} count</h1>
+          <p className="text-xs text-brown-faint">{branch?.name} · Count what is there; system stock is hidden until you submit.</p>
+        </div>
+
+        {countItems.length === 0 ? (
+          <p className="text-sm text-brown-muted bg-white rounded-xl border border-[#E8DDD0] p-4">
+            {count.kind === 'weekly'
+              ? 'No key items yet. A manager marks key items under Locations & key items.'
+              : 'There are no active items to count.'}
+          </p>
+        ) : (
+          <>
+            <div className="flex gap-2 overflow-x-auto pb-1 -mx-4 px-4">
+              {groups.map(g => {
+                const p = groupProgress(g, entryMap)
+                const on = g.key === activeTab
+                return (
+                  <button
+                    key={g.key} type="button" onClick={() => setTab(g.key)}
+                    className={`px-3 py-2 rounded-full text-xs font-semibold whitespace-nowrap border ${
+                      on ? 'bg-[#C4813A] border-[#C4813A] text-white' : 'bg-white border-[#D4C5B0] text-brown-medium'}`}
+                  >
+                    {g.label} · {p.done}/{p.total}
+                  </button>
+                )
+              })}
+            </div>
+            <label className="flex items-center gap-2 text-xs text-brown-muted">
+              <input type="checkbox" checked={onlyGaps} onChange={e => setOnlyGaps(e.target.checked)} />
+              Not counted only
+            </label>
+            <div className="space-y-2">
+              {group && shownItems.map(i => (
+                <CountRow
+                  key={entryKey(i.id, group.locationId)}
+                  item={i}
+                  locationId={group.locationId}
+                  saved={entryMap.get(entryKey(i.id, group.locationId))}
+                  onSave={saveEntry}
+                />
+              ))}
+              {group && shownItems.length === 0 && (
+                <p className="text-sm text-brown-faint text-center py-4">Everything here is counted.</p>
+              )}
+            </div>
+            <button type="button" onClick={cancel} className="text-xs text-brown-faint underline pt-2">Cancel this count</button>
+          </>
+        )}
+        {error && <p className="text-sm text-red-700">{error}</p>}
+      </div>
+
+      {countItems.length > 0 && (
+        <div className="fixed bottom-0 inset-x-0 bg-white border-t border-[#E8DDD0] px-4 py-3">
+          <div className="max-w-2xl mx-auto">
+            {confirming ? (
+              <div className="space-y-2">
+                <p className="text-sm text-brown-dark">
+                  Stock on hand at {branch?.name} will be set to these counts for {countItems.length} items. This cannot be undone.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" onClick={() => setConfirming(false)} className="h-12 rounded-xl border border-[#D4C5B0] text-sm font-semibold text-brown-medium">
+                    Keep counting
+                  </button>
+                  <button type="button" onClick={submit} disabled={busy} className="h-12 rounded-xl bg-brown-btn text-white text-sm font-bold disabled:opacity-50">
+                    {busy ? 'Submitting…' : 'Submit count'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex justify-between text-xs text-brown-muted mb-2">
+                  <span>{done} of {countItems.length} items counted</span>
+                  {missing.length > 0 && <span>{missing.length} to go</span>}
+                </div>
+                <button
+                  type="button" disabled={missing.length > 0} onClick={() => setConfirming(true)}
+                  className="w-full h-12 rounded-xl bg-brown-btn text-white text-sm font-bold disabled:opacity-40"
+                >
+                  Submit count
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
