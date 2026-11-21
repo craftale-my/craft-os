@@ -2,7 +2,9 @@
 -- VERIFY — Stocktake (2026-11-22). DEV ONLY (craft-os-dev).
 --
 -- Creates four [TEST] key items (three costed, one with no cost anywhere),
--- acts as the [TEST] Cheras supervisor login, and always ends by
+-- then three more for the branch-scope rule (2026-11-22: a count covers only
+-- the items the branch carries = linked to an active location there OR stock
+-- on hand there), acts as the [TEST] Cheras supervisor login, and always ends by
 -- raising its report as an error so every change is rolled back.
 -- Last line: VERIFY OK or VERIFY FAILED.
 -- ============================================================================
@@ -18,6 +20,14 @@ declare
   v_b    uuid;   -- item B: 4 on hand at RM 2.00, counted 6   -> gain 2
   v_c    uuid;   -- item C: 5 on hand, counted 5              -> no ledger row
   v_d    uuid;   -- item D: no cost anywhere, 0 on hand, counted 2 -> gain at no cost
+                 --         (in scope through its Cheras location, VERIFY Dry)
+  v_e    uuid;   -- item E: key item, no location at Cheras, 0 on hand there -> out of scope
+  v_f    uuid;   -- item F: key item, stock at Cheras, no location there      -> in scope
+  v_g    uuid;   -- item G: key item, linked only at Puchong, 0 at Cheras     -> out of scope
+  v_loc4 uuid;   -- Cheras location holding item D
+  v_locp uuid;   -- Puchong location holding item G
+  v_count2 stock_counts%rowtype;
+  v_pcount uuid;
   v_loc1 uuid;
   v_loc2 uuid;
   v_loc3 uuid;   -- deactivated mid-count
@@ -31,9 +41,9 @@ declare
   v_avg_after  numeric;
   v_bal  numeric;
 begin
-  -- Fixture (as postgres): no key items and no open count at Cheras yet.
+  -- Fixture (as postgres): no key items and no open count at Cheras or Puchong yet.
   update items set count_weekly = false where count_weekly;
-  delete from stock_counts where branch_id = c_cheras and status = 'in_progress';
+  delete from stock_counts where branch_id in (c_cheras, c_puchong) and status = 'in_progress';
 
   perform set_config('request.jwt.claims', json_build_object('sub', c_sup_cheras, 'role', 'authenticated')::text, true);
 
@@ -102,12 +112,15 @@ begin
   insert into storage_locations (branch_id, name, sort_order) values (c_cheras, '[TEST] VERIFY Front', 0) returning id into v_loc1;
   insert into storage_locations (branch_id, name, sort_order) values (c_cheras, '[TEST] VERIFY Back', 1) returning id into v_loc2;
   insert into storage_locations (branch_id, name, sort_order) values (c_cheras, '[TEST] VERIFY Old', 2) returning id into v_loc3;
+  -- D has no stock anywhere, so only a Cheras location puts it in scope.
+  insert into storage_locations (branch_id, name, sort_order) values (c_cheras, '[TEST] VERIFY Dry', 3) returning id into v_loc4;
+  insert into item_locations (item_id, location_id) values (v_d, v_loc4);
   execute 'set local role authenticated';
   perform save_count_entry(v_count.id, v_a, v_loc1, 4);
   perform save_count_entry(v_count.id, v_a, v_loc2, 3);   -- A total 7
   perform save_count_entry(v_count.id, v_a, v_loc3, 1);   -- cleared below once Old is removed
   perform save_count_entry(v_count.id, v_b, null, 6);
-  perform save_count_entry(v_count.id, v_d, null, 2);     -- D: gain of 2 at no cost
+  perform save_count_entry(v_count.id, v_d, v_loc4, 2);   -- D: gain of 2 at no cost
   begin
     perform submit_stock_count(v_count.id);
     v_ok := false;
@@ -240,12 +253,88 @@ begin
   v_out := v_out || format(E'%s  entries refused after submit\n', case when v_ok then 'PASS' else 'FAIL' end);
   v_fail := v_fail or not v_ok;
 
+  -- 12. Branch scope (owner decision 2026-11-22) ------------------------------
+  -- Fixture (as postgres): E = key item with no location at Cheras and nothing
+  -- on hand there; F = key item with stock at Cheras but no location; G = key
+  -- item linked only to a Puchong location, nothing on hand at Cheras.
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price, count_weekly)
+  values ('[TEST] VERIFY Stocktake E', 'raw', 'pcs', 'pcs', 1, 1, true) returning id into v_e;
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price, count_weekly)
+  values ('[TEST] VERIFY Stocktake F', 'raw', 'pcs', 'pcs', 1, 1, true) returning id into v_f;
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price, count_weekly)
+  values ('[TEST] VERIFY Stocktake G', 'raw', 'pcs', 'pcs', 1, 1, true) returning id into v_g;
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type)
+  values (v_f, c_cheras, 'stock_in', 3, 1, 'manual');
+  insert into storage_locations (branch_id, name, sort_order) values (c_puchong, '[TEST] VERIFY Puchong Shelf', 0) returning id into v_locp;
+  insert into item_locations (item_id, location_id) values (v_g, v_locp);
+  insert into stock_counts (branch_id, kind) values (c_puchong, 'weekly') returning id into v_pcount;
+
+  execute 'set local role authenticated';
+  v_count2 := start_stock_count(c_cheras, 'weekly');
+
+  -- 12a. E (no location, zero balance) is not in scope
+  v_ok := not exists (select 1 from stock_count_scope(v_count2.id) s where s = v_e);
+  v_out := v_out || format(E'%s  scope: key item with no Cheras location and no stock there is out\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+
+  -- 12b. F (stock at Cheras, no location) is in scope
+  v_ok := exists (select 1 from stock_count_scope(v_count2.id) s where s = v_f);
+  v_out := v_out || format(E'%s  scope: key item with stock at Cheras but no location is in\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+
+  -- 12c. G (linked only at Puchong, zero at Cheras) is not in Cheras's scope;
+  --      the scope is exactly A-D + F (A, B, C, F by stock; D by location).
+  v_ok := not exists (select 1 from stock_count_scope(v_count2.id) s where s = v_g);
+  select count(*) into v_n from stock_count_scope(v_count2.id) s where s in (v_a, v_b, v_c, v_d, v_e, v_f, v_g);
+  v_ok := v_ok and v_n = 5;
+  v_out := v_out || format(E'%s  scope: item linked only at another branch is out (%s of 7 test items in)\n', case when v_ok then 'PASS' else 'FAIL' end, v_n);
+  v_fail := v_fail or not v_ok;
+
+  -- 12a'. E and G do not block submit and are not written; F is
+  perform save_count_entry(v_count2.id, v_a, null, 7);
+  perform save_count_entry(v_count2.id, v_b, null, 6);
+  perform save_count_entry(v_count2.id, v_c, null, 5);
+  perform save_count_entry(v_count2.id, v_d, v_loc4, 2);
+  perform save_count_entry(v_count2.id, v_f, null, 3);
+  begin
+    v_count2 := submit_stock_count(v_count2.id);
+    v_ok := v_count2.status = 'submitted' and v_count2.item_count = 5;
+  exception when others then
+    v_ok := false;
+    v_out := v_out || format(E'      submit error: %s\n', sqlerrm);
+  end;
+  v_ok := v_ok
+      and exists (select 1 from stock_count_items where count_id = v_count2.id and item_id = v_f)
+      and not exists (select 1 from stock_count_items where count_id = v_count2.id and item_id in (v_e, v_g));
+  v_out := v_out || format(E'%s  scope: out-of-scope items do not block submit and are not written\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+
+  -- 12d. A Cheras supervisor cannot read the scope of a Puchong count
+  begin
+    perform stock_count_scope(v_pcount);
+    v_ok := false;
+  exception when others then v_ok := sqlerrm like '%Not authorised to count stock at this branch%';
+  end;
+  v_out := v_out || format(E'%s  supervisor cannot read another branch''s count scope\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+
+  -- 12e. The internal helper is not callable by clients
+  begin
+    perform stock_count_scope_for(c_cheras, 'full');
+    v_ok := false;
+  exception when insufficient_privilege then v_ok := true;
+  end;
+  execute 'reset role';
+  v_out := v_out || format(E'%s  stock_count_scope_for not executable by authenticated\n', case when v_ok then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or not v_ok;
+
   -- 10. anon cannot run any stocktake function -------------------------------
   select not bool_or(has_function_privilege('anon', p.oid, 'execute')) into v_ok
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public'
      and p.proname in ('save_storage_location', 'set_location_items', 'set_item_count_weekly',
-                       'start_stock_count', 'save_count_entry', 'cancel_stock_count', 'submit_stock_count');
+                       'start_stock_count', 'save_count_entry', 'cancel_stock_count', 'submit_stock_count',
+                       'stock_count_scope', 'stock_count_scope_for');
   v_out := v_out || format(E'%s  anon cannot execute stocktake functions\n', case when v_ok then 'PASS' else 'FAIL' end);
   v_fail := v_fail or not v_ok;
 

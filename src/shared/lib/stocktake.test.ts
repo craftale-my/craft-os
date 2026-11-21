@@ -47,12 +47,18 @@ describe('baseToPacksLoose', () => {
 })
 
 describe('itemsForCount', () => {
-  const items = [item('a', { count_weekly: true }), item('b'), item('c', { count_weekly: true, status: 'inactive' })]
-  it('weekly = active key items', () => {
-    expect(itemsForCount(items, 'weekly').map(i => i.id)).toEqual(['a'])
+  const items = [item('a', { count_weekly: true }), item('b'), item('c', { count_weekly: true, status: 'inactive' }), item('d')]
+  it('keeps only items in the server scope, in list order', () => {
+    expect(itemsForCount(items, new Set(['b', 'a'])).map(i => i.id)).toEqual(['a', 'b'])
   })
-  it('full = every active item', () => {
-    expect(itemsForCount(items, 'full').map(i => i.id)).toEqual(['a', 'b'])
+  it('drops an inactive item even when the scope lists it', () => {
+    expect(itemsForCount(items, new Set(['c', 'd'])).map(i => i.id)).toEqual(['d'])
+  })
+  it('empty scope = nothing to count', () => {
+    expect(itemsForCount(items, new Set())).toEqual([])
+  })
+  it('ignores scope ids with no loaded item', () => {
+    expect(itemsForCount(items, new Set(['zzz', 'b'])).map(i => i.id)).toEqual(['b'])
   })
 })
 

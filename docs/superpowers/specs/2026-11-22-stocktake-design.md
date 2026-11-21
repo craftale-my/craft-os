@@ -9,7 +9,8 @@ Inventory v2 (live since 2026-10-30) records stock in, wastage, transfers and pr
 
 ## Owner decisions (2026-11-22)
 
-1. **Cadence:** key items weekly, every item monthly. A count is either `weekly` (items flagged as key items) or `full` (every active item).
+1. **Cadence:** key items weekly, every item monthly. A count is either `weekly` (carried items flagged as key items) or `full` (every carried item).
+   **Scope (decided 2026-11-22):** items are global (one catalogue for all branches), so a count at a branch covers only the items that branch *carries*: active AND (linked to an active storage location of that branch OR its stock balance there — sum of `inventory_transactions.quantity` for item + branch — is not zero). This replaced the earlier "every active item" / "every active key item". The rule lives in one SQL helper, `stock_count_scope_for(branch, kind)`, used by `start_stock_count`, `submit_stock_count` and `stock_count_scope`.
 2. **No approval step:** submitting a count adjusts stock immediately. Managers review the variance afterwards.
 3. **Blind count:** the counting screen never shows the system quantity. Expected quantity and variance appear only after submit.
 4. **Ordered by storage location:** each branch has its own locations (Chiller 1, Freezer, Dry Store, Bar …); the count list is grouped by location in walking order.
@@ -36,12 +37,13 @@ Changes to existing objects:
 ## RPCs (SECURITY DEFINER, `use_procurement` capability, branch checked with `can_access_branch`)
 
 - `save_storage_location(id, branch_id, name, sort_order, is_active)`, `set_location_items(location_id, item_ids[])` (replaces that location's item list, in walking order), `set_item_count_weekly(item_id, value)` — manager+ (`manage_procurement`). Locations are deactivated, never deleted.
-- `start_stock_count(branch_id, kind)` → count id. Fails if the branch already has an in-progress count (returns that count's id in the error so the screen can open it).
+- `start_stock_count(branch_id, kind)` → count id. Fails if the branch already has an in-progress count (returns that count's id in the error so the screen can open it). Refuses an empty scope: weekly "No key items yet. A manager marks key items under Locations & key items."; full "No items to count at this branch yet. Give items a storage location under Locations & key items."
+- `stock_count_scope(count_id)` → set of item ids the count covers (its branch and kind), computed live. Ids only, so the counting screen stays blind. `use_procurement` + `can_access_branch`. The helper `stock_count_scope_for(branch_id, kind)` is internal (not executable by clients).
 - `save_count_entry(count_id, item_id, location_id, counted_base)` — upsert; only while `in_progress`; `counted_base ≥ 0`. A null `counted_base` deletes the entry (clears a mistaken number).
 - `cancel_stock_count(count_id)` — only while `in_progress`; started_by or manager+.
 - `submit_stock_count(count_id)`:
   1. Lock the count row; it must be `in_progress`.
-  2. Build the item list: `full` = every active item; `weekly` = active items with `count_weekly`. Every listed item must have an entry (0 is valid) at every active location at the count's branch it is linked to; an item linked to no active location there needs an entry with `location_id` null (Unassigned) or, to tolerate layout changes mid-count, any entry at all. Entries at other locations still add to the item's total. Otherwise raise "N spot(s) not counted yet" (the screen lists them). Decided 2026-11-22 so a spot nobody counted is not silently written off as a loss.
+  2. Build the item list from the scope (decided 2026-11-22): `full` = every item the branch carries; `weekly` = carried items with `count_weekly`. Carried = active AND (linked to an active location at the count's branch OR non-zero balance there). Entries for items outside the scope are ignored. Every listed item must have an entry (0 is valid) at every active location at the count's branch it is linked to; an item linked to no active location there needs an entry with `location_id` null (Unassigned) or, to tolerate layout changes mid-count, any entry at all. Entries at other locations still add to the item's total. Otherwise raise "N spot(s) not counted yet" (the screen lists them). Decided 2026-11-22 so a spot nobody counted is not silently written off as a loss.
   3. Per item, take the same advisory lock key as the other stock-out paths (`'stock_out:'||item||':'||branch`), then `expected_base` = current balance at the branch, `variance_base = counted − expected`.
   4. Unit cost = `inventory_avg_unit_cost(item, branch)`; if the branch holds no stock, fall back to `latest_price / conversion_rate`. A gain at this cost leaves the moving average unchanged.
   5. When `variance_base ≠ 0`, insert one `stocktake` ledger row with `quantity = variance_base` and the stamped `unit_cost`. Afterwards the balance equals the counted quantity, so it is never negative.
@@ -61,7 +63,8 @@ Supervisors see only their own branch; managers see all branches (same rule as t
 
 ## Edge cases
 
-- An item added after a count started is included at submit if it matches the kind, so it must be counted before submit.
+- An item added after a count started is included at submit if it matches the kind and the branch carries it (scope is computed live), so it must be counted before submit.
+- An item the branch does not carry (no location there, zero balance) never appears; to count stock found of such an item, a manager first gives it a location at that branch.
 - Inactive items are left out of new counts; entries already saved for them are ignored.
 - Two people entering the same item and location: last save wins (the entry shows who counted it).
 - Counting while trading: expected stock is taken at submit, so receiving or wastage logged during the count is reflected. Staff are told to count before opening or after closing.

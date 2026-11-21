@@ -121,7 +121,7 @@ export default function StockCountsPage() {
                   {starting === kind ? 'Starting…' : `Start ${kind} count`}
                 </p>
                 <p className="text-xs text-brown-faint mt-1">
-                  {kind === 'weekly' ? 'Key items only' : 'Every item at this branch'}
+                  {kind === 'weekly' ? 'Key items only' : 'Every item this branch carries'}
                 </p>
               </button>
             ))}

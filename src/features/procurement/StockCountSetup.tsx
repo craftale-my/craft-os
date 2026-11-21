@@ -230,6 +230,7 @@ export default function StockCountSetupPage() {
 
         <section className="space-y-2">
           <h2 className="text-sm font-bold text-brown-dark">Storage locations — walking order</h2>
+          <p className="text-xs text-brown-faint">A branch counts an item if it has a location here or stock on hand.</p>
           {active.length === 0 && <p className="text-sm text-brown-faint">No locations yet. Add them in the order you walk the store.</p>}
           {active.map((l, idx) => {
             const n = links.filter(x => x.location_id === l.id).length

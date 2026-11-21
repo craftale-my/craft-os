@@ -116,6 +116,8 @@ export default function StockCountSessionPage() {
   const [locations, setLocations] = useState<StorageLocation[]>([])
   const [links, setLinks] = useState<ItemLocation[]>([])
   const [entries, setEntries] = useState<StockCountEntry[]>([])
+  // Item ids this count covers (server rule: items the branch carries). Ids only — the screen stays blind.
+  const [scope, setScope] = useState<Set<string> | null>(null)
   const [tab, setTab] = useState<string>('')
   const [onlyGaps, setOnlyGaps] = useState(false)
   // Keys uncounted at the moment "Not counted only" was switched on or the tab changed; rows stay put while being filled.
@@ -133,11 +135,12 @@ export default function StockCountSessionPage() {
     const { data: c, error: cErr } = await supabase.from('stock_counts').select('*').eq('id', id).maybeSingle()
     if (cErr || !c) { setError(cErr?.message ?? 'Count not found'); setLoading(false); return }
     const sc = c as StockCount
-    const [bRes, iRes, lRes, eRes] = await Promise.all([
+    const [bRes, iRes, lRes, eRes, sRes] = await Promise.all([
       supabase.from('branches').select('*').eq('id', sc.branch_id).maybeSingle(),
       supabase.from('items').select('*').eq('status', 'active').order('name'),
       supabase.from('storage_locations').select('*').eq('branch_id', sc.branch_id),
       supabase.from('stock_count_entries').select('*').eq('count_id', sc.id),
+      supabase.rpc('stock_count_scope', { p_count_id: sc.id }),
     ])
     const locs = (lRes.data as StorageLocation[]) ?? []
     const linkRes = locs.length
@@ -149,15 +152,17 @@ export default function StockCountSessionPage() {
     setLocations(locs)
     setLinks((linkRes.data as ItemLocation[]) ?? [])
     setEntries((eRes.data as StockCountEntry[]) ?? [])
+    // Keep the last good scope if this reload failed, rather than emptying the list.
+    if (!sRes.error) setScope(new Set((sRes.data as string[] | null) ?? []))
     const loadErr = bRes.error?.message ?? iRes.error?.message ?? lRes.error?.message
-      ?? linkRes.error?.message ?? eRes.error?.message
+      ?? linkRes.error?.message ?? eRes.error?.message ?? sRes.error?.message
     if (loadErr) setError(loadErr)
     setLoading(false)
   }, [id])
 
   useEffect(() => { load() }, [load])
 
-  const countItems = useMemo(() => (count ? itemsForCount(items, count.kind) : []), [items, count])
+  const countItems = useMemo(() => (scope ? itemsForCount(items, scope) : []), [items, scope])
   const groups = useMemo(() => groupForCounting(countItems, locations, links), [countItems, locations, links])
   const entryMap = useMemo(
     () => new Map(entries.map(e => [entryKey(e.item_id, e.location_id), Number(e.counted_base)])), [entries])
@@ -270,11 +275,11 @@ export default function StockCountSessionPage() {
           <p className="text-xs text-brown-faint">{branch?.name} · Count what is there; system stock is hidden until you submit.</p>
         </div>
 
-        {countItems.length === 0 ? (
+        {scope === null ? null : countItems.length === 0 ? (
           <p className="text-sm text-brown-muted bg-white rounded-xl border border-[#E8DDD0] p-4">
             {count.kind === 'weekly'
               ? 'No key items yet. A manager marks key items under Locations & key items.'
-              : 'There are no active items to count.'}
+              : 'No items to count at this branch yet. Give items a storage location under Locations & key items.'}
           </p>
         ) : (
           <>

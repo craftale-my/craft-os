@@ -1,4 +1,4 @@
-import type { Item, StorageLocation, ItemLocation, StockCountEntry, StockCountKind } from '../types'
+import type { Item, StorageLocation, ItemLocation, StockCountEntry } from '../types'
 
 export const UNASSIGNED = 'unassigned'
 
@@ -25,9 +25,14 @@ export function baseToPacksLoose(base: number, rate: number): { packs: number; l
   return { packs, loose: loose < 0 ? 0 : loose }
 }
 
-/** Items a count of this kind must cover: weekly = active key items, full = every active item. */
-export function itemsForCount(items: Item[], kind: StockCountKind): Item[] {
-  return items.filter(i => i.status === 'active' && (kind === 'full' || i.count_weekly))
+/**
+ * Items a count must cover: the active items whose ids are in the count's scope.
+ * The scope comes from the server (stock_count_scope): the items the branch carries
+ * (linked to an active location there, or stock on hand there), key items only for
+ * a weekly count. Ids only, so the counting screen stays blind.
+ */
+export function itemsForCount(items: Item[], scope: ReadonlySet<string>): Item[] {
+  return items.filter(i => i.status === 'active' && scope.has(i.id))
 }
 
 /** Key for an item at a location (null location = Unassigned). */

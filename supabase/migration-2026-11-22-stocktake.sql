@@ -209,6 +209,60 @@ end;
 $$;
 
 -- 6. Counting functions (anyone with use_procurement at the branch) -----------
+
+-- Scope (owner decision 2026-11-22): items are global, but a count at a branch
+-- covers only the items that branch carries. An item is carried at a branch
+-- when it is active AND (it is linked to an active storage location of that
+-- branch OR its stock balance there is not zero). full = carried items;
+-- weekly = carried key items. Computed live; internal helper (not callable by
+-- clients) so start, submit and stock_count_scope share one rule.
+create or replace function stock_count_scope_for(p_branch_id uuid, p_kind text)
+returns setof uuid
+language sql stable security definer
+set search_path = public, pg_temp
+as $$
+  with on_hand as (
+    select t.item_id
+      from inventory_transactions t
+     where t.branch_id = p_branch_id
+     group by t.item_id
+    having coalesce(sum(t.quantity), 0) <> 0
+  )
+  select i.id
+    from items i
+   where i.status = 'active'
+     and (p_kind = 'full' or i.count_weekly)
+     and (exists (select 1 from item_locations il
+                    join storage_locations sl on sl.id = il.location_id
+                         and sl.branch_id = p_branch_id and sl.is_active
+                   where il.item_id = i.id)
+          or exists (select 1 from on_hand h where h.item_id = i.id))
+$$;
+
+-- The in-scope item ids of a count (its branch and kind), for the counting
+-- screen. Ids only: the screen stays blind (no balances leave the server).
+create or replace function stock_count_scope(p_count_id uuid)
+returns setof uuid
+language plpgsql stable security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_count stock_counts%rowtype;
+begin
+  if not has_procurement_cap('use_procurement') then
+    raise exception 'Not authorised to count stock';
+  end if;
+  select * into v_count from stock_counts where id = p_count_id;
+  if not found then
+    raise exception 'Count not found';
+  end if;
+  if not can_access_branch(v_count.branch_id) then
+    raise exception 'Not authorised to count stock at this branch';
+  end if;
+  return query select s.id from stock_count_scope_for(v_count.branch_id, v_count.kind) as s(id);
+end;
+$$;
+
 create or replace function start_stock_count(p_branch_id uuid, p_kind text)
 returns stock_counts
 language plpgsql security definer
@@ -231,11 +285,13 @@ begin
     raise exception 'Branch not found';
   end if;
   -- An empty count could never be submitted (nothing to count), so refuse it up front.
-  if p_kind = 'weekly' and not exists (select 1 from items where status = 'active' and count_weekly) then
-    raise exception 'No key items yet. A manager marks key items under Locations & key items.';
-  end if;
-  if p_kind = 'full' and not exists (select 1 from items where status = 'active') then
-    raise exception 'There are no active items to count.';
+  -- Scope = items this branch carries (see stock_count_scope_for).
+  if not exists (select 1 from stock_count_scope_for(p_branch_id, p_kind)) then
+    if p_kind = 'weekly' then
+      raise exception 'No key items yet. A manager marks key items under Locations & key items.';
+    else
+      raise exception 'No items to count at this branch yet. Give items a storage location under Locations & key items.';
+    end if;
   end if;
   select id into v_open from stock_counts where branch_id = p_branch_id and status = 'in_progress';
   if found then
@@ -346,6 +402,7 @@ set search_path = public, pg_temp
 as $$
 declare
   v_count    stock_counts%rowtype;
+  v_scope    uuid[];
   v_missing  int;
   r          record;
   v_expected numeric;
@@ -371,43 +428,41 @@ begin
     raise exception 'This count is no longer open';
   end if;
 
+  -- Scope: the items this branch carries (stock_count_scope_for), computed once.
+  v_scope := array(select s.id from stock_count_scope_for(v_count.branch_id, v_count.kind) as s(id));
+
   -- Every active location an item is linked to at this branch needs its own
   -- number (0 is valid). An item linked to no active location here needs an
   -- entry at all (Unassigned, or anywhere, so a layout change mid-count is tolerated).
   select
     (select count(*)
-       from items i
-       join item_locations il on il.item_id = i.id
+       from unnest(v_scope) as sc(item_id)
+       join item_locations il on il.item_id = sc.item_id
        join storage_locations sl on sl.id = il.location_id
             and sl.branch_id = v_count.branch_id and sl.is_active
-      where i.status = 'active'
-        and (v_count.kind = 'full' or i.count_weekly)
-        and not exists (select 1 from stock_count_entries e
-                         where e.count_id = p_count_id and e.item_id = i.id
+      where not exists (select 1 from stock_count_entries e
+                         where e.count_id = p_count_id and e.item_id = sc.item_id
                            and e.location_id = sl.id))
     +
     (select count(*)
-       from items i
-      where i.status = 'active'
-        and (v_count.kind = 'full' or i.count_weekly)
-        and not exists (select 1 from item_locations il
+       from unnest(v_scope) as sc(item_id)
+      where not exists (select 1 from item_locations il
                           join storage_locations sl on sl.id = il.location_id
                                and sl.branch_id = v_count.branch_id and sl.is_active
-                         where il.item_id = i.id)
+                         where il.item_id = sc.item_id)
         and not exists (select 1 from stock_count_entries e
-                         where e.count_id = p_count_id and e.item_id = i.id))
+                         where e.count_id = p_count_id and e.item_id = sc.item_id))
     into v_missing;
   if v_missing > 0 then
     raise exception '% spot(s) not counted yet', v_missing;
   end if;
 
   for r in
-    select i.id as item_id, sum(e.counted_base) as counted
-      from items i
-      join stock_count_entries e on e.item_id = i.id and e.count_id = p_count_id
-     where i.status = 'active' and (v_count.kind = 'full' or i.count_weekly)
-     group by i.id
-     order by i.id
+    select sc.item_id, sum(e.counted_base) as counted
+      from unnest(v_scope) as sc(item_id)
+      join stock_count_entries e on e.item_id = sc.item_id and e.count_id = p_count_id
+     group by sc.item_id
+     order by sc.item_id
   loop
     perform pg_advisory_xact_lock(hashtext('stock_out:' || r.item_id::text || ':' || v_count.branch_id::text));
     select coalesce(sum(quantity), 0) into v_expected
@@ -455,6 +510,8 @@ revoke all on function start_stock_count(uuid, text) from public, anon;
 revoke all on function save_count_entry(uuid, uuid, uuid, numeric) from public, anon;
 revoke all on function cancel_stock_count(uuid) from public, anon;
 revoke all on function submit_stock_count(uuid) from public, anon;
+revoke all on function stock_count_scope(uuid) from public, anon;
+revoke all on function stock_count_scope_for(uuid, text) from public, anon, authenticated;
 grant execute on function save_storage_location(uuid, uuid, text, int, boolean) to authenticated;
 grant execute on function set_location_items(uuid, uuid[]) to authenticated;
 grant execute on function set_item_count_weekly(uuid, boolean) to authenticated;
@@ -462,3 +519,4 @@ grant execute on function start_stock_count(uuid, text) to authenticated;
 grant execute on function save_count_entry(uuid, uuid, uuid, numeric) to authenticated;
 grant execute on function cancel_stock_count(uuid) to authenticated;
 grant execute on function submit_stock_count(uuid) to authenticated;
+grant execute on function stock_count_scope(uuid) to authenticated;
