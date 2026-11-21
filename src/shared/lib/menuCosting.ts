@@ -53,3 +53,13 @@ export function costStatus(v: {
 export function formatBp(bp: number | null): string {
   return bp == null ? '—' : `${(bp / 100).toFixed(1)}%`
 }
+
+/** True when two recipes hold the same items with the same quantities (order ignored). */
+export function sameRecipeLines(
+  a: { item_id: string; qty_base: number }[],
+  b: { item_id: string; qty_base: number }[],
+): boolean {
+  if (a.length !== b.length) return false
+  const m = new Map(b.map(l => [l.item_id, l.qty_base]))
+  return a.every(l => m.has(l.item_id) && m.get(l.item_id) === l.qty_base)
+}

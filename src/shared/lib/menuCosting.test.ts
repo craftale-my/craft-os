@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  packsLooseToBase, baseToPacksLoose, lineCost, recipeCost, foodCostBp, costStatus, formatBp,
+  packsLooseToBase, baseToPacksLoose, lineCost, recipeCost, foodCostBp, costStatus, formatBp, sameRecipeLines,
 } from './menuCosting'
 
 describe('packsLooseToBase', () => {
@@ -72,5 +72,14 @@ describe('formatBp', () => {
     expect(formatBp(2083)).toBe('20.8%')
     expect(formatBp(2500)).toBe('25.0%')
     expect(formatBp(null)).toBe('—')
+  })
+})
+
+describe('sameRecipeLines', () => {
+  it('compares items and quantities, ignoring order', () => {
+    expect(sameRecipeLines([{ item_id: 'a', qty_base: 1 }, { item_id: 'b', qty_base: 2 }], [{ item_id: 'b', qty_base: 2 }, { item_id: 'a', qty_base: 1 }])).toBe(true)
+    expect(sameRecipeLines([{ item_id: 'a', qty_base: 1 }], [{ item_id: 'a', qty_base: 2 }])).toBe(false)
+    expect(sameRecipeLines([{ item_id: 'a', qty_base: 1 }], [])).toBe(false)
+    expect(sameRecipeLines([], [])).toBe(true)
   })
 })
