@@ -255,5 +255,148 @@ begin
   end if;
 end $$;
 
+-- ── V3. Drawer kicks (spec §5): a payment, a part, a refund with a method that opens the drawer queue a
+--    drawer job before their receipt / slip; a card one does not; pay in / out kick; a reprint never ──
+do $$
+declare
+  v_a     uuid := pg_temp.id('branch');
+  v_since bigint;
+  v_kinds text[];
+  v_jobs  jsonb[];
+  v_t     uuid;
+  v_due   integer;
+begin
+  update payment_methods set opens_drawer = (kind = 'cash') where branch_id = v_a;
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- T2 (a card part of 5.00 in V2): the rest in cash → drawer, then the receipt
+  v_due := (pos_bill_totals(pg_temp.id('T2'))->>'totalSen')::integer - pos_bill_paid_parts(pg_temp.id('T2'));
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform checkout_bill(pg_temp.id('T2'), pg_temp.pay('cash', v_due, v_due), gen_random_uuid());
+  select array_agg(payload->>'kind' order by seq), array_agg(payload order by seq) into v_kinds, v_jobs
+    from print_jobs where branch_id = v_a and seq > v_since;
+  if v_kinds is distinct from array['drawer', 'receipt'] then raise exception 'FAIL V3 cash checkout: %', v_kinds; end if;
+  if v_jobs[1] is distinct from '{"kind": "drawer", "route": "Bar", "reason": "Payment"}'::jsonb
+     or (select kind from print_jobs where branch_id = v_a and seq > v_since order by seq limit 1) is distinct from 'receipt' then
+    raise exception 'FAIL V3 the drawer job: %', v_jobs[1];
+  end if;
+  -- D1 by card: the receipt only
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform checkout_bill(pg_temp.id('D1'), pg_temp.pay('card', (pos_bill_totals(pg_temp.id('D1'))->>'totalSen')::integer), gen_random_uuid());
+  select array_agg(payload->>'kind' order by seq) into v_kinds from print_jobs where branch_id = v_a and seq > v_since;
+  if v_kinds is distinct from array['receipt'] then raise exception 'FAIL V3 card checkout: %', v_kinds; end if;
+  -- a cash part on a new takeaway T3: drawer, then the part receipt
+  v_t := pg_temp.bill_of(pg_temp.order_on(null, null, array['latte']));
+  perform pg_temp.put('T3', v_t);
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform pay_bill_part(v_t, gen_random_uuid(), 500, null, pg_temp.pay('cash', 500, 500), 0);
+  select array_agg(payload->>'kind' order by seq), array_agg(payload order by seq) into v_kinds, v_jobs
+    from print_jobs where branch_id = v_a and seq > v_since;
+  if v_kinds is distinct from array['drawer', 'part'] or v_jobs[1]->>'reason' is distinct from 'Part payment' then
+    raise exception 'FAIL V3 cash part: %', v_jobs;
+  end if;
+  -- refunds on T2 (5.00 card, 5.60 cash): cash → drawer, slip; card → the slip only
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform pg_temp.ok(refund_bill(gen_random_uuid(), pg_temp.id('T2'), 100, pg_temp.id('cash'), 'Cold drink', pg_temp.id('sup'), '2222'), 'V3 cash refund');
+  select array_agg(payload->>'kind' order by seq), array_agg(payload order by seq) into v_kinds, v_jobs
+    from print_jobs where branch_id = v_a and seq > v_since;
+  if v_kinds is distinct from array['drawer', 'refund'] or v_jobs[1]->>'reason' is distinct from 'Refund' then
+    raise exception 'FAIL V3 cash refund: %', v_jobs;
+  end if;
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform pg_temp.ok(refund_bill(gen_random_uuid(), pg_temp.id('T2'), 100, pg_temp.id('card'), 'Cold drink', pg_temp.id('sup'), '2222'), 'V3 card refund');
+  select array_agg(payload->>'kind' order by seq) into v_kinds from print_jobs where branch_id = v_a and seq > v_since;
+  if v_kinds is distinct from array['refund'] then raise exception 'FAIL V3 card refund: %', v_kinds; end if;
+  -- pay in and pay out: a kick each
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform pg_temp.ok(record_cash_move(gen_random_uuid(), 'pay_in', 2000, 'Float top-up', null, null), 'V3 pay in');
+  perform pg_temp.ok(record_cash_move(gen_random_uuid(), 'pay_out', 500, 'Ice', pg_temp.id('sup'), '2222'), 'V3 pay out');
+  select array_agg(payload->>'reason' order by seq) into v_kinds from print_jobs where branch_id = v_a and seq > v_since;
+  if v_kinds is distinct from array['Pay in', 'Pay out'] then raise exception 'FAIL V3 pay in / out: %', v_kinds; end if;
+  -- a reprint never kicks
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform reprint_receipt(pg_temp.id('T2'));
+  select array_agg(payload->>'kind' order by seq) into v_kinds from print_jobs where branch_id = v_a and seq > v_since;
+  if v_kinds is distinct from array['receipt'] then raise exception 'FAIL V3 reprint: %', v_kinds; end if;
+  -- cash that does not open the drawer: no kick
+  update payment_methods set opens_drawer = false where id = pg_temp.id('cash');
+  v_t := pg_temp.bill_of(pg_temp.order_on(null, null, array['latte']));
+  v_due := (pos_bill_totals(v_t)->>'totalSen')::integer;
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform checkout_bill(v_t, pg_temp.pay('cash', v_due, v_due), gen_random_uuid());
+  select array_agg(payload->>'kind' order by seq) into v_kinds from print_jobs where branch_id = v_a and seq > v_since;
+  if v_kinds is distinct from array['receipt'] then raise exception 'FAIL V3 opens_drawer off: %', v_kinds; end if;
+  update payment_methods set opens_drawer = true where id = pg_temp.id('cash');
+end $$;
+
+-- ── V4. Open drawer (spec §5): a reason needed, logged with its shift and cashier, one kick per id, the
+--    outlet's template, no receipt printer refused ──
+do $$
+declare
+  v_a     uuid := pg_temp.id('branch');
+  v_id    uuid := gen_random_uuid();
+  v_since bigint;
+  v_row   pos_drawer_opens;
+  v_jobs  jsonb[];
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  perform pg_temp.expect_error(format('select pos_open_drawer(%L, %L)', gen_random_uuid(), ' '), 'Choose a reason', 'V4 no reason');
+  v_since := (select coalesce(max(seq), 0) from print_jobs);
+  perform pg_temp.ok(pos_open_drawer(v_id, 'Give change'), 'V4 open');
+  select * into v_row from pos_drawer_opens where id = v_id;
+  if v_row.branch_id is distinct from v_a or v_row.shift_id is distinct from pg_temp.id('shift')
+     or v_row.opened_by is distinct from pg_temp.id('cashier') or v_row.reason is distinct from 'Give change' then
+    raise exception 'FAIL V4 the log: %', to_jsonb(v_row);
+  end if;
+  -- a resend of the same id: logged once, kicked once
+  perform pg_temp.ok(pos_open_drawer(v_id, 'Give change'), 'V4 resend');
+  if (select count(*) from pos_drawer_opens where id = v_id) <> 1 then raise exception 'FAIL V4 a resend logged twice'; end if;
+  select array_agg(payload order by seq) into v_jobs from print_jobs where branch_id = v_a and seq > v_since;
+  if v_jobs is distinct from array['{"kind": "drawer", "route": "Bar", "reason": "Give change"}'::jsonb] then
+    raise exception 'FAIL V4 the kick: %', v_jobs;
+  end if;
+  -- a second open; the live Z report counts both
+  perform pg_temp.ok(pos_open_drawer(gen_random_uuid(), 'Swap a note'), 'V4 second open');
+  if pos_shift_report(pg_temp.id('shift'))->'cash'->>'noSaleOpens' is distinct from '2' then
+    raise exception 'FAIL V4 live Z report: %', pos_shift_report(pg_temp.id('shift'))->'cash';
+  end if;
+  -- the outlet's template without Other: only its reasons
+  insert into reason_templates(branch_id, action, reasons, compulsory, allow_other) values (v_a, 'open_drawer', '{Give change}', true, false);
+  perform pg_temp.expect_error(format('select pos_open_drawer(%L, %L)', gen_random_uuid(), 'Felt like it'),
+    'Choose one of the listed reasons', 'V4 listed reasons');
+  -- no receipt printer: refused, nothing logged
+  update branch_pos_settings set receipt_route = null where branch_id = v_a;
+  perform pg_temp.expect_error(format('select pos_open_drawer(%L, %L)', gen_random_uuid(), 'Give change'),
+    'No receipt printer is set — choose one in POS settings', 'V4 no receipt printer');
+  update branch_pos_settings set receipt_route = 'Bar' where branch_id = v_a;
+  if (select count(*) from pos_drawer_opens where branch_id = v_a) <> 2 then
+    raise exception 'FAIL V4 opens logged: %', (select count(*) from pos_drawer_opens where branch_id = v_a);
+  end if;
+end $$;
+
+-- ── V5. Reports → Cash drawer counts the opens; the frozen Z report keeps them; no shift, no Open drawer ──
+do $$
+declare
+  v_a   uuid := pg_temp.id('branch');
+  v     jsonb;
+  v_exp integer;
+  v_day date := pos_business_day(now());
+begin
+  perform pg_temp.act(pg_temp.id('owner'));
+  v := pos_report_drawer(array[v_a], v_day, v_day);
+  if jsonb_array_length(v->'shifts') <> 1 or v->'shifts'->0->>'noSaleOpens' is distinct from '2' then
+    raise exception 'FAIL V5 Cash drawer report: %', v;
+  end if;
+  -- close the shift at the expected cash: the frozen report keeps the count
+  perform pg_temp.act(pg_temp.id('dev'));
+  v_exp := pos_shift_expected_cash(pg_temp.id('shift'));
+  v := close_shift(pg_temp.id('shift'), v_exp, null, null, null, v_exp);
+  if not coalesce((v->>'ok')::boolean, false) or v->'report'->'cash'->>'noSaleOpens' is distinct from '2' then
+    raise exception 'FAIL V5 frozen Z report: %', v;
+  end if;
+  perform pg_temp.expect_error(format('select pos_open_drawer(%L, %L)', gen_random_uuid(), 'Give change'),
+    'Open a shift first.', 'V5 no shift');
+end $$;
+
+
 select 'VERIFY OK' as result;
 rollback;
