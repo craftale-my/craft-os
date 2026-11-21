@@ -95,10 +95,12 @@ phone is often not the one who ordered).
     never appears as a channel name.
   - **To verify first:** that an `anon` client may broadcast on a public channel in the dev project. If
     it may not, the page reads every 4 s while in view instead, and nothing else in this design changes.
-- **Stale carts.** A line is ignored and deleted on the next read when it is older than 2 hours
-  (assumed), or when it was created before the table's most recent bill was closed (paid or voided).
+- **Stale carts.** A line is deleted on the next read when it is older than 2 hours (assumed), or when
+  the table has no open bill and the line was created before the table's most recent bill was closed
+  (paid or voided).
   The next party never inherits the last party's cart.
-- **Limits.** 60 lines per table cart (assumed); quantity 1–99; note 200 characters (as today); name
+- **Limits.** 50 lines per table cart and quantity 1–20 per line (both are `pos_insert_order`'s own
+  limits for one order); note 200 characters (as today); name
   20 characters, trimmed, control characters removed; avatar must be one of the 8 keys. The existing
   limit of 5 QR orders per table per minute stays.
 - **The old call stays.** `place_table_order` is kept as it is, so a page that was open across the
@@ -120,7 +122,7 @@ create table if not exists qr_cart_lines (
   product_id   uuid not null,
   variant_id   uuid not null,
   option_ids   uuid[] not null default '{}',
-  qty          integer not null check (qty between 1 and 99),
+  qty          integer not null check (qty between 1 and 20),
   note         text,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
@@ -142,39 +144,44 @@ the messages `place_table_order` uses today.
   ```json
   { "version": "<text>",
     "lines": [ { "id": "…", "guestId": "…", "guestLabel": "Eric", "guestAvatar": "a3",
-                 "productId": "…", "variantId": "…", "optionIds": ["…"], "qty": 1, "note": null,
-                 "available": true } ] }
+                 "productId": "…", "variantId": "…", "optionIds": ["…"], "qty": 1, "note": null } ] }
   ```
 
   ordered by `created_at`. `version` is a hash of the lines' ids and `updated_at`; the client sends it
-  back when it sends the cart. `available` is false when `pos_insert_order` would refuse the line now
-  (product or variant not on the branch's QR menu, outside its time slot, sold out, an option
-  unavailable). That test is taken out of `pos_insert_order` into one helper both call, so the two
-  cannot disagree.
+  back when it sends the cart. **Whether a line is available is judged on the phone** from the menu it
+  already holds (`qr_menu`, read again every minute): product on the menu, not sold out, variant and
+  options still offered — the test the page applies to its own cart today. Every phone holds the same
+  menu, so they agree. The server stays the judge at Send (below).
 - **`qr_cart_put(p_token, p_guest jsonb, p_line jsonb, p_line_id uuid) returns uuid`** — `p_guest` is
   `{id, name, avatar}`; `p_line` is today's `OrderLine`. With `p_line_id` null it inserts (refused at
-  60 lines: `This table's order is full. Please send it first.`). With `p_line_id` it replaces that
+  50 lines: `This table's order is full. Please send it first.`). With `p_line_id` it replaces that
   line, only when the line is on this table and its `guest_id` equals `p_guest.id`; otherwise
-  `You can only change your own items.` The line must be orderable now, with the reasons
-  `pos_insert_order` gives.
+  `You can only change your own items.` It checks the line's shape and that the product and variant
+  exist; whether it can be ordered is checked by the item sheet before and by `pos_insert_order` at Send.
 - **`qr_cart_remove(p_token, p_guest_id uuid, p_line_id uuid) returns void`** — same ownership rule.
   Removing a line that is already gone succeeds.
 - **`qr_cart_rename(p_token, p_guest jsonb) returns void`** — sets name and avatar on that guest's
   lines in the cart.
-- **`qr_cart_send(p_token, p_pax integer, p_version text, p_client_order_id uuid) returns jsonb`** —
+- **`qr_cart_send(p_token, p_pax integer, p_version text, p_skip uuid[], p_client_order_id uuid) returns
+  jsonb`** — `p_skip` is the ids of the lines the sender's phone shows as unavailable.
   1. A resend of an order that already went in returns `{ "status": "sent", "orderId": … }` (same
      idempotency as `place_table_order`).
   2. Runs `place_table_order`'s checks: active, not paused, `qr_requires_open_bill`, 5 per minute.
   3. Locks the table's cart lines. If the current version differs from `p_version`, returns
      `{ "status": "changed" }` and sends nothing.
-  4. Takes the available lines; none → `Nothing to send.`
+  4. Takes the lines not in `p_skip`; none → `Nothing to send.`
   5. Calls `pos_insert_order` with source `qr` and those lines, each carrying its `guestId`, avatar and
      label (§3, computed against the labels already on the table's open bill).
-  6. Deletes **all** the table's cart lines, the unavailable ones too, and returns
+  6. Deletes **all** the table's cart lines, the skipped ones too, and returns
      `{ "status": "sent", "orderId": … }`.
-- **`pos_insert_order`** — re-created with two changes: an item may carry `guestId`, `guestLabel` and
-  `guestAvatar`, stored on `order_items`; and each ticket line gains `"guest": <label>` when the item has one. Lines
-  from the counter are byte-for-byte what they are today.
+
+  If `pos_insert_order` refuses a line after all (it left the menu within the last minute), nothing is
+  sent, the error names the item, and the page reads the menu again at once — the line then shows as
+  unavailable and the next Send skips it.
+- **`pos_insert_order`** — re-created from its live text with two changes, marked `-- G`: a QR item may
+  carry `guestId`, `guestLabel` and `guestAvatar`, stored on `order_items`; and each ticket line gains
+  `"guest": <label>` when the item has one. Its checks are not touched. Lines from the counter are
+  byte-for-byte what they are today.
 - **`qr_table_state`** — each item gains `guestLabel` and `guestAvatar` from `order_items` (both null
   for counter items, which the page lists under `Ordered at the counter`).
 - **The POS's bill items read** (`BillItemRow`'s query) — gains `guest_id`, `guest_label`.
@@ -205,7 +212,7 @@ the label this guest already has on the bill if any; else `p_name` if no other g
   leftTheMenu / leftTheMenuNotice / pruneAfterRefresh` and their tests once nothing uses them.
 - **Ticket** — `TicketLine` gains `guest?: string`; the ticket text prints the line as
   `1 × Latte — Eric` (wrapped by the existing `wrap`). An add-on's own line on another route carries
-  the same guest. Void tickets carry it too.
+  the same guest. Void tickets are unchanged (they name the item and the table).
 - **POS bill column** — a sent row with a label shows it in small muted type after the name.
 - **Split items** (`SplitItemsScreen`) — when the bill's live lines carry at least two different guest
   labels, a row of chips sits above the list, one per label. A tap picks every remaining unit of that
@@ -227,12 +234,11 @@ the label this guest already has on the bill if any; else `p_name` if no other g
 
 ## 7. Testing
 
-- Unit (vitest): `qrGuest` (clean name, storage fallback), `qrCart` (grouping, totals skip unavailable
-  lines, toast text for one / several / own additions / removals), `useTableCart` with a mocked client
+- Unit (vitest): `qrGuest` (clean name, storage fallback), `qrCart` (grouping, which lines are unavailable, totals skip them, toast text for one / several / own additions / removals), `useTableCart` with a mocked client
   (stale reply dropped, ping after write, `changed` handling), `GuestCard`, `SendSheet`, ticket text
   with and without a guest, the Split chips.
-- SQL verify script on dev: put / replace / remove with the right and the wrong guest; the 60-line cap;
-  an unavailable line is marked and skipped by Send; `changed` on a version mismatch; idempotent resend;
+- SQL verify script on dev: put / replace / remove with the right and the wrong guest; the 50-line cap;
+  a skipped line is left out by Send and deleted with the rest; `changed` on a version mismatch; idempotent resend;
   labels (`Guest`, `Guest 2`, a returning guest keeps their label); stale lines after 2 h and after a
   bill close; ticket payload carries `guest`; counter orders unchanged.
 - By hand on dev, two phones on one table: names and avatars, live toast, edit own / cannot edit
@@ -242,7 +248,7 @@ the label this guest already has on the bill if any; else `p_name` if no other g
 ## 8. Build order
 
 1. Verify anon Broadcast on dev (§3).
-2. Migration: table, columns, the shared "orderable now" helper, cart functions, `pos_insert_order`,
+2. Migration: table, columns, cart functions, `pos_insert_order`,
    `qr_table_state`; verify script.
 3. `qrGuest`, `qrCart`, `useTableCart` with tests.
 4. `GuestCard`, `SendSheet`, `QrApp` wiring; remove the dead `qrState` helpers.
