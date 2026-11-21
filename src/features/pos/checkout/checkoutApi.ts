@@ -374,6 +374,13 @@ export async function openTable(tableId: string, pax: number | null, children: n
   return data as string
 }
 
+/** W7 spec §6: mark sent, live lines of one open bill served (or not served); how many changed. No PIN. */
+export async function setItemsServed(itemIds: string[], served: boolean): Promise<number> {
+  const { data, error } = await supabase.rpc('set_items_served', { p_item_ids: itemIds, p_served: served })
+  if (error) fail(error)
+  return Number(data ?? 0)
+}
+
 /** Paid, voided and merged bills of the branch closed since `sinceIso` (newest first). */
 export async function fetchClosedBillsSince(branchId: string, sinceIso: string): Promise<ClosedBillRow[]> {
   const { data, error } = await supabase.from('bills')

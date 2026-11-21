@@ -79,9 +79,9 @@ export default function BillColumn(p: {
             <div className="text-xs text-brown-muted">#{o.order_no} · {o.source === 'qr' ? 'QR' : 'Counter'} · {time(o.placed_at)}</div>
             {view.sent.filter((s) => s.item.order_id === orderId).map((s) => (
               <button key={s.item.id} type="button" disabled={s.voided} onClick={() => p.onSentTap(s)}
-                className={`flex min-h-11 w-full justify-between gap-2 py-1.5 text-left ${s.voided ? 'line-through opacity-50' : ''}`}>
+                className={`flex min-h-11 w-full justify-between gap-2 py-1.5 text-left ${s.voided ? 'line-through opacity-50' : s.served ? 'text-brown-muted' : ''}`}>
                 <span>
-                  <LineText qty={s.qty} name={s.name} mods={s.mods} note={s.note} guest={s.item.guest_label} />
+                  <LineText qty={s.qty} name={s.name} mods={s.mods} note={s.note} guest={s.item.guest_label} served={s.served} />
                   <DiscountRows rows={s.discountRows} />
                 </span>
                 <span className="tabular-nums">{formatSen(s.amountSen)}</span>
@@ -135,10 +135,13 @@ export default function BillColumn(p: {
   )
 }
 
-function LineText({ qty, name, mods, note, guest }: { qty: number; name: string; mods: string[]; note: string | null; guest?: string | null }) {
+function LineText({ qty, name, mods, note, guest, served = false }: {
+  qty: number; name: string; mods: string[]; note: string | null; guest?: string | null
+  served?: boolean   // W7: ✓ before the line; nothing prints
+}) {
   return (
     <span>
-      {qty} × {name}{guest && <span className="ml-1 text-xs text-brown-muted">· {guest}</span>}
+      {served && <span aria-hidden="true">✓ </span>}{qty} × {name}{guest && <span className="ml-1 text-xs text-brown-muted">· {guest}</span>}
       {mods.map((m, k) => <span key={k} className="block pl-4 text-xs text-brown-muted">+ {m}</span>)}
       {note && <span className="block pl-4 text-xs italic text-brown-muted">* {note}</span>}
     </span>

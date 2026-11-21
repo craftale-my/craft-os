@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import BillColumn from './BillColumn'
 import type { BillView } from './billView'
+import { billView } from './billView'
+import type { BillItemRow } from './posApi'
 
 afterEach(cleanup)
 
@@ -62,5 +64,24 @@ describe('BillColumn pax with children (W7 spec §5)', () => {
     expect(screen.getByRole('button', { name: '4 pax (2 children)' })).toBeTruthy()
     rerender(<BillColumn {...props} pax={4} paxChildren={null} onPax={() => {}} catalogName={null} onCatalog={null} />)
     expect(screen.getByRole('button', { name: '4 pax' })).toBeTruthy()
+  })
+})
+
+describe('BillColumn served lines (W7 spec §6)', () => {
+  const row = (id: string, served: string | null): BillItemRow => ({
+    id, order_id: 'o1', product_id: 'p1', name_snapshot: 'Latte', unit_price_sen: 900, sst_rate_bp: 600, takeaway_fee_sen: 0,
+    order_type: 'dine_in', qty: 2, note: null, modifiers_snapshot: [], voided_at: null, catalog_discount_bp: 0, catalog_discount_name: null,
+    discount_kind: null, discount_value: null, discount_reason: null, served_at: served,
+    orders: { order_no: '1', source: 'counter', placed_at: '2026-11-22T02:00:00Z' },
+  })
+  it('a served line: ✓ before its name, muted; an unserved one as before', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [row('i1', '2026-11-22T03:00:00Z'), row('i2', null)],
+      lines: [], menu: null, info: new Map(), billing: null })
+    render(<BillColumn {...props} view={v} catalogName={null} onCatalog={null} />)
+    const [served, open] = screen.getAllByRole('button', { name: /× Latte/ })
+    expect(served.textContent).toMatch(/^✓ 2 × Latte/)
+    expect(served.className).toContain('text-brown-muted')
+    expect(open.textContent).toMatch(/^2 × Latte/)
+    expect(open.className).not.toContain('text-brown-muted')
   })
 })

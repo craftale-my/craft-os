@@ -19,7 +19,7 @@ import ItemActionsOverlay from './ItemActionsOverlay'
 import MoveToGrid from './MoveToGrid'
 import { billActionNotes, billActions, clearedNotice, itemActionNotes, itemActions, type BillAction, type ItemAction } from './billActions'
 import { SPLIT_ACTION_LABEL } from './splitSelection'
-import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
+import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, unservedIds, type DraftRow, type SentRow } from './billView'
 import { moveTargets, type MoveTarget } from './moveTargets'
 import { shownChildren, shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
 import { withPhotos, type PadProductInfo } from './padInfo'
@@ -28,7 +28,7 @@ import { tileSlotLabel } from './padSlots'
 import { padPastLastOrder } from './orderWindow'
 import type { BillSummary } from './billSummaries'
 import {
-  clearBillDiscount, clearItemDiscount, mergeBills, moveBill, openTable, setBillDiscount, setBillPax, setItemDiscount, voidBill, voidItem,
+  clearBillDiscount, clearItemDiscount, mergeBills, moveBill, openTable, setBillDiscount, setBillPax, setItemDiscount, setItemsServed, voidBill, voidItem,
   type BillingConfig,
 } from '../checkout/checkoutApi'
 import ApprovalDialog from '../checkout/ApprovalDialog'
@@ -336,6 +336,7 @@ export default function OrderScreen({
   const actions = billActions({
     isTable: target.kind === 'table', hasBill: !!bill, loaded, liveSentCount: view.liveSentCount, draftCount: view.draftCount,
     qrPaused: paused, qrRequiresOpenBill: billing?.settings.qrRequiresOpenBill ?? false, billDiscount: billDisc !== null,
+    unservedCount: unservedIds(view.sent).length,
   })
   const partPaid = bill ? summaries.get(bill.id)?.paidSen ?? 0 : 0       // split spec §3.5
   // shown off with why: offline (split), or a part paid (split, discount, void: the server refuses them)
@@ -345,6 +346,10 @@ export default function OrderScreen({
     setDialog(null)
     if (actionNotes[a]) return
     if (a === 'send') void send()
+    else if (a === 'mark_served') {
+      const ids = unservedIds(view.sent)                              // W7: every live line not served yet
+      if (ids.length > 0) void run(async () => { await setItemsServed(ids, true) })
+    }
     else if (a === 'move') setDialog({ kind: 'move' })
     else if (a === 'split' && bill) {
       if (view.draftCount > 0) {
@@ -375,6 +380,7 @@ export default function OrderScreen({
   }
   const pickItemAction = (row: SentRow, a: ItemAction) => {
     if (itemNotes[a]) return
+    if (a === 'serve' || a === 'unserve') { void run(async () => { await setItemsServed([row.item.id], a === 'serve') }); return }   // W7
     if (a === 'void_item') setDialog({ kind: 'void_item', row })
     else if (a === 'discount_item' || a === 'edit_item_discount') setDialog({ kind: 'discount_item', row })
     else {
@@ -548,7 +554,7 @@ export default function OrderScreen({
       )}
       {bill && dialog?.kind === 'item_actions' && (
         <ItemActionsOverlay title={`${dialog.row.qty} × ${dialog.row.name}`}
-          actions={itemActions({ discounted: storedDiscount(dialog.row.item) !== null })}
+          actions={itemActions({ discounted: storedDiscount(dialog.row.item) !== null, served: dialog.row.served })}
           notes={itemNotes}
           disabled={busy || sending} onPick={(a) => pickItemAction(dialog.row, a)} onClose={() => setDialog(null)} />
       )}

@@ -1,11 +1,11 @@
 // src/features/pos/order/BillActionsOverlay.tsx
 import type { ComponentType } from 'react'
-import { ArrowRightLeft, Ban, CircleX, Eraser, Pause, Percent, Play, QrCode, Scissors, Send, Undo2, Users } from 'lucide-react'
+import { ArrowRightLeft, Ban, CheckCheck, CircleX, Eraser, Pause, Percent, Play, QrCode, Scissors, Send, Undo2, Users } from 'lucide-react'
 import ActionsOverlay from './ActionsOverlay'
 import { BILL_ACTION_LABEL, type BillAction } from './billActions'
 
 const ICON: Record<BillAction, ComponentType<{ size?: number }>> = {
-  send: Send, move: ArrowRightLeft, split: Scissors, discount_bill: Percent, edit_bill_discount: Percent, remove_bill_discount: Undo2,
+  send: Send, mark_served: CheckCheck, move: ArrowRightLeft, split: Scissors, discount_bill: Percent, edit_bill_discount: Percent, remove_bill_discount: Undo2,
   void_bill: Ban, close_empty: CircleX, pax: Users, pause_qr: Pause, resume_qr: Play, clear_qr_cart: Eraser, open_qr: QrCode,
 }
 

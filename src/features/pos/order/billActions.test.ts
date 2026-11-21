@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BILL_ACTION_LABEL, PART_PAID_FIRST, billActionNotes, billActions, clearedNotice, itemActionNotes, itemActions } from './billActions'
+import { BILL_ACTION_LABEL, ITEM_ACTION_LABEL, PART_PAID_FIRST, billActionNotes, billActions, clearedNotice, itemActionNotes, itemActions } from './billActions'
 import { SPLIT_ACTION_LABEL, SPLIT_OFFLINE } from './splitSelection'
 
 const table = { isTable: true, hasBill: true, loaded: true, liveSentCount: 2, draftCount: 0, qrPaused: false, qrRequiresOpenBill: false, billDiscount: false }
@@ -64,9 +64,16 @@ describe('billActionNotes', () => {
 })
 
 describe('itemActions', () => {
-  it('Discount item and Void item; a discounted item offers Edit and Remove', () => {
-    expect(itemActions({ discounted: false })).toEqual(['discount_item', 'void_item'])
-    expect(itemActions({ discounted: true })).toEqual(['edit_item_discount', 'remove_item_discount', 'void_item'])
+  it('Serve first (Not served once served), then Discount item and Void item; a discounted item offers Edit and Remove', () => {
+    expect(itemActions({ discounted: false, served: false })).toEqual(['serve', 'discount_item', 'void_item'])
+    expect(itemActions({ discounted: true, served: false })).toEqual(['serve', 'edit_item_discount', 'remove_item_discount', 'void_item'])
+    expect(itemActions({ discounted: false, served: true })).toEqual(['unserve', 'discount_item', 'void_item'])
+    expect([ITEM_ACTION_LABEL.serve, ITEM_ACTION_LABEL.unserve]).toEqual(['Serve', 'Not served'])
+  })
+  it('a part paid does not stop Serve', () => {
+    const notes = itemActionNotes({ partPaid: true })
+    expect(notes.serve).toBeUndefined()
+    expect(notes.unserve).toBeUndefined()
   })
 })
 
@@ -84,5 +91,16 @@ describe('clearedNotice', () => {
     expect(clearedNotice(0)).toBe('The QR cart was already empty')
     expect(clearedNotice(1)).toBe('QR cart cleared: 1 item removed')
     expect(clearedNotice(5)).toBe('QR cart cleared: 5 items removed')
+  })
+})
+
+describe('Mark all served (W7 spec §6)', () => {
+  it('on a loaded bill with a live unserved line, right after Send; never without one', () => {
+    expect(billActions({ ...table, unservedCount: 2 })).toEqual(['mark_served', 'move', 'split', 'discount_bill', 'void_bill', 'pax', 'pause_qr', 'clear_qr_cart'])
+    expect(billActions({ ...table, draftCount: 1, unservedCount: 1 }).slice(0, 2)).toEqual(['send', 'mark_served'])
+    expect(billActions({ ...table, unservedCount: 0 })).not.toContain('mark_served')
+    expect(billActions({ ...table, loaded: false, unservedCount: 2 })).not.toContain('mark_served')
+    expect(billActions({ ...table, hasBill: false, liveSentCount: 0, unservedCount: 2 })).not.toContain('mark_served')
+    expect(BILL_ACTION_LABEL.mark_served).toBe('Mark all served')
   })
 })
