@@ -44,6 +44,9 @@ export interface BillItemRow {
   voided_at: string | null
   catalog_discount_bp: number           // its catalog's discount when ordered (Staff Meal 5000)
   catalog_discount_name: string | null
+  /** QR table cart: who added the line; absent or null for counter lines */
+  guest_id?: string | null
+  guest_label?: string | null
   discount_kind: DiscountKind | null    // its item discount
   discount_value: number | null
   discount_reason: string | null
@@ -160,7 +163,7 @@ export async function fetchOpenBills(branchId: string): Promise<OpenBillRow[]> {
 export async function fetchBillItems(billId: string): Promise<BillItemRow[]> {
   const { data, error } = await supabase.from('order_items')
     .select('id, order_id, product_id, name_snapshot, unit_price_sen, sst_rate_bp, takeaway_fee_sen, order_type, qty, note, modifiers_snapshot, voided_at, ' +
-            'catalog_discount_bp, catalog_discount_name, discount_kind, discount_value, discount_reason, ' +
+            'catalog_discount_bp, catalog_discount_name, discount_kind, discount_value, discount_reason, guest_id, guest_label, ' +
             'orders!inner(order_no, source, placed_at)')
     .eq('bill_id', billId)
   if (error) fail(error)

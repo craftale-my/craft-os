@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BillItemRow } from './posApi'
 import {
+  guestLabels, guestPicked, toggleGuest,
   canSplit, everythingSelected, liveUnits, movedNotice, ofLabel, parseMoveItemsResult, pickedUnits, prune, selectAll, setQty,
   splitLines, splitTitle, toSplitItems, SPLIT_ACTION_LABEL, SPLIT_OFFLINE, MOVE_NEEDS_NO_DISCOUNT, BILL_CHANGED_ITEMS,
 } from './splitSelection'
@@ -17,8 +18,8 @@ const lines = splitLines([row('i1', 'Latte', 3, 1300), row('i2', 'Cake', 1, 1500
 describe('splitLines', () => {
   it('lists the live lines in bill order with name, modifiers, note and line price', () => {
     expect(lines).toEqual([
-      { id: 'i1', name: 'Latte', mods: ['Oat milk'], note: null, qty: 3, amountSen: 3900 },
-      { id: 'i2', name: 'Cake', mods: [], note: 'no sugar', qty: 1, amountSen: 1500 },
+      { id: 'i1', name: 'Latte', mods: ['Oat milk'], note: null, qty: 3, amountSen: 3900, guest: null },
+      { id: 'i2', name: 'Cake', mods: [], note: 'no sugar', qty: 1, amountSen: 1500, guest: null },
     ])
     expect(liveUnits(lines)).toBe(4)
   })
@@ -93,5 +94,34 @@ describe('parseMoveItemsResult', () => {
   it('refuses anything else', () => {
     expect(() => parseMoveItemsResult(null)).toThrow('Unexpected reply from the server')
     expect(() => parseMoveItemsResult({ targetBillId: 'b7', movedUnits: 2 })).toThrow('Unexpected reply from the server')
+  })
+})
+
+describe('pick by guest', () => {
+  const g = splitLines([
+    { ...row('a', 'Latte', 2, 1300), guest_label: 'Eric' },
+    { ...row('b', 'Cake', 1, 1500), guest_label: 'Mei' },
+    { ...row('c', 'Mocha', 1, 1400), guest_label: 'Eric' },
+    row('d', 'Tea', 1, 800),                                   // ordered at the counter
+  ])
+  it('lists the guests on the bill once each, in bill order, without the counter', () => {
+    expect(guestLabels(g)).toEqual(['Eric', 'Mei'])
+    expect(g.map((l) => l.guest)).toEqual(['Eric', 'Mei', 'Eric', null])
+  })
+  it('a tap picks every unit of that guest and keeps what was picked', () => {
+    const p = toggleGuest({ b: 1 }, g, 'Eric')
+    expect(p).toEqual({ a: 2, b: 1, c: 1 })
+    expect(guestPicked(p, g, 'Eric')).toBe(true)
+    expect(guestPicked(p, g, 'Mei')).toBe(true)
+  })
+  it('a guest is picked only when every unit of theirs is', () => {
+    expect(guestPicked({ a: 1, c: 1 }, g, 'Eric')).toBe(false)
+    expect(guestPicked({}, g, 'Nobody')).toBe(false)
+  })
+  it('a second tap takes that guest\'s lines out and leaves the rest', () => {
+    expect(toggleGuest({ a: 2, b: 1, c: 1 }, g, 'Eric')).toEqual({ b: 1 })
+  })
+  it('a tap on a partly picked guest completes the pick', () => {
+    expect(toggleGuest({ a: 1 }, g, 'Eric')).toEqual({ a: 2, c: 1 })
   })
 })

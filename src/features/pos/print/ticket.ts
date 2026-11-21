@@ -5,6 +5,7 @@ export interface TicketLine {
   name: string
   note: string | null
   mods?: string[] // modifier names, e.g. ["Oat milk"]; absent on Phase 0 payloads
+  guest?: string // QR table cart: the guest who added the line ("Eric", "Guest 2"); absent for the counter
 }
 
 export interface TicketPayload {
@@ -54,7 +55,7 @@ export function wrap(text: string, width: number, indent = ''): string[] {
 export function renderTicketLines(t: TicketPayload, cols: number): string[] {
   const rule = '-'.repeat(cols)
   const body = t.lines.flatMap((l) => [
-    ...wrap(`${l.qty} x ${l.name}`, cols, '    '),
+    ...wrap(`${l.qty} x ${l.name}${l.guest ? ` - ${l.guest}` : ''}`, cols, '    '),
     ...(l.mods ?? []).flatMap((m) => wrap(`+ ${m}`, cols - 4, '  ').map((s) => `    ${s}`)),
     ...(l.note ? wrap(`* ${l.note}`, cols - 4, '  ').map((s) => `    ${s}`) : []),
   ])

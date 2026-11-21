@@ -57,6 +57,21 @@ describe('renderTicketLines', () => {
     ])
   })
 
+  it('names the guest after the item when the line has one', () => {
+    const t: TicketPayload = { ...base, lines: [
+      { qty: 1, name: 'Latte', note: null, guest: 'Eric' },
+      { qty: 2, name: 'Cake', note: 'no nuts', mods: ['Cream'], guest: 'Guest 2' },
+      { qty: 1, name: 'Tea', note: null },
+    ] }
+    expect(renderTicketLines(t, 32).slice(5, -1)).toEqual([
+      '1 x Latte - Eric',
+      '2 x Cake - Guest 2',
+      '    + Cream',
+      '    * no nuts',
+      '1 x Tea',
+    ])
+  })
+
   it('marks takeaway when there is no table', () => {
     const lines = renderTicketLines({ ...base, tableLabel: null, source: 'counter' }, 32)
     expect(lines[1]).toBe('TAKEAWAY')

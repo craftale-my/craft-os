@@ -9,7 +9,7 @@ import { ITEM_MOVE_HINT, itemMoveTargets, moveTargets, type MoveTarget } from '.
 import type { OrderTarget } from './orderTarget'
 import { fetchBillItems, moveItems, type BillItemRow, type OpenBillRow, type TableRow } from './posApi'
 import {
-  MOVE_NEEDS_NO_DISCOUNT, SPLIT_OFFLINE, everythingSelected, movedNotice, ofLabel, pickedUnits, prune, selectAll, setQty,
+  MOVE_NEEDS_NO_DISCOUNT, SPLIT_OFFLINE, guestLabels, guestPicked, toggleGuest, everythingSelected, movedNotice, ofLabel, pickedUnits, prune, selectAll, setQty,
   splitLines, splitTitle, toSplitItems, type Picked, type SplitItem,
 } from './splitSelection'
 import { mergeBills, moveBill, splitTotals } from '../checkout/checkoutApi'
@@ -68,6 +68,7 @@ export default function SplitItemsScreen({
     return () => { live = false }
   }, [bill.id, refreshKey, localKey])
   const lines = useMemo(() => splitLines(items ?? []), [items])
+  const guests = useMemo(() => guestLabels(lines), [lines])
   useEffect(() => { if (items) setPicked((p) => prune(p, lines)) }, [items, lines])
 
   const current = bills.find((b) => b.id === bill.id) ?? null
@@ -154,6 +155,20 @@ export default function SplitItemsScreen({
         <button type="button" onClick={() => setPicked({})} disabled={busy || units === 0}
           className="min-h-11 rounded-xl border border-border-mid px-4 text-sm font-medium text-brown-dark disabled:opacity-40">Clear</button>
       </header>
+      {guests.length >= 2 && (
+        <div aria-label="Pick by guest" className="flex gap-2 overflow-x-auto border-b border-border bg-card px-3 py-2">
+          {guests.map((g) => {
+            const on = guestPicked(picked, lines, g)
+            return (
+              <button key={g} type="button" aria-pressed={on} disabled={busy}
+                onClick={() => setPicked((p) => toggleGuest(p, lines, g))}
+                className={`min-h-11 shrink-0 rounded-full border-2 px-4 text-sm font-medium disabled:opacity-40 ${on ? 'border-brown-btn bg-brown-btn text-white' : 'border-border-mid text-brown-dark'}`}>
+                {g}
+              </button>
+            )
+          })}
+        </div>
+      )}
       {gone && <p role="alert" className="m-3 rounded bg-red-50 p-2 text-sm text-red-700">{BILL_GONE}</p>}
       {loadError && <p role="alert" className="m-3 rounded bg-red-50 p-2 text-sm text-red-700">{loadError}</p>}
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">

@@ -8,8 +8,8 @@ import type { BillItemRow } from './posApi'
  *  (lineQty). The server refuses the pick when the line's qty is no longer lineQty ("The bill changed"), so a
  *  Pay selected that lands after its reply was lost cannot let the next id pay the same unit again. */
 export interface SplitItem { itemId: string; qty: number; lineQty: number }
-/** A live line of the bill, as the picker lists it. */
-export interface SplitLine { id: string; name: string; mods: string[]; note: string | null; qty: number; amountSen: number }
+/** A live line of the bill, as the picker lists it. `guest` = who added it on the QR page (null: the counter). */
+export interface SplitLine { id: string; name: string; mods: string[]; note: string | null; qty: number; amountSen: number; guest: string | null }
 /** item id → units picked; a line that is not in it has none picked. */
 export type Picked = Readonly<Record<string, number>>
 /** move_items' answer. */
@@ -31,7 +31,7 @@ export const canSplit = (liveUnitCount: number): boolean => liveUnitCount >= 2
 export function splitLines(items: BillItemRow[]): SplitLine[] {
   return items.filter((i) => i.voided_at === null).map((i) => ({
     id: i.id, name: i.name_snapshot, mods: i.modifiers_snapshot.map((m) => m.name), note: i.note, qty: i.qty,
-    amountSen: i.unit_price_sen * i.qty,
+    amountSen: i.unit_price_sen * i.qty, guest: i.guest_label ?? null,
   }))
 }
 
@@ -49,6 +49,27 @@ export function setQty(p: Picked, lines: SplitLine[], id: string, qty: number): 
 }
 
 export const selectAll = (lines: SplitLine[]): Picked => Object.fromEntries(lines.map((l) => [l.id, l.qty]))
+/** The guests on the bill, once each in bill order (QR table cart). Counter lines name no one. */
+export const guestLabels = (lines: SplitLine[]): string[] => [...new Set(lines.flatMap((l) => (l.guest ? [l.guest] : [])))]
+
+/** Is every unit of that guest's lines picked? */
+export function guestPicked(p: Picked, lines: SplitLine[], guest: string): boolean {
+  const own = lines.filter((l) => l.guest === guest)
+  return own.length > 0 && own.every((l) => (p[l.id] ?? 0) === l.qty)
+}
+
+/** A tap on a guest's chip: picks every unit of their lines, or takes them all out when they already are.
+ *  The other lines' picks stay. */
+export function toggleGuest(p: Picked, lines: SplitLine[], guest: string): Picked {
+  const on = guestPicked(p, lines, guest)
+  const next: Record<string, number> = { ...p }
+  for (const l of lines) {
+    if (l.guest !== guest) continue
+    if (on) delete next[l.id]
+    else next[l.id] = l.qty
+  }
+  return next
+}
 export const pickedUnits = (p: Picked): number => Object.values(p).reduce((n, q) => n + q, 0)
 
 /** Every unit of every live line: Pay selected and Move to table then run the whole-bill flows. */

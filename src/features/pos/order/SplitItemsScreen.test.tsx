@@ -188,3 +188,29 @@ describe('SplitItemsScreen', () => {
     expect(screen.getByText('2 of 3')).toBeTruthy()
   })
 })
+
+describe('pick by guest chips', () => {
+  it('shows a chip per guest when the bill has at least two, and a tap picks that guest\'s units', async () => {
+    api.fetchBillItems.mockResolvedValue([
+      { ...row('i1', 'Latte', 2, 1300), guest_label: 'Eric' },
+      { ...row('i2', 'Cake', 1, 1500), guest_label: 'Mei' },
+      row('i3', 'Tea', 1, 800),
+    ])
+    renderPicker()
+    await flush()
+    expect(button('Eric').getAttribute('aria-pressed')).toBe('false')
+    press('Eric')
+    expect(button('Eric').getAttribute('aria-pressed')).toBe('true')
+    expect(button('Mei').getAttribute('aria-pressed')).toBe('false')
+    expect((screen.getByRole('checkbox', { name: 'Cake' }) as HTMLInputElement).checked).toBe(false)
+    press('Eric')
+    expect(button('Eric').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('shows no chips with one guest or none', async () => {
+    api.fetchBillItems.mockResolvedValue([{ ...row('i1', 'Latte', 2, 1300), guest_label: 'Eric' }, row('i2', 'Cake', 1, 1500)])
+    renderPicker()
+    await flush()
+    expect(screen.queryByRole('button', { name: 'Eric' })).toBeNull()
+  })
+})

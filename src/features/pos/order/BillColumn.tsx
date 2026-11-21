@@ -79,7 +79,7 @@ export default function BillColumn(p: {
               <button key={s.item.id} type="button" disabled={s.voided} onClick={() => p.onSentTap(s)}
                 className={`flex min-h-11 w-full justify-between gap-2 py-1.5 text-left ${s.voided ? 'line-through opacity-50' : ''}`}>
                 <span>
-                  <LineText qty={s.qty} name={s.name} mods={s.mods} note={s.note} />
+                  <LineText qty={s.qty} name={s.name} mods={s.mods} note={s.note} guest={s.item.guest_label} />
                   <DiscountRows rows={s.discountRows} />
                 </span>
                 <span className="tabular-nums">{formatSen(s.amountSen)}</span>
@@ -133,10 +133,10 @@ export default function BillColumn(p: {
   )
 }
 
-function LineText({ qty, name, mods, note }: { qty: number; name: string; mods: string[]; note: string | null }) {
+function LineText({ qty, name, mods, note, guest }: { qty: number; name: string; mods: string[]; note: string | null; guest?: string | null }) {
   return (
     <span>
-      {qty} × {name}
+      {qty} × {name}{guest && <span className="ml-1 text-xs text-brown-muted">· {guest}</span>}
       {mods.map((m, k) => <span key={k} className="block pl-4 text-xs text-brown-muted">+ {m}</span>)}
       {note && <span className="block pl-4 text-xs italic text-brown-muted">* {note}</span>}
     </span>
