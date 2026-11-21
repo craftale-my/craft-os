@@ -39,6 +39,9 @@ import ReceivingPage from './features/procurement/Receiving'
 import TransfersPage from './features/procurement/Transfers'
 import TransferShipPage from './features/procurement/TransferShip'
 import WastagePage from './features/procurement/Wastage'
+import StockCountsPage from './features/procurement/StockCounts'
+import StockCountSessionPage from './features/procurement/StockCountSession'
+import StockCountSetupPage from './features/procurement/StockCountSetup'
 import RecipesPage from './features/procurement/Recipes'
 import RecipeNewPage from './features/procurement/RecipeNew'
 import RecipeDetailPage from './features/procurement/RecipeDetail'
@@ -387,6 +390,33 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><WastagePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/stock-counts"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><StockCountsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/stock-counts/setup"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><StockCountSetupPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/stock-counts/:id"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><StockCountSessionPage /></AppLayout>
           </ProtectedRoute>
         }
       />
