@@ -5,7 +5,8 @@ import { findProduct, linePriceSen, type OrderLine, type PosMenu } from '../feat
 import { avatarEmoji } from './qrGuest'
 
 export interface CartLine extends OrderLine { id: string; guestId: string; guestLabel: string; guestAvatar: string }
-export interface CartState { version: string; lines: CartLine[] }
+/** lastOrder: id of the newest QR order ever placed from this table (null = none; absent in older fixtures) */
+export interface CartState { version: string; lines: CartLine[]; lastOrder?: string | null }
 export interface GuestGroup { guestId: string; label: string; avatar: string; isMe: boolean; lines: CartLine[] }
 /** an item of qr_table_state: already sent */
 export interface OrderedItem {
@@ -32,8 +33,18 @@ export function parseCart(data: unknown): CartState | null {
       optionIds: Array.isArray(l.optionIds) ? l.optionIds.filter((x): x is string => typeof x === 'string') : [],
     })
   }
-  return { version: data.version, lines }
+  return { version: data.version, lines, lastOrder: typeof data.lastOrder === 'string' ? data.lastOrder : null }
 }
+
+/** Was an order sent from this table's cart between two reads? (qr_cart_state.lastOrder moved.)
+ *  The first read (before = null) is the baseline, never "sent". */
+export function orderWasSent(before: CartState | null, after: CartState): boolean {
+  if (!before || typeof after.lastOrder !== 'string') return false
+  return after.lastOrder !== (before.lastOrder ?? null)
+}
+
+/** One definition of "this cart as the sender saw it": the cart version and the lines left out. */
+export const sentKey = (cart: CartState, skip: string[]): string => `${cart.version}|${skip.join(',')}`
 
 /** Can this line be ordered from the menu the phone holds now? Every phone holds the same menu. */
 export function lineAvailable(menu: PosMenu, line: OrderLine): boolean {

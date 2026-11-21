@@ -82,6 +82,7 @@ begin
   perform pg_temp.ok((select l->>'guestAvatar' from jsonb_array_elements(s->'lines') l where l->>'id' = idb::text) = 'a1', 'B7 a bad avatar becomes a1');
   perform pg_temp.ok((select l->>'note' from jsonb_array_elements(s->'lines') l where l->>'id' = ida::text) = 'no ice', 'B8 note trimmed');
   perform pg_temp.ok((s->>'version') <> 'empty', 'B9 version set');
+  perform pg_temp.ok(qr_cart_state(v_tok) ? 'lastOrder', 'B10 state carries lastOrder');
 
   -- ── C: only your own lines; bad input ──
   perform pg_temp.expect_error(format('select qr_cart_put(%L, %L::jsonb, %L::jsonb, %L)', v_tok, gb, v_line, ida),
@@ -128,6 +129,7 @@ begin
   r := qr_cart_send(v_tok, 2, v_version, array[idc], v_coid);
   perform pg_temp.ok(r->>'status' = 'sent', 'F3 sent');
   v_order := (r->>'orderId')::uuid;
+  perform pg_temp.ok((qr_cart_state(v_tok)->>'lastOrder')::uuid = v_order, 'F3a lastOrder is the order just sent');
   perform pg_temp.ok((select count(*) from qr_cart_lines where table_id = v_table.id) = 0, 'F4 the whole cart is cleared, the skipped line too');
   perform pg_temp.ok((select count(*) from order_items where order_id = v_order) = 2, 'F5 two items, the skipped one left out');
   perform pg_temp.ok((select array_agg(guest_label order by guest_label) from order_items where order_id = v_order) = array['Ann', 'Mei'], 'F6 labels on the items');

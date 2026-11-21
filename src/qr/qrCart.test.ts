@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { PosMenu } from '../features/pos/order/cart'
 import {
-  additionsToast, cartChannel, cartTotalSen, groupCart, groupOrdered, isNetworkError, lineAvailable, parseCart,
-  sendGroups, skipIds, type CartLine, type CartState, type OrderedItem,
+  additionsToast, cartChannel, cartTotalSen, groupCart, groupOrdered, isNetworkError, lineAvailable, orderWasSent, parseCart,
+  sendGroups, sentKey, skipIds, type CartLine, type CartState, type OrderedItem,
 } from './qrCart'
 
 const menu: PosMenu = { categories: [{ name: 'Drinks', products: [
@@ -27,7 +27,11 @@ describe('parseCart', () => {
   it('reads the server reply', () => {
     const raw = { version: 'abc', lines: [{ id: 'l1', guestId: ME, guestLabel: 'Eric', guestAvatar: 'a1',
       productId: 'latte', variantId: 'hot', optionIds: ['oat'], qty: 2, note: null }] }
-    expect(parseCart(raw)).toEqual({ version: 'abc', lines: [line('l1', ME, { optionIds: ['oat'], qty: 2 })] })
+    expect(parseCart(raw)).toEqual({ version: 'abc', lines: [line('l1', ME, { optionIds: ['oat'], qty: 2 })], lastOrder: null })
+  })
+  it('reads lastOrder when the reply has one', () => {
+    expect(parseCart({ version: 'abc', lines: [], lastOrder: 'o1' })?.lastOrder).toBe('o1')
+    expect(parseCart({ version: 'abc', lines: [] })?.lastOrder).toBeNull()
   })
   it('refuses anything else', () => {
     expect(parseCart(null)).toBeNull()
@@ -120,5 +124,26 @@ describe('cartChannel', () => {
     expect(await cartChannel('abc123')).toBe(a)
     expect(await cartChannel('abc124')).not.toBe(a)
     expect(a).not.toContain('abc123')
+  })
+})
+
+describe('orderWasSent', () => {
+  const at = (lastOrder: string | null | undefined): CartState => ({ version: 'v', lines: [], lastOrder })
+  it('the first read is the baseline, never sent', () => { expect(orderWasSent(null, at('o1'))).toBe(false) })
+  it('same id: not sent', () => { expect(orderWasSent(at('o1'), at('o1'))).toBe(false) })
+  it('null or missing before, id after: sent', () => {
+    expect(orderWasSent(at(null), at('o1'))).toBe(true)
+    expect(orderWasSent(at(undefined), at('o1'))).toBe(true)
+  })
+  it('id A to id B: sent', () => { expect(orderWasSent(at('a'), at('b'))).toBe(true) })
+  it('id to null: not sent', () => { expect(orderWasSent(at('a'), at(null))).toBe(false) })
+})
+
+describe('sentKey', () => {
+  it('same cart and skip list give the same key; a different version or skip list another', () => {
+    const c: CartState = { version: 'v1', lines: [] }
+    expect(sentKey(c, ['a', 'b'])).toBe(sentKey({ version: 'v1', lines: [] }, ['a', 'b']))
+    expect(sentKey(c, [])).not.toBe(sentKey({ version: 'v2', lines: [] }, []))
+    expect(sentKey(c, ['a'])).not.toBe(sentKey(c, ['a', 'b']))
   })
 })

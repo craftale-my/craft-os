@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { defaultLine, formatSen, linePriceSen, validateLine, type OrderLine, type PosProduct } from './cart'
 import PickPill from './PickPill'
 
-export default function LineSheet({ product, initial, mostPicked, busy, error, onCancel, onDone }: {
+export default function LineSheet({ product, initial, mostPicked, busy, error, confirmLabel, onCancel, onDone }: {
   product: PosProduct
   initial?: OrderLine
   /** Most picked (menu picks): group id → option id, marked with a pill — never chosen for the guest */
@@ -11,6 +11,8 @@ export default function LineSheet({ product, initial, mostPicked, busy, error, o
   busy?: boolean
   /** QR table cart: why the last Add did not go through */
   error?: string | null
+  /** the confirm button's word: 'Add' (default) or 'Save' when an existing line is edited */
+  confirmLabel?: string
   onCancel: () => void
   onDone: (line: OrderLine) => void
 }) {
@@ -84,7 +86,7 @@ export default function LineSheet({ product, initial, mostPicked, busy, error, o
           <button onClick={onCancel} className="flex-1 rounded-xl border border-border py-3">Cancel</button>
           <button disabled={!!problem || busy} onClick={() => onDone(line)}
             className="flex-1 rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover disabled:opacity-40">
-            {busy ? 'Adding…' : <>Add · {price === null ? '—' : formatSen(price * line.qty)}</>}
+            {busy ? (confirmLabel === 'Save' ? 'Saving…' : 'Adding…') : <>{confirmLabel ?? 'Add'} · {price === null ? '—' : formatSen(price * line.qty)}</>}
           </button>
         </div>
       </div>

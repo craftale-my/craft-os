@@ -44,4 +44,14 @@ describe('LineSheet busy and error (QR table cart)', () => {
     render(<LineSheet product={latte} error="Not added — no connection. Tap Add to try again." onCancel={() => {}} onDone={() => {}} />)
     expect(screen.getByRole('alert').textContent).toBe('Not added — no connection. Tap Add to try again.')
   })
+
+  it('confirmLabel Save names the button, and its busy label', () => {
+    const one = { ...latte, groups: [] }
+    render(<LineSheet product={one} confirmLabel="Save" onCancel={() => {}} onDone={() => {}} />)
+    expect(screen.getByRole('button', { name: /^Save · RM 9\.00/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Add/ })).toBeNull()
+    cleanup()
+    render(<LineSheet product={one} confirmLabel="Save" busy onCancel={() => {}} onDone={() => {}} />)
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeTruthy()
+  })
 })

@@ -158,7 +158,10 @@ begin
                'guestAvatar', l.guest_avatar, 'productId', l.product_id, 'variantId', l.variant_id,
                'optionIds', to_jsonb(l.option_ids), 'qty', l.qty, 'note', l.note)
              order by l.created_at, l.id)
-        from qr_cart_lines l where l.table_id = v_table.id), '[]'::jsonb));
+        from qr_cart_lines l where l.table_id = v_table.id), '[]'::jsonb),
+    'lastOrder', (select o.id from orders o join bills b on b.id = o.bill_id
+                   where b.table_id = v_table.id and o.source = 'qr'
+                   order by o.placed_at desc, o.id desc limit 1));
 end $$;
 revoke all on function qr_cart_state(text) from public;
 grant execute on function qr_cart_state(text) to anon, authenticated;

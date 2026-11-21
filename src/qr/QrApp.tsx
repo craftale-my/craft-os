@@ -10,7 +10,7 @@ import LineSheet from '../features/pos/order/LineSheet'
 import PickPill from '../features/pos/order/PickPill'
 import { avatarEmoji, loadGuest, newGuest, saveGuest, type Guest } from './qrGuest'
 import {
-  additionsToast, cartChannel, cartTotalSen, groupCart, groupOrdered, isNetworkError, lineAvailable, sendGroups, skipIds,
+  additionsToast, cartChannel, cartTotalSen, groupCart, groupOrdered, isNetworkError, lineAvailable, orderWasSent, sendGroups, sentKey, skipIds,
   type CartLine, type CartState, type OrderedItem,
 } from './qrCart'
 import { makeCartApi, makeCartSignal } from './qrCartApi'
@@ -43,7 +43,6 @@ export default function QrApp() {
   const token = tokenFromLocation(window.location.pathname, window.location.search)
   const [screen, setScreen] = useState<Screen>({ kind: 'loading' })
   const [state, setState] = useState<TableState | null>(null)
-  const stateRef = useRef<TableState | null>(null)
   // table cart (docs/superpowers/specs/2026-11-22-qr-shared-table-cart-design.md): who this phone is
   const [guest, setGuest] = useState<Guest | null>(() => (token ? loadGuest(token) : null))
   const guestRef = useRef(guest)
@@ -60,8 +59,10 @@ export default function QrApp() {
   const [sendError, setSendError] = useState<string | null>(null)
   const [sendMessage, setSendMessage] = useState<string | null>(null)
   const [placed, setPlaced] = useState(false)
-  const [toast, setToast] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ text: string; at: number } | null>(null)   // `at` restarts the timer for the same text twice
   const sendingRef = useRef(false)
+  const seen = useRef<string | null>(null)                           // sentKey of the cart the sender last looked at (spec §2)
+  const adoptSeen = useRef(false)                                    // after a refused send: take the re-read cart as seen
   const pending = useRef<{ id: string; key: string } | null>(null)   // one client_order_id per distinct cart sent
   const menuRef = useRef<PosMenu | null>(null)
   useEffect(() => { menuRef.current = screen.kind === 'ready' ? screen.menu : null }, [screen])
@@ -79,7 +80,6 @@ export default function QrApp() {
   const loadState = async (): Promise<TableState | null> => {
     const { data } = await qrClient.rpc('qr_table_state', { p_token: token })
     if (!data) return null
-    stateRef.current = data as TableState
     setState(data as TableState)
     return data as TableState
   }
@@ -129,6 +129,7 @@ export default function QrApp() {
         setScreen({ kind: 'ready', info, menu })
         setCategory((c) => (c && info.categories.some((x) => x.name === c) ? c : info.categories[0]?.name ?? null))
         setSheet((s) => (s && findProduct(menu, s.product.id) ? s : null))
+        void loadState()                                            // "Ordered so far" picks up what the counter added
         if (!picksLoaded.current || Date.now() - picksAt.current >= PICKS_REFRESH_MS) loadPicks()
       }, () => { /* offline for a moment: try again next minute */ })
     }
@@ -153,21 +154,37 @@ export default function QrApp() {
     const me = guestRef.current
     if (menu && me) {
       const text = additionsToast(before, after, me.id, menu)
-      if (text) setToast(text)
+      if (text) setToast({ text, at: Date.now() })
     }
-    // the cart emptied: either the table's order was sent (from any phone) or its last line was
-    // removed — "Ordered so far" growing tells which
-    if (before && before.lines.length > 0 && after.lines.length === 0) {
-      setSendOpen(false)
-      const had = stateRef.current?.items.length ?? 0
-      void loadState().then((s) => { if ((s?.items.length ?? 0) > had) setPlaced(true) })
-    }
+    setError(null)                                                  // a failed removal's message goes when the cart moves on
+    // an order was sent from this table's cart (from any phone): the server says so, not a count
+    if (orderWasSent(before, after)) { setSendOpen(false); setPlaced(true); void loadState() }
+    else if (after.lines.length === 0) setSendOpen(false)           // the last line went: nothing left to send
   })
   useEffect(() => {
     if (!toast) return
     const timer = setTimeout(() => setToast(null), TOAST_MS)
     return () => clearTimeout(timer)
   }, [toast])
+  // after a refused send ('changed'): the cart as re-read is what the sender sees now
+  useEffect(() => {
+    if (!adoptSeen.current || !table.cart || screen.kind !== 'ready') return
+    seen.current = sentKey(table.cart, skipIds(screen.menu, table.cart.lines))
+    adoptSeen.current = false
+  })
+  // the send sheet closes itself when nothing is sendable any more, so it cannot reopen later with a stale message
+  useEffect(() => {
+    if (!sendOpen) return
+    const lines = table.cart?.lines ?? []
+    if (screen.kind !== 'ready' || !guest || sendGroups(screen.menu, lines, guest.id).length === 0) {
+      setSendOpen(false); setSendMessage(null); setSendError(null)
+    }
+  }, [sendOpen, screen, guest, table.cart])
+  // the item sheet closes when the line it edits is gone
+  useEffect(() => {
+    if (!sheet || sheet.lineId === null || sheetBusy || !table.cart || !guest) return
+    if (!table.cart.lines.some((l) => l.id === sheet.lineId && l.guestId === guest.id)) setSheet(null)
+  }, [sheet, sheetBusy, table.cart, guest])
 
   if (screen.kind === 'loading') return <Shell><p className="p-6 text-center text-brown-muted">Loading menu…</p></Shell>
   if (screen.kind === 'error') {
@@ -239,13 +256,17 @@ export default function QrApp() {
       setSendError('How many people are at the table? (1–99)'); return
     }
     const skip = skipIds(menu, cartLines)
-    const key = `${table.cart.version}|${skip.join(',')}`
+    const key = sentKey(table.cart, skip)
+    // what is sent is always what the sender saw (spec §2): a change since the sheet opened is shown first
+    if (seen.current !== key) {
+      seen.current = key; setSendError(null); setSendMessage('The order changed — please check again.'); return
+    }
     if (!pending.current || pending.current.key !== key) pending.current = { id: crypto.randomUUID(), key }
     let refused = false
     sendingRef.current = true; setSending(true); setSendError(null); setSendMessage(null)
     try {
       const status = await table.send(paxNum, skip, pending.current.id)
-      if (status === 'changed') { setSendMessage('The order changed — please check again.'); return }
+      if (status === 'changed') { adoptSeen.current = true; setSendMessage('The order changed — please check again.'); return }
       pending.current = null
       setSendOpen(false); setPlaced(true); setGoesWellFor(null); setError(null)
       await loadState()
@@ -274,7 +295,7 @@ export default function QrApp() {
       <button type="button" onClick={() => setGuestEdit(true)} aria-label={`You are ${guest.name}. Change name or avatar`}
         className="min-h-11 rounded-full bg-white/15 px-3 text-sm">{avatarEmoji(guest.avatar)} {guest.name}</button>
     }>
-      {toast && <div role="status" className="fixed inset-x-3 top-3 z-30 rounded-xl bg-brown-dark px-4 py-3 text-sm text-white shadow-lg">{toast}</div>}
+      {toast && <div role="status" className="fixed inset-x-3 top-3 z-30 rounded-xl bg-brown-dark px-4 py-3 text-sm text-white shadow-lg">{toast.text}</div>}
       {placed && (
         <div className="m-3 rounded-xl bg-green-50 p-3 text-sm text-green-800">
           Order placed — it is on its way. You can add more below.
@@ -356,7 +377,10 @@ export default function QrApp() {
           {error && <p role="alert" className="my-1 text-red-700">{error}</p>}
         </div>
         <button disabled={sendable.length === 0 || table.status !== 'ready'}
-          onClick={() => { setSendError(null); setSendMessage(null); setSendOpen(true) }}
+          onClick={() => {
+            seen.current = table.cart ? sentKey(table.cart, skipIds(menu, cartLines)) : null
+            setSendError(null); setSendMessage(null); setSendOpen(true)
+          }}
           className="mt-1 w-full rounded-xl bg-brown-btn py-3 text-white disabled:opacity-40">
           {placeLabel}
         </button>
@@ -364,7 +388,7 @@ export default function QrApp() {
 
       {sheet && (
         <LineSheet product={sheet.product} initial={sheet.lineId === null ? undefined : mine.find((l) => l.id === sheet.lineId)}
-          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError}
+          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError} confirmLabel={sheet.lineId === null ? undefined : 'Save'}
           onCancel={() => { if (!sheetBusy) setSheet(null) }}
           onDone={(line) => void done(line)} />
       )}
