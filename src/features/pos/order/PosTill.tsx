@@ -322,7 +322,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
           onSplit={(bill) => { setDrafts(0); setScreen({ kind: 'split', bill, back: screen.target }) }} />
       )}
       {screen.kind === 'split' && (
-        <SplitItemsScreen key={screen.bill.id} bill={screen.bill} title={billTitle(screen.bill.table_id, screen.bill.bill_no, tables)}
+        <SplitItemsScreen key={screen.bill.id} bill={screen.bill} title={billTitle(screen.bill.table_id, screen.bill.bill_no, tables, screen.bill.call_no)}
           tables={tables} bills={bills} summaries={summaries} refreshKey={refreshKey} online={online} shiftOpen={shift.open}
           initialPicked={screen.picked}
           onBack={() => openOrder(screen.back)}
@@ -334,7 +334,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
       {screen.kind === 'transaction' && <TransactionScreen branchId={branchId} />}
       {screen.kind === 'payment' && (
         <PaymentScreen key={`${screen.bill.id}:${screen.split ? 'split' : 'whole'}`} branchId={branchId} bill={screen.bill} refreshKey={refreshKey}
-          title={screen.split ? splitTitle(billTitle(screen.bill.table_id, screen.bill.bill_no, tables)) : billTitle(screen.bill.table_id, screen.bill.bill_no, tables)}
+          title={screen.split ? splitTitle(billTitle(screen.bill.table_id, screen.bill.bill_no, tables, screen.bill.call_no)) : billTitle(screen.bill.table_id, screen.bill.bill_no, tables, screen.bill.call_no)}
           split={screen.split ? { items: screen.split.items } : undefined}
           online={online}
           onSplitByItem={screen.split ? undefined : () => setScreen({ kind: 'split', bill: screen.bill, back: screen.back })}

@@ -110,7 +110,7 @@ export default function TransactionScreen({ branchId }: { branchId: string }) {
         <div className="flex items-center gap-2 border-b border-border p-2">
           <label className="relative flex-1">
             <Search size={18} className="pointer-events-none absolute left-3 top-3 text-brown-muted" />
-            <input className="h-11 w-full rounded-xl border border-border-mid pl-9 pr-3" placeholder="Bill no or table"
+            <input className="h-11 w-full rounded-xl border border-border-mid pl-9 pr-3" placeholder="Bill no, call no or table"
               value={search} onChange={(e) => setSearch(e.target.value)} />
           </label>
           <button type="button" onClick={() => void load()} aria-label="Refresh"

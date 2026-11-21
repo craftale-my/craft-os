@@ -50,3 +50,21 @@ describe('txPaymentLabel and splitFromNote: a bill paid in parts or split from a
     expect(splitFromNote('261117-001')).toBe('Split from bill 261117-001.')
   })
 })
+
+describe('call numbers in Transactions (W4 spec §2)', () => {
+  const withCall = [
+    { ...b('261026-001', 'paid', 0, null), call_no: 'TA012' },
+    { ...b('261026-002', 'paid', 0, null), call_no: 'TA013' },
+    b('261026-012', 'paid'),
+  ]
+  it('a takeaway bill with a number says it', () => {
+    expect(txWhere(withCall[0])).toBe('TA012 · Takeaway')
+    expect(txWhere(withCall[2])).toBe('Table T3')
+  })
+  it('"TA12", "ta012" and "12" find TA012 (and "12" the bill numbers with 12)', () => {
+    expect(filterTransactions(withCall, 'all', 'TA12').map((x) => x.bill_no)).toEqual(['261026-001'])
+    expect(filterTransactions(withCall, 'all', 'ta012').map((x) => x.bill_no)).toEqual(['261026-001'])
+    expect(filterTransactions(withCall, 'all', '12').map((x) => x.bill_no)).toEqual(['261026-001', '261026-012'])
+    expect(filterTransactions(withCall, 'all', 'ta 13').map((x) => x.bill_no)).toEqual(['261026-002'])
+  })
+})

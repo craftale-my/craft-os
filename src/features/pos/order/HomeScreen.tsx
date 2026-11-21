@@ -8,6 +8,7 @@ import { areaTabs, currentArea, elapsedLabel, visibleTables } from './home'
 import type { OpenBillRow, TableRow } from './posApi'
 import { tableCards, takeawayBills, type TableCard } from './tableStatus'
 import { useMinuteClock } from './useMinuteClock'
+import { takeawayLabel } from './callNo'
 
 /** Home (spec §1): search, refresh and the area tabs on top; the table tiles (5 a row) with each
  *  open bill's total and minutes; the Other bills column with + Takeaway and every open takeaway
@@ -74,8 +75,8 @@ export default function HomeScreen({ tables, bills, summaries, newBillIds, banne
               <button key={b.id} type="button" onClick={() => onPickBill(b.id)}
                 className="flex min-h-14 w-full items-center justify-between rounded-xl border-2 border-brown-btn bg-canvas px-3 text-left">
                 <span>
-                  <span className="block font-semibold text-brown-dark">{b.bill_no}</span>
-                  <span className="block text-xs text-brown-muted">Takeaway · {elapsedLabel(b.opened_at, now)}</span>
+                  <span className="block font-semibold text-brown-dark">{b.call_no ? takeawayLabel(b.call_no) : b.bill_no}</span>
+                  <span className="block text-xs text-brown-muted">{`${b.call_no ? b.bill_no : 'Takeaway'} · ${elapsedLabel(b.opened_at, now)}`}</span>
                   {(s?.paidSen ?? 0) > 0 && <span className="block text-xs font-semibold text-green-800">{partPaidTag(s?.paidSen ?? 0)}</span>}
                 </span>
                 <span className="font-semibold tabular-nums text-brown-dark">{s ? formatSen(s.totalSen) : ''}</span>

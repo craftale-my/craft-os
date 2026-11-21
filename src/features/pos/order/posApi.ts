@@ -28,6 +28,7 @@ export interface TableRow {
 export interface OpenBillRow {
   id: string; bill_no: string; table_id: string | null; order_type: OrderType; pax: number | null; opened_at: string
   discount_kind: DiscountKind | null; discount_value: number | null; discount_reason: string | null   // the bill discount
+  call_no?: string | null   // W4: TA012 on a takeaway bill; null for dine-in and bills made before W4
 }
 export interface BillItemRow {
   id: string
@@ -151,7 +152,7 @@ export async function fetchPadProductInfo(): Promise<Map<string, PadProductInfo>
 
 export async function fetchOpenBills(branchId: string): Promise<OpenBillRow[]> {
   const { data, error } = await supabase.from('bills')
-    .select('id, bill_no, table_id, order_type, pax, opened_at, discount_kind, discount_value, discount_reason')
+    .select('id, bill_no, table_id, order_type, pax, opened_at, discount_kind, discount_value, discount_reason, call_no')
     .eq('branch_id', branchId).eq('status', 'open').order('opened_at')
   if (error) fail(error)
   return (data ?? []) as OpenBillRow[]

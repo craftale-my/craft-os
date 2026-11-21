@@ -103,6 +103,7 @@ export interface ClosedBillRow {
   total_sen: number | null
   refunded_sen: number
   merged_into: string | null
+  call_no?: string | null   // W4: TA012 on a takeaway bill; null for dine-in and bills made before W4
   dining_tables: { label: string } | null
 }
 export type { CheckoutResult }
@@ -367,7 +368,7 @@ export async function openTable(tableId: string, pax: number | null): Promise<st
 /** Paid, voided and merged bills of the branch closed since `sinceIso` (newest first). */
 export async function fetchClosedBillsSince(branchId: string, sinceIso: string): Promise<ClosedBillRow[]> {
   const { data, error } = await supabase.from('bills')
-    .select('id, bill_no, table_id, order_type, status, closed_at, total_sen, refunded_sen, merged_into, dining_tables(label)')
+    .select('id, bill_no, table_id, order_type, status, closed_at, total_sen, refunded_sen, merged_into, call_no, dining_tables(label)')
     .eq('branch_id', branchId).in('status', ['paid', 'voided', 'merged']).gte('closed_at', sinceIso)
     .order('closed_at', { ascending: false })
   if (error) fail(error)
