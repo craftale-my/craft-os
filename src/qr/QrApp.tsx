@@ -61,6 +61,10 @@ export default function QrApp() {
   const [placed, setPlaced] = useState(false)
   const [toast, setToast] = useState<{ text: string; at: number } | null>(null)   // `at` restarts the timer for the same text twice
   const sendingRef = useRef(false)
+  const sheetBusyRef = useRef(false)
+  useEffect(() => { sheetBusyRef.current = sheetBusy }, [sheetBusy])
+  const backPending = useRef(false)                                  // a history.back() is on its way: popstate has not arrived yet
+  const sentElsewhere = useRef(false)                                // an order was just sent from another phone: the cart view bounces once
   const seen = useRef<string | null>(null)                           // sentKey of the cart the sender last looked at (spec §2)
   const adoptSeen = useRef(false)                                    // after a refused send: take the re-read cart as seen
   const pending = useRef<{ id: string; key: string } | null>(null)   // one client_order_id per distinct cart sent
@@ -158,7 +162,10 @@ export default function QrApp() {
     }
     setError(null)                                                  // a failed removal's message goes when the cart moves on
     // an order was sent from this table's cart (from any phone): the server says so, not a count
-    if (orderWasSent(before, after)) { setSendOpen(false); setPlaced(true); void loadState() }
+    if (orderWasSent(before, after)) {
+      setSendOpen(false); setPlaced(true); void loadState()
+      if (!sendingRef.current) sentElsewhere.current = true         // not this phone's own send: a guest on the cart view goes back to the menu
+    }
     else if (after.lines.length === 0) setSendOpen(false)           // the last line went: nothing left to send
   })
   useEffect(() => {
@@ -193,17 +200,40 @@ export default function QrApp() {
     if (v === 'orders') void loadState()                               // the page reads the table afresh on entry
     setView(v)
   }
-  const goMenu = () => { if (history.state?.qrView) history.back(); else setView('menu') }
+  // idempotent: history.state only changes when popstate arrives, so a second fast tap must not call back() again
+  const goMenu = () => {
+    if (!history.state?.qrView) { setView('menu'); return }
+    if (backPending.current) return
+    backPending.current = true
+    history.back()
+  }
   useEffect(() => {
     if (history.state?.qrView) history.replaceState(null, '')          // a reload lands on the menu
-    const onPop = () => setView((history.state?.qrView as View | undefined) ?? 'menu')
+    const onPop = () => {
+      backPending.current = false
+      const v = (history.state?.qrView as View | undefined) ?? 'menu'
+      setView(v)
+      if (v === 'menu') {                                              // a sheet must not float over the wrong view; never while a request is in flight
+        if (!sendingRef.current) { setSendOpen(false); setSendMessage(null); setSendError(null) }
+        if (!sheetBusyRef.current) setSheet(null)
+      }
+    }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
-  // the cart emptied under the guest because the table's order went from another phone: back to the menu (its banner says so)
+  // the table's order was sent from another phone while this guest is on the cart view: back to the menu
+  // (its banner says so). Keyed on that send event, never on the banner or an empty cart.
   useEffect(() => {
-    if (view === 'cart' && placed && table.cart && table.cart.lines.length === 0 && !sendingRef.current) goMenu()
+    if (!sentElsewhere.current || sendingRef.current) return
+    sentElsewhere.current = false
+    if (view === 'cart') goMenu()
   }) // eslint-disable-line react-hooks/exhaustive-deps
+  // the sender's banner is for the other phones: leaving the Order placed view clears it
+  const prevView = useRef<View>('menu')
+  useEffect(() => {
+    if (prevView.current === 'sent' && view !== 'sent') setPlaced(false)
+    prevView.current = view
+  }, [view])
 
   if (screen.kind === 'loading') return <Shell><p className="p-6 text-center text-brown-muted">Loading menu…</p></Shell>
   if (screen.kind === 'error') {
@@ -277,7 +307,7 @@ export default function QrApp() {
       const status = await table.send(paxNum, skip, pending.current.id, table.cart.version)
       if (status === 'changed') { adoptSeen.current = true; setSendMessage('The order changed — please check again.'); return }
       pending.current = null
-      setSendOpen(false); setPlaced(true); setError(null)
+      setSendOpen(false); setError(null)                               // no menu banner for the sender: they see the Order placed view
       setSentGroups(sendable); openView('sent')                         // the groups the sheet showed are exactly what was sent
       await loadState()
     } catch (e) {

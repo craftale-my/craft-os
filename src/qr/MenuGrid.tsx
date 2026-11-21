@@ -16,7 +16,9 @@ export default function MenuGrid({ products, popularIds, units, onOpen }: {
       {products.filter((p) => p.variants.length > 0).map((p) => {
         const n = units.get(p.id) ?? 0
         const price = priceText(p)
-        const label = p.soldOut ? `${p.name}, ${price}, sold out` : n > 0 ? `${p.name}, ${price}, ${n} in the cart` : `${p.name}, ${price}`
+        const popular = popularIds.has(p.id)
+        const label = p.soldOut ? `${p.name}, ${price}, sold out`
+          : `${p.name}, ${price}${popular ? ', Popular' : ''}${n > 0 ? `, ${n} in the cart` : ''}`
         return (
           <button key={p.id} type="button" disabled={p.soldOut} aria-label={label} onClick={() => onOpen(p)}
             className="flex flex-col overflow-hidden rounded-xl border border-border bg-card text-left disabled:opacity-50">
@@ -33,7 +35,8 @@ export default function MenuGrid({ products, popularIds, units, onOpen }: {
               )}
             </div>
             <div className="p-2">
-              <div className="line-clamp-2 text-sm font-medium">{p.name}{popularIds.has(p.id) && <PickPill text="Popular" />}</div>
+              {popular && <div className="-ml-1.5 mb-1"><PickPill text="Popular" /></div>}
+              <div data-testid="tile-name" className="line-clamp-2 text-sm font-medium">{p.name}</div>
               <div className="mt-0.5 text-xs text-brown-muted">{price}</div>
             </div>
           </button>

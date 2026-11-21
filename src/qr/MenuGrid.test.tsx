@@ -44,6 +44,14 @@ describe('MenuGrid', () => {
     expect(screen.getByRole('button', { name: /Latte/ }).textContent).toContain('Popular')
     expect(screen.getByRole('button', { name: /Tea/ }).textContent).not.toContain('Popular')
   })
+  it('keeps the Popular pill out of the clamped name and says Popular in the label', () => {
+    render(<MenuGrid {...base} popularIds={new Set(['latte'])} units={new Map([['latte', 2]])} />)
+    const tile = screen.getByRole('button', { name: 'Latte, RM 12.00, Popular, 2 in the cart' })
+    const name = within(tile).getByTestId('tile-name')
+    expect(name.textContent).toBe('Latte')
+    expect(name.contains(within(tile).getByText('Popular'))).toBe(false)
+    expect(screen.getByRole('button', { name: 'Tea, from RM 8.00' })).toBeTruthy()
+  })
   it('a tap opens the product', () => {
     const onOpen = vi.fn()
     render(<MenuGrid {...base} onOpen={onOpen} />)

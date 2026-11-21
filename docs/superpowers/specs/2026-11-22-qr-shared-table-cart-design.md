@@ -89,6 +89,9 @@ phone's Back returns to the menu.
 **After sending** — the sender sees the `Order placed` view. Every phone at the table empties its cart; the
 others show the existing `Order placed — it is on its way. You can add more below.` banner on the menu. A
 phone shows it when `qr_cart_state`'s `lastOrder` (the id of the newest QR order from this table) moves.
+The sender never sees it: it is cleared when the sender leaves the `Order placed` view. A guest on the
+cart view when another phone sends is returned to the menu once; a cart that merely becomes empty stays
+on the cart view.
 `Orders` groups its lines by guest.
 
 **A guest with nothing in the cart** may still send the table's cart (assumed: the person holding the
