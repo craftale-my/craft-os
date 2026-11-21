@@ -196,6 +196,7 @@ export interface DrawerRow {
   cashRefundSen: number
   payInSen: number
   payOutSen: number
+  noSaleOpens: number       // W4: Open drawer presses in the shift
   expectedSen: number
   countedSen: number | null
   varianceSen: number | null
@@ -274,7 +275,7 @@ const DAILY_KEYS = ['bills', 'pax', 'grossSen', 'discountSen', 'takeawayFeeSen',
 const SUMMARY_KEYS = ['beforeDiscountsSen', 'catalogDiscountSen', 'itemDiscountSen', 'billDiscountSen', 'grossSen',
   'takeawayFeeSen', 'serviceChargeSen', 'sstSen', 'roundingSen', 'nettSen'] as const
 const SST_KEYS = ['rateBp', 'baseSen', 'sstSen'] as const
-const DRAWER_KEYS = ['floatSen', 'cashSalesSen', 'cashRefundSen', 'payInSen', 'payOutSen', 'expectedSen'] as const
+const DRAWER_KEYS = ['floatSen', 'cashSalesSen', 'cashRefundSen', 'payInSen', 'payOutSen', 'noSaleOpens', 'expectedSen'] as const
 const LEDGER_BILL_KEYS = ['grossSen', 'discountSen', 'takeawayFeeSen', 'serviceChargeSen', 'sstSen', 'roundingSen', 'totalSen',
   'refundedSen'] as const
 const LEDGER_LINE_KEYS = ['qty', 'unitPriceSen', 'catalogDiscountSen', 'itemDiscountSen', 'billShareSen', 'netSen', 'sstRateBp',

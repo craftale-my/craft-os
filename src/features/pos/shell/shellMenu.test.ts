@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { menuItems, mytClock } from './shellMenu'
+import { MENU_LABEL, menuItems, mytClock } from './shellMenu'
 
 describe('menuItems', () => {
   it('everything for a manager', () => {
-    expect(menuItems({ manageMenu: true, supervise: true, settings: true })).toEqual(['order', 'menu', 'transaction', 'report', 'setting'])
+    expect(menuItems({ manageMenu: true, supervise: true, settings: true })).toEqual(['order', 'menu', 'transaction', 'drawer', 'report', 'setting'])
   })
-  it('a cashier sees Order and Transaction only', () => {
-    expect(menuItems({ manageMenu: false, supervise: false, settings: false })).toEqual(['order', 'transaction'])
+  it('a cashier sees Order, Transaction and Open drawer', () => {
+    expect(menuItems({ manageMenu: false, supervise: false, settings: false })).toEqual(['order', 'transaction', 'drawer'])
   })
   it('a supervisor without settings gets Report but not Setting', () => {
-    expect(menuItems({ manageMenu: false, supervise: true, settings: false })).toEqual(['order', 'transaction', 'report'])
+    expect(menuItems({ manageMenu: false, supervise: true, settings: false })).toEqual(['order', 'transaction', 'drawer', 'report'])
+  })
+  it('Open drawer is labelled as the spec says', () => {
+    expect(MENU_LABEL.drawer).toBe('Open drawer')
   })
 })
 

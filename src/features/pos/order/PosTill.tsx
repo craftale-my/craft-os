@@ -24,6 +24,7 @@ import MyPinDialog from '../checkout/MyPinDialog'
 import PaymentScreen from '../checkout/PaymentScreen'
 import TransactionScreen from '../checkout/TransactionScreen'
 import ShiftsDrawer from '../shift/ShiftsDrawer'
+import OpenDrawerDialog from '../shift/OpenDrawerDialog'
 import { useShiftOpen } from '../shift/useShiftOpen'
 import BottomBar from '../shell/BottomBar'
 import GridMenu from '../shell/GridMenu'
@@ -85,6 +86,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const [printProblems, setPrintProblems] = useState(0)   // the print host's problem count: the bottom bar's badge
   const [pinOpen, setPinOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)   // W4: Open drawer
   const [paxFor, setPaxFor] = useState<TableRow | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const [stuckNames, setStuckNames] = useState<Map<string, string> | null>(null)
@@ -197,6 +199,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   const pickMenu = (item: MenuItem) => {
     setMenuOpen(false)
     if (item === 'report') { setReportOpen(true); return }
+    if (item === 'drawer') { setDrawerOpen(true); return }
     leave(() => {
       if (item === 'order') goHome()
       else if (item === 'transaction') { editingFrom.current = null; setDrafts(0); setScreen({ kind: 'transaction' }) }
@@ -208,7 +211,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
   // Locking closes what the last person had open; an open Payment goes home without taking money.
   useEffect(() => {
     if (!locked) return
-    setMenuOpen(false); setStaffOpen(false); setReportOpen(false); setPaxFor(null); setConfirm(null)
+    setMenuOpen(false); setStaffOpen(false); setReportOpen(false); setDrawerOpen(false); setPaxFor(null); setConfirm(null)
     // Payment and Transaction have no drafts to keep; the order screen stays (its own dialogs close via `locked`)
     if (screenRef.current.kind === 'payment' || screenRef.current.kind === 'transaction' || screenRef.current.kind === 'split') goHome()
   }, [locked])
@@ -366,6 +369,7 @@ export default function PosTill({ branchId, branchName, staffId, staffName, can,
         onUnpair={onUnpair ? () => { setStaffOpen(false); onUnpair() } : undefined} />
       {pinOpen && <MyPinDialog onClose={() => setPinOpen(false)} />}
       {reportOpen && <ShiftsDrawer onClose={() => setReportOpen(false)} />}
+      {drawerOpen && <OpenDrawerDialog branchId={branchId} onClose={() => setDrawerOpen(false)} />}
       {paxFor && (
         <PaxDialog title={`Table ${paxFor.label}`} current={null} onClose={() => setPaxFor(null)}
           onPick={(n) => { const t = paxFor; setPaxFor(null); openOrder({ kind: 'table', tableId: t.id, pax: n }) }} />

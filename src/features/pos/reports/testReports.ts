@@ -96,10 +96,10 @@ export const EMPTY_AUDIT: AuditReport = {
 export const DRAWER: DrawerReport = {
   shifts: [
     { outlet: 'Cheras', openedAt: '2026-01-06T00:00:00.000Z', closedAt: '2026-01-06T14:00:00.000Z', openedBy: 'Aina', closedBy: 'Aina',
-      floatSen: 10000, cashSalesSen: 3990, cashRefundSen: 300, payInSen: 2000, payOutSen: 500, expectedSen: 15190,
+      floatSen: 10000, cashSalesSen: 3990, cashRefundSen: 300, payInSen: 2000, payOutSen: 500, noSaleOpens: 2, expectedSen: 15190,
       countedSen: 15150, varianceSen: -40, reason: 'Short at close' },
     { outlet: 'Cheras', openedAt: '2026-01-06T12:00:00.000Z', closedAt: null, openedBy: 'Aina', closedBy: null,
-      floatSen: 10000, cashSalesSen: 1910, cashRefundSen: 0, payInSen: 0, payOutSen: 0, expectedSen: 11910,
+      floatSen: 10000, cashSalesSen: 1910, cashRefundSen: 0, payInSen: 0, payOutSen: 0, noSaleOpens: 0, expectedSen: 11910,
       countedSen: null, varianceSen: null, reason: null },
   ],
 }

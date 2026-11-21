@@ -107,10 +107,16 @@ describe('DrawerTab', () => {
     await settle()
     expect(bodyRows(section('Cash drawer'))).toEqual([
       ['Cheras', '6 Jan 2026, 08:00', '6 Jan 2026, 22:00', 'Aina', 'Aina', 'RM 100.00', 'RM 39.90', 'RM 3.00', 'RM 20.00',
-       'RM 5.00', 'RM 151.90', 'RM 151.50', 'RM -0.40', 'Short at close'],
+       'RM 5.00', '2', 'RM 151.90', 'RM 151.50', 'RM -0.40', 'Short at close'],
       ['Cheras', '6 Jan 2026, 20:00', 'Still open', 'Aina', '—', 'RM 100.00', 'RM 19.10', 'RM 0.00', 'RM 0.00',
-       'RM 0.00', 'RM 119.10', '—', '—', '—'],
+       'RM 0.00', '0', 'RM 119.10', '—', '—', '—'],
     ])
+  })
+  it('the No-sale opens column sits after Pay out', async () => {
+    render(<DrawerTab query={Q} />)
+    await settle()
+    const heads = [...section('Cash drawer').querySelectorAll('thead th')].map((th) => th.textContent)
+    expect(heads.indexOf('No-sale opens')).toBe(heads.indexOf('Pay out') + 1)
   })
   it('none: says so', async () => {
     h.drawer.mockResolvedValue({ shifts: [] })

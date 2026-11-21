@@ -7,7 +7,7 @@ import {
   saveServiceChargeRule, type Approver, type PaymentMethodRow, type ReceiptDetails, type ServiceChargeRuleRow,
 } from './checkoutApi'
 import { fetchOutletApprovers } from '../outlets/outletsApi'
-import { ACTION_TITLES, type ReasonAction } from './reasons'
+import { ACTION_TITLES, OPEN_DRAWER_REASONS, type ReasonAction } from './reasons'
 import { bpToPercentText, methodKindPatch, parsePercentBp, parseReasons, receiptDetailsProblem, scopeLabel } from './settingsForm'
 import type { PaymentKind } from './tender'
 import type { FontSize } from '../print/doc'
@@ -15,7 +15,7 @@ import ReceiptLogoField from './ReceiptLogoField'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const KINDS: PaymentKind[] = ['cash', 'card', 'duitnow', 'ewallet', 'other']
-const ACTIONS: ReasonAction[] = ['void_item', 'void_bill', 'refund', 'discount']
+const ACTIONS: ReasonAction[] = ['void_item', 'void_bill', 'refund', 'discount', 'open_drawer']
 const ORDER_TYPES: { key: BillOrderType; label: string }[] = [{ key: 'dine_in', label: 'Dine-in' }, { key: 'takeaway', label: 'Takeaway' }]
 const box = 'rounded-xl border border-border bg-card p-4'
 const input = 'rounded border border-border p-1'
@@ -293,6 +293,7 @@ function ReasonsSection({ branchId, run, onError, outcome }: { branchId: string 
     void_bill: { text: '', compulsory: true, allowOther: true },
     refund: { text: '', compulsory: true, allowOther: true },
     discount: { text: '', compulsory: true, allowOther: true },
+    open_drawer: { text: OPEN_DRAWER_REASONS.join('\n'), compulsory: true, allowOther: true },   // W4: the defaults until saved
   })
   useEffect(() => {
     fetchReasonTemplates(branchId).then((rows) => setDrafts((d) => {
@@ -309,8 +310,8 @@ function ReasonsSection({ branchId, run, onError, outcome }: { branchId: string 
   }, `${ACTION_TITLES[a]} reasons saved`)
   return (
     <section className={box}>
-      <h2 className="font-semibold">Reasons for voids, refunds and discounts</h2>
-      <div className="mt-2 grid grid-cols-4 gap-3 text-sm">
+      <h2 className="font-semibold">Reasons for voids, refunds, discounts and opening the drawer</h2>
+      <div className="mt-2 grid grid-cols-5 gap-3 text-sm">
         {ACTIONS.map((a) => (
           <div key={a}>
             <div className="font-medium">{ACTION_TITLES[a]}</div>
