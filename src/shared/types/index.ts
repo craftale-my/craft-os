@@ -1,3 +1,5 @@
+export * from './procurement'
+
 export type Rank = 'trainee' | 'junior' | 'senior' | 'supervisor' | 'manager'
 export type MissionCategory = 'espresso' | 'milk' | 'service' | 'ops' | 'knowledge' | 'leadership'
 export type CompletionStatus = 'pending' | 'approved' | 'rejected'
@@ -8,6 +10,15 @@ export type StaffStatus = 'active' | 'resigned'
 // ─── System roles (access control — separate from rank/XP and job title) ──────
 
 export type SystemRole = 'owner' | 'admin' | 'hr' | 'manager' | 'supervisor' | 'staff'
+
+/** Customer Service (Craft Marketing inbox) access. null on Staff = no access. */
+export type CsRole = 'agent' | 'supervisor' | 'admin'
+export const CS_ROLES: CsRole[] = ['agent', 'supervisor', 'admin']
+export const CS_ROLE_LABELS: Record<CsRole, string> = {
+  agent: 'Agent — reply to conversations',
+  supervisor: 'Supervisor — reassign + view team',
+  admin: 'Admin — channels, automation, knowledge base',
+}
 
 export const SYSTEM_ROLES: SystemRole[] = ['owner', 'admin', 'hr', 'manager', 'supervisor', 'staff']
 
@@ -45,6 +56,8 @@ export type Capability =
   | 'pos_supervise'    // approve POS voids & refunds with a PIN (SQL: has_menu_cap / staff_has_cap)
   | 'manage_menu'      // edit the company-wide menu and its catalogs (SQL: has_menu_cap / staff_has_cap)
   | 'pos_login'        // sign in to the POS with a PIN where one may work (SQL: has_menu_cap / staff_has_cap)
+  | 'manage_procurement'  // supplier & item master data
+  | 'use_procurement'     // raise POs, receive goods, view inventory
 
 export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'view_team',           label: 'View Team' },
@@ -61,6 +74,8 @@ export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'pos_supervise',       label: 'Approve POS voids & refunds' },
   { key: 'manage_menu',         label: 'Edit menu' },
   { key: 'pos_login',           label: 'Sign in to the POS' },
+  { key: 'manage_procurement',  label: 'Manage Procurement' },
+  { key: 'use_procurement',     label: 'Use Procurement' },
 ]
 
 type CapMap = Partial<Record<Capability, boolean>>
@@ -74,6 +89,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     pos_supervise: true,
     manage_menu: true,
     pos_login: true,
+    manage_procurement: true, use_procurement: true,
   },
   admin: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
@@ -82,6 +98,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     pos_supervise: true,
     manage_menu: true,
     pos_login: true,
+    manage_procurement: true, use_procurement: true,
   },
   hr: {
     view_team: true, manage_staff: true, manage_schedule: false, conduct_reviews: false,
@@ -90,6 +107,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     pos_supervise: false,
     manage_menu: false,
     pos_login: false,
+    manage_procurement: false, use_procurement: false,
   },
   manager: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
@@ -98,6 +116,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     pos_supervise: true,
     manage_menu: false,
     pos_login: true,
+    manage_procurement: true, use_procurement: true,
   },
   supervisor: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
@@ -106,6 +125,8 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     pos_supervise: true,
     manage_menu: false,
     pos_login: true,
+    // Supervisors raise POs and receive goods, but don't own the master data.
+    manage_procurement: false, use_procurement: true,
   },
   staff: {
     view_team: false, manage_staff: false, manage_schedule: false, conduct_reviews: false,
@@ -114,6 +135,7 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     pos_supervise: false,
     manage_menu: false,
     pos_login: true,
+    manage_procurement: false, use_procurement: false,
   },
 }
 
@@ -132,6 +154,8 @@ export interface Staff {
   avatar: string | null
   rank: Rank
   system_role: SystemRole
+  /** Optional so older fixtures still type-check; null/undefined = no access. */
+  cs_role?: CsRole | null
   job_title_id: string | null
   branch_id: string | null
   supervisor_id: string | null
@@ -146,18 +170,24 @@ export interface Staff {
   // onboarding fields
   onboarding_completed: boolean | null
   nickname: string | null
-  ic_number: string | null
-  address: string | null
   gender: string | null
-  date_of_birth: string | null
-  contact_number: string | null
   branch: string | null
   employment_type: string | null
   working_experience: string | null
   education: string | null
   // management fields
-  manager_notes: string | null
   last_level_up_at: string | null
+}
+
+/** staff_private row — IC, DOB, phone, address. RLS: self + hr/manager/admin/owner.
+ *  A reader without permission gets no row at all (not nulls). */
+export interface StaffPrivate {
+  staff_id: string
+  ic_number: string | null
+  date_of_birth: string | null
+  contact_number: string | null
+  address: string | null
+  updated_at: string
 }
 
 export interface Mission {
@@ -329,7 +359,12 @@ export function getScoreConfig(score: number) {
 
 // Hardcoded fallbacks — used only when the dynamic tables are unavailable/empty
 // (e.g. before the departments/employment_types migration has been run).
-export const BRANCHES = ['Cheras (Taman Connaught)', 'Puchong (Bandar Puteri)', 'Other']
+export const BRANCHES = [
+  'Cheras (Taman Connaught)',
+  'Puchong (Bandar Puteri)',
+  'Kepong (Taman Usahawan)',
+  'Other',
+]
 export const GENDERS = ['Man', 'Woman']
 export const EMPLOYMENT_TYPES = ['Full Time / Contract', 'Part Time']
 export const DEPARTMENTS = ['Barista (Full Time)', 'Service Crew', 'Bakery', 'Kitchen', 'Other']
@@ -791,7 +826,7 @@ export interface ScheduledShift {
   id: string
   staff_id: string
   shift_type_id: string | null
-  leave_type: LeaveType | null
+  leave_type: ScheduleLeaveType | null
   branch_id: string | null
   date: string
   status: 'scheduled' | 'confirmed' | 'swapped' | 'cancelled'
@@ -810,8 +845,40 @@ export const SCHEDULE_LEAVE_OPTIONS: { type: LeaveType; label: string }[] = [
   { type: 'public_holiday', label: 'Public Holiday Replacement' },
 ]
 
-export const SCHEDULE_LEAVE_LABELS: Partial<Record<LeaveType, string>> =
-  Object.fromEntries(SCHEDULE_LEAVE_OPTIONS.map(o => [o.type, o.label]))
+/** What a non-shift schedule row can hold: a manager-assigned leave, or the
+ *  staff member's weekly rest day. A rest day is not leave — it writes no
+ *  attendance row and touches no leave balance. */
+export type ScheduleLeaveType = LeaveType | 'rest_day'
+
+export const REST_DAY_LABEL = 'Rest Day'
+
+export const SCHEDULE_LEAVE_LABELS: Partial<Record<ScheduleLeaveType, string>> = {
+  ...Object.fromEntries(SCHEDULE_LEAVE_OPTIONS.map(o => [o.type, o.label])),
+  rest_day: REST_DAY_LABEL,
+}
+
+/** Monday of the Mon–Sun week containing `date` (YYYY-MM-DD), as YYYY-MM-DD.
+ *  Matches Postgres `date_trunc('week', …)`, which the one-rest-day-per-week
+ *  index uses. */
+export function weekStartOf(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  const dow = d.getUTCDay()
+  d.setUTCDate(d.getUTCDate() - (dow === 0 ? 6 : dow - 1))
+  return d.toISOString().slice(0, 10)
+}
+
+/** Each staff member gets at most one rest day per Mon–Sun week. Returns the
+ *  date of a rest day already scheduled in `date`'s week (other than `date`
+ *  itself), or null if a rest day may be placed on `date`. */
+export function otherRestDayInWeek(
+  shifts: Pick<ScheduledShift, 'date' | 'leave_type'>[],
+  date: string,
+): string | null {
+  const week = weekStartOf(date)
+  const hit = shifts.find(s =>
+    s.leave_type === 'rest_day' && s.date !== date && weekStartOf(s.date) === week)
+  return hit?.date ?? null
+}
 
 /** A schedule-assigned leave writes an attendance row (status on_leave).
  *  When the leave marker is replaced, that row may be deleted — but only

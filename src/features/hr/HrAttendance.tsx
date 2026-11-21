@@ -1,15 +1,15 @@
-import { useState, useEffect, Fragment } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { useAuth } from '../auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
-import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ScheduledShift, ShiftType, LeaveType } from '../../shared/types'
+import type { Staff, Attendance, AttendanceStatus, AttendanceBreak, ScheduledShift, ShiftType, ScheduleLeaveType } from '../../shared/types'
 import { ATTENDANCE_STATUS_LABELS, ATTENDANCE_STATUS_COLORS, BRANCHES, DEPT_LABELS, MONTHS_FULL, DEFAULT_BREAK_MINUTES, computeBreakOvertime, SCHEDULE_LEAVE_LABELS, DEPT_SHIFT_COLORS } from '../../shared/types'
 import { toCSV, downloadCSV } from '../../shared/lib/csv'
 import { calcLateness, localDateStr, prevDateStr, resolveAttendanceDate } from '../../shared/lib/attendance'
 import { writeOutcome, writeOutcomeWithRow, type WriteOutcome, type WriteOutcomeWithRow } from '../../shared/lib/db-write'
+import { DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES, LATE_REASON_LABELS, type LateReasonCode } from '../../shared/lib/lateReason'
 import { buildStaffReport } from '../../shared/lib/attendance-report'
 import type { DailyDetail } from '../../shared/lib/attendance-report'
-import { DEFAULT_WRITTEN_EXPLANATION_THRESHOLD_MINUTES, LATE_REASON_LABELS, type LateReasonCode } from '../../shared/lib/lateReason'
 import { Avatar } from '../../shared/components/Avatar'
 import { MapPin, CheckCircle, X, AlertTriangle, ZoomIn, Coffee, ChevronDown, ChevronRight } from 'lucide-react'
 import { ClockModal, type ClockResult } from './ClockModal'
@@ -23,6 +23,15 @@ function todayStr(): string {
 
 function daysInMonth(year: number, month: number): number {
   return new Date(year, month, 0).getDate()
+}
+
+/**
+ * Resigned staff stay out of the team views unless they have something on
+ * record for the period being viewed: a month they actually worked still
+ * needs their row, the months after they left do not.
+ */
+export function hideIdleResigned(staff: Staff[], withRecords: Set<string>): Staff[] {
+  return staff.filter(s => s.status !== 'resigned' || withRecords.has(s.id))
 }
 
 function fmtTime(iso: string): string {
@@ -112,7 +121,9 @@ export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; manage
   }
 
   async function markAllPresent() {
-    const rows = visibleStaff.map(s => ({
+    // A resigned row is only on screen because of an existing record; never
+    // overwrite it with a fresh "present".
+    const rows = visibleStaff.filter(s => s.status !== 'resigned').map(s => ({
       staff_id: s.id,
       date,
       status: 'present' as const,
@@ -153,7 +164,7 @@ export function DailyRoster({ allStaff, managerId }: { allStaff: Staff[]; manage
     else { setRosterError(null); load() }
   }
 
-  const visibleStaff = allStaff.filter(s => {
+  const visibleStaff = hideIdleResigned(allStaff, new Set(Object.keys(records))).filter(s => {
     if (filterBranch && s.branch !== filterBranch) return false
     if (filterDept && s.department !== filterDept) return false
     return true
@@ -376,6 +387,7 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
     if (!map[r.staff_id]) map[r.staff_id] = {}
     map[r.staff_id][day] = r
   })
+  const gridStaff = hideIdleResigned(allStaff, new Set(Object.keys(map)))
 
   async function exportCSV() {
     setExporting(true)
@@ -409,7 +421,7 @@ function MonthlyGrid({ allStaff }: { allStaff: Staff[] }) {
             </tr>
           </thead>
           <tbody>
-            {allStaff.map((s, i) => (
+            {gridStaff.map((s, i) => (
               <tr key={s.id} className={i > 0 ? 'border-t border-[#F0E8DC]' : ''}>
                 <td className="px-3 py-1.5 font-medium text-brown-dark sticky left-0 bg-white whitespace-nowrap">{s.name}</td>
                 {days.map(d => {
@@ -528,7 +540,7 @@ function weekdayShort(date: string): string {
 
 /** "Morning 9:30am–6:00pm", the leave label on a leave-marker day, else "—". */
 function shiftLabel(d: DailyDetail): string {
-  if (d.leaveType) return SCHEDULE_LEAVE_LABELS[d.leaveType as LeaveType] ?? d.leaveType
+  if (d.leaveType) return SCHEDULE_LEAVE_LABELS[d.leaveType as ScheduleLeaveType] ?? d.leaveType
   if (!d.shiftName) return '—'
   if (!d.shiftStart || !d.shiftEnd) return d.shiftName
   return `${d.shiftName} ${fmtTime2(d.shiftStart)}–${fmtTime2(d.shiftEnd)}`
@@ -538,14 +550,47 @@ type ReportBreak = DailyDetail['breaks'][number]
 
 const breakAt = (d: DailyDetail, n: 1 | 2): ReportBreak | null => d.breaks.find(b => b.number === n) ?? null
 
-/** ISO timestamp -> `9:32am`. The page-wide `fmtTime` renders `09:32 am`
- *  (zero-padded, spaced); the report puts clock times next to shift times
- *  formatted by `fmtTime2`, so it needs the same compact spelling. Changing
- *  `fmtTime` itself would restyle the clock card and daily roster too. */
+/** Every other value on a report row is fixed Malaysian time — `date` and the
+ *  shift's `start_time`/`end_time` are date/time columns, and `late_minutes` was
+ *  computed on the staff member's own on-site device. Only clock_in/clock_out
+ *  are timestamptz, so reading them with the viewer's local hours put "1:32am"
+ *  next to "Morning 9:30am–6:00pm" on a laptop set to UTC, and made the exported
+ *  CSV differ depending on who ran it. Pin them to the same zone as everything
+ *  beside them. */
+const MYT_CLOCK = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Kuala_Lumpur', hour: 'numeric', minute: '2-digit', hour12: true,
+})
+
+/** ISO timestamp -> `9:32am` in Malaysian time. The page-wide `fmtTime` renders
+ *  `09:32 am` (zero-padded, spaced); the report puts clock times next to shift
+ *  times formatted by `fmtTime2`, so it needs the same compact spelling.
+ *  Changing `fmtTime` itself would restyle the clock card and daily roster. */
 function fmtClock(iso: string): string {
-  const d = new Date(iso)
-  const h = d.getHours()
-  return `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}${h >= 12 ? 'pm' : 'am'}`
+  const parts = MYT_CLOCK.formatToParts(new Date(iso))
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? ''
+  return `${get('hour')}:${get('minute')}${get('dayPeriod').toLowerCase().replace(/\s/g, '')}`
+}
+
+/** The Malaysian calendar date an instant falls on. */
+function mytDateOf(iso: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kuala_Lumpur', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(iso))
+}
+
+/** A clock time that says so when it belongs to a later day than the row it sits
+ *  on. An overnight shift is filed under the day it STARTS, so its clock-out
+ *  lands on the next calendar date — printed bare, `1:04am` beside a `5:02pm`
+ *  clock-in reads as a clock-out eight hours before the clock-in, and the CSV
+ *  carries the same trap into whatever a payroll clerk computes from it. */
+function fmtClockOn(iso: string, rowDate: string): string {
+  const base = fmtClock(iso)
+  const stamp = mytDateOf(iso)
+  if (stamp === rowDate) return base
+  const days = Math.round(
+    (new Date(`${stamp}T00:00:00`).getTime() - new Date(`${rowDate}T00:00:00`).getTime()) / 86400000,
+  )
+  return `${base} ${days > 0 ? '+' : ''}${days}d`
 }
 
 /** "12:05pm–12:38pm (33m)" — the overtime suffix is added separately so the UI
@@ -603,6 +648,8 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
   const [error, setError] = useState<string | null>(null)
   const [truncated, setTruncated] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
+  /** Newest load() run. Anything older must not touch state — see load(). */
+  const runIdRef = useRef(0)
 
   // Branch/department narrow the pool the staff dropdown offers; the dropdown
   // then narrows the report itself to one person.
@@ -625,8 +672,27 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
     // isn't a full success; publish all three together at the end.
     const clear = () => { setAttendance([]); setBreaks([]); setShifts([]); setTruncated(false) }
 
+    // Each run stakes a claim on the newest request id. Changing the range or
+    // the filters starts a run without cancelling the one already in flight, and
+    // the reads are paged, so a superseded run can answer seconds after the one
+    // that replaced it. Whoever answered last used to win: the table showed an
+    // abandoned selection's rows under the current heading, an abandoned run's
+    // failure blanked a result that had loaded fine, and both CSV exports read
+    // that same state. Every publish below is gated on still being current.
+    const runId = ++runIdRef.current
+    const current = () => runIdRef.current === runId
+    const fail = (message: string) => {
+      if (!current()) return
+      clear(); setError(message); setLoading(false)
+    }
+
     setTruncated(false)
     if (staffIds.length === 0) { clear(); setError(null); return }
+    // Clearing a date input leaves an empty string, which is not caught by the
+    // ordering compare below ('' > '2026-08-31' is false) and reaches PostgREST
+    // as `date=gte.`, surfacing a raw `invalid input syntax for type date` at
+    // the manager. Name the field that is actually empty.
+    if (!from || !to) { clear(); setError(!from ? 'Pick a start date.' : 'Pick an end date.'); return }
     if (from > to) { clear(); setError('Start date must be on or before the end date.'); return }
     setLoading(true)
     setError(null)
@@ -640,7 +706,8 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       .order('date')
       .order('id')
       .range(lo, hi))
-    if (att.error) { clear(); setError(`Could not load attendance — ${att.error.message}`); setLoading(false); return }
+    if (att.error) { fail(`Could not load attendance — ${att.error.message}`); return }
+    if (!current()) return
     const attRows = att.rows
     // All three reads page to the same ceiling, and all three matter: a dropped
     // break inflates Worked minutes and hides break overtime, a dropped shift
@@ -666,7 +733,8 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
         .order('attendance_id')
         .order('break_number')
         .range(lo, hi))
-      if (brk.error) { clear(); setError(`Could not load breaks — ${brk.error.message}`); setLoading(false); return }
+      if (brk.error) { fail(`Could not load breaks — ${brk.error.message}`); return }
+      if (!current()) return
       // Drop the embedded parent — buildStaffReport groups on attendance_id,
       // which every row still carries.
       brkRows = brk.rows.map(({ attendance: _parent, ...b }) => b as AttendanceBreak)
@@ -683,7 +751,8 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       .order('date')
       .order('id')
       .range(lo, hi))
-    if (shift.error) { clear(); setError(`Could not load shifts — ${shift.error.message}`); setLoading(false); return }
+    if (shift.error) { fail(`Could not load shifts — ${shift.error.message}`); return }
+    if (!current()) return
     const shiftRows = shift.rows
     if (shift.truncated) hitLimit = true
 
@@ -705,25 +774,43 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
     setTo(r.to)
   }
 
-  const summaries = buildStaffReport(staffIds, attendance, breaks, shifts)
+  // `now` decides which rostered days have had their chance to be worked — a
+  // shift still in progress is not a missed clock-in. Passed explicitly so the
+  // dependency on the clock is visible at the call site.
+  const withRecords = new Set([...attendance.map(a => a.staff_id), ...shifts.map(sh => sh.staff_id)])
+  const shownIds = new Set(hideIdleResigned(visibleStaff, withRecords).map(s => s.id))
+  const summaries = buildStaffReport(staffIds, attendance, breaks, shifts, new Date())
+    .filter(s => shownIds.has(s.staffId))
   const staffName = (id: string) => allStaff.find(s => s.id === id)?.name ?? id
 
+  // A CSV outlives the screen it came from: it gets mailed to payroll with no
+  // banner attached. So the export refuses to run while the numbers on screen
+  // are not real, and when a read did truncate, the warning travels inside the
+  // file and in its name rather than staying on the page.
+  const exportBlocked = loading || error != null || staffIds.length === 0
+  const INCOMPLETE_NOTE = `INCOMPLETE EXPORT — this range passed the ${REPORT_MAX_ROWS.toLocaleString()}-record read ceiling. Rows were left out: totals are understated and missed clock-ins may be overstated. Narrow the date range or pick one staff member before acting on these numbers.`
+  const exportName = (kind: string) =>
+    `attendance_${kind}_${from}_${to}${truncated ? '_INCOMPLETE' : ''}.csv`
+
   function exportSummaryCSV() {
+    if (exportBlocked) return
     const rows = summaries.map(s => [
       staffName(s.staffId), s.present, s.late, s.lateMinutes,
       s.absent, s.onLeave, s.halfDay, s.missedClockIn, s.breakOvertimes,
     ])
-    downloadCSV(`attendance_summary_${from}_${to}.csv`, toCSV(SUMMARY_HEADERS, rows))
+    if (truncated) rows.push([INCOMPLETE_NOTE])
+    downloadCSV(exportName('summary'), toCSV(SUMMARY_HEADERS, rows))
   }
 
   function exportDetailCSV() {
+    if (exportBlocked) return
     const rows = summaries.flatMap(s => s.days.map(d => [
       staffName(s.staffId),
       d.date,
       weekdayShort(d.date),
       shiftLabel(d),
-      d.clockIn ? fmtClock(d.clockIn) : '—',
-      d.clockOut ? fmtClock(d.clockOut) : '—',
+      d.clockIn ? fmtClockOn(d.clockIn, d.date) : '—',
+      d.clockOut ? fmtClockOn(d.clockOut, d.date) : '—',
       fmtWorked(d.workedMinutes),
       breakCellText(breakAt(d, 1)),
       breakCellText(breakAt(d, 2)),
@@ -731,7 +818,8 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       statusText(d),
       d.distanceM != null ? `${d.distanceM}m` : '',
     ]))
-    downloadCSV(`attendance_detail_${from}_${to}.csv`, toCSV(DETAIL_HEADERS, rows))
+    if (truncated) rows.push([INCOMPLETE_NOTE])
+    downloadCSV(exportName('detail'), toCSV(DETAIL_HEADERS, rows))
   }
 
   const selectCls = 'px-3 py-1.5 rounded-lg border border-[#D4C5B0] bg-white text-xs text-brown-dark focus:outline-none focus:ring-2 focus:ring-[#C4813A40]'
@@ -772,7 +860,7 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
       <div className="flex flex-wrap items-center gap-2">
         <select className={selectCls} value={filterStaff} onChange={e => setFilterStaff(e.target.value)}>
           <option value="">All staff</option>
-          {scopeStaff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          {scopeStaff.map(s => <option key={s.id} value={s.id}>{s.status === 'resigned' ? `${s.name} (resigned)` : s.name}</option>)}
         </select>
         <select
           className={selectCls}
@@ -792,13 +880,15 @@ export function AttendanceReport({ allStaff }: { allStaff: Staff[] }) {
         </select>
         <button
           onClick={exportSummaryCSV}
-          className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+          disabled={exportBlocked}
+          className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
         >
           Export Summary CSV
         </button>
         <button
           onClick={exportDetailCSV}
-          className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors"
+          disabled={exportBlocked}
+          className="px-3 py-1.5 rounded-lg border border-[#D4C5B0] text-xs text-brown-medium font-medium hover:bg-[#F5EDE0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
         >
           Export Detail CSV
         </button>
@@ -908,8 +998,8 @@ function DailyDetailTable({ days }: { days: DailyDetail[] }) {
                 <td className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">{d.date}</td>
                 <td className="px-2.5 py-1.5 text-brown-faint whitespace-nowrap">{weekdayShort(d.date)}</td>
                 <td className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">{shiftLabel(d)}</td>
-                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockIn ? fmtClock(d.clockIn) : '—'}</td>
-                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockOut ? fmtClock(d.clockOut) : '—'}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockIn ? fmtClockOn(d.clockIn, d.date) : '—'}</td>
+                <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap">{d.clockOut ? fmtClockOn(d.clockOut, d.date) : '—'}</td>
                 <td className="px-2.5 py-1.5 text-brown-dark whitespace-nowrap tabular-nums">{fmtWorked(d.workedMinutes)}</td>
                 {[b1, b2].map((b, i) => (
                   <td key={i} className="px-2.5 py-1.5 text-brown-medium whitespace-nowrap">
@@ -970,7 +1060,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
   const [break1Allowed, setBreak1Allowed] = useState(0)
   const [break2Allowed, setBreak2Allowed] = useState(0)
   const [todayShift, setTodayShift] = useState<ShiftType | null>(null)
-  const [todayLeave, setTodayLeave] = useState<LeaveType | null>(null)
+  const [todayLeave, setTodayLeave] = useState<ScheduleLeaveType | null>(null)
   const [breaks, setBreaks] = useState<AttendanceBreak[]>([])
   const [breakBusy, setBreakBusy] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -1034,7 +1124,7 @@ export function MyAttendance({ staff }: { staff: Staff }) {
 
     // Yesterday's shift decides whether a night shift is still running;
     // the active day's shift drives the badge and break allowances.
-    type ShiftRow = { date: string; leave_type: LeaveType | null; shift_type: ShiftType | null }
+    type ShiftRow = { date: string; leave_type: ScheduleLeaveType | null; shift_type: ShiftType | null }
     const { data: shiftRows } = await supabase
       .from('scheduled_shifts')
       .select('date, leave_type, shift_type:shift_types(*)')

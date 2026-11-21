@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './features/auth/AuthContext'
+import { ErrorBoundary } from './shared/components/ErrorBoundary'
 import { LookupsProvider } from './shared/lib/lookups'
 import { effectiveSystemRole } from './shared/lib/permissions'
 import { ProtectedRoute, OnboardingRoute } from './features/auth/ProtectedRoute'
@@ -30,12 +31,35 @@ import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
 import HrClaimsPage from './features/hr/HrClaims'
 import SchedulePage from './features/schedule/Schedule'
+import FeedbackPage from './features/feedback/FeedbackPage'
+import OrgChartPage from './features/orgchart/OrgChart'
+import SuppliersPage from './features/procurement/Suppliers'
+import ItemsPage from './features/procurement/Items'
+import ItemDetailPage from './features/procurement/ItemDetail'
+import PurchaseOrdersPage from './features/procurement/PurchaseOrders'
+import PurchaseOrderNewPage from './features/procurement/PurchaseOrderNew'
+import PurchaseOrderDetailPage from './features/procurement/PurchaseOrderDetail'
+import ReceivingListPage from './features/procurement/ReceivingList'
+import ReceivingPage from './features/procurement/Receiving'
+import TransfersPage from './features/procurement/Transfers'
+import TransferShipPage from './features/procurement/TransferShip'
+import WastagePage from './features/procurement/Wastage'
+import RecipesPage from './features/procurement/Recipes'
+import RecipeNewPage from './features/procurement/RecipeNew'
+import RecipeDetailPage from './features/procurement/RecipeDetail'
+import ProducePage from './features/procurement/Produce'
+import InventoryPage from './features/procurement/Inventory'
+import InventoryDetailPage from './features/procurement/InventoryDetail'
 
 function AppLayout({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation()
   return (
     <div className="min-h-screen bg-[#F5F0E8]">
       <Sidebar />
-      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen">{children}</main>
+      {/* key=pathname:换页即复位。Sidebar(含反馈按钮)在 boundary 之外,页面崩了仍可用。 */}
+      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen pb-[calc(5rem+env(safe-area-inset-bottom))]">
+        <ErrorBoundary key={pathname}>{children}</ErrorBoundary>
+      </main>
     </div>
   )
 }
@@ -197,6 +221,24 @@ function AppRoutes() {
       />
 
       <Route
+        path="/feedback"
+        element={
+          <ProtectedRoute>
+            <AppLayout><FeedbackPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/org-chart"
+        element={
+          <ProtectedRoute>
+            <AppLayout><OrgChartPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
         path="/probation/:staffId"
         element={
           <ProtectedRoute requireCap="conduct_reviews">
@@ -286,6 +328,173 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="manage_menu">
             <AppLayout><MenuRoutes /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/suppliers"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><SuppliersPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/items"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><ItemsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Detail is readable by anyone who can raise a PO — they need to see
+          prices and stock — while the Items list stays manager-only. */}
+      <Route
+        path="/procurement/items/:id"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><ItemDetailPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/orders"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><PurchaseOrdersPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Before /orders/:id so "new" isn't swallowed as an id. */}
+      <Route
+        path="/procurement/orders/new"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><PurchaseOrderNewPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/orders/:id"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><PurchaseOrderDetailPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/receiving"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><ReceivingListPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/receiving/:poId"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><ReceivingPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/transfers"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><TransfersPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/transfers/:poId/ship"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><TransferShipPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/wastage"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><WastagePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/recipes"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><RecipesPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Managers only — the page itself explains that to everyone else. */}
+      <Route
+        path="/procurement/recipes/new"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><RecipeNewPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/recipes/:itemId"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><RecipeDetailPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/recipes/:itemId/produce"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><ProducePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/inventory"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><InventoryPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Alias for the Stock on Hand page. */}
+      <Route
+        path="/procurement/stock"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <Navigate to="/procurement/inventory" replace />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/inventory/:itemId"
+        element={
+          <ProtectedRoute requireCap="use_procurement">
+            <AppLayout><InventoryDetailPage /></AppLayout>
           </ProtectedRoute>
         }
       />
