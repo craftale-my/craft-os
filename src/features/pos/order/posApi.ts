@@ -197,6 +197,14 @@ export async function setTablePaused(tableId: string, paused: boolean): Promise<
   if (!out.ok) throw new Error(`Table change failed: ${out.reason}`)
 }
 
+/** Staff empty a table's shared QR cart (pos_clear_qr_cart: a till session of the table's outlet);
+ *  how many lines went. */
+export async function clearQrCart(tableId: string): Promise<number> {
+  const { data, error } = await supabase.rpc('pos_clear_qr_cart', { p_table_id: tableId })
+  if (error) fail(error)
+  return Number(data ?? 0)
+}
+
 export async function fetchRoutes(branchId: string): Promise<PrintRoute[]> {
   const { data, error } = await supabase.from('print_routes').select('name, kind, address').eq('branch_id', branchId).order('name')
   if (error) fail(error)

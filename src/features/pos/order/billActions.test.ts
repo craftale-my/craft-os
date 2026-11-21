@@ -1,34 +1,42 @@
 import { describe, expect, it } from 'vitest'
-import { BILL_ACTION_LABEL, PART_PAID_FIRST, billActionNotes, billActions, itemActionNotes, itemActions } from './billActions'
+import { BILL_ACTION_LABEL, PART_PAID_FIRST, billActionNotes, billActions, clearedNotice, itemActionNotes, itemActions } from './billActions'
 import { SPLIT_ACTION_LABEL, SPLIT_OFFLINE } from './splitSelection'
 
 const table = { isTable: true, hasBill: true, loaded: true, liveSentCount: 2, draftCount: 0, qrPaused: false, qrRequiresOpenBill: false, billDiscount: false }
 
 describe('billActions', () => {
   it('a table bill with items: Move, Split / Move items, Discount bill, Void bill, Pax, Pause QR', () => {
-    expect(billActions(table)).toEqual(['move', 'split', 'discount_bill', 'void_bill', 'pax', 'pause_qr'])
+    expect(billActions(table)).toEqual(['move', 'split', 'discount_bill', 'void_bill', 'pax', 'pause_qr', 'clear_qr_cart'])
   })
   it('one live unit: nothing to split', () => {
-    expect(billActions({ ...table, liveSentCount: 1 })).toEqual(['move', 'discount_bill', 'void_bill', 'pax', 'pause_qr'])
+    expect(billActions({ ...table, liveSentCount: 1 })).toEqual(['move', 'discount_bill', 'void_bill', 'pax', 'pause_qr', 'clear_qr_cart'])
   })
   it('drafts add Send first; a bill with nothing live offers Close empty bill instead of Void bill', () => {
-    expect(billActions({ ...table, draftCount: 2, liveSentCount: 0 })).toEqual(['send', 'move', 'close_empty', 'pax', 'pause_qr'])
+    expect(billActions({ ...table, draftCount: 2, liveSentCount: 0 })).toEqual(['send', 'move', 'close_empty', 'pax', 'pause_qr', 'clear_qr_cart'])
   })
   it('neither split, void nor close before the items are loaded', () => {
-    expect(billActions({ ...table, loaded: false })).toEqual(['move', 'pax', 'pause_qr'])
+    expect(billActions({ ...table, loaded: false })).toEqual(['move', 'pax', 'pause_qr', 'clear_qr_cart'])
   })
   it('an empty table: Pax and the QR switches; Open for QR only when QR waits for an open bill', () => {
     const empty = { ...table, hasBill: false, liveSentCount: 0, qrPaused: true }
-    expect(billActions(empty)).toEqual(['pax', 'resume_qr'])
-    expect(billActions({ ...empty, qrRequiresOpenBill: true })).toEqual(['pax', 'resume_qr', 'open_qr'])
+    expect(billActions(empty)).toEqual(['pax', 'resume_qr', 'clear_qr_cart'])
+    expect(billActions({ ...empty, qrRequiresOpenBill: true })).toEqual(['pax', 'resume_qr', 'clear_qr_cart', 'open_qr'])
   })
   it('a takeaway bill: Move, Split / Move items, Discount bill and Void bill', () => {
     expect(billActions({ ...table, isTable: false })).toEqual(['move', 'split', 'discount_bill', 'void_bill'])
     expect(billActions({ ...table, isTable: false, hasBill: false, draftCount: 1 })).toEqual(['send'])
   })
   it('a bill with a discount offers Edit and Remove instead; Remove stays even when nothing is live', () => {
-    expect(billActions({ ...table, billDiscount: true })).toEqual(['move', 'split', 'edit_bill_discount', 'remove_bill_discount', 'void_bill', 'pax', 'pause_qr'])
-    expect(billActions({ ...table, billDiscount: true, liveSentCount: 0 })).toEqual(['move', 'edit_bill_discount', 'remove_bill_discount', 'close_empty', 'pax', 'pause_qr'])
+    expect(billActions({ ...table, billDiscount: true })).toEqual(['move', 'split', 'edit_bill_discount', 'remove_bill_discount', 'void_bill', 'pax', 'pause_qr', 'clear_qr_cart'])
+    expect(billActions({ ...table, billDiscount: true, liveSentCount: 0 })).toEqual(['move', 'edit_bill_discount', 'remove_bill_discount', 'close_empty', 'pax', 'pause_qr', 'clear_qr_cart'])
+  })
+  it('Clear QR cart sits right after Pause / Resume QR on every table, and never on a takeaway bill', () => {
+    for (const qrPaused of [false, true]) {
+      const a = billActions({ ...table, qrPaused })
+      expect(a.indexOf('clear_qr_cart')).toBe(a.indexOf(qrPaused ? 'resume_qr' : 'pause_qr') + 1)
+    }
+    expect(billActions({ ...table, isTable: false })).not.toContain('clear_qr_cart')
+    expect(BILL_ACTION_LABEL.clear_qr_cart).toBe('Clear QR cart')
   })
   it('the split action reads Split / Move items', () => {
     expect(BILL_ACTION_LABEL.split).toBe('Split / Move items')
@@ -68,5 +76,13 @@ describe('itemActionNotes', () => {
   })
   it('a part paid: discount (set or edit) and void item are off with the server\'s words; Remove discount stays', () => {
     expect(itemActionNotes({ partPaid: true })).toEqual({ discount_item: PART_PAID_FIRST, edit_item_discount: PART_PAID_FIRST, void_item: PART_PAID_FIRST })
+  })
+})
+
+describe('clearedNotice', () => {
+  it('says how many items were removed, or that the cart was already empty', () => {
+    expect(clearedNotice(0)).toBe('The QR cart was already empty')
+    expect(clearedNotice(1)).toBe('QR cart cleared: 1 item removed')
+    expect(clearedNotice(5)).toBe('QR cart cleared: 5 items removed')
   })
 })

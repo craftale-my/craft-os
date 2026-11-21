@@ -34,7 +34,7 @@ declare
   gb constant jsonb := '{"id":"aaaaaaaa-0000-4000-8000-000000000002","name":"Mei","avatar":"a9"}';
   gc constant jsonb := '{"id":"aaaaaaaa-0000-4000-8000-000000000003","name":"","avatar":"a5"}';
   gd constant jsonb := '{"id":"aaaaaaaa-0000-4000-8000-000000000004","name":"Ann","avatar":"a2"}';
-  ida uuid; idb uuid; idc uuid; idx uuid;
+  ida uuid; idb uuid; idc uuid; idx uuid; v_staff uuid; v_other uuid;
   s jsonb; r jsonb; v_order uuid; v_coid uuid := gen_random_uuid(); v_version text;
 begin
   -- ── A: schema and grants ──
@@ -229,6 +229,36 @@ begin
          now() - interval '31 minutes', now() - interval '31 minutes'
     from generate_series(1, 2);
   perform pg_temp.ok(jsonb_array_length(qr_cart_state(v_tok)->'lines') = 2, 'K3 with a bill open an old cart stays');
+
+  -- ── L: staff clear a table's cart (pos_clear_qr_cart) ──
+  perform pg_temp.ok(has_function_privilege('authenticated', 'pos_clear_qr_cart(uuid)', 'execute'), 'L1a signed-in staff may call it');
+  perform pg_temp.ok(not has_function_privilege('anon', 'pos_clear_qr_cart(uuid)', 'execute'), 'L1b the QR page (anon) may not');
+  -- L2: no session at all (the verify script runs with no auth.uid())
+  perform set_config('request.jwt.claims', '', true);
+  perform pg_temp.expect_error(format('select pos_clear_qr_cart(%L)', v_table.id), 'Sign in required', 'L2 no session');
+  -- L3: an active staff login of the table's branch (the C1 transition path of pos_ctx(); a till tablet's
+  -- session goes through the same pos_my_branch()), then one of another branch
+  select id into v_staff from staff where branch_id = v_table.branch_id and is_active and status = 'active'
+    and not exists (select 1 from pos_devices d where d.id = staff.id) limit 1;
+  select id into v_other from staff where branch_id is distinct from v_table.branch_id and branch_id is not null
+    and is_active and status = 'active' and not exists (select 1 from pos_devices d where d.id = staff.id) limit 1;
+  if v_staff is null then raise notice 'L3 SKIPPED: no active staff at the borrowed table''s branch'; return; end if;
+  delete from qr_cart_lines where table_id = v_table.id;
+  insert into qr_cart_lines(table_id, guest_id, guest_name, guest_avatar, product_id, variant_id, qty)
+  select v_table.id, (ga->>'id')::uuid, 'Mei', 'a3', (v_prod->>'id')::uuid, (v_prod->'variants'->0->>'id')::uuid, 1
+    from generate_series(1, 2);
+  if v_other is not null then
+    perform set_config('request.jwt.claims', json_build_object('sub', v_other, 'role', 'authenticated')::text, true);
+    perform pg_temp.expect_error(format('select pos_clear_qr_cart(%L)', v_table.id), 'This table is not at your outlet.', 'L3a another outlet');
+    perform pg_temp.ok((select count(*) from qr_cart_lines where table_id = v_table.id) = 2, 'L3b another outlet removed nothing');
+  else
+    raise notice 'L3a SKIPPED: no active staff at another branch';
+  end if;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_staff, 'role', 'authenticated')::text, true);
+  perform pg_temp.ok(pos_clear_qr_cart(v_table.id) = 2, 'L3c clearing returns the 2 lines removed');
+  perform pg_temp.ok(not exists (select 1 from qr_cart_lines where table_id = v_table.id), 'L3d the cart is empty');
+  perform pg_temp.ok(pos_clear_qr_cart(v_table.id) = 0, 'L3e clearing an empty cart returns 0');
+  perform set_config('request.jwt.claims', '', true);
 end $$;
 
 rollback;

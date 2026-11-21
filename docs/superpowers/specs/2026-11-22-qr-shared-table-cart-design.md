@@ -190,6 +190,10 @@ the messages `place_table_order` uses today.
   If `pos_insert_order` refuses a line after all (it left the menu within the last minute), nothing is
   sent, the error names the item, and the page reads the menu again at once — the line then shows as
   unavailable and the next Send skips it.
+- **`pos_clear_qr_cart(p_table_id uuid) returns integer`** — staff only (`authenticated`, not `anon`):
+  needs a till session of the table's own outlet (`pos_my_branch()`; another outlet is refused with
+  `This table is not at your outlet.`). Locks the table's cart, deletes all its lines and returns the
+  number removed.
 - **`pos_insert_order`** — re-created from its live text with two changes, marked `-- G`: a QR item may
   carry `guestId`, `guestLabel` and `guestAvatar`, stored on `order_items`; and each ticket line gains
   `"guest": <label>` when the item has one. The guest fields are stored only while `qr_cart_send` is the
@@ -225,6 +229,11 @@ first line.
   whose product left the menu. `Goes well with` and `Popular here` keep working: "already in the cart"
   now means anywhere in the table's cart. `qrState.ts` loses `addLine / replaceLine / removeLine /
   leftTheMenu / leftTheMenuNotice / pruneAfterRefresh` and their tests once nothing uses them.
+- **POS table action `Clear QR cart`** (`billActions.ts`, right after Pause / Resume QR; a dine-in table
+  only) — asks `Clear QR cart` / `Remove everything guests have added on their phones for Table <label>
+  but not sent yet? Orders already sent are not affected.` / `Clear`, calls `pos_clear_qr_cart`, then
+  shows one of `QR cart cleared: 1 item removed`, `QR cart cleared: N items removed` or
+  `The QR cart was already empty`. A failure shows as any other table action's does.
 - **Ticket** — `TicketLine` gains `guest?: string`; the ticket text prints the line as
   `1 x Latte - Eric` (ASCII hyphen; wrapped by the existing `wrap`). The name is reduced to printable
   ASCII, and a name with no ASCII letter or digit left (Chinese only, say) prints no name. The QR page and
@@ -247,6 +256,7 @@ first line.
 | Broadcast unavailable | Reads every 15 s still run (4 s if the verify step in §3 failed). |
 | Staff pause the table mid-order | Writes and Send are refused with the paused message; the page shows it as today on its next menu read. |
 | Bill closed while a cart is open | The cart's lines predate the close and are dropped on the next read; the page shows an empty cart. |
+| A guest left a line and went away while the bill is open | Staff use Clear QR cart on the table; guests' phones show the empty cart within 15 s. |
 | Guest clears browser data | They get a new `guestId`; their old cart lines become "someone else's" and expire or are sent with the table. |
 
 ## 7. Testing

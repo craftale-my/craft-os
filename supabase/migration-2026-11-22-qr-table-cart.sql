@@ -5,6 +5,7 @@
 --   3 helpers (not callable by clients) and the five cart RPCs (anon)
 --   4 pos_insert_order re-created: the live text with the lines marked "-- G" changed
 --   5 qr_table_state re-created: each item says which guest ordered it
+--   6 pos_clear_qr_cart: staff empty a table's cart (POS → table actions → Clear QR cart)
 
 -- ── 1 ─────────────────────────────────────────────────────────────────────────
 create table if not exists qr_cart_lines (
@@ -619,6 +620,28 @@ language sql stable security definer set search_path = public, pg_temp as $$
 $$;
 revoke all on function qr_table_state(text) from public;
 grant execute on function qr_table_state(text) to anon, authenticated;
+
+-- ── 6 staff: clear a table's cart (POS → table actions → Clear QR cart) ───────────────────────────
+-- A till session of the table's own outlet only. pos_my_branch() is the outlet of every front-of-house
+-- call (pos_ctx(): a locked or unpaired till gets its coded error, which the POS app answers with its
+-- lock screen). Returns how many lines were removed.
+create or replace function pos_clear_qr_cart(p_table_id uuid) returns integer
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_branch uuid;
+  v_n      integer;
+begin
+  select branch_id into v_branch from dining_tables where id = p_table_id;
+  if v_branch is null or v_branch is distinct from pos_my_branch() then
+    raise exception 'This table is not at your outlet.';
+  end if;
+  perform qr_cart_lock(p_table_id);
+  delete from qr_cart_lines where table_id = p_table_id;
+  get diagnostics v_n = row_count;
+  return v_n;
+end $$;
+revoke all on function pos_clear_qr_cart(uuid) from public, anon;
+grant execute on function pos_clear_qr_cart(uuid) to authenticated;
 
 notify pgrst, 'reload schema';
 select 'qr table cart applied' as result;

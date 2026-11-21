@@ -4,18 +4,18 @@
 import { SPLIT_ACTION_LABEL, SPLIT_OFFLINE, canSplit } from './splitSelection'
 
 export type BillAction = 'send' | 'move' | 'split' | 'discount_bill' | 'edit_bill_discount' | 'remove_bill_discount'
-  | 'void_bill' | 'close_empty' | 'pax' | 'pause_qr' | 'resume_qr' | 'open_qr'
+  | 'void_bill' | 'close_empty' | 'pax' | 'pause_qr' | 'resume_qr' | 'clear_qr_cart' | 'open_qr'
 
 export const BILL_ACTION_LABEL: Record<BillAction, string> = {
   send: 'Send', move: 'Move', split: SPLIT_ACTION_LABEL, discount_bill: 'Discount bill', edit_bill_discount: 'Edit discount',
   remove_bill_discount: 'Remove discount', void_bill: 'Void bill', close_empty: 'Close empty bill', pax: 'Pax',
-  pause_qr: 'Pause QR', resume_qr: 'Resume QR', open_qr: 'Open for QR',
+  pause_qr: 'Pause QR', resume_qr: 'Resume QR', clear_qr_cart: 'Clear QR cart', open_qr: 'Open for QR',
 }
 
 /** Send with drafts; Move with a bill; once its items are loaded: Split / Move items once loaded with
  *  two live units or more (split spec §3.1), Discount bill when it has live items
  *  (Edit and Remove discount when it has one), then Void bill when it has live items, Close empty
- *  bill when it has none; on a table: Pax, Pause or Resume QR, and Open for QR while it has no bill
+ *  bill when it has none; on a table: Pax, Pause or Resume QR, Clear QR cart, and Open for QR while it has no bill
  *  and the branch makes QR wait for an open bill (today's BillPanel). */
 export function billActions(p: {
   isTable: boolean; hasBill: boolean; loaded: boolean; liveSentCount: number; draftCount: number
@@ -31,10 +31,16 @@ export function billActions(p: {
     out.push(p.liveSentCount > 0 ? 'void_bill' : 'close_empty')
   }
   if (p.isTable) {
-    out.push('pax', p.qrPaused ? 'resume_qr' : 'pause_qr')
+    out.push('pax', p.qrPaused ? 'resume_qr' : 'pause_qr', 'clear_qr_cart')
     if (!p.hasBill && p.qrRequiresOpenBill) out.push('open_qr')
   }
   return out
+}
+
+/** The words after Clear QR cart, from the number of lines pos_clear_qr_cart removed. */
+export function clearedNotice(n: number): string {
+  if (n <= 0) return 'The QR cart was already empty'
+  return `QR cart cleared: ${n} ${n === 1 ? 'item' : 'items'} removed`
 }
 
 /** pos_no_parts' words (split spec §3.5): what the server answers while a bill has a part paid. */

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Search } from 'lucide-react'
 import {
-  fetchBillItems, fetchBranchCatalogs, fetchMenuPicks, fetchPadProductInfo, setSoldOut, setTablePaused,
+  clearQrCart, fetchBillItems, fetchBranchCatalogs, fetchMenuPicks, fetchPadProductInfo, setSoldOut, setTablePaused,
   type BillItemRow, type OpenBillRow, type TableRow,
 } from './posApi'
 import { defaultLine, findProduct, formatSen, validateLine, type OrderLine, type PosProduct } from './cart'
@@ -17,7 +17,7 @@ import BillColumn from './BillColumn'
 import BillActionsOverlay from './BillActionsOverlay'
 import ItemActionsOverlay from './ItemActionsOverlay'
 import MoveToGrid from './MoveToGrid'
-import { billActionNotes, billActions, itemActionNotes, itemActions, type BillAction, type ItemAction } from './billActions'
+import { billActionNotes, billActions, clearedNotice, itemActionNotes, itemActions, type BillAction, type ItemAction } from './billActions'
 import { SPLIT_ACTION_LABEL } from './splitSelection'
 import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
 import { moveTargets, type MoveTarget } from './moveTargets'
@@ -363,6 +363,13 @@ export default function OrderScreen({
     } else if (a === 'pax') setDialog({ kind: 'pax', purpose: 'set' })
     else if (a === 'open_qr') setDialog({ kind: 'pax', purpose: 'open_qr' })
     else if (a === 'pause_qr' || a === 'resume_qr') void togglePause()
+    else if (a === 'clear_qr_cart' && table) {
+      setConfirm({ title: 'Clear QR cart', message: `Remove everything guests have added on their phones for Table ${table.label} but not sent yet? Orders already sent are not affected.`,
+        confirmLabel: 'Clear', danger: true, onConfirm: () => {
+          let removed = 0
+          void run(async () => { removed = await clearQrCart(table.id) }, () => setNotice(clearedNotice(removed)))
+        } })
+    }
   }
   const pickItemAction = (row: SentRow, a: ItemAction) => {
     if (itemNotes[a]) return
