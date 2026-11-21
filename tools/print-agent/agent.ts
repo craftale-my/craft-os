@@ -2,13 +2,13 @@
 // Sends raw ESC/POS bytes to the printer on TCP 9100.
 // Run:  node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
 import { createClient } from '@supabase/supabase-js'
-import { renderJobLines } from '../../src/features/pos/print/printJob.ts'
-import { encodeEscPos } from '../../src/features/pos/print/escpos.ts'
+import { renderJobDoc } from '../../src/features/pos/print/printJob.ts'
+import { encodeEscPosDoc } from '../../src/features/pos/print/escpos.ts'
 import { processJob, type PrintHostDeps, type PrintJob } from '../../src/features/pos/print/printHost.ts'
 import { assertDevDatabase } from '../../src/features/pos/guard.ts'
 import { sendRaw } from './sendRaw.ts'
 import { checkPrinter, interpretStatus, PAPER_STATUS, queryStatus } from './printerStatus.ts'
-import { branchFilter, branchIdFrom, isAgentJob, loginBranchProblem } from './branch.ts'
+import { branchFilter, branchIdFrom, isAgentJob, loginBranchProblem, staleMinutes } from './branch.ts'
 
 function env(key: string): string {
   const value = process.env[key]
@@ -17,6 +17,8 @@ function env(key: string): string {
 }
 
 const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+type AgentJob = PrintJob & { branch_id?: string; created_at?: string; attempts?: number }
 
 async function main(): Promise<void> {
   const url = env('SUPABASE_URL')
@@ -85,17 +87,14 @@ async function main(): Promise<void> {
   }
 
   // Never rejects: it is called from the sweep, a Realtime callback and an interval.
-  const handle = async (job: PrintJob & { branch_id?: string; created_at?: string; attempts?: number }): Promise<void> => {
+  const handle = async (job: AgentJob): Promise<void> => {
     if (!isAgentJob(job, branchId, addressOf)) return
     const id8 = job.id.slice(0, 8)
-    // An old ticket that was never tried stays pending (the iPad shows it as "Waiting") so staff
-    // decide, not a backlog dump. A requeued one (attempts >= 1) is a Reprint someone asked for: print it.
-    if (job.created_at && (job.attempts ?? 0) === 0) {
-      const ageMin = (Date.now() - Date.parse(job.created_at)) / 60_000
-      if (ageMin > maxAgeMin) {
-        console.log(`skipped old ticket ${job.route} ${id8} (${Math.round(ageMin)} min)`)
-        return
-      }
+    // An old job never tried stays pending for staff to decide; a drawer kick is old after 2 minutes.
+    const ageMin = staleMinutes(job, Date.now(), maxAgeMin)
+    if (ageMin !== null) {
+      console.log(`skipped old ${job.payload.kind === 'drawer' ? 'drawer kick' : 'ticket'} ${job.route} ${id8} (${Math.round(ageMin)} min)`)
+      return
     }
     // Per call, so a concurrent handler of the same job cannot mislabel the log.
     let printed = false
@@ -110,7 +109,7 @@ async function main(): Promise<void> {
         if (error) throw error
       },
       print: async (j) => {
-        await sendInTurn(addressOf.get(j.route)!, encodeEscPos(renderJobLines(j.payload, cols)))
+        await sendInTurn(addressOf.get(j.route)!, encodeEscPosDoc(renderJobDoc(j.payload, cols)))
         printed = true
       },
     }
@@ -121,6 +120,17 @@ async function main(): Promise<void> {
       if (printed) console.error(`${job.route} ${id8} printed but could not record it: ${errMessage(e)}`)
       else console.error(`${job.route} ${id8} failed: ${errMessage(e)}`)
     }
+  }
+
+  // One job at a time per route, in the order they arrive: Realtime delivers a transaction's inserts in
+  // insert order and the sweep reads created_at, then seq — so a drawer kick queued with its receipt
+  // (same transaction, same created_at) opens the drawer before the receipt prints (W4 spec §5).
+  // handle never rejects, so the chain never breaks.
+  const routeTurns = new Map<string, Promise<void>>()
+  const handleInTurn = (job: AgentJob): Promise<void> => {
+    const turn = (routeTurns.get(job.route) ?? Promise.resolve()).then(() => handle(job))
+    routeTurns.set(job.route, turn)
+    return turn
   }
 
   // Realtime can drop events while reconnecting; the sweep catches anything missed.
@@ -136,11 +146,12 @@ async function main(): Promise<void> {
         .eq('status', 'pending')
         .in('route', [...addressOf.keys()])
         .order('created_at')
+        .order('seq')
       if (error) {
         console.error('sweep failed:', error.message)
         return
       }
-      for (const job of (data ?? []) as (PrintJob & { branch_id?: string; created_at?: string; attempts?: number })[]) await handle(job)
+      for (const job of (data ?? []) as AgentJob[]) await handleInTurn(job)
     } catch (e) {
       console.error('sweep failed:', errMessage(e))
     } finally {
@@ -151,7 +162,7 @@ async function main(): Promise<void> {
   supabase
     .channel(`print-agent-${crypto.randomUUID()}`)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'print_jobs', filter: branchFilter(branchId) }, (p) => {
-      void handle(p.new as PrintJob & { branch_id?: string })
+      void handleInTurn(p.new as AgentJob)
     })
     .subscribe((status) => {
       console.log('realtime:', status)

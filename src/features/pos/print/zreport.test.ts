@@ -220,3 +220,17 @@ describe('Z report part payments', () => {
     for (const l of renderZReportLines(payload(report), 32)) expect(l.length).toBeLessThanOrEqual(32)
   })
 })
+
+describe('no-sale drawer opens (W4 spec §5)', () => {
+  it('the cash section ends with the count; a report frozen before W4 prints no such line', () => {
+    const before = renderZReportLines(payload(shiftOne), 48)
+    const at = before.indexOf('VOIDS SINCE THE LAST CLOSE') - 1          // the rule that opens the next section
+    expect(renderZReportLines(payload({ ...shiftOne, cash: { ...shiftOne.cash, noSaleOpens: 2 } }), 48))
+      .toEqual([...before.slice(0, at), 'Drawer opened without a sale: 2', ...before.slice(at)])
+    expect(before.some((l) => l.startsWith('Drawer opened'))).toBe(false)
+  })
+  it('zero is printed too', () => {
+    expect(renderZReportLines(payload({ ...shiftOne, cash: { ...shiftOne.cash, noSaleOpens: 0 } }), 48))
+      .toContain('Drawer opened without a sale: 0')
+  })
+})

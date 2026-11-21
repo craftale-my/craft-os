@@ -216,7 +216,7 @@ export async function fetchBranchName(branchId: string): Promise<string | null> 
 export async function fetchPrintJobs(branchId: string, statuses: string[]): Promise<PrintJobRow[]> {
   const { data, error } = await supabase.from('print_jobs')
     .select('id, branch_id, route, payload, status, attempts, last_error, claimed_at, created_at')
-    .eq('branch_id', branchId).in('status', statuses).order('created_at')
+    .eq('branch_id', branchId).in('status', statuses).order('created_at').order('seq')   // seq: a drawer kick before its receipt (W4)
   if (error) fail(error)
   return (data ?? []) as unknown as PrintJobRow[]
 }

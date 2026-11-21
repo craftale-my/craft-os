@@ -119,6 +119,36 @@ describe('printFromBrowser', () => {
     expect(String(vi.mocked(f).mock.calls[0][1]?.body)).toContain('Total (MYR)')
   })
 
+  it('a drawer kick sends the pulse alone to Epson and to Star', async () => {
+    const kick = { kind: 'drawer' as const, route: 'Bar', reason: 'Payment' }
+    const e = fakeFetch(200, '<response success="true" code="" status="251658262"/>')
+    await printFromBrowser(epson, kick, e)
+    const eBody = String(vi.mocked(e).mock.calls[0][1]?.body)
+    expect(eBody).toContain('<pulse/>')
+    expect(eBody).not.toContain('<text')
+    const s = fakeFetch(200, '<Response><success>true</success></Response>')
+    await printFromBrowser(star, kick, s)
+    expect(String(vi.mocked(s).mock.calls[0][1]?.body)).toContain('&lt;root&gt;&lt;peripheral/&gt;&lt;/root&gt;')
+  })
+
+  it('a receipt with a call number, logo and QR: Epson gets the number as centred text, no pulse', async () => {
+    const receipt: ReceiptPayload = {
+      kind: 'receipt', route: 'Bar', reprint: false, callNo: 'TA012', fontSize: 'small', footerQr: 'https://g.page/r/craft',
+      header: { title: 'Craft Cafe', legalName: null, registrationNo: null, sstNo: null, address: null, phone: null, email: null,
+                logo: { width: 16, height: 2, data: '/wAP8A==' } },
+      billNo: '261122-001', closedAt: '2026-11-22T05:00:00.000Z', cashier: 'Aina', tableLabel: null, pax: null,
+      items: [{ qty: 1, name: 'Latte', unitSen: 1300, amountSen: 1300, mods: [] }], itemCount: 1,
+      subtotalSen: 1300, sstGroups: [], serviceChargeGroups: [], takeawayFeeSen: 0, roundingSen: 0, totalSen: 1300,
+      payments: [{ name: 'Cash', kind: 'cash', amountSen: 1300, tenderedSen: null, reference: null }], changeSen: 0, footer: 'Thanks',
+    }
+    const f = fakeFetch(200, '<response success="true" code="" status="251658262"/>')
+    await printFromBrowser(epson, receipt, f)
+    const body = String(vi.mocked(f).mock.calls[0][1]?.body)
+    expect(body).toContain(`<text lang="zh-cn">${' '.repeat(18)}TA012&#10;`)
+    expect(body).not.toContain('<pulse/>')
+    expect(body).not.toContain('g.page')
+  })
+
   it('refuses routes that belong to the print agent', async () => {
     await expect(
       printFromBrowser({ route: 'Kitchen', kind: 'agent', address: '10.0.0.5:9100' }, payload, fakeFetch(200, '')),

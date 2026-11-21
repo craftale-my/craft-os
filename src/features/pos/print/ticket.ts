@@ -16,6 +16,7 @@ export interface TicketPayload {
   placedAt: string // ISO, UTC
   lines: TicketLine[]
   void?: true // a void ticket: the kitchen stops these lines
+  callNo?: string | null // W4: the bill's call number (TA012), added by the print_jobs_call_no trigger; absent on dine-in and older tickets
 }
 
 const MYT = new Intl.DateTimeFormat('en-GB', {

@@ -40,7 +40,7 @@ export default function PrintHostPanel({ branchId, inline = false, onProblems }:
     }, (e) => setNote(msg(e)))
   }, [branchId])
 
-  const handle = useCallback(async (job: PrintJob) => {
+  const printOne = useCallback(async (job: PrintJob) => {
     const route = routesRef.current.find((r) => r.route === job.route)
     if (!route || route.kind === 'agent') return            // the Node agent prints these
     try {
@@ -49,6 +49,14 @@ export default function PrintHostPanel({ branchId, inline = false, onProblems }:
       setNote(`${job.route}: printed but could not record it — ${msg(e)}`)
     }
   }, [])
+  // One job at a time, in the order they arrive (Realtime: insert order; the sweep: created_at, then seq),
+  // so a drawer kick queued with its receipt opens the drawer before the receipt prints (W4 spec §5).
+  const turn = useRef<Promise<void>>(Promise.resolve())
+  const handle = useCallback((job: PrintJob): Promise<void> => {
+    const next = turn.current.then(() => printOne(job))
+    turn.current = next.catch(() => undefined)
+    return next
+  }, [printOne])
 
   const sweep = useCallback(async () => {
     if (sweeping.current) return
