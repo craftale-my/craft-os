@@ -2,11 +2,15 @@ import { useState } from 'react'
 import { defaultLine, formatSen, linePriceSen, validateLine, type OrderLine, type PosProduct } from './cart'
 import PickPill from './PickPill'
 
-export default function LineSheet({ product, initial, mostPicked, onCancel, onDone }: {
+export default function LineSheet({ product, initial, mostPicked, busy, error, onCancel, onDone }: {
   product: PosProduct
   initial?: OrderLine
   /** Most picked (menu picks): group id → option id, marked with a pill — never chosen for the guest */
   mostPicked?: Readonly<Record<string, string>>
+  /** QR table cart: the line is being written to the server — Add is off and says so */
+  busy?: boolean
+  /** QR table cart: why the last Add did not go through */
+  error?: string | null
   onCancel: () => void
   onDone: (line: OrderLine) => void
 }) {
@@ -75,11 +79,12 @@ export default function LineSheet({ product, initial, mostPicked, onCancel, onDo
           value={line.note ?? ''} onChange={(e) => setLine({ ...line, note: e.target.value || null })} maxLength={120} />
 
         {touched && problem && <p className="mt-2 text-sm text-red-700">{problem}</p>}
+        {error && <p role="alert" className="mt-2 text-sm text-red-700">{error}</p>}
         <div className="mt-4 flex gap-2">
           <button onClick={onCancel} className="flex-1 rounded-xl border border-border py-3">Cancel</button>
-          <button disabled={!!problem} onClick={() => onDone(line)}
+          <button disabled={!!problem || busy} onClick={() => onDone(line)}
             className="flex-1 rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover disabled:opacity-40">
-            Add · {price === null ? '—' : formatSen(price * line.qty)}
+            {busy ? 'Adding…' : <>Add · {price === null ? '—' : formatSen(price * line.qty)}</>}
           </button>
         </div>
       </div>

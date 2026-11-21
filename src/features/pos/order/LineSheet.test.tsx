@@ -33,3 +33,15 @@ describe('LineSheet Most picked', () => {
     expect(screen.queryByText('Most picked')).toBeNull()
   })
 })
+
+describe('LineSheet busy and error (QR table cart)', () => {
+  it('while busy, Add is off and says Adding…', () => {
+    render(<LineSheet product={latte} busy onCancel={() => {}} onDone={() => {}} />)
+    expect((screen.getByRole('button', { name: 'Adding…' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('shows the error it is given', () => {
+    render(<LineSheet product={latte} error="Not added — no connection. Tap Add to try again." onCancel={() => {}} onDone={() => {}} />)
+    expect(screen.getByRole('alert').textContent).toBe('Not added — no connection. Tap Add to try again.')
+  })
+})
