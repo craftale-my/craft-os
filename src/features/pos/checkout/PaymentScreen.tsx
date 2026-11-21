@@ -409,6 +409,7 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center bg-cream p-6">
         <div className="w-full max-w-md rounded-2xl bg-card p-8 text-center shadow-card">
+          {bill.call_no && <div className="mb-2 text-4xl font-semibold text-brown-dark">{bill.call_no}</div>}
           <div className="text-sm text-brown-muted">Bill {result.billNo} paid · {formatSen(result.totalSen)}</div>
           <div className="mt-6 text-sm uppercase tracking-wide text-brown-muted">Change</div>
           <div className="text-6xl font-semibold text-brown-dark tabular-nums">{formatSen(result.changeSen)}</div>

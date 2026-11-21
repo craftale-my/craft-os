@@ -526,6 +526,16 @@ describe('PaymentScreen — split by item (split spec §3.3)', () => {
     await flush()
     expect(screen.getByText('Bill 261026-001 paid · RM 106.70')).toBeTruthy()
   })
+
+  it('a takeaway shows its call number big on the change screen, to call the customer (W4)', async () => {
+    const ta = { ...bill, table_id: null, order_type: 'takeaway' as const, call_no: 'TA012' }
+    api.fetchCheckoutState.mockResolvedValue({ status: 'paid', billNo: bill.bill_no, mergedIntoBillNo: null, totals: null,
+      result: { billId: 'b1', billNo: bill.bill_no, totalSen: 10670, changeSen: 0, receiptQueued: true } })
+    render(<PaymentScreen branchId="br" bill={ta} title="TA012 · Takeaway" refreshKey={0} earlierIds={['old-id']}
+      onSendIds={() => {}} onClose={() => {}} onPaid={() => {}} />)
+    await flush()
+    expect(screen.getByText('TA012')).toBeTruthy()
+  })
 })
 
 describe('PaymentScreen — split equally / by amount (split spec §3.5)', () => {
