@@ -218,7 +218,7 @@ export function renderZReportLines(input: ZReportPayload, cols: number): string[
       ...lr('Variance', c.varianceSen === null ? '-' : signedMoney(c.varianceSen), cols),
       ...(c.varianceReason ? indented(`Reason: ${c.varianceReason}`, cols) : []),
       ...(c.varianceApprovedBy ? indented(`Approved by ${c.varianceApprovedBy}`, cols) : []),
-      ...(c.noSaleOpens !== undefined ? [`Drawer opened without a sale: ${c.noSaleOpens}`] : []),
+      ...(c.noSaleOpens !== undefined ? lr('Drawer opened without a sale:', String(c.noSaleOpens), cols) : []),
     ]),
     ...section('VOIDS SINCE THE LAST CLOSE', r.voids.items.length + r.voids.bills.length === 0 ? ['No voids'] : [
       ...r.voids.items.flatMap((v) => [

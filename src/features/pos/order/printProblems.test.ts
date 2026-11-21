@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyJobs, formatAge, routesWithoutPrinter } from './printProblems'
+import { classifyJobs, formatAge, routesWithoutPrinter, waitingMessage } from './printProblems'
 import type { PrintJobRow } from './posApi'
 
 const NOW = Date.parse('2026-10-23T12:00:00Z')
@@ -41,5 +41,16 @@ describe('formatAge', () => {
   it('uses seconds then minutes', () => {
     expect(formatAge(50_000)).toBe('50 s')
     expect(formatAge(300_000)).toBe('5 min')
+  })
+})
+
+describe('waitingMessage', () => {
+  it('asks about the agent for an ordinary job', () => {
+    expect(waitingMessage(job({}), 60_000)).toBe('Waiting — no printer is picking this up (route Bar). Is the print agent running? · 1 min'.replace('1 min', formatAge(60_000)))
+  })
+  it('says a cash drawer kick is skipped after 2 minutes', () => {
+    const drawer = job({ payload: { kind: 'drawer', route: 'Bar', reason: 'Payment' } as unknown as PrintJobRow['payload'] })
+    expect(waitingMessage(drawer, 60_000)).toBe(`Cash drawer kick waiting — it is skipped after 2 minutes. · ${formatAge(60_000)}`)
+    expect(waitingMessage(drawer, 60_000)).not.toContain('print agent')
   })
 })

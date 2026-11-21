@@ -20,6 +20,8 @@
 -- C4  Open drawer: reason action open_drawer, pos_drawer_opens, pos_open_drawer (needs an open shift).
 -- C5  The Z report's cash.noSaleOpens (pos_shift_report) and Reports → Cash drawer's noSaleOpens
 --     (pos_report_drawer).
+-- C6  The server refuses a drawer kick that is repeated (requeue_print_job) or late (claim_print_job: more
+--     than 2 minutes old, finished as failed).
 -- Re-run hazards: re-running migration-2026-10-29-pos-outlets.sql puts back save_receipt_settings without
 -- the C2 keys; migration-2026-10-29-pos-device-till.sql refund_bill and record_cash_move without the kick;
 -- migration-2026-11-16-pos-split-bill.sql pos_pay_and_close without the kick; migration-2026-11-17-pos-bill-parts.sql
@@ -243,8 +245,8 @@ language sql stable security definer set search_path = public, pg_temp as $$
                'mods', (select coalesce(jsonb_agg(m->>'name' order by ord), '[]'::jsonb)
                           from jsonb_array_elements(oi.modifiers_snapshot) with ordinality as x(m, ord)
                          where not coalesce(s.receipt_hide_free_mods, false)                           -- C2
-                            or jsonb_typeof(m->'priceDeltaSen') is distinct from 'number'              -- C2
-                            or (m->>'priceDeltaSen')::numeric <> 0),                                   -- C2
+                            or case when jsonb_typeof(m->'priceDeltaSen') = 'number'                   -- C2
+                                    then (m->>'priceDeltaSen')::numeric <> 0 else true end),           -- C2
                'discounts', (select coalesce(jsonb_agg(d.j order by d.k), '[]'::jsonb) from (
                    select 1 as k, jsonb_build_object(
                             'label', coalesce(oi.catalog_discount_name, 'Catalog') || ' ' || (oi.catalog_discount_bp / 100) || '%',
@@ -320,8 +322,8 @@ language sql stable security definer set search_path = public, pg_temp as $$
                'mods', (select coalesce(jsonb_agg(m->>'name' order by ord), '[]'::jsonb)
                           from jsonb_array_elements(oi.modifiers_snapshot) with ordinality as x(m, ord)
                          where not coalesce(s.receipt_hide_free_mods, false)                           -- C2
-                            or jsonb_typeof(m->'priceDeltaSen') is distinct from 'number'              -- C2
-                            or (m->>'priceDeltaSen')::numeric <> 0),                                   -- C2
+                            or case when jsonb_typeof(m->'priceDeltaSen') = 'number'                   -- C2
+                                    then (m->>'priceDeltaSen')::numeric <> 0 else true end),           -- C2
                'discounts', (select coalesce(jsonb_agg(d.j order by d.k), '[]'::jsonb) from (
                    select 1 as k, jsonb_build_object(
                             'label', coalesce(oi.catalog_discount_name, 'Catalog') || ' ' || (oi.catalog_discount_bp / 100) || '%',
@@ -926,6 +928,46 @@ begin
 end $$;
 revoke all on function pos_report_drawer(uuid[], date, date) from public, anon;
 grant execute on function pos_report_drawer(uuid[], date, date) to authenticated;
+
+-- ── C6. Drawer kicks: the server refuses a repeated or late kick ───────────
+-- requeue_print_job and claim_print_job keep the text of migration-2026-10-29-pos-device-till.sql except the
+-- lines marked C6.
+create or replace function requeue_print_job(p_id uuid) returns void
+ language plpgsql
+ security definer
+ set search_path to 'public', 'pg_temp'
+as $function$
+declare
+  v_branch uuid := pos_print_branch();
+begin
+  if exists (select 1 from print_jobs where id = p_id and branch_id = v_branch and payload->>'kind' = 'drawer') then   -- C6
+    raise exception 'A cash drawer kick cannot be sent again.';                                                          -- C6
+  end if;                                                                                                                -- C6
+  update print_jobs set status = 'pending'
+   where id = p_id and branch_id = v_branch
+     and (status = 'failed' or (status = 'printing' and claimed_at < now() - interval '2 minutes'));
+end $function$;
+
+create or replace function claim_print_job(p_id uuid) returns boolean
+ language plpgsql
+ security definer
+ set search_path to 'public', 'pg_temp'
+as $function$
+declare
+  v_branch uuid := pos_print_branch();
+begin
+  update print_jobs set status = 'failed', last_error = 'Too late to open the drawer.'                                  -- C6
+   where id = p_id and status = 'pending' and branch_id = v_branch                                                      -- C6
+     and payload->>'kind' = 'drawer' and now() - created_at > interval '2 minutes';                                      -- C6
+  if found then return false; end if;                                                                                    -- C6
+  update print_jobs set status = 'printing', attempts = attempts + 1, claimed_at = now()
+   where id = p_id and status = 'pending' and branch_id = v_branch;
+  return found;
+end $function$;
+revoke all on function claim_print_job(uuid) from public, anon;
+grant execute on function claim_print_job(uuid) to authenticated;
+revoke all on function requeue_print_job(uuid) from public, anon;
+grant execute on function requeue_print_job(uuid) to authenticated;
 
 notify pgrst, 'reload schema';
 select 'pos receipt numbers applied' as result;

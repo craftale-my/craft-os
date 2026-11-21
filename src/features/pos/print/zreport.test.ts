@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderZReportLines, signedMoney, type ZReport, type ZReportPayload } from './zreport'
 import { jobLabel, renderJobLines } from './printJob'
+import { lr } from './receipt'
 
 // The first shift of the shifts verify script (supabase/migration-2026-10-24-pos-shifts-verify.sql,
 // section F) with real-looking names and times: the numbers are the ones the SQL checks.
@@ -226,11 +227,19 @@ describe('no-sale drawer opens (W4 spec §5)', () => {
     const before = renderZReportLines(payload(shiftOne), 48)
     const at = before.indexOf('VOIDS SINCE THE LAST CLOSE') - 1          // the rule that opens the next section
     expect(renderZReportLines(payload({ ...shiftOne, cash: { ...shiftOne.cash, noSaleOpens: 2 } }), 48))
-      .toEqual([...before.slice(0, at), 'Drawer opened without a sale: 2', ...before.slice(at)])
+      .toEqual([...before.slice(0, at), ...lr('Drawer opened without a sale:', '2', 48), ...before.slice(at)])
     expect(before.some((l) => l.startsWith('Drawer opened'))).toBe(false)
   })
   it('zero is printed too', () => {
     expect(renderZReportLines(payload({ ...shiftOne, cash: { ...shiftOne.cash, noSaleOpens: 0 } }), 48))
-      .toContain('Drawer opened without a sale: 0')
+      .toContain(lr('Drawer opened without a sale:', '0', 48)[0])
+  })
+  it('stays within a 58 mm paper (32 columns), even for 100 opens', () => {
+    const lines = renderZReportLines(payload({ ...shiftOne, cash: { ...shiftOne.cash, noSaleOpens: 100 } }), 32)
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(32)
+    expect(lines.join('\n')).toContain('Drawer opened without a sale:')
+    expect(lines.some((l) => l.trim() === '100')).toBe(true)
+    expect(renderZReportLines(payload({ ...shiftOne, cash: { ...shiftOne.cash, noSaleOpens: 2 } }), 42)
+      .filter((l) => l.startsWith('Drawer opened')).map((l) => l.length)).toEqual([42])
   })
 })

@@ -310,6 +310,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       ['save_receipt_settings', 'uuid, jsonb'], ['pay_bill_part', 'uuid, uuid, integer, integer, jsonb, integer'],
       ['refund_bill', 'uuid, uuid, integer, uuid, text, uuid, text'], ['record_cash_move', 'uuid, text, integer, text, uuid, text'],
       ['pos_open_drawer', 'uuid, text'], ['pos_report_drawer', 'uuid[], date, date'],
+      ['claim_print_job', 'uuid'], ['requeue_print_job', 'uuid'],                                    // C6
     ]
     const bodies = functionBodies(sql)
     expect(bodies.map((b) => b.name).sort()).toEqual([...internal, ...granted].map(([n]) => n).sort())
@@ -337,6 +338,13 @@ describe('pg-safeupdate guard: POS migrations', () => {
     for (const f of ['pos_pay_and_close', 'pay_bill_part', 'refund_bill', 'record_cash_move', 'pos_open_drawer']) {
       expect(body(f), f).toContain('pos_queue_drawer(')
     }
+    // C6: the server refuses a repeated or a late drawer kick (the bodies have their strings emptied: read the file)
+    const c6 = (n: string) => sql.slice(sql.indexOf(`create or replace function ${n}(`)).split('$function$;')[0]
+    expect(c6('requeue_print_job')).toContain("payload->>'kind' = 'drawer'")
+    expect(c6('requeue_print_job')).toContain('A cash drawer kick cannot be sent again.')
+    expect(c6('claim_print_job')).toContain("interval '2 minutes'")
+    expect(c6('claim_print_job')).toContain('Too late to open the drawer.')
+    expect(sql).not.toMatch(/\bor\s+\(m->>'priceDeltaSen'\)::numeric/)                // the free add-on filter casts only a number
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
     const verify = readFileSync(new URL('migration-2026-11-22-pos-receipt-numbers-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)

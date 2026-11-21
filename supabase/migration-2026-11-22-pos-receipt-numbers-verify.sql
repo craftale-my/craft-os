@@ -1,7 +1,8 @@
 -- Self-check for the POS receipt template, call numbers and cash drawer (W4). Run on craft-os-dev after
 -- migration-2026-11-22-pos-receipt-numbers.sql. Everything is rolled back. Success = a result row
 -- "VERIFY OK". Sections (one DO block each, ids in the temp table fixture): FIXTURE; V1 call numbers;
--- V2 receipt template; V3 drawer kicks; V4 Open drawer; V5 Z report, Reports → Cash drawer, no shift.
+-- V2 receipt template; V3 drawer kicks; V4 Open drawer; V5 Z report, Reports → Cash drawer, no shift;
+-- V6 the server refuses a repeated or late drawer kick.
 -- Outlet VERIFY W4: receipt route Bar (an agent route), SST registered, 5 sen rounding, no service charge.
 -- Latte 10.00 (6%) and Cake 8.00 (8%), both printed on Bar. A card and a cash method, a cashier and a
 -- supervisor with PINs, one tablet signed in, a shift open with a float of 100.00.
@@ -397,6 +398,36 @@ begin
     'Open a shift first.', 'V5 no shift');
 end $$;
 
+-- ── V6. The server refuses a repeated or late drawer kick (C6): a drawer job is never requeued; one older
+--    than 2 minutes is not claimed but finished as failed; a fresh one is claimed ──
+do $$
+declare
+  v_a     uuid := pg_temp.id('branch');
+  v_fresh uuid;
+  v_old   uuid;
+begin
+  insert into print_jobs(branch_id, route, kind, payload)
+  values (v_a, 'Bar', 'receipt', '{"kind": "drawer", "route": "Bar", "reason": "Payment"}'::jsonb) returning id into v_fresh;
+  insert into print_jobs(branch_id, route, kind, payload, created_at)
+  values (v_a, 'Bar', 'receipt', '{"kind": "drawer", "route": "Bar", "reason": "Payment"}'::jsonb, now() - interval '3 minutes')
+  returning id into v_old;
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- a fresh kick is claimed; once failed it cannot be sent again
+  if not claim_print_job(v_fresh) then raise exception 'FAIL V6 a fresh drawer job is claimed'; end if;
+  perform finish_print_job(v_fresh, false, 'Printer off');
+  perform pg_temp.expect_error(format('select requeue_print_job(%L)', v_fresh),
+    'A cash drawer kick cannot be sent again.', 'V6 requeue of a drawer job');
+  if (select status from print_jobs where id = v_fresh) is distinct from 'failed' then
+    raise exception 'FAIL V6 the refused requeue left the job %', (select status from print_jobs where id = v_fresh);
+  end if;
+  -- a kick queued 3 minutes ago is not claimed: failed with its reason
+  if claim_print_job(v_old) then raise exception 'FAIL V6 a late drawer job was claimed'; end if;
+  if (select status from print_jobs where id = v_old) is distinct from 'failed'
+     or (select last_error from print_jobs where id = v_old) is distinct from 'Too late to open the drawer.' then
+    raise exception 'FAIL V6 the late drawer job: %', (select to_jsonb(j) from print_jobs j where j.id = v_old);
+  end if;
+  if (select attempts from print_jobs where id = v_old) <> 0 then raise exception 'FAIL V6 the late job was attempted'; end if;
+end $$;
 
 select 'VERIFY OK' as result;
 rollback;

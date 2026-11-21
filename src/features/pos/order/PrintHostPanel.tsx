@@ -5,7 +5,7 @@ import { jobLabel } from '../print/printJob'
 import { staleMinutes } from '../print/stale'
 import { claimJob, fetchMenuRoutes, fetchPrintJobs, fetchRoutes, finishJob, insertTestPrint, requeueJob, type PrintJobRow } from './posApi'
 import { usePosRealtime } from './usePosRealtime'
-import { classifyJobs, formatAge, routesWithoutPrinter, type PrintProblem } from './printProblems'
+import { classifyJobs, routesWithoutPrinter, waitingMessage, type PrintProblem } from './printProblems'
 
 const STUCK_MS = 2 * 60_000
 const WAIT_MS = 45_000
@@ -123,7 +123,7 @@ export default function PrintHostPanel({ branchId, inline = false, onProblems }:
               <div className="font-medium">{j.route} · {jobLabel(j.payload)}</div>
               {kind === 'waiting' ? (
                 <>
-                  <div className="text-xs text-red-700">Waiting — no printer is picking this up (route {j.route}). Is the print agent running? · {formatAge(ageMs)}</div>
+                  <div className="text-xs text-red-700">{waitingMessage(j, ageMs)}</div>
                   <button onClick={() => void dismiss(j)} className="mt-1 rounded border border-border px-2 py-1 text-xs">Not needed</button>
                 </>
               ) : (

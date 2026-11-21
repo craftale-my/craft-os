@@ -5,6 +5,7 @@ describe('the print document (W4 spec §4)', () => {
   it('Font B fits a third more characters; large keeps the width', () => {
     expect(lineWidth('small', 42)).toBe(56)
     expect(lineWidth('small', 48)).toBe(64)
+    expect(lineWidth('small', 32)).toBe(42)
     expect(lineWidth('normal', 42)).toBe(42)
     expect(lineWidth('large', 42)).toBe(42)
   })

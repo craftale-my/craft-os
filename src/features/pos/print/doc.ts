@@ -18,9 +18,9 @@ export interface PrintDoc {
   blocks: DocBlock[]
 }
 
-/** Characters per line: Font B fits a third more (42 → 56); normal and large keep `cols`. */
+/** Characters per line: Font B fits a third more (42 → 56; 32 → 42); normal and large keep `cols`. */
 export function lineWidth(fontSize: FontSize, cols: number): number {
-  return fontSize === 'small' ? Math.round((cols * 4) / 3) : cols
+  return fontSize === 'small' ? Math.floor((cols * 4) / 3) : cols
 }
 
 export function textBlocks(lines: string[]): DocBlock[] {

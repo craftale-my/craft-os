@@ -25,3 +25,9 @@ export function formatAge(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
   return s < 120 ? `${s} s` : `${Math.round(s / 60)} min`
 }
+
+/** The line under a waiting job: a cash drawer kick is skipped after 2 minutes, so it is not "is the agent running?". */
+export function waitingMessage(job: PrintJobRow, ageMs: number): string {
+  if (job.payload?.kind === 'drawer') return `Cash drawer kick waiting — it is skipped after 2 minutes. · ${formatAge(ageMs)}`
+  return `Waiting — no printer is picking this up (route ${job.route}). Is the print agent running? · ${formatAge(ageMs)}`
+}
