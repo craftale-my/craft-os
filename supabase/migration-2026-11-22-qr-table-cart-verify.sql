@@ -63,6 +63,7 @@ begin
   select p into v_prod from jsonb_array_elements(qr_menu(v_tok)->'categories') c, jsonb_array_elements(c->'products') p
    where not (p->>'soldOut')::boolean and jsonb_array_length(p->'variants') > 0
      and not exists (select 1 from jsonb_array_elements(p->'groups') g where (g->>'min')::integer > 0)
+   order by (select mp.print_route is null from menu_products mp where mp.id = (p->>'id')::uuid), p->>'name'
    limit 1;
   v_line := jsonb_build_object('productId', v_prod->>'id', 'variantId', v_prod->'variants'->0->>'id',
                                'qty', 2, 'note', '  no ice  ', 'optionIds', '[]'::jsonb);
@@ -132,6 +133,9 @@ begin
   perform pg_temp.ok((select array_agg(guest_label order by guest_label) from order_items where order_id = v_order) = array['Ann', 'Mei'], 'F6 labels on the items');
   perform pg_temp.ok((select guest_avatar from order_items where order_id = v_order and guest_label = 'Ann') = 'a4', 'F7 avatar on the item');
   perform pg_temp.ok((select guest_id from order_items where order_id = v_order and guest_label = 'Mei') = (gb->>'id')::uuid, 'F8 guest id on the item');
+  if (select print_route from menu_products where id = (v_prod->>'id')::uuid) is not null then
+    perform pg_temp.ok(exists (select 1 from print_jobs j where j.order_id = v_order and j.kind = 'ticket'), 'F9a the order made a ticket');
+  end if;
   perform pg_temp.ok(not exists (select 1 from print_jobs j, jsonb_array_elements(j.payload->'lines') l
                                   where j.order_id = v_order and j.kind = 'ticket' and not (l ? 'guest')), 'F9 every ticket line names its guest');
   r := qr_cart_send(v_tok, 2, 'whatever', '{}', v_coid);
@@ -150,11 +154,15 @@ begin
   s := qr_table_state(v_tok);
   perform pg_temp.ok(exists (select 1 from jsonb_array_elements(s->'items') i where i->>'guestLabel' = 'Mei' and i->>'guestAvatar' = 'a1'), 'H1 qr_table_state carries guest label and avatar');
 
-  -- ── I: the old call still works and names no guest ──
-  v_order := place_table_order(v_tok, null, jsonb_build_array(v_line || '{"guestLabel":"Sneaky"}'), gen_random_uuid());
-  perform pg_temp.ok((select guest_id is null and guest_avatar is null from order_items where order_id = v_order), 'I1 no guest id from the old call');
+  -- ── I: the old call still works and can name no guest ──
+  v_order := place_table_order(v_tok, null, jsonb_build_array(v_line || jsonb_build_object(
+               'guestId', gb->>'id', 'guestLabel', 'AAA', 'guestAvatar', 'a2')), gen_random_uuid());
+  perform pg_temp.ok((select guest_id is null and guest_label is null and guest_avatar is null
+                        from order_items where order_id = v_order), 'I1 the old call cannot write guest fields');
   perform pg_temp.ok(not exists (select 1 from print_jobs j, jsonb_array_elements(j.payload->'lines') l
-                                  where j.order_id = v_order and j.kind = 'ticket' and (l ? 'guest') and l->>'guest' <> 'Sneaky'), 'I2 ticket lines unchanged in shape');
+                                  where j.order_id = v_order and j.kind = 'ticket' and (l ? 'guest')), 'I2 its ticket lines carry no guest key');
+  perform pg_temp.ok((select l->>'guestLabel' from jsonb_array_elements(qr_cart_state(v_tok)->'lines') l where l->>'id' = idx::text) = 'Ann',
+                     'I3 a sent guest''s label is not changed by the old call');
 
   -- ── J: stale lines ──
   update qr_cart_lines set created_at = now() - interval '3 hours' where id = idx;
@@ -166,6 +174,21 @@ begin
    where table_id = v_table.id and status = 'open';
   s := qr_cart_state(v_tok);
   perform pg_temp.ok(jsonb_array_length(s->'lines') = 0, 'J3 lines from before the bill closed are dropped');
+  -- J4: the next party's bill is already open — an old party's line still goes
+  ida := qr_cart_put(v_tok, gd, v_line, null);
+  update qr_cart_lines set created_at = now() - interval '10 minutes' where id = ida;   -- before the close in J3
+  perform place_table_order(v_tok, null, jsonb_build_array(v_line), gen_random_uuid());  -- opens a new bill
+  perform pg_temp.ok(exists (select 1 from bills b where b.table_id = v_table.id and b.status = 'open'), 'J4a a new bill is open');
+  s := qr_cart_state(v_tok);
+  perform pg_temp.ok(jsonb_array_length(s->'lines') = 0, 'J4 the old party''s line is dropped though a bill is open');
+  -- J5: a paid part of a split bill is not the table closing
+  ida := qr_cart_put(v_tok, gd, v_line, null);
+  update qr_cart_lines set created_at = now() - interval '30 seconds' where id = ida;   -- after J3's close (1 min ago), before the part's
+  insert into bills(branch_id, bill_no, table_id, order_type, status, closed_at, split_from)
+  select b.branch_id, b.bill_no || '-V', b.table_id, 'dine_in', 'paid', now() - interval '10 seconds', b.id
+    from bills b where b.table_id = v_table.id and b.status = 'open';
+  s := qr_cart_state(v_tok);
+  perform pg_temp.ok(jsonb_array_length(s->'lines') = 1, 'J5 a paid part does not clear the cart');
 end $$;
 
 rollback;

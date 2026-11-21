@@ -75,15 +75,16 @@ language sql security definer set search_path = public, pg_temp as $$
 $$;
 revoke all on function qr_cart_lock(uuid) from public, anon, authenticated;
 
--- Stale lines go: older than 2 hours, or left by a party whose bill has been closed.
+-- Stale lines go: older than 2 hours, or created before the table's last bill was closed (paid or
+-- voided) — the next party never inherits a cart, whether or not their bill is open yet. A paid part
+-- of a split bill (split_from set) is not the table closing.
 create or replace function qr_cart_purge(p_table_id uuid) returns void
 language sql security definer set search_path = public, pg_temp as $$
   delete from qr_cart_lines l
    where l.table_id = p_table_id
      and (l.created_at < now() - interval '2 hours'
-          or (not exists (select 1 from bills b where b.table_id = p_table_id and b.status = 'open')
-              and l.created_at < (select max(b.closed_at) from bills b
-                                   where b.table_id = p_table_id and b.status <> 'open')));
+          or l.created_at < (select max(b.closed_at) from bills b
+                              where b.table_id = p_table_id and b.status <> 'open' and b.split_from is null));
 $$;
 revoke all on function qr_cart_purge(uuid) from public, anon, authenticated;
 
@@ -314,7 +315,11 @@ begin
    where l.table_id = v_table.id and not (l.id = any (coalesce(p_skip, '{}'::uuid[])));
   if v_items is null then raise exception 'Nothing to send.'; end if;
 
+  -- only this function may name guests on order items (pos_insert_order reads the flag; place_table_order
+  -- and the counter never set it)
+  perform set_config('craft.qr_cart_send', 'on', true);
   v_order := pos_insert_order(v_table.branch_id, v_table.id, 'dine_in', p_pax, 'qr', null, v_items, p_client_order_id, null);
+  perform set_config('craft.qr_cart_send', 'off', true);
   delete from qr_cart_lines where table_id = v_table.id;
   return jsonb_build_object('status', 'sent', 'orderId', v_order);
 end $$;
@@ -540,10 +545,10 @@ begin
             nullif(trim(left(case when jsonb_typeof(v_item->'note') = 'string' then v_item->>'note' end, 200)), ''),
             -- Sub-plan 3: the packaging fee is fixed when the item is ordered (takeaway bills only)
             case when p_order_type = 'takeaway' then v_prod.takeaway_fee_sen else 0 end,
-            case when p_source = 'qr' and (v_item->>'guestId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            case when p_source = 'qr' and current_setting('craft.qr_cart_send', true) = 'on' and (v_item->>'guestId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                  then (v_item->>'guestId')::uuid end,                                                -- G
-            case when p_source = 'qr' then nullif(left(btrim(coalesce(v_item->>'guestLabel', '')), 24), '') end,   -- G
-            case when p_source = 'qr' and (v_item->>'guestAvatar') ~ '^a[1-8]$' then v_item->>'guestAvatar' end);  -- G
+            case when p_source = 'qr' and current_setting('craft.qr_cart_send', true) = 'on' then nullif(left(btrim(coalesce(v_item->>'guestLabel', '')), 24), '') end,   -- G
+            case when p_source = 'qr' and current_setting('craft.qr_cart_send', true) = 'on' and (v_item->>'guestAvatar') ~ '^a[1-8]$' then v_item->>'guestAvatar' end);  -- G
   end loop;
 
   -- ── tickets: one job per route, shaped exactly like TicketPayload (ticket.ts) ──
