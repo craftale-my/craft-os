@@ -62,6 +62,7 @@ export const NAV: NavEntry[] = [
       { id: 'menu',         label: 'Menu',              to: '/menu', activePaths: ['/menu'], cap: 'manage_menu' },
       { id: 'pos-settings', label: 'POS Settings',      to: '/pos/settings', cap: 'access_settings' },
       { id: 'pos-devices',  label: 'Devices',           to: '/pos/devices', cap: 'access_settings' },
+      { id: 'pos-einvoice', label: 'E-invoice',         to: '/pos/einvoice', cap: 'access_settings' },
     ],
   },
   { id: 'settings', label: 'Settings', to: '/settings', cap: 'access_settings' },

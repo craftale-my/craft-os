@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   User, Target, CheckSquare, ClipboardList, FolderKanban,
   Users, BookUser, Clock, LogOut, Menu, X, Settings, ChevronDown,
-  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, UtensilsCrossed, Store, MonitorSmartphone, Printer, ChartColumn,
+  CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, UtensilsCrossed, Store, MonitorSmartphone, Printer, ChartColumn, FileCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -36,6 +36,7 @@ const ICONS: Record<string, LucideIcon> = {
   'pos-reports': ChartColumn,
   menu: UtensilsCrossed,
   'pos-settings': Printer,
+  'pos-einvoice': FileCheck,
   settings: Settings,
 }
 
