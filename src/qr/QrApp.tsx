@@ -49,6 +49,8 @@ export default function QrApp() {
   const sendingRef = useRef(false)
   const itemBusyRef = useRef(false)
   useEffect(() => { itemBusyRef.current = itemBusy }, [itemBusy])
+  const viewRef = useRef<View>('menu')              // the view now, for a request that ends after the guest moved on
+  const itemFrom = useRef<'menu' | 'cart'>('menu')  // where the item page was opened from
   const backPending = useRef(false)                                  // a history.back() is on its way: popstate has not arrived yet
   const sentElsewhere = useRef(false)                                // an order was just sent from another phone: the cart view bounces once
   const seen = useRef<string | null>(null)                           // sentKey of the cart the sender last looked at (spec §2)
@@ -141,6 +143,7 @@ export default function QrApp() {
   // (its banner says so). Keyed on that send event, never on the banner or an empty cart.
   useEffect(() => {
     if (!sentElsewhere.current || sendingRef.current) return
+    if (view === 'item' && item?.from === 'cart') return               // decided when the guest is back on the cart
     sentElsewhere.current = false
     if (view === 'cart') goMenu()
   }) // eslint-disable-line react-hooks/exhaustive-deps
@@ -156,6 +159,7 @@ export default function QrApp() {
   useEffect(() => {
     if (prevView.current === 'sent' && view !== 'sent') setPlaced(false)
     prevView.current = view
+    viewRef.current = view
   }, [view])
 
   if (screen.kind === 'loading') return <Notice muted>Loading menu…</Notice>
@@ -210,7 +214,10 @@ export default function QrApp() {
       setItem(null); setPlaced(false); setError(null)
     } catch (e) {
       const msg = errorText(e)
-      setItemError(isNetworkError(msg) ? 'Not added — no connection. Tap Add to try again.' : `Not added: ${msg}`)
+      const text = isNetworkError(msg) ? 'Not added — no connection. Tap Add to try again.' : `Not added: ${msg}`
+      // the guest left the page while the write was in flight: the page is gone, so a toast says it
+      if (viewRef.current !== 'item') { say(isNetworkError(msg) ? `${line.qty} × ${item.product.name} was not added — no connection.` : text); setItem(null) }
+      else setItemError(text)
     } finally { setItemBusy(false) }
   }
 
@@ -273,12 +280,14 @@ export default function QrApp() {
 
   /** The item page: a page of its own, with a history entry on top of the menu or the cart. */
   const openItem = (product: PosProduct, lineId: string | null) => {
+    if (itemBusyRef.current) return                                    // one write at a time: the earlier item is still being added
+    itemFrom.current = view === 'cart' ? 'cart' : 'menu'
     if (view === 'menu') menuY.current = window.scrollY
     setItemError(null); setItem({ product, lineId, from: view === 'cart' ? 'cart' : 'menu' })
     history.pushState({ qrView: 'item' }, ''); setView('item')
   }
   const sections = [...(popular.length > 0 ? [{ name: 'Popular', products: popular, popular: true }] : []), ...menu.categories]
-  const shown: View = view === 'item' && !item ? 'menu' : view
+  const shown: View = view === 'item' && !item ? itemFrom.current : view   // closing: already where Back will land
   return (
     <div className="min-h-screen bg-cream">
       <div className="mx-auto max-w-lg">

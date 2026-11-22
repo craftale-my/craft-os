@@ -49,7 +49,7 @@ export default function CartPage({ menu, me, mine, others, pairs, subtotalSen, s
           <h2 id="cart-mine" className="text-[22px] font-bold text-brown-dark">Your items</h2>
           <GuestLine avatar={me.avatar} label={me.name} />
           <ul>{mine.map((l) => (
-            <Row key={l.id} menu={menu} line={l} onEdit={(p) => onEdit(p, l.id)} onRemove={() => onRemove(l.id)} onQty={(n) => onQty(l.id, n)} />
+            <Row key={l.id} menu={menu} line={l} onEdit={(p) => onEdit(p, l.id)} onRemove={() => onRemove(l.id)} onQty={(n) => onQty(l.id, n)} noMore={!!closed} />
           ))}</ul>
         </section>
       )}
@@ -95,12 +95,13 @@ const QTYS = Array.from({ length: 20 }, (_, i) => i + 1)
 /** One line of the cart: quantity on the left, name / options / remark / Edit in the middle, price and bin
  *  on the right. With onEdit / onRemove / onQty it is the guest's own; without, someone else's (read-only).
  *  A line the menu no longer offers is struck through and says so; its owner can still remove it. */
-function Row({ menu, line, onEdit, onRemove, onQty }: {
+function Row({ menu, line, onEdit, onRemove, onQty, noMore = false }: {
   menu: PosMenu
   line: CartLine
   onEdit?: (product: PosProduct) => void
   onRemove?: () => void
   onQty?: (qty: number) => Promise<void>
+  noMore?: boolean                            // past last order: the quantity can only go down
 }) {
   const [pendingQty, setPendingQty] = useState<number | null>(null)
   const p = findProduct(menu, line.productId)
@@ -118,7 +119,7 @@ function Row({ menu, line, onEdit, onRemove, onQty }: {
           <select aria-label={`Quantity of ${label.name}`} value={pendingQty ?? line.qty} disabled={pendingQty !== null}
             onChange={(e) => void changeQty(Number(e.target.value))}
             className="h-full w-full appearance-none rounded-lg border border-border-mid bg-card pl-3 pr-6 text-base text-brown-dark disabled:opacity-60">
-            {QTYS.map((n) => <option key={n} value={n}>{n}</option>)}
+            {QTYS.filter((n) => !noMore || n <= line.qty).map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
           <ChevronDown size={16} aria-hidden="true" className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-brown-dark" />
         </div>

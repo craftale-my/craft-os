@@ -161,4 +161,10 @@ describe('CartPage remark and last orders (W7 spec §2, §3)', () => {
     expect(screen.queryByRole('status')).toBeNull()
     expect((screen.getByRole('button', { name: /^Place order/ }) as HTMLButtonElement).disabled).toBe(false)
   })
+
+  it('past last order the quantity box only offers the same or fewer', () => {
+    render(<CartPage {...make([L('a', 'me', { qty: 3 })], { closed: 'Last order was at 21:30.' })} />)
+    const qty = screen.getByRole('combobox', { name: 'Quantity of Latte' }) as HTMLSelectElement
+    expect([...qty.options].map((o) => o.value)).toEqual(['1', '2', '3'])
+  })
 })

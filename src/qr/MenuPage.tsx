@@ -43,7 +43,7 @@ export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, s
   const [view, setView] = useState<MenuView>(readView)
   const bar = useRef<HTMLElement>(null)
   const ids = sections.map((_, i) => `qr-sec-${i}`)
-  const { active, jumpTo } = useScrollSpy(ids, bar)
+  const { active, jumpTo } = useScrollSpy(ids, bar, sections.map((s) => s.name).join('|'))
   const choose = (v: MenuView) => {
     setView(v)
     try { localStorage.setItem(MENU_VIEW_KEY, v) } catch { /* private mode: this visit only */ }
@@ -91,7 +91,7 @@ export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, s
       <CategoryBar ref={bar} names={sections.map((s) => s.name)} active={active} onPick={jumpTo} />
 
       {sections.map((s, i) => (
-        <Fragment key={s.name}>
+        <Fragment key={`${i}:${s.name}`}>
           {i > 0 && <div aria-hidden="true" className="h-2 bg-brown-track" />}
           <section id={ids[i]} aria-labelledby={`${ids[i]}-h`} className={view === 'grid' ? 'pb-5' : 'pb-1'}>
             <h2 id={`${ids[i]}-h`} className="px-4 pb-1 pt-5 text-[26px] font-bold leading-tight text-brown-dark">{s.name}</h2>

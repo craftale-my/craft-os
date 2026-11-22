@@ -27,7 +27,7 @@ const CategoryBar = forwardRef<HTMLElement, {
       <div className="relative">
         <div ref={scroller} className="flex gap-2 overflow-x-auto py-2.5 pl-4 pr-12 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {names.map((n, i) => (
-            <button key={n} ref={(el) => { pills.current[i] = el }} type="button" onClick={() => pick(i)}
+            <button key={`${i}:${n}`} ref={(el) => { pills.current[i] = el }} type="button" onClick={() => pick(i)}
               aria-current={i === active ? 'true' : undefined}
               className={`min-h-9 shrink-0 whitespace-nowrap rounded-full px-4 text-[15px] font-medium transition-colors ${
                 i === active ? 'bg-brown-btn text-white' : 'bg-brown-track text-brown-dark'}`}>{n}</button>
@@ -52,7 +52,7 @@ const CategoryBar = forwardRef<HTMLElement, {
             </div>
             <ul>
               {names.map((n, i) => (
-                <li key={n}>
+                <li key={`${i}:${n}`}>
                   <button type="button" onClick={() => pick(i)}
                     className={`min-h-12 w-full border-t border-border px-4 text-left text-base ${i === active ? 'font-semibold text-brown-btn' : 'text-brown-dark'}`}>{n}</button>
                 </li>

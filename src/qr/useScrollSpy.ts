@@ -19,10 +19,11 @@ export function activeSection(tops: number[], line: number, atBottom = false): n
 const JUMP_IDLE_MS = 150
 const JUMP_MAX_MS = 3000
 
-export function useScrollSpy(ids: string[], bar: RefObject<HTMLElement | null>): { active: number; jumpTo: (i: number) => void } {
+/** `content` names what the sections hold: when it changes under the same ids, the sections are observed afresh. */
+export function useScrollSpy(ids: string[], bar: RefObject<HTMLElement | null>, content = ''): { active: number; jumpTo: (i: number) => void } {
   const [active, setActive] = useState(0)
   const holdUntil = useRef(0)
-  const key = ids.join('|')
+  const key = `${ids.join('|')}#${content}`
 
   const measure = useCallback(() => {
     if (Date.now() < holdUntil.current) return
