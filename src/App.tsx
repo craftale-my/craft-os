@@ -252,7 +252,7 @@ function AppRoutes() {
         }
       />
 
-      <Route path="/pos" element={<ProtectedRoute><PosPage /></ProtectedRoute>} />
+      <Route path="/pos" element={<ProtectedRoute><AppLayout><PosPage /></AppLayout></ProtectedRoute>} />
 
       <Route
         path="/pos/reports"

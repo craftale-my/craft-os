@@ -49,9 +49,13 @@ Out of scope: native apps, offline PIN sign-in, a customer display, kiosks, prod
   POS nav keeps Reports, Menu, POS Settings, Devices; the till entry goes to the notice.
 - **Open must-dos** from earlier reviews that belong to C3 (`.superpowers/sdd/progress.md`: Plan B FINAL REVIEW,
   device-till Task 1/2 minors) are listed in the plan and either done here or explicitly left with a reason.
-- **Order of rollout:** D first (every agent paired and printing), then the C3 SQL, then the Craft OS build with
-  the notice. The server cannot tell whether a staff-login agent is still running somewhere, so the readiness doc
-  carries this order.
+- **Order of rollout:** D SQL first, then pair every print agent (and make sure every outlet's browser-printed
+  routes have a POS-app tablet set to print), then deploy the new Craft OS build with the notice, then the C3 SQL
+  last. Before the C3 SQL, check that every print route is covered: an `agent` route needs an active `print_agent`
+  device at its outlet, any other route an active `pos` device with `prints` there (the query is in plan Task 6
+  Step 6; every row `covered = true`). The order was changed after the final review: the new Craft OS build does
+  not depend on C3, so it goes first, and C3 goes last. The server cannot tell whether a staff-login agent is
+  still running somewhere, so the readiness doc carries this order.
 
 ## 4. Testing
 
