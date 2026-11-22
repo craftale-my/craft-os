@@ -8,7 +8,7 @@
 -- ============================================================================
 
 -- Never queue long behind live checkouts for a lock: fail fast, retry in a quiet window.
-set lock_timeout = '5s';
+set local lock_timeout = '5s';
 
 -- OUT signature gained `capped`, so drop first (idempotent).
 drop function if exists stock_count_usage_period(uuid);
@@ -175,7 +175,7 @@ as $$
 declare
   p record;
   v_sold numeric; v_waste numeric; v_unexp numeric; v_nocost bigint;
-  v_first_start timestamptz; v_dep_start timestamptz;
+  v_first_start timestamptz; v_dep_start timestamptz; v_has_pos boolean;
 begin
   perform stock_count_usage_guard(p_count_id);
   select * into p from stock_count_usage_period(p_count_id);
@@ -185,10 +185,12 @@ begin
          min(u.period_start) filter (where u.counted)
     into v_sold, v_waste, v_unexp, v_nocost, v_first_start
     from stock_count_usage_calc(p_count_id) u;
-  -- When sales deduction began at the branch. A count whose window (the earliest counted
-  -- item's start, which is never later than the summary start) opens before that is a
-  -- partial period: sales before it were never deducted, so they show as unexplained loss.
-  select min(d.depleted_at) into v_dep_start from bill_depletions d where d.branch_id = p.branch_id;
+  -- When sales deduction went live (sales_depletion_meta, stamped by the depletion migration).
+  -- A window that opens before it (the earliest counted item's start, never later than the
+  -- summary start) is a partial period: sales before it were never deducted, so they show as
+  -- unexplained loss. Not flagged at a branch that has never had a POS bill (nothing to deduct).
+  select m.started_at into v_dep_start from sales_depletion_meta m where m.id;
+  v_has_pos := exists (select 1 from bills b where b.branch_id = p.branch_id);
   return jsonb_build_object(
     'period_start', p.period_start,
     'period_end', p.period_end,
@@ -206,7 +208,9 @@ begin
     'unexplained_value', v_unexp,
     'rows_without_cost', v_nocost,
     'depletion_started_at', v_dep_start,
-    'partial_period', v_dep_start is null or v_dep_start > least(p.period_start, coalesce(v_first_start, p.period_start)));
+    'has_pos_sales', v_has_pos,
+    'partial_period', v_has_pos
+                      and (v_dep_start is null or v_dep_start > least(p.period_start, coalesce(v_first_start, p.period_start))));
 end;
 $$;
 

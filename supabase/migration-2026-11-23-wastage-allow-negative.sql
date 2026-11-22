@@ -13,7 +13,7 @@
 -- after this file: it would put the refusal back.
 -- ============================================================================
 
-set lock_timeout = '5s';
+set local lock_timeout = '5s';
 
 create or replace function log_wastage(
   p_branch_id  uuid,

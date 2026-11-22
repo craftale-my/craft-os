@@ -50,7 +50,7 @@ Grab orders (not POS bills yet), refund stock returns, back-filling old bills, p
 - Per-item start (2026-11-23, owner's delegate): weekly counts cover only key items, so each item's window starts at the latest earlier submitted count at the branch that contains the item, falling back to the summary-level start above; rows add `period_start` and `counted` (item in C; `unexplained_pct` is null when not counted). Summary totals are the sum of the per-item rows and add `rows_without_cost`.
 - Bounds (2026-11-23): items not in C use the summary-level start; no window reaches back more than 180 days before C's `submitted_at`; the ledger index is partial (sale/wastage rows only).
 - Plus summary: period start/end, totals in RM, `bills_paid`, `lines_without_recipe` (sum from `bill_depletions` in the period), `depletion_errors` count.
-- **Partial period (2026-11-23 review):** `depletion_started_at` = the earliest `bill_depletions.depleted_at` at the branch (null if none) and `partial_period` = true when it is null or later than the window's start (the earliest counted item's start, never later than `period_start`). Sales before deduction began were never deducted, so the first count after go-live would show them as unexplained loss; the screen says so.
+- **Partial period (2026-11-23 review, re-review fix):** `depletion_started_at` = `sales_depletion_meta.started_at` (a one-row table stamped when the depletion migration first runs; select for `use_procurement`, no client writes), `has_pos_sales` = the branch has any `bills` row, and `partial_period` = `has_pos_sales` and (start is null or later than the window's start — the earliest counted item's start, never later than `period_start`). So a baseline count right after go-live is not flagged, and non-POS branches never are.
 
 `stock_count_unrecipe_sales(p_count_id uuid)` — same access and period; returns menu product/variant name and quantity sold for paid, non-voided lines whose variant has no recipe lines (top 50 by quantity).
 
@@ -81,7 +81,7 @@ On the stock count result view (`StockCountResult`), a new section **Since last 
 
 1. Confirm POS, menu costing and stocktake are live on prod (the depletion migration's guard refuses otherwise).
 2. Recipes entered in Menu Costing for the menu (lines without a recipe deduct nothing).
-3. Pick a quiet window (outside trading hours): both migrations `set lock_timeout = '5s'` and fail fast rather than queue behind checkouts; just retry.
+3. Pick a quiet window (outside trading hours): the migrations `set local lock_timeout = '5s'` and fail fast rather than queue behind checkouts; just retry.
 4. Apply `migration-2026-11-23-stock-count-usage.sql` (ledger index), then `migration-2026-11-23-sales-depletion.sql` (constraint, covering index, trigger), then `migration-2026-11-23-wastage-allow-negative.sql` (changes behaviour already live on prod: wastage no longer refused above on-hand) — one transaction each. Never re-run `migration-2026-10-29-owner-decisions.sql` afterwards (it puts the refusal back).
 5. Immediately run a baseline **full** count per branch, so the first "Since last count" window starts after deduction began (otherwise it is a partial period).
 6. Deploy the frontend.

@@ -10,7 +10,7 @@
 -- ============================================================================
 
 -- Never queue long behind live checkouts for a lock: fail fast, retry in a quiet window.
-set lock_timeout = '5s';
+set local lock_timeout = '5s';
 
 do $$
 begin
@@ -70,6 +70,20 @@ create policy bill_depletions_select on bill_depletions for select to authentica
   using (has_procurement_cap('use_procurement') and can_access_branch(branch_id));
 revoke all on bill_depletions from anon, authenticated;
 grant select on bill_depletions to authenticated;
+
+-- 2b. When sales deduction went live (one row, stamped when this migration first runs) ----
+-- The usage report flags a count window that opened before this as a partial period.
+create table if not exists sales_depletion_meta (
+  id         boolean primary key default true check (id),
+  started_at timestamptz not null default now()
+);
+insert into sales_depletion_meta default values on conflict do nothing;
+alter table sales_depletion_meta enable row level security;
+drop policy if exists sales_depletion_meta_select on sales_depletion_meta;
+create policy sales_depletion_meta_select on sales_depletion_meta for select to authenticated
+  using (has_procurement_cap('use_procurement'));
+revoke all on sales_depletion_meta from anon, authenticated;
+grant select on sales_depletion_meta to authenticated;
 
 -- 3. deplete_bill (internal) -------------------------------------------------------
 create or replace function deplete_bill(p_bill_id uuid)

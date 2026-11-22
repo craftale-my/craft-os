@@ -91,14 +91,17 @@ describe('plural', () => {
 
 describe('partialPeriodNote', () => {
   it('is null for a full period', () => {
-    expect(partialPeriodNote({ partial_period: false, depletion_started_at: '2026-11-01T00:00:00Z' })).toBeNull()
+    expect(partialPeriodNote({ partial_period: false, has_pos_sales: true, depletion_started_at: '2026-11-01T00:00:00Z' })).toBeNull()
+  })
+  it('is null for a branch without POS bills', () => {
+    expect(partialPeriodNote({ partial_period: true, has_pos_sales: false, depletion_started_at: null })).toBeNull()
   })
   it('says deduction has not started when there is no start', () => {
-    expect(partialPeriodNote({ partial_period: true, depletion_started_at: null }))
+    expect(partialPeriodNote({ partial_period: true, has_pos_sales: true, depletion_started_at: null }))
       .toBe('Sales deduction has not started at this branch yet')
   })
   it('names the start in Malaysia time', () => {
-    expect(partialPeriodNote({ partial_period: true, depletion_started_at: '2026-11-22T18:32:00Z' }))
+    expect(partialPeriodNote({ partial_period: true, has_pos_sales: true, depletion_started_at: '2026-11-22T18:32:00Z' }))
       .toBe("Sales deduction started 23 Nov 02:32 — sales before that are not included, so this period's unexplained figure is overstated.")
   })
 })
@@ -111,5 +114,6 @@ describe('normaliseUsageSummary partial period', () => {
     const d = normaliseUsageSummary({ period_start: 'a', period_end: 'b' } as never)
     expect(d.partial_period).toBe(false)
     expect(d.depletion_started_at).toBeNull()
+    expect(d.has_pos_sales).toBe(false)
   })
 })

@@ -608,9 +608,11 @@ export interface StockUsageSummary {
   rows_without_cost: number
   /** True when the summary window was cut at 180 days. */
   capped: boolean
-  /** First sales deduction at the branch (null: none yet). */
+  /** When sales deduction went live (sales_depletion_meta; null if not recorded). */
   depletion_started_at: string | null
-  /** Deduction started after the window opened (or never): unexplained is overstated. */
+  /** The branch has had at least one POS bill. */
+  has_pos_sales: boolean
+  /** POS branch whose window opened before deduction went live: unexplained is overstated. */
   partial_period: boolean
 }
 

@@ -29,6 +29,7 @@ export function normaliseUsageSummary(raw: StockUsageSummary): StockUsageSummary
     capped: raw.capped === true,
     depletion_started_at: raw.depletion_started_at ?? null,
     partial_period: raw.partial_period === true,
+    has_pos_sales: raw.has_pos_sales === true,
   }
 }
 
@@ -44,9 +45,9 @@ export function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`
 }
 
-/** The warning when sales deduction began inside the window (or never), else null. */
-export function partialPeriodNote(s: Pick<StockUsageSummary, 'partial_period' | 'depletion_started_at'>): string | null {
-  if (!s.partial_period) return null
+/** The warning when a POS branch's window opened before sales deduction went live (or no start is recorded), else null. The server never flags a branch without POS bills. */
+export function partialPeriodNote(s: Pick<StockUsageSummary, 'partial_period' | 'depletion_started_at' | 'has_pos_sales'>): string | null {
+  if (!s.partial_period || !s.has_pos_sales) return null
   if (!s.depletion_started_at) return 'Sales deduction has not started at this branch yet'
   return `Sales deduction started ${myt(s.depletion_started_at)} — sales before that are not included, so this period's unexplained figure is overstated.`
 }

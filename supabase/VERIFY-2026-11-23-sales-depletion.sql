@@ -14,7 +14,7 @@ declare
   v_a uuid; v_cat uuid; v_prod uuid; v_var uuid; v_var_norecipe uuid; v_grp uuid; v_opt_add uuid; v_opt_swap uuid;
   v_bill uuid; v_bill2 uuid; v_bill3 uuid; v_order uuid; v_n int; v_q numeric; v_row record;
   v_c1 uuid; v_c2 uuid; v_sum jsonb;
-  v_tbl uuid; v_part uuid; v_w uuid;                                  -- A8 split simulation
+  v_tbl uuid; v_part uuid; v_w uuid; v_br4 uuid; v_c7 uuid;                                  -- A8 split simulation
   c_owner constant uuid := '76cbcf9f-905e-450d-9f5e-1c9e72a9373d';  -- dev test login (owner), PART C
   c_cash  constant uuid := 'eeeeeeee-0000-0000-0000-0000000005d1';  -- PART C cashier (rolled back)
   c_dev   constant uuid := 'eeeeeeee-0000-0000-0000-0000000005d3';  -- PART C tablet (rolled back)
@@ -120,7 +120,9 @@ begin
     cross join (values ('anon'), ('authenticated')) as r(rolname)
    where n.nspname = 'public' and p.proname in ('deplete_bill', 'bills_deplete_on_paid');
   v_ok := v_ok and not has_table_privilege('authenticated', 'public.bill_depletions', 'insert')
-                and not has_table_privilege('anon', 'public.bill_depletions', 'select');
+                and not has_table_privilege('anon', 'public.bill_depletions', 'select')
+                and not has_table_privilege('authenticated', 'public.sales_depletion_meta', 'update')
+                and not has_table_privilege('anon', 'public.sales_depletion_meta', 'select');
   v_out := v_out || format(E'%s  internal depletion functions and table writes closed to clients\n', case when v_ok is true then 'PASS' else 'FAIL' end);
   v_fail := v_fail or v_ok is not true;
 
@@ -338,25 +340,48 @@ begin
   v_out := v_out || format(E'%s  usage functions closed to anon; period helper internal\n', case when v_ok is true then 'PASS' else 'FAIL' end);
   v_fail := v_fail or v_ok is not true;
 
-  -- B5. Partial period: sales deduction started after the window opened (or never) -------
+  -- B5. Partial period, against sales_depletion_meta.started_at (set here to T-5d) ----------
+  --  C2 (counted window from C0 at T-10d) opens before the start -> partial;
+  --  branch 4: start T-5d < baseline count T-4d < first bill T-3d < target T-1h -> not partial;
+  --  branch 3 has no POS bill at all -> not partial, has_pos_sales false; no meta row -> partial, start null
+  update sales_depletion_meta set started_at = v_ts - interval '5 days' where id;
+  insert into branches (name) values ('[TEST] SD Branch 4') returning id into v_br4;
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (v_br4, 'full', 'submitted', v_ts - interval '4 days', v_ts - interval '4 days', 1, 0, 0, 0) returning id into v_c6;
+  insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
+  values (v_c6, v_a, 10, 10, 0, 0.05, 0);
+  insert into bills (branch_id, bill_no, order_type, status, closed_at)
+  values (v_br4, '[TEST]SD-B4', 'dine_in', 'paid', v_ts - interval '3 days');
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (v_br4, 'weekly', 'submitted', v_ts - interval '1 hour', v_ts - interval '1 hour', 1, 0, 0, 0) returning id into v_c7;
+  insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
+  values (v_c7, v_a, 10, 10, 0, 0.05, 0);
   perform set_config('request.jwt.claims', json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
   execute 'set local role authenticated';
   v_sum := stock_count_usage_summary(v_c2);
-  v_ok := (v_sum->>'depletion_started_at')::timestamptz = v_ts and (v_sum->>'partial_period')::boolean = true;
+  v_ok := (v_sum->>'depletion_started_at')::timestamptz = v_ts - interval '5 days'
+      and (v_sum->>'partial_period')::boolean = true and (v_sum->>'has_pos_sales')::boolean = true;
+  v_out := v_out || format(E'%s  partial_period true when the counted window opens before deduction started (%s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'partial_period');
+  v_fail := v_fail or v_ok is not true;
+  v_sum := stock_count_usage_summary(v_c7);
+  v_ok := (v_sum->>'partial_period')::boolean = false and (v_sum->>'has_pos_sales')::boolean = true;
+  v_out := v_out || format(E'%s  baseline count after the start but before the first bill: partial_period false (%s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'partial_period');
+  v_fail := v_fail or v_ok is not true;
   v_sum := stock_count_usage_summary(v_c5);
-  v_ok := v_ok and v_sum ? 'depletion_started_at' and jsonb_typeof(v_sum->'depletion_started_at') = 'null'
-               and (v_sum->>'partial_period')::boolean = true;
+  v_ok := (v_sum->>'partial_period')::boolean = false and (v_sum->>'has_pos_sales')::boolean = false;
+  v_out := v_out || format(E'%s  branch with no POS bill: partial_period false, has_pos_sales false (%s / %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'partial_period', v_sum->>'has_pos_sales');
+  v_fail := v_fail or v_ok is not true;
   execute 'reset role';
-  insert into bills (branch_id, bill_no, order_type, status, closed_at)
-  values (v_br3, '[TEST]SD-OLD', 'dine_in', 'paid', v_ts - interval '300 days') returning id into v_bill3;
-  insert into bill_depletions (bill_id, branch_id, depleted_at, status) values (v_bill3, v_br3, v_ts - interval '300 days', 'done');
+  delete from sales_depletion_meta where id;
   execute 'set local role authenticated';
-  v_sum := stock_count_usage_summary(v_c5);
-  v_ok := v_ok and (v_sum->>'partial_period')::boolean = false
-               and (v_sum->>'depletion_started_at')::timestamptz = v_ts - interval '300 days';
+  v_sum := stock_count_usage_summary(v_c7);
+  v_ok := jsonb_typeof(v_sum->'depletion_started_at') = 'null' and (v_sum->>'partial_period')::boolean = true;
   execute 'reset role';
-  v_out := v_out || format(E'%s  partial_period: true when deduction started inside the window or never, false when before (%s)\n',
-                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'depletion_started_at');
+  v_out := v_out || format(E'%s  no start recorded at a POS branch: partial_period true, start null (%s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'partial_period');
   v_fail := v_fail or v_ok is not true;
 
   -- B6. Wastage may exceed on-hand (owner 2026-11-23); manual negative adjustments keep their guard
