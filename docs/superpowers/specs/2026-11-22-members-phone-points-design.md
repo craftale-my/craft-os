@@ -34,8 +34,8 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
   (`22 Nov · Craft Cafe Cheras · +42`), `How points work: 1 point for every RM 1 you pay.` and `Sign out`.
 - The phone stays signed in on this device for 180 days (a token in `localStorage`, usable at any table
   of ours).
-- **Which bill earns:** when a signed-in guest's phone sends the table's order (or is at the table when
-  it is sent and has lines in it), the bill is linked to that member if it has none yet. One member per
+- **Which bill earns:** when a signed-in guest's phone sends the table's order, or opens the page at a
+  table that already has an open bill, the bill is linked to that member if it has none yet. One member per
   bill — the first to be linked. A later guest who signs in at a table whose bill already has a member
   sees `This table's points are going to +60 ••• ••1234.` The counter can change it.
 - Points arrive when the bill is paid at the counter; the page then shows the new balance on its next read.
@@ -67,7 +67,8 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
 - **Phone numbers:** stored in E.164 (`+60123456789`). Malaysian mobile numbers only in this version
   (`+60 1x`, 9–10 digits after `+60`); the leading `0` a guest types is dropped. Shown masked
   (`+60 ••• ••6789`) everywhere on the guest side and on receipts; staff and owner see it in full.
-- **Staff Meal and staff discounts:** a bill on the Staff Meal catalog earns nothing.
+- **Staff Meal:** a bill with any live item ordered from a discounted catalog (`menu_catalogs.discount_bp > 0`,
+  i.e. Staff Meal) earns nothing.
 
 ## 5. Sign-in and security
 
@@ -81,7 +82,7 @@ guest must never hold such a session. Members get their own small token scheme, 
 - **Confirm** — `POST /verify`: checks the code; creates the member if new; returns a member token
   (32 random bytes; only its SHA-256 is stored, with device label and expiry 180 days).
 - **Using it** — the QR page passes the token to `member_me(p_token)` (balance and last entries) and to
-  `qr_cart_send` (new optional parameter) so the server can link the bill. `member_sign_out(p_token)`.
+  `member_link_table` so the server can link the bill. `member_sign_out(p_token)`.
 - **Limits:** per number 3 codes per 15 minutes and 10 per day; per IP 10 requests per hour; a global
   daily cap on SMS sent (default 300, a setting) that turns sign-in off with
   `Sign-in is busy right now. Please ask our staff to add your number.` — protects the SMS bill.
@@ -106,11 +107,17 @@ guest must never hold such a session. Members get their own small token scheme, 
   RLS on all; no policy for `anon`; staff read through functions; owner manages.
 - `bills.member_id uuid references members`.
 - Functions: `member_me`, `member_sign_out` (anon, token); `pos_bill_set_member(p_bill_id, p_phone)` /
-  `pos_bill_clear_member` (staff, own branch, open bill); `member_adjust` (owner); `member_search`;
-  internal `member_award(p_bill_id)` called from `pos_pay_and_close` and `member_refund(p_bill_id, p_sen)`
-  from the refund function — both re-created from their current text with the one added call.
-- `qr_cart_send` gains `p_member_token text default null`; `qr_table_state` returns the bill's masked
-  member number.
+  `pos_bill_clear_member` (staff, own branch, open bill); `member_adjust` (owner); `member_search`.
+- **Points are written by triggers, not by editing the checkout functions** (they are large, and other
+  work re-creates them): `after update of status on bills` — a bill that becomes `paid` with a member gets
+  its one `earn` row; `after insert on refunds` — the negative row; a bill that becomes `merged` hands its
+  member to the bill it merged into when that one has none. A split-off part bill is created with its
+  parent's member by a `before insert on bills` trigger when the insert names a parent (follow how the
+  split migration links a part to its parent).
+- **Linking from the QR page is its own call**, `member_link_table(p_table_token, p_member_token)` (anon):
+  links the table's open bill to the member when the bill has none and returns the masked number the
+  bill's points go to. The page calls it after a successful send and when a signed-in guest opens a table
+  that has an open bill. `qr_cart_send` and `qr_table_state` are not changed.
 - Edge Function `member-auth` (service role inside; never returns the code).
 - Verify script: award once per bill, refund floors at zero, staff-meal bill earns nothing, token of a
   deleted member refused, anon cannot read any member table; `rollback; select 'VERIFY OK'`.
@@ -119,7 +126,7 @@ guest must never hold such a session. Members get their own small token scheme, 
 
 - QR: `src/qr/member/` — `memberApi.ts`, `useMember.ts` (token in `localStorage`, balance),
   `MemberSheet.tsx` (the three steps + signed-in view), `phone.ts` (pure: normalise, validate, mask; tests);
-  the top-strip button; `QrApp` passes the token to `table.send`.
+  the top-strip button; `QrApp` calls `member_link_table` after a send and on entry.
 - POS: `Member` bill action + small dialog; bill column line; receipt lines in `ticket.ts`.
 - Back office: `Members` page and the two settings.
 
@@ -148,6 +155,6 @@ SQL → Edge Function (+ secrets) → back office → POS → QR. Dev can run en
 
 ## 11. Build order
 
-1. SQL: tables, ledger, award/refund, verify. 2. Edge Function with `log` adapter. 3. QR sheet + token.
-4. Link on send + table state. 5. POS attach + receipt. 6. Back office page + settings. 7. Real SMS adapter
-once the provider is chosen.
+1. SQL: tables, ledger, triggers, RPCs, verify. 2. Edge Function with the `log` adapter. 3. QR sheet, token,
+link. 4. POS attach, bill column, receipt. 5. Back office page + settings. 6. Real SMS adapter once the
+provider is chosen. Plan: `docs/superpowers/plans/2026-11-23-members-phone-points.md`.
