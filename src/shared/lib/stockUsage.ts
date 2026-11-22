@@ -27,7 +27,28 @@ export function normaliseUsageSummary(raw: StockUsageSummary): StockUsageSummary
     unexplained_value: num(raw.unexplained_value),
     rows_without_cost: num(raw.rows_without_cost),
     capped: raw.capped === true,
+    depletion_started_at: raw.depletion_started_at ?? null,
+    partial_period: raw.partial_period === true,
   }
+}
+
+/** "−RM 2.00" / "+RM 2.00" / "RM 0.00", with the tone: red for a loss, green for a gain, neutral at 0. */
+export function signedMoney(value: number, money: (n: number) => string): { text: string; tone: 'loss' | 'gain' | 'zero' } {
+  if (value < 0) return { text: `−${money(Math.abs(value))}`, tone: 'loss' }
+  if (value > 0) return { text: `+${money(value)}`, tone: 'gain' }
+  return { text: money(0), tone: 'zero' }
+}
+
+/** "1 bill" / "3 bills" (also for other simple English nouns). */
+export function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
+
+/** The warning when sales deduction began inside the window (or never), else null. */
+export function partialPeriodNote(s: Pick<StockUsageSummary, 'partial_period' | 'depletion_started_at'>): string | null {
+  if (!s.partial_period) return null
+  if (!s.depletion_started_at) return 'Sales deduction has not started at this branch yet'
+  return `Sales deduction started ${myt(s.depletion_started_at)} — sales before that are not included, so this period's unexplained figure is overstated.`
 }
 
 /** Biggest unexplained loss first, then most sold by value, then by name. */

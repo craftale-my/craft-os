@@ -608,6 +608,10 @@ export interface StockUsageSummary {
   rows_without_cost: number
   /** True when the summary window was cut at 180 days. */
   capped: boolean
+  /** First sales deduction at the branch (null: none yet). */
+  depletion_started_at: string | null
+  /** Deduction started after the window opened (or never): unexplained is overstated. */
+  partial_period: boolean
 }
 
 export interface UnrecipeSale {

@@ -5,6 +5,7 @@ import { money, qty } from '../../shared/lib/procurement'
 import { useCan } from '../../shared/lib/permissions'
 import {
   normaliseUsageRow, normaliseUsageSummary, sortUsageRows, formatPct, formatPeriod, sinceLabel,
+  signedMoney, plural, partialPeriodNote,
 } from '../../shared/lib/stockUsage'
 import type { StockUsageRow, StockUsageSummary, UnrecipeSale } from '../../shared/types'
 
@@ -40,27 +41,34 @@ export default function StockCountUsage({ countId }: { countId: string }) {
   const sorted = sortUsageRows(rows)
   const withMovement = sorted.filter(r => r.sold_base !== 0 || r.wasted_base !== 0 || r.unexplained_base !== 0)
   const shown = showAll ? withMovement : withMovement.slice(0, 15)
+  const unexplained = signedMoney(summary.unexplained_value, money)
+  const toneClass = { loss: 'text-red-700', gain: 'text-green-700', zero: 'text-brown-dark' }
+  const partialNote = partialPeriodNote(summary)
 
   return (
     <section className="space-y-3 pt-2">
       <div>
         <h2 className="text-base font-bold text-brown-dark">Since last count</h2>
         <p className="text-xs text-brown-faint">
-          {formatPeriod(summary.period_start, summary.period_end)} · {summary.bills_paid} bills paid
+          {formatPeriod(summary.period_start, summary.period_end)} · {plural(summary.bills_paid, 'bill')} paid
           {!summary.from_previous && ' · first count, so the last 30 days are shown'}
         </p>
         {summary.capped && <p className="text-xs text-brown-faint">Window limited to the last 180 days</p>}
       </div>
 
+      {partialNote && (
+        <p className="rounded-xl border border-[#F0D9B5] bg-[#FDF6EC] p-3 text-xs text-[#8A5A1C]">{partialNote}</p>
+      )}
+
       <div className="grid grid-cols-3 gap-2">
         {[
-          { label: 'Sold (recipes)', value: summary.sold_value, tone: 'text-brown-dark' },
-          { label: 'Wasted', value: summary.wasted_value, tone: 'text-brown-dark' },
-          { label: 'Unexplained', value: summary.unexplained_value, tone: summary.unexplained_value < 0 ? 'text-red-700' : 'text-green-700' },
+          { label: 'Sold (recipes)', text: money(summary.sold_value), tone: 'text-brown-dark' },
+          { label: 'Wasted', text: money(summary.wasted_value), tone: 'text-brown-dark' },
+          { label: 'Unexplained', text: unexplained.text, tone: toneClass[unexplained.tone] },
         ].map(t => (
           <div key={t.label} className="bg-white rounded-xl border border-[#E8DDD0] p-3 text-center">
             <p className="text-xs text-brown-faint">{t.label}</p>
-            <p className={`text-base font-bold ${t.tone}`}>{money(Math.abs(t.value))}</p>
+            <p className={`text-base font-bold ${t.tone}`}>{t.text}</p>
           </div>
         ))}
       </div>
@@ -74,7 +82,7 @@ export default function StockCountUsage({ countId }: { countId: string }) {
       {summary.lines_without_recipe > 0 && (
         <div className="rounded-xl border border-[#F0D9B5] bg-[#FDF6EC] p-3 text-xs text-[#8A5A1C] space-y-1">
           <p className="font-semibold">
-            {summary.lines_without_recipe} item{summary.lines_without_recipe === 1 ? '' : 's'} sold had no recipe, so usage is understated.
+            {plural(summary.lines_without_recipe, 'order line')} had no recipe, so usage is understated.
           </p>
           {unrecipe.length > 0 && (
             <p>{unrecipe.slice(0, 5).map(u => `${u.product_name} · ${u.variant_name} (${u.qty_sold})`).join(', ')}</p>
@@ -83,7 +91,7 @@ export default function StockCountUsage({ countId }: { countId: string }) {
         </div>
       )}
       {summary.depletion_errors > 0 && (
-        <p className="text-xs text-red-700">{summary.depletion_errors} paid bill{summary.depletion_errors === 1 ? '' : 's'} could not deduct stock. Ask a manager to check the recipes.</p>
+        <p className="text-xs text-red-700">{plural(summary.depletion_errors, 'paid bill')} could not deduct stock. Ask a manager to check.</p>
       )}
 
       {withMovement.length === 0 ? (
