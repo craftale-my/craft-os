@@ -745,15 +745,10 @@ describe('validateWastage', () => {
     expect(validateWastage({ ...ok, quantity: NaN })).toBe('Quantity must be greater than zero')
   })
 
-  it('rejects more than is on hand, allows exactly what is on hand', () => {
-    expect(validateWastage({ ...ok, quantity: 600 }))
-      .toBe('Cannot log 600 g of wastage: only 500 g on hand at this branch')
-    expect(validateWastage({ ...ok, quantity: 500 })).toBeNull()
-    expect(validateWastage({ ...ok, onHand: 0, quantity: 1 }))
-      .toBe('Cannot log 1 g of wastage: only 0 g on hand at this branch')
-  })
-
-  it('leaves the stock check to the RPC when on-hand is unknown', () => {
+  it('allows more than is on hand (owner decision 2026-11-23: stock may go negative)', () => {
+    expect(validateWastage({ ...ok, quantity: 600 })).toBeNull()
+    expect(validateWastage({ ...ok, onHand: 0, quantity: 1 })).toBeNull()
+    expect(validateWastage({ ...ok, onHand: -20, quantity: 5 })).toBeNull()
     expect(validateWastage({ ...ok, onHand: null, quantity: 1e6 })).toBeNull()
   })
 
