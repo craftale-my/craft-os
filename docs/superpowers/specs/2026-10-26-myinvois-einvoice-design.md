@@ -126,3 +126,100 @@ ongoing task is automatic; people act only when something fails.
 - ~~Over or under RM5M?~~ **Settled 2026-10-29: between RM3M and RM5M**, so the
   relaxation period runs to 31 Dec 2027. Step 5 (QR request page) may follow the
   first branch cutover instead of blocking it.
+
+## W5 — catch-up and automation (2026-11-23)
+
+Readiness W5. The owner picked W5 next on 2026-11-23; the lowest-admin route above (approved 2026-10-29)
+is the design. This section fixes what changed since the skeleton and settles the small decisions (the
+owner asked Claude to make those). Branch `feature/pos-demo` (feature/einvoice merged in 979c4e2).
+
+### W5.1 What the skeleton misses
+
+- **Discounts (W2).** `billLines` builds item lines at gross price and throws when an SST group's base is
+  smaller than its items (any discounted bill). **Takeaway lines in a dine-in bill (W7)** and the
+  per-line takeaway fee are not modelled. Consolidation sums whole-bill totals only.
+- **No outlet start date.** Consolidation would report every paid bill of a branch, including bills
+  Feedme already reports. That breaks "no double reporting" at cut-over.
+- **No RM10,000 guard**, no scheduled run, no credit notes.
+
+### W5.2 Lines come from the sales ledger
+
+- A document's lines are built from the same per-line figures as Reports → Ledger export
+  (`pos_report_lines`: gross, catalog / item / bill-share discount, net, SST base = net + takeaway fee
+  on a takeaway line; SST per line = the bill's rate group split by largest remainder, ordered as the
+  ledger orders it). One shared SQL function returns these lines for a set of bills, and both the ledger
+  and the e-invoice read it, so an e-invoice and the ledger agree to the sen.
+- **Single invoice:** one line per item line: unit price, quantity, the discount as a line allowance,
+  the takeaway fee as a taxed line charge, tax at the line's rate. Service charge and rounding stay
+  whole-document amounts, as before.
+- **Consolidated invoice:** one line per **business day** (06:00–05:59 MYT, as Reports) and SST rate,
+  "Receipts 261025-001 – 261025-212 (212)", plus that day's untaxed amounts and service charge. The month
+  is the business-day month, so a consolidated invoice equals Reports → Overview for the same month and
+  outlet.
+- Every document is checked before submission: its payable amount must equal the bills' `total_sen` sum
+  (a mismatch refuses, as now).
+
+### W5.3 Outlet start date (no double reporting)
+
+- New `branches.einvoice_from date`, set per outlet on the E-invoice screen ("Report e-invoices from").
+  Empty = this outlet is not reported by us (Feedme still reports it). Only bills whose business day is on
+  or after it are invoiced, consolidated or credited.
+- It may be set or moved later freely; moving it earlier, or clearing it, is refused once a live
+  document exists for that outlet.
+
+### W5.4 The daily job
+
+- `pg_cron` runs every day at 07:00 MYT (after the 1st's business day of the old month has closed) and
+  calls the Edge Function's `run` action through `pg_net`, with a job secret (Supabase Vault on the
+  database side, function secret `EINVOICE_JOB_SECRET` on the function side; generated, never shown).
+- Each run, in order:
+  1. Refresh every submitted document still waiting for LHDN.
+  2. Days 1–7 of a month: for each outlet with a start date, consolidate the previous month if it has no
+     valid consolidated invoice yet; at most 3 attempts per outlet and month, then stop and raise the
+     banner.
+  3. Credit notes (W5.5).
+  4. Write one `einvoice_job_runs` row: when, what was done per outlet, and errors.
+- Not set up (no LHDN credentials or company details missing): the run records "not set up" and calls
+  nothing. In sandbox that raises no banner; in production it does.
+
+### W5.5 Credit notes for refunds
+
+- **Refund of an individually invoiced bill** → a single credit note (`CN-…`) referencing that invoice's
+  LHDN UUID, issued by the next daily run.
+- **Refunds of bills already in a consolidated invoice** → one consolidated credit note per outlet and
+  month for that month's refunds (by the refund's business day), issued with the next month's
+  consolidation and referencing the consolidated invoice(s) of the original bills.
+- A refund of a bill not yet reported waits until its bill is reported, then follows the rules above.
+  A refund of a bill before the outlet's start date is never reported by us.
+- Refunds store an amount only, so a credit note splits the refund over the bill's own mix (each SST rate
+  group, the untaxed part and the service charge) by largest remainder; its tax never exceeds the bill's.
+
+### W5.6 Bills over RM10,000
+
+- A bill whose total is over RM10,000 is left out of consolidation and raises the banner ("needs the
+  buyer's details for an individual e-invoice"); the owner issues it from the E-invoice screen with the
+  buyer's details. Kept during the relaxation period too (see above).
+
+### W5.7 Screen and banner
+
+- E-invoice screen gains: per-outlet "Report e-invoices from" dates, the last job runs (date, outcome),
+  and the bills over RM10,000 waiting for a buyer. The banner (access_settings users) shows when a
+  document is rejected or invalid, a consolidation failed 3 times, a bill over RM10,000 waits, or (in
+  production only) e-invoicing is not set up.
+
+### W5.8 Out of W5
+
+First real sandbox submission and fixing the builder against LHDN's validator (needs the owner's sandbox
+credentials), the receipt QR request page, the production switch and v1.1 signing (build order steps 2,
+5, 6, 8). Field choices stay unverified until the first sandbox submission.
+
+### W5.9 Testing
+
+- Unit tests: the builders (discounts, takeaway lines, service charge, rounding, multi-rate, credit-note
+  split), the job's decisions (which month, attempts, start dates).
+- A reconciliation run over every paid dev bill: each single-bill document adds up to its `total_sen`,
+  and a consolidated document per outlet and month equals the bills' sum and Reports → Overview.
+- SQL verify (rolled back, dev): start-date rules, the shared ledger lines, job bookkeeping, links, the
+  RM10,000 exclusion, credit-note selection.
+- Dev: the `run` action called with the job secret and no LHDN credentials records "not set up"; the
+  cron job exists and is scheduled.
