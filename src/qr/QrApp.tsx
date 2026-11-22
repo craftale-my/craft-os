@@ -19,6 +19,7 @@ import CartPage from './CartPage'
 import SentPage from './SentPage'
 import OrdersPage from './OrdersPage'
 import { Notice, Shell } from './qrParts'
+import { aiPick, kindsOf } from './aiPick'
 import { useMinuteClock } from '../features/pos/order/useMinuteClock'
 import { qrClosedMessage } from '../features/pos/order/orderWindow'
 
@@ -60,6 +61,11 @@ export default function QrApp() {
   const [view, setView] = useState<View>('menu')
   const menuY = useRef(0)                                            // the menu's scroll position, restored on return
   const [sentGroups, setSentGroups] = useState<GuestGroup[]>([])         // what the send sheet showed when the order went: the "Order placed" view
+  // AI Pick (spec 2026-11-22-qr-ai-pick-mascot-design.md §5): hidden with ✕ for this visit; the seed keeps
+  // its sentence fixed for the visit; one Add from the card at a time
+  const [aiHidden, setAiHidden] = useState(false)
+  const [aiSeed] = useState(() => Math.floor(Math.random() * 2 ** 31))
+  const [aiBusy, setAiBusy] = useState(false)
 
   const { screen, loadMenu, picks, menuRef, refreshNow } = useQrMenu(token, sendingRef, {
     loaded: () => { void loadState() },
@@ -195,6 +201,19 @@ export default function QrApp() {
   // W7 spec §3: outside the outlet's window the page says when ordering opens again; Add and Place order are
   // off (the server refuses them anyway — its clock decides)
   const closedMsg = qrClosedMessage(info.ordersOpenAt ?? null, info.lastOrderAt ?? null, new Date(clock))
+  // AI Pick: not past last order, not offline (CartPage checks both too), not once hidden
+  const pick = aiHidden || closedMsg || table.status !== 'ready' ? null : aiPick(menu, picks, mine, cartLines, kindsOf(menu), aiSeed)
+
+  /** The AI Pick card's Add: the product's default line to the table's cart. A failure keeps the card and
+   *  says so in the cart's error line; on success the card moves on to the next suggestion (or goes). */
+  const addPick = async (p: PosProduct) => {
+    if (aiBusy) return
+    setAiBusy(true); setError(null)
+    try { await table.add(guest, defaultLine(p)); setPlaced(false) } catch (e) {
+      const msg = errorText(e)
+      setError(isNetworkError(msg) ? 'Not added — no connection. Try again.' : `Not added: ${msg}`)
+    } finally { setAiBusy(false) }
+  }
 
   /** The item page's Add / Save: the line goes to the table's cart on the server, then each ticked pairing
    *  as its own line, one after another. A pairing that fails leaves the item added; a toast names it. On
@@ -309,6 +328,7 @@ export default function QrApp() {
           sendable={sendable.length > 0} status={table.status} error={error} closed={closedMsg} onBack={goMenu}
           onEdit={(p, lineId) => openItem(p, lineId)} onRemove={(id) => void remove(id)} onQty={changeQty}
           onOpenProduct={(p) => openItem(p, null)}
+          aiPick={pick} aiBusy={aiBusy} onAiAdd={(p) => void addPick(p)} onAiHide={() => setAiHidden(true)}
           onPlace={() => {
             seen.current = table.cart ? sentKey(table.cart, skipIds(menu, cartLines)) : null
             setSendError(null); setSendMessage(null); setSendOpen(true)

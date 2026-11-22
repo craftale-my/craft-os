@@ -3,10 +3,12 @@ import { ChevronDown, Trash2 } from 'lucide-react'
 import { findProduct, formatSen, lineLabel, linePriceSen, type PosMenu, type PosProduct } from '../features/pos/order/cart'
 import { lineAvailable, type CartLine, type GuestGroup } from './qrCart'
 import { GuestLine, PageHeader, PickCard } from './qrParts'
+import AiPickCard from './AiPickCard'
+import Mascot from './Mascot'
 
 /** The table's cart, on its own page (reference frames 11, 12). No fetching in here: the page that owns
  *  the state passes it in. */
-export default function CartPage({ menu, me, mine, others, pairs, subtotalSen, sendable, status, error, closed = null, onBack, onEdit, onRemove, onQty, onOpenProduct, onPlace }: {
+export default function CartPage({ menu, me, mine, others, pairs, subtotalSen, sendable, status, error, closed = null, aiPick = null, aiBusy = false, onAiAdd, onAiHide, onBack, onEdit, onRemove, onQty, onOpenProduct, onPlace }: {
   menu: PosMenu
   /** this phone's guest: the line under Your items */
   me: { name: string; avatar: string }
@@ -22,6 +24,12 @@ export default function CartPage({ menu, me, mine, others, pairs, subtotalSen, s
   error: string | null
   /** W7 spec §3: past the outlet's last-order time — this sentence shows and Place order is off */
   closed?: string | null
+  /** spec 2026-11-22-qr-ai-pick-mascot-design.md: the AI Pick (null = none, or hidden for this visit) */
+  aiPick?: { product: PosProduct; sentence: string } | null
+  /** an Add from the AI Pick card is being written */
+  aiBusy?: boolean
+  onAiAdd?: (product: PosProduct) => void
+  onAiHide?: () => void
   onBack: () => void
   onEdit: (product: PosProduct, lineId: string) => void
   onRemove: (lineId: string) => void
@@ -34,13 +42,17 @@ export default function CartPage({ menu, me, mine, others, pairs, subtotalSen, s
     return (
       <div>
         <PageHeader title="Cart" onBack={onBack} />
-        <div className="p-6 text-center">
-          <p className="text-brown-muted">Your cart is empty.</p>
+        <div className="flex flex-col items-center p-6 pt-10 text-center">
+          <Mascot pose="sleepy" size={96} />
+          <p className="mt-3 text-brown-muted">Your cart is empty.</p>
           <button type="button" onClick={onBack} className="mt-3 min-h-11 rounded-xl bg-brown-btn px-5 text-white">Back to menu</button>
         </div>
       </div>
     )
   }
+  // the AI Pick shows while ordering is open and the cart is live; its product leaves the pairing strip
+  const pick = aiPick && !closed && status === 'ready' && onAiAdd && onAiHide ? aiPick : null
+  const strip = pick ? pairs.filter((p) => p.id !== pick.product.id) : pairs
   return (
     <div className="pb-28">
       <PageHeader title="Cart" onBack={onBack} />
@@ -68,11 +80,15 @@ export default function CartPage({ menu, me, mine, others, pairs, subtotalSen, s
         {error && <p role="alert" className="mt-2 text-sm text-red-700">{error}</p>}
         {closed && <p role="status" className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{closed}</p>}
       </div>
-      {pairs.length > 0 && (
+      {pick && onAiAdd && onAiHide && (
+        <AiPickCard product={pick.product} sentence={pick.sentence} busy={aiBusy}
+          onAdd={onAiAdd} onOpen={onOpenProduct} onHide={onAiHide} />
+      )}
+      {strip.length > 0 && (
         <section aria-labelledby="cart-pairs" className="mt-2 border-t-8 border-brown-track pt-4">
           <h2 id="cart-pairs" className="px-4 text-[19px] font-bold text-brown-dark">Goes well with your order</h2>
           <div className="mt-3 flex gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {pairs.map((p) => <PickCard key={p.id} product={p} onOpen={() => onOpenProduct(p)} />)}
+            {strip.map((p) => <PickCard key={p.id} product={p} onOpen={() => onOpenProduct(p)} />)}
           </div>
         </section>
       )}

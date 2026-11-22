@@ -60,4 +60,8 @@ describe('SentPage', () => {
     expect(onAddMore).toHaveBeenCalledTimes(2)
     expect(onViewOrders).toHaveBeenCalled()
   })
+  it('the cheer mascot stands beside the check mark', () => {
+    render(<SentPage {...base} />)
+    expect(screen.getByTestId('mascot-cheer')).toBeTruthy()
+  })
 })

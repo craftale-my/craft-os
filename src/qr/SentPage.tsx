@@ -2,6 +2,7 @@ import { Check, ConciergeBell, ReceiptText } from 'lucide-react'
 import { findProduct, lineLabel, linePriceSen, type PosMenu } from '../features/pos/order/cart'
 import type { GuestGroup } from './qrCart'
 import { GuestLine, ItemLine, PageHeader } from './qrParts'
+import Mascot from './Mascot'
 
 /** Order details (reference frames 13, 14), shown to the guest who sent the table's order: what was sent
  *  (the groups the send sheet showed). */
@@ -17,8 +18,11 @@ export default function SentPage({ menu, groups, tableLabel, billNo, onAddMore, 
     <div className="pb-28">
       <PageHeader title="Order details" onClose={onAddMore} />
       <div className="px-4 pb-6 pt-8 text-center">
-        <div aria-hidden="true" className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-brown-btn text-white">
-          <Check size={34} strokeWidth={3} />
+        <div className="flex items-end justify-center gap-2">
+          <div aria-hidden="true" className="flex h-16 w-16 items-center justify-center rounded-full bg-brown-btn text-white">
+            <Check size={34} strokeWidth={3} />
+          </div>
+          <Mascot pose="cheer" size={72} className="-mb-1" />
         </div>
         <h2 className="mt-4 text-[24px] font-bold text-brown-dark">Order sent</h2>
       </div>

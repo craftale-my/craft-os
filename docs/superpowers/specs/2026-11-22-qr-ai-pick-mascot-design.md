@@ -33,8 +33,9 @@ brown and cream, as inline SVG (no image file, no third-party art). Four poses: 
 
 - left: the mascot (`pick`); a small pill `AI Pick` with a sparkle icon;
 - one line of text (the sentence);
-- the suggested product: photo, name, price, and a button `Add` (a product that needs a choice opens its
-  item page instead, as a pairing card does);
+- the suggested product: photo, name, price, and a button `Add` (a product that needs a choice — several
+  sizes, a group with a minimum, or a default line the server would refuse — opens its item page instead,
+  as a pairing card does; optional add-ons do not count);
 - a small `✕` (`aria-label="Hide AI Pick"`) hides the card for this visit to the table.
 - After `Add`, the card shows the next suggestion if there is one, otherwise it goes away.
 - Not shown: when there is no suggestion, when the cart is empty, past last order (W7 rule), offline.
@@ -58,7 +59,8 @@ Pure function `aiPick(menu, picks, mine, all, kinds, seed)` in `src/qr/aiPick.ts
    Each candidate must pass `validateLine(p, defaultLine(p)) === null` or be openable (it has choices) and
    not be in the table's cart.
 3. Take the first candidate; the sentence comes from the list for that situation, chosen by `seed`
-   (a number fixed per visit, so the sentence does not change on every refresh).
+   and the product id (`seed` is fixed per visit, so the sentence does not change on every refresh).
+   No available line of mine → no card (the pick is about this guest's order).
 
 **Drink or food** — a new field on the category: `menu_categories.kind` — `'drink' | 'food' | null`
 (null = neither; such products only take part in `mixed`). Set in the back office category editor
@@ -79,12 +81,13 @@ the name is filled in.
 
 ## 4. Server (one small migration, dev first)
 
-`supabase/migration-2026-11-22-menu-category-kind.sql` (+ verify):
+`supabase/migration-2026-11-23-menu-category-kind.sql` (+ verify):
 
 - `alter table menu_categories add column if not exists kind text check (kind in ('drink','food'))`.
 - The QR menu function and the POS menu read return `kind` with each category (re-create from current
   text; additive field — an older client ignores it).
-- The category save RPC accepts `kind`.
+- A setter of its own, `menu_set_category_kind(id, kind)` (like `menu_set_category_active`), so
+  `menu_save_category` keeps its signature; the editor lookups return `kind` with each category.
 
 ## 5. Client
 
