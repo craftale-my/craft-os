@@ -31,7 +31,8 @@ export function recipeCost(lines: { qtyBase: number; unitCost: number | null | u
     if (c == null) missing += 1
     else total += c
   }
-  return { cost: missing > 0 ? null : Math.round(total * 10000) / 10000, missing }
+  // Unrounded: food cost % must match the database view to the basis point. Round only for display.
+  return { cost: missing > 0 ? null : total, missing }
 }
 
 /** Food cost in basis points: cost (RM) ÷ price (sen). */
@@ -62,4 +63,51 @@ export function sameRecipeLines(
   if (a.length !== b.length) return false
   const m = new Map(b.map(l => [l.item_id, l.qty_base]))
   return a.every(l => m.has(l.item_id) && m.get(l.item_id) === l.qty_base)
+}
+
+/** The text in a row's pack and loose boxes while it is being edited. */
+export interface QtyDraft { packs: string; loose: string }
+
+/** What the boxes show for a stored quantity (sign is shown by the Adds / Removes chip). */
+export function draftFromBase(base: number, rate: number): QtyDraft {
+  const s = baseToPacksLoose(Math.abs(base), rate)
+  return { packs: s.packs ? String(s.packs) : '', loose: s.loose ? String(s.loose) : '' }
+}
+
+export type DraftCommit = { ok: true; base: number } | { ok: false; message: string }
+
+function parseBox(v: string): number | null {
+  if (v.trim() === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 ? n : NaN
+}
+
+/**
+ * Turns a row's draft into a signed base quantity, reading both boxes together
+ * (so "0 packs + 150 g" is 150, not the old packs plus 150). Invalid or empty
+ * drafts are refused; the caller keeps the previous quantity and shows the message.
+ */
+export function commitQtyDraft(draft: QtyDraft, rate: number, negative: boolean): DraftCommit {
+  const single = rate === 1
+  const p = parseBox(draft.packs)
+  const l = single ? null : parseBox(draft.loose)
+  if (Number.isNaN(p) || Number.isNaN(l)) return { ok: false, message: 'Enter a number, 0 or more.' }
+  const base = packsLooseToBase(p, l, rate)
+  if (base == null || base === 0) return { ok: false, message: 'Quantity cannot be empty. Use Remove to drop this ingredient.' }
+  return { ok: true, base: negative ? -base : base }
+}
+
+/**
+ * How a recipe's total should read. A cost that has not arrived yet (or failed to
+ * load) is absent from the map; an ingredient with no price is present as null.
+ */
+export type CostDisplay = 'empty' | 'loading' | 'failed' | 'missing_price' | 'ok'
+export function costDisplay(
+  itemIds: string[], costs: Map<string, number | null>, failed: Set<string>,
+): CostDisplay {
+  if (itemIds.length === 0) return 'empty'
+  const absent = itemIds.filter(id => !costs.has(id))
+  if (absent.some(id => failed.has(id))) return 'failed'
+  if (absent.length > 0) return 'loading'
+  return itemIds.some(id => costs.get(id) == null) ? 'missing_price' : 'ok'
 }
