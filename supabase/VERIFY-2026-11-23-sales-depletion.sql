@@ -189,6 +189,12 @@ begin
   v_out := v_out || format(E'%s  180-day cap: item last counted 250 days ago is bounded at period_end - 180 days (sold %s, start %s)\n',
                            case when v_ok is true then 'PASS' else 'FAIL' end, v_row.sold_base, v_row.period_start);
   v_fail := v_fail or v_ok is not true;
+  v_sum := stock_count_usage_summary(v_c5);
+  v_ok := (v_sum->>'capped')::boolean = true and (v_sum->>'from_previous')::boolean = true
+      and (v_sum->>'period_start')::timestamptz = v_ts + interval '1 hour' - interval '180 days';
+  v_out := v_out || format(E'%s  summary window capped at 180 days (capped %s, start %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'capped', v_sum->>'period_start');
+  v_fail := v_fail or v_ok is not true;
 
   -- B1. Item A: sold 380 + 3 (boundary at the end included, at the start excluded, older sale ignored),
   --     the target's own stocktake row is not sold/wasted ------------------------------------
@@ -235,7 +241,7 @@ begin
       and round((v_sum->>'sold_value')::numeric, 2) = 19.00
       and round((v_sum->>'wasted_value')::numeric, 2) = 1.50
       and round((v_sum->>'unexplained_value')::numeric, 2) = -2.00
-      and (v_sum->>'rows_without_cost')::int = 0;
+      and (v_sum->>'rows_without_cost')::int = 0 and (v_sum->>'capped')::boolean = false;
   v_out := v_out || format(E'%s  summary exact: 2 bills, 1 line without recipe, 1 error, sold 19.00, wasted 1.50, unexplained -2.00, 0 rows without cost (%s)\n',
                            case when v_ok is true then 'PASS' else 'FAIL' end, v_sum);
   v_fail := v_fail or v_ok is not true;

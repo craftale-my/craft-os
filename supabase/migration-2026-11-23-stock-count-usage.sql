@@ -6,9 +6,12 @@
 -- Additive and idempotent. Requires migration-2026-11-23-sales-depletion.sql.
 -- ============================================================================
 
-create or replace function stock_count_usage_period(
+-- OUT signature gained `capped`, so drop first (idempotent).
+drop function if exists stock_count_usage_period(uuid);
+create function stock_count_usage_period(
   p_count_id uuid,
-  out branch_id uuid, out period_start timestamptz, out period_end timestamptz, out from_previous boolean
+  out branch_id uuid, out period_start timestamptz, out period_end timestamptz, out from_previous boolean,
+  out capped boolean
 )
 language plpgsql stable security definer
 set search_path = public, pg_temp
@@ -29,6 +32,9 @@ begin
   if period_start is null then
     period_start := v_c.submitted_at - interval '30 days';
   end if;
+  -- Hard cap: the summary-level window never reaches back more than 180 days.
+  capped := period_start < period_end - interval '180 days';
+  if capped then period_start := period_end - interval '180 days'; end if;
 end;
 $$;
 revoke all on function stock_count_usage_period(uuid) from public, anon, authenticated;
@@ -177,6 +183,7 @@ begin
     'period_start', p.period_start,
     'period_end', p.period_end,
     'from_previous', p.from_previous,
+    'capped', p.capped,
     'bills_paid', (select count(*) from bills b where b.branch_id = p.branch_id and b.status = 'paid'
                      and b.closed_at > p.period_start and b.closed_at <= p.period_end),
     'lines_without_recipe', (select coalesce(sum(d.lines_without_recipe), 0) from bill_depletions d
