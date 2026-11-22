@@ -399,6 +399,22 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
+  it('scans the D migration: pos_agent_whoami for print agents only, granted like its neighbours, a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-22-pos-agent-pairing.sql', SUPABASE), 'utf8')
+    const bodies = functionBodies(sql)
+    expect(bodies.map((b) => b.name)).toEqual(['pos_agent_whoami'])
+    const body = bodies[0].body
+    expect(body).toContain("v_dev.kind <> ''")                       // strings are emptied: kind <> 'print_agent'
+    expect(body).toContain('v_dev.revoked_at is not null')
+    expect(body).toContain("current_setting('')::boolean")           // no stamp in a read-only call
+    expect(sql).toContain('revoke all on function pos_agent_whoami() from public, anon;')
+    expect(sql).toContain('grant execute on function pos_agent_whoami() to authenticated;')
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-30-pos-app\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'pos agent pairing applied' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-11-22-pos-agent-pairing-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
 })
 
 describe('the discount RPCs act as the POS session, never auth.uid()', () => {
