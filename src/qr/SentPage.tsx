@@ -22,18 +22,21 @@ export default function SentPage({ menu, groups, tableLabel, billNo, onAddMore, 
         </div>
         <h2 className="mt-4 text-[24px] font-bold text-brown-dark">Order sent</h2>
       </div>
-      <div className="h-1 bg-brown-btn" />
+      {/* the reference's progress strip: four steps, the first (sent) done — the page tracks no later step */}
+      <div aria-hidden="true" className="grid grid-cols-4 gap-1">
+        {[0, 1, 2, 3].map((k) => <div key={k} className={`h-1 ${k === 0 ? 'bg-brown-btn' : 'bg-brown-track'}`} />)}
+      </div>
       <div data-testid="sent-columns" className={`grid py-6 text-center ${billNo ? 'grid-cols-2' : 'grid-cols-1'}`}>
         <div>
           <div className="text-[17px] font-semibold text-brown-dark">Table</div>
-          <div className="mt-2 flex items-center justify-center gap-2 text-[26px] text-brown-dark">
+          <div className="mt-2 flex items-center justify-center gap-2 text-[22px] text-brown-dark">
             <ConciergeBell size={22} aria-hidden="true" /><span>{tableLabel}</span>
           </div>
         </div>
         {billNo && (
           <div>
             <div className="text-[17px] font-semibold text-brown-dark">Bill no.</div>
-            <div className="mt-2 flex items-center justify-center gap-2 text-[26px] text-brown-dark">
+            <div className="mt-2 flex items-center justify-center gap-2 text-[22px] text-brown-dark">
               <ReceiptText size={22} aria-hidden="true" /><span>{billNo}</span>
             </div>
           </div>
