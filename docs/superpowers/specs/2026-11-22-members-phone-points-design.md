@@ -76,10 +76,10 @@ Members are **not** Supabase Auth users: every existing policy treats `authentic
 guest must never hold such a session. Members get their own small token scheme, all behind
 `security definer` functions callable by `anon`.
 
-- **Request a code** — Edge Function `member-auth` (`POST /request`): validates the number, rate-limits,
+- **Request a code** — Edge Function `member-auth` (`POST {action: 'request', phone}`): validates the number, rate-limits,
   creates a 6-digit code (stored hashed, expires in 5 minutes, 5 attempts), asks the SMS provider to send
   `Craft Cafe: your code is 123456. It expires in 5 minutes.`
-- **Confirm** — `POST /verify`: checks the code; creates the member if new; returns a member token
+- **Confirm** — `POST {action: 'verify', phone, code}`: checks the code; creates the member if new; returns a member token
   (32 random bytes; only its SHA-256 is stored, with device label and expiry 180 days).
 - **Using it** — the QR page passes the token to `member_me(p_token)` (balance and last entries) and to
   `member_link_table` so the server can link the bill. `member_sign_out(p_token)`.
@@ -112,7 +112,7 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
 - Functions: `member_public_settings`, `member_me`, `member_sign_out`, `member_link_table` (anon);
   `pos_bill_set_member(p_bill_id, p_phone)` / `pos_bill_clear_member` (a till's staff session, own outlet,
   open bill); `member_search`, `member_ledger`, `member_settings_get` (back office: `access_settings`);
-  `member_adjust`, `member_delete`, `member_settings_set` (owner); `member_otp_request`, `member_otp_verify`
+  `member_adjust`, `member_delete`, `member_settings_set` (owner); `member_otp_request`, `member_otp_verify`, `member_otp_void` (the SMS never left: the code is made unusable)
   (service role, for the Edge Function).
 - Staff Meal is read from each item's own record of its catalog's discount (`order_items.catalog_discount_bp`,
   written when the item is ordered), not from the catalog as it is now.

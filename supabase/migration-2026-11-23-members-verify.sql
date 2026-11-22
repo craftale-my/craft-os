@@ -143,7 +143,8 @@ begin
     perform pg_temp.check(not has_function_privilege('anon', t, 'execute'), 'M1 anon cannot run ' || t);
     perform pg_temp.check(has_function_privilege('authenticated', t, 'execute'), 'M1 staff run ' || t);
   end loop;
-  foreach t in array array['member_otp_request(text,text,text,text)', 'member_otp_verify(text,text,text,text)'] loop
+  foreach t in array array['member_otp_request(text,text,text,text)', 'member_otp_verify(text,text,text,text)',
+                           'member_otp_void(text,text)'] loop
     perform pg_temp.check(not has_function_privilege('anon', t, 'execute'), 'M1 anon cannot run ' || t);
     perform pg_temp.check(not has_function_privilege('authenticated', t, 'execute'), 'M1 staff cannot run ' || t);
     perform pg_temp.check(has_function_privilege('service_role', t, 'execute'), 'M1 service_role runs ' || t);
@@ -363,6 +364,14 @@ begin
   perform pg_temp.check((select expires_at from member_tokens where token_hash = pg_temp.hash('verify-token-C-0001'))
                         between now() + interval '179 days' and now() + interval '181 days', 'M6 the token lasts 180 days');
   perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('333333'), pg_temp.hash('verify-token-C-0002'), null) = 'expired', 'M6 a used code is dead');
+  -- a voided code (the SMS never left) cannot be confirmed
+  delete from member_otps where phone = '+60129876543';
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('555555'), '555555') = 'ok', 'M6 code to void');
+  perform pg_temp.check(member_otp_void('0129876543', pg_temp.hash('555555')), 'M6 void → true');
+  perform pg_temp.check(not member_otp_void('0129876543', pg_temp.hash('555555')), 'M6 void twice → false');
+  perform pg_temp.check((select dev_code from member_otps where phone = '+60129876543' and code_hash = pg_temp.hash('555555')) is null, 'M6 void clears the dev code');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('555555'), pg_temp.hash('verify-token-C-0003'), null) = 'expired', 'M6 a voided code is dead');
+  delete from member_otps where phone = '+60129876543';
   -- the same answers for a member and a non-member
   perform pg_temp.check(member_otp_request('0123456789', '10.0.0.9', pg_temp.hash('444444'), null) = 'ok', 'M6 a member asks: ok');
   -- per IP: 10 per hour

@@ -9,7 +9,7 @@
 --   5 till RPCs (device session): pos_bill_set_member, pos_bill_clear_member
 --   6 back office: member_search, member_ledger, member_settings_get (access_settings);
 --     member_adjust, member_delete, member_settings_set (owner)
---   7 Edge Function only (service_role): member_otp_request, member_otp_verify
+--   7 Edge Function only (service_role): member_otp_request, member_otp_verify, member_otp_void
 -- Every DELETE / UPDATE has a WHERE: Supabase's API role runs pg-safeupdate.
 
 do $$
@@ -627,6 +627,24 @@ begin
 end $$;
 revoke all on function member_otp_verify(text, text, text, text) from public, anon, authenticated;
 grant execute on function member_otp_verify(text, text, text, text) to service_role;
+
+-- The SMS for a stored code never left (the provider failed): the code is marked used so it can never be
+-- confirmed (verify then answers 'expired'). The row still counts toward the limits. Matches by number
+-- and code hash, unused codes only; returns whether a row was voided.
+create or replace function member_otp_void(p_phone text, p_code_hash text) returns boolean
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_phone text := member_phone_normalise(p_phone);
+  v_n     integer;
+begin
+  if v_phone is null then raise exception 'Invalid phone number'; end if;
+  update member_otps set used_at = now(), dev_code = null
+   where phone = v_phone and code_hash = p_code_hash and used_at is null;
+  get diagnostics v_n = row_count;
+  return v_n > 0;
+end $$;
+revoke all on function member_otp_void(text, text) from public, anon, authenticated;
+grant execute on function member_otp_void(text, text) to service_role;
 
 notify pgrst, 'reload schema';
 select 'members applied' as result;
