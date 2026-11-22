@@ -113,7 +113,59 @@ begin
   v_out := v_out || format(E'%s  internal depletion functions and table writes closed to clients\n', case when v_ok is true then 'PASS' else 'FAIL' end);
   v_fail := v_fail or v_ok is not true;
 
-  -- PART B (usage report) is appended in Task 3 here. --------------------------------
+  -- PART B: usage report ---------------------------------------------------------------
+  -- Previous count a day ago, current count a minute from now; between them:
+  -- the -380 g sale (bill 1) and a 30 g wastage; the current count found 40 g less than book.
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (c_cheras, 'full', 'submitted', now() - interval '1 day', now() - interval '1 day', 0, 0, 0, 0) returning id into v_c1;
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type)
+  values (v_a, c_cheras, 'wastage', -30, 0.05, 'manual');
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (c_cheras, 'full', 'submitted', now(), now() + interval '1 minute', 1, 0, 2, -2) returning id into v_c2;
+  insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
+  values (v_c2, v_a, 4550, 4590, -40, 0.05, -2);
+
+  perform set_config('request.jwt.claims', json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  execute 'set local role authenticated';
+
+  -- B1. Per-item usage ------------------------------------------------------------------
+  select * into v_row from stock_count_usage(v_c2) where item_id = v_a;
+  v_ok := v_row.sold_base = 380 and round(v_row.sold_value, 2) = 19.00
+      and v_row.wasted_base = 30 and round(v_row.wasted_value, 2) = 1.50
+      and v_row.unexplained_base = -40 and round(v_row.unexplained_value, 2) = -2.00
+      and round(v_row.unexplained_pct, 2) = 10.53;
+  v_out := v_out || format(E'%s  usage: sold 380 g RM 19.00, wasted 30 g RM 1.50, unexplained -40 g RM -2.00 = 10.53%% (got %s / %s / %s / %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_row.sold_base, v_row.wasted_base, v_row.unexplained_base, v_row.unexplained_pct);
+  v_fail := v_fail or v_ok is not true;
+
+  -- B2. Summary -----------------------------------------------------------------------
+  v_sum := stock_count_usage_summary(v_c2);
+  v_ok := (v_sum->>'from_previous')::boolean = true
+      and (v_sum->>'lines_without_recipe')::int >= 1
+      and (v_sum->>'depletion_errors')::int >= 1
+      and (v_sum->>'bills_paid')::int >= 2
+      and round((v_sum->>'sold_value')::numeric, 2) >= 19.00;
+  v_out := v_out || format(E'%s  summary: previous count found, paid bills, lines without recipe, errors (%s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum);
+  v_fail := v_fail or v_ok is not true;
+
+  -- B3. Sold without recipe -------------------------------------------------------------
+  select exists (select 1 from stock_count_unrecipe_sales(v_c2) where variant_name = 'No recipe' and qty_sold = 1)
+    into v_ok;
+  v_out := v_out || format(E'%s  sold-without-recipe lists the no-recipe variant\n', case when v_ok is true then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or v_ok is not true;
+  execute 'reset role';
+
+  -- B4. anon refused; internal period function closed ------------------------------------
+  select not bool_or(has_function_privilege('anon', p.oid, 'execute'))
+     and not exists (select 1 from pg_proc p2 join pg_namespace n2 on n2.oid = p2.pronamespace
+                      where n2.nspname = 'public' and p2.proname = 'stock_count_usage_period'
+                        and has_function_privilege('authenticated', p2.oid, 'execute'))
+    into v_ok
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname in ('stock_count_usage', 'stock_count_usage_summary', 'stock_count_unrecipe_sales');
+  v_out := v_out || format(E'%s  usage functions closed to anon; period helper internal\n', case when v_ok is true then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or v_ok is not true;
 
   v_out := v_out || case when v_fail then 'VERIFY FAILED' else 'VERIFY OK' end;
   raise exception E'\n%', v_out;
