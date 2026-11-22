@@ -457,7 +457,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'einvoice_bill_lines', 'einvoice_bill_source', 'einvoice_unlinked_paid_bills', 'einvoice_large_bills',
       'einvoice_create_document',
       'einvoice_pending_single_refunds', 'einvoice_pending_consolidated_refunds', 'einvoice_consolidated_refund_months',
-      'einvoice_record_attempt', 'einvoice_reconcile_source',
+      'einvoice_record_attempt', 'einvoice_claim_send', 'einvoice_reconcile_source',
     ])
     expect(body('pos_report_ledger')).toContain('from pos_ledger_lines(array(select pb.id from pb)) x')
     expect(body('pos_report_ledger')).not.toContain('floor_sst')
@@ -468,7 +468,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'einvoice_bill_source(uuid)', 'einvoice_unlinked_paid_bills(uuid, date)', 'einvoice_create_document(jsonb, uuid[], uuid[])',
       'einvoice_pending_single_refunds()', 'einvoice_pending_consolidated_refunds(uuid, date)',
       'einvoice_consolidated_refund_months(date)', 'einvoice_record_attempt(text, text, uuid, date, uuid, boolean, text)',
-      'einvoice_reconcile_source(date, date)',
+      'einvoice_claim_send(uuid)', 'einvoice_reconcile_source(date, date)',
     ]
     for (const f of service) {
       expect(sql).toContain(`revoke all on function ${f} from public, anon, authenticated;`)

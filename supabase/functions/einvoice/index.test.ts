@@ -8,7 +8,7 @@ describe('einvoice Edge Function wiring', () => {
     expect(src).toContain("const job = body.action === 'run' || body.action === 'reconcile'")
     expect(src).toMatch(/if \(job\) \{\s*if \(!jobSecretMatches\(req\.headers\.get\('x-einvoice-job-secret'\), Deno\.env\.get\('EINVOICE_JOB_SECRET'\)\)\)/)
     expect(src).toContain("asCaller.rpc('has_menu_cap', { p_cap: 'access_settings' })")
-    for (const a of ['status', 'submit_bill', 'consolidate', 'refresh', 'credit_notes', 'run', 'reconcile']) {
+    for (const a of ['status', 'submit_bill', 'consolidate', 'refresh', 'resend', 'credit_notes', 'run', 'reconcile']) {
       expect(src).toContain(`case '${a}':`)
     }
   })
@@ -21,5 +21,14 @@ describe('einvoice Edge Function wiring', () => {
   it('records every run and reads the start date before consolidating', () => {
     expect(src).toContain("admin.from('einvoice_job_runs').insert(")
     expect(src).toContain("select('id, einvoice_from')")
+  })
+
+  it('claims a draft before submitting, flags stale sends, refuses reconcile windows over 3 months', () => {
+    expect(src).toContain("admin.rpc('einvoice_claim_send'")
+    expect(src.indexOf("einvoice_claim_send")).toBeLessThan(src.indexOf('client.submit('))
+    expect([...src.matchAll(/client\.submit\(/g)]).toHaveLength(1)
+    expect(src).toContain("lt('send_started_at', cutoff)")
+    expect(src).toContain('Reconcile at most 3 months at a time')
+    expect(src).toContain("The request body must be a JSON object")
   })
 })

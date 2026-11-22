@@ -499,5 +499,28 @@ begin
   end loop;
 end $$;
 
+-- ── V7. Claiming a draft for sending ──
+do $$
+declare
+  v_a  uuid := pg_temp.id('a');
+  v_id uuid := gen_random_uuid();
+begin
+  insert into einvoice_documents (id, kind, environment, branch_id, code_number, total_sen)
+  values (v_id, 'consolidated_invoice', 'sandbox', v_a, 'CON-VERIFY-CLAIM', 100);
+  if (select count(*) from einvoice_claim_send(v_id)) <> 1 then raise exception 'FAIL V7 first claim'; end if;
+  if (select send_started_at from einvoice_documents where id = v_id) is null then raise exception 'FAIL V7 claim not stamped'; end if;
+  if (select count(*) from einvoice_claim_send(v_id)) <> 0 then raise exception 'FAIL V7 second claim won'; end if;
+  update einvoice_documents set send_started_at = null, needs_check = true where id = v_id;
+  if (select count(*) from einvoice_claim_send(v_id)) <> 0 then raise exception 'FAIL V7 needs_check draft claimable'; end if;
+  update einvoice_documents set needs_check = false, status = 'submitted' where id = v_id;
+  if (select count(*) from einvoice_claim_send(v_id)) <> 0 then raise exception 'FAIL V7 submitted document claimable'; end if;
+  update einvoice_documents set status = 'draft' where id = v_id;
+  if (select count(*) from einvoice_claim_send(v_id)) <> 1 then raise exception 'FAIL V7 released draft not claimable'; end if;
+  if has_function_privilege('authenticated', 'einvoice_claim_send(uuid)', 'execute')
+     or has_function_privilege('anon', 'einvoice_claim_send(uuid)', 'execute') then
+    raise exception 'FAIL V7 einvoice_claim_send grants';
+  end if;
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;

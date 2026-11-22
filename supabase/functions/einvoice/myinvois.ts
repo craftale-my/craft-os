@@ -31,6 +31,14 @@ export class MyInvoisError extends Error {
   }
 }
 
+/** The submit never left us (no token, no connection for it): LHDN cannot have received the document. */
+export class NotSentError extends Error {
+  readonly notSent = true
+  constructor(message: string) {
+    super(message)
+  }
+}
+
 const bytesToHex = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('')
 function bytesToBase64(bytes: Uint8Array): string {
   let s = ''
@@ -88,6 +96,11 @@ export class MyInvoisClient {
         codeNumber: d.codeNumber,
       }
     }))
+    try {
+      await this.accessToken()                       // a failure here is before any document went out
+    } catch (e) {
+      throw new NotSentError(e instanceof Error ? e.message : String(e))
+    }
     const r = await this.call('POST', '/api/v1.0/documentsubmissions/', { documents })
     return {
       submissionUid: r?.submissionUid ?? r?.submissionUID ?? null,

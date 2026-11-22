@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   businessDay, ccnRef, cnRef, conRef, emptyReport, inConsolidationWindow, jobSecretMatches, MAX_ATTEMPTS, monthEnd,
-  previousMonth, refOfDocument, runCreditNotes, runJob, runOutcome, type JobSteps, type PendingDoc, type StepResult,
+  previousMonth, refOfDocument, runCreditNotes, runJob, runOutcome, sendOnce, submitFailureVerdict, type JobSteps, type PendingDoc, type StepResult,
 } from './job.ts'
 import type { PendingRefund } from './documents.ts'
 
@@ -202,5 +202,43 @@ describe('runCreditNotes with force (the screen’s Retry)', () => {
     await runCreditNotes(s, r, r.businessDay, true)
     expect(s.creditNote).toHaveBeenCalledTimes(1)
     expect(s.record).toHaveBeenCalledWith(cnRef('o1', 'r1'), true, null)
+  })
+})
+
+describe('sending a draft once', () => {
+  const err = (status: number) => Object.assign(new Error('x'), { status })
+  it('classifies a failed submit', () => {
+    expect(submitFailureVerdict(Object.assign(new Error('no token'), { notSent: true }))).toBe('release')
+    expect(submitFailureVerdict(err(429))).toBe('release')
+    expect(submitFailureVerdict(err(503))).toBe('release')
+    expect(submitFailureVerdict(err(422))).toBe('needs_check')
+    expect(submitFailureVerdict(err(400))).toBe('rejected')
+    expect(submitFailureVerdict(err(500))).toBe('needs_check')
+    expect(submitFailureVerdict(new TypeError('network'))).toBe('needs_check')
+    expect(submitFailureVerdict(null)).toBe('needs_check')
+  })
+
+  it('a second send of the same draft does not call submit', async () => {
+    let claimed = false
+    let submits = 0
+    const send = () => sendOnce<string>({
+      claim: async () => (claimed ? false : (claimed = true)),
+      lost: async () => 'lost',
+      submit: async () => { submits++; return 'accepted' },
+      answered: async (a) => a,
+      failed: async (v) => v,
+    })
+    expect(await send()).toBe('accepted')
+    expect(await send()).toBe('lost')
+    expect(submits).toBe(1)
+  })
+
+  it('hands a thrown submit to failed with its verdict, and never submits when the claim is lost', async () => {
+    const r = await sendOnce<string>({
+      claim: async () => true, lost: async () => 'lost',
+      submit: async () => { throw Object.assign(new Error('dup'), { status: 422 }) },
+      answered: async (a) => a, failed: async (v) => v,
+    })
+    expect(r).toBe('needs_check')
   })
 })

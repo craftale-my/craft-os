@@ -9,6 +9,7 @@
 //   submit_bill   — (user) { billId, buyer? }  one paid bill as its own e-invoice (over RM 10,000: buyer required)
 //   consolidate   — (user) { branchId, month: 'YYYY-MM' }  a past business month's remaining bills
 //   refresh       — (user) { documentId }  read LHDN's verdict (or resend a draft that never reached LHDN)
+//   resend        — (user) { documentId }  send a draft whose answer was unknown (needs_check), after checking the MyInvois portal
 //   credit_notes  — (user) issue every credit note due now, past the 3-attempt stop (the screen's Retry)
 //   run           — (job)  the daily run: refresh, consolidate on days 1–7, credit notes; one einvoice_job_runs row
 //   reconcile     — (job)  { from?, to? }  build (never submit) every paid bill's document and each outlet-month's
@@ -31,7 +32,8 @@ import {
   type BillSource, type MonthBill, type PendingRefund, type PlanCtx, type Planned,
 } from './documents.ts'
 import {
-  businessDay, conRef, emptyReport, jobSecretMatches, monthEnd, monthOf, runCreditNotes, runJob, runOutcome,
+  STALE_SEND_MS, businessDay, conRef, emptyReport, jobSecretMatches, monthEnd, monthOf, previousMonth, runCreditNotes,
+  runJob, runOutcome, sendOnce,
   type AttemptRef, type JobReport, type JobSteps, type PendingDoc, type StepResult,
 } from './job.ts'
 import { reconcile, type ReconcileSource } from './reconcile.ts'
@@ -178,28 +180,57 @@ async function issue(
   return send(admin, client, { ...row, payload })
 }
 
+/**
+ * Send a draft, once. A draft means "we never recorded LHDN's answer", so the draft is claimed first
+ * (einvoice_claim_send) and only the winner submits. A clear rejection frees the bills; LHDN not taking it
+ * frees the claim for the next run; any unclear answer sets needs_check and nothing resends it until the
+ * owner presses Resend.
+ */
 async function send(admin: SupabaseClient, client: MyInvoisClient, row: Record<string, any>) {
-  try {
-    const r = await client.submit([{ codeNumber: row.code_number, document: row.payload }])
-    const ok = r.accepted.find((a) => a.codeNumber === row.code_number)
-    if (ok) {
-      return updateDoc(admin, row.id, {
-        status: 'submitted', submission_uid: r.submissionUid, lhdn_uuid: ok.uuid,
-        submitted_at: new Date().toISOString(), errors: null,
-      })
-    }
+  if (row.status !== 'draft') return row
+  if (!row.payload) {
     await releaseLinks(admin, row.id)
-    return updateDoc(admin, row.id, { status: 'rejected', submission_uid: r.submissionUid, errors: r.rejected })
-  } catch (e) {
-    if (e instanceof MyInvoisError && e.status >= 400 && e.status < 500 && e.status !== 401 && e.status !== 429) {
-      await releaseLinks(admin, row.id)
-      return updateDoc(admin, row.id, { status: 'rejected', errors: { status: e.status, body: e.body } })
-    }
-    // Credentials, rate limit, network or LHDN down: keep the draft and its bills for a resend.
-    return updateDoc(admin, row.id, {
-      errors: { message: message(e), ...(e instanceof MyInvoisError ? { status: e.status, body: e.body } : {}) },
-    })
+    return updateDoc(admin, row.id, { status: 'rejected', errors: { message: 'The document was never built, so it was not sent' } })
   }
+  const checkNeeded = (errors: unknown) => updateDoc(admin, row.id, { needs_check: true, errors })
+  return sendOnce<Record<string, any>>({
+    async claim() {
+      const { data, error } = await admin.rpc('einvoice_claim_send', { p_id: row.id })
+      if (error) throw error
+      return Array.isArray(data) && data.length > 0
+    },
+    lost: () => loadDocument(admin, row.id),
+    async submit() {
+      const r = await client.submit([{ codeNumber: row.code_number, document: row.payload }])
+      const ok = r.accepted.find((a) => a.codeNumber === row.code_number)
+      if (ok) {
+        await updateDoc(admin, row.id, {
+          status: 'submitted', submission_uid: r.submissionUid, lhdn_uuid: ok.uuid,
+          submitted_at: new Date().toISOString(), errors: null,
+        })
+        return 'accepted'
+      }
+      if (r.rejected.some((x) => x.codeNumber === row.code_number)) {
+        await releaseLinks(admin, row.id)
+        await updateDoc(admin, row.id, { status: 'rejected', submission_uid: r.submissionUid, errors: r.rejected })
+        return 'rejected'
+      }
+      return 'unclear'
+    },
+    async answered(a) {
+      if (a === 'unclear') return checkNeeded({ message: 'LHDN answered without naming this document' })
+      return loadDocument(admin, row.id)
+    },
+    async failed(verdict, e) {
+      const detail = { message: message(e), ...(e instanceof MyInvoisError ? { status: e.status, body: e.body } : {}) }
+      if (verdict === 'rejected') {
+        await releaseLinks(admin, row.id)
+        return updateDoc(admin, row.id, { status: 'rejected', errors: detail })
+      }
+      if (verdict === 'release') return updateDoc(admin, row.id, { send_started_at: null, errors: detail })
+      return checkNeeded(detail)
+    },
+  })
 }
 
 /** Read LHDN's verdict on a submitted document, or resend a draft that never reached LHDN. */
@@ -316,6 +347,12 @@ function jobSteps(admin: SupabaseClient, s: Settings): JobSteps {
       }
     },
     async pendingDocuments(): Promise<PendingDoc[]> {
+      // A send that started long ago and never recorded an answer: its outcome is unknown, never resend it.
+      const cutoff = new Date(Date.now() - STALE_SEND_MS).toISOString()
+      const { error: staleErr } = await admin.from('einvoice_documents')
+        .update({ needs_check: true, updated_at: new Date().toISOString() })
+        .eq('status', 'draft').eq('needs_check', false).not('send_started_at', 'is', null).lt('send_started_at', cutoff)
+      if (staleErr) throw staleErr
       const { data, error } = await admin.from('einvoice_documents')
         .select('id, code_number, kind, branch_id, period_start, status')
         .in('status', ['draft', 'submitted']).eq('environment', s.environment).order('created_at')
@@ -415,6 +452,20 @@ async function actionRefresh(admin: SupabaseClient, s: Settings, body: any) {
   return withLink(await refreshDocument(admin, readyClient(s), row))
 }
 
+/** The owner's call after checking the MyInvois portal: send a draft whose answer was unknown. */
+async function actionResend(admin: SupabaseClient, s: Settings, body: any) {
+  if (typeof body.documentId !== 'string') throw new Refusal('documentId is required')
+  const client = readyClient(s)
+  const row = await loadDocument(admin, body.documentId)
+  if (row.environment !== s.environment) throw new Refusal(`This document was sent to ${row.environment}; settings now say ${s.environment}`, 409)
+  const { data, error } = await admin.from('einvoice_documents')
+    .update({ needs_check: false, send_started_at: null, updated_at: new Date().toISOString() })
+    .eq('id', row.id).eq('status', 'draft').eq('needs_check', true).select('*')
+  if (error) throw error
+  if (!data?.length) throw new Refusal('Only a draft that needs a check can be resent', 409)
+  return withLink(await send(admin, client, data[0]))
+}
+
 /** The screen's Retry for credit notes: everything due now, stopped ones included. */
 async function actionCreditNotes(admin: SupabaseClient, s: Settings): Promise<JobReport> {
   readyClient(s)
@@ -439,12 +490,24 @@ async function actionRun(admin: SupabaseClient, s: Settings) {
   return { outcome, report }
 }
 
-/** The overview is per full business month, so the window is widened to whole months. */
+/**
+ * The overview is per full business month, so the window is widened to whole months. Default: the previous
+ * month and the current one. At most 3 months (each is built bill by bill).
+ */
 async function actionReconcile(admin: SupabaseClient, body: any) {
-  const day = (v: unknown, fallback: string) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : fallback)
-  const from = `${monthOf(day(body.from, '2000-01-01'))}-01`
-  const to = monthEnd(monthOf(day(body.to, businessDay(new Date()))))
-  const { data, error } = await admin.rpc('einvoice_reconcile_source', { p_from: from, p_to: to })
+  const day = (v: unknown, name: string): string | null => {
+    if (v == null) return null
+    if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw new Refusal(`${name} must be YYYY-MM-DD`)
+    return v
+  }
+  const given = { from: day(body.from, 'from'), to: day(body.to, 'to') }
+  const today = monthOf(businessDay(new Date()))
+  const toMonth = given.to ? monthOf(given.to) : today
+  const fromMonth = given.from ? monthOf(given.from) : previousMonth(toMonth)
+  const count = (Number(toMonth.slice(0, 4)) - Number(fromMonth.slice(0, 4))) * 12 + Number(toMonth.slice(5)) - Number(fromMonth.slice(5)) + 1
+  if (count < 1) throw new Refusal('to must not be before from')
+  if (count > 3) throw new Refusal('Reconcile at most 3 months at a time')
+  const { data, error } = await admin.rpc('einvoice_reconcile_source', { p_from: `${fromMonth}-01`, p_to: monthEnd(toMonth) })
   if (error) throw error
   return reconcile(data as ReconcileSource)
 }
@@ -459,7 +522,9 @@ Deno.serve(async (req) => {
   const secretKey = resolveSecretKey()
   if (!url || !anonKey || !secretKey) return json({ error: 'Function is not configured: missing platform keys' }, 500)
 
-  const body = await req.json().catch(() => ({}))
+  const parsed = await req.json().catch(() => null)
+  const badBody = parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)
+  const body = badBody ? {} : parsed
   const job = body.action === 'run' || body.action === 'reconcile'
   let callerId: string | null = null
   if (job) {
@@ -482,6 +547,7 @@ Deno.serve(async (req) => {
 
   const admin = createClient(url, secretKey, { auth: { persistSession: false, autoRefreshToken: false } })
   try {
+    if (badBody) throw new Refusal('The request body must be a JSON object')
     const { data: settings, error } = await admin.from('einvoice_settings').select('*').eq('id', true).single()
     if (error) throw error
     switch (body.action) {
@@ -489,10 +555,11 @@ Deno.serve(async (req) => {
       case 'submit_bill': return json(await actionSubmitBill(admin, settings, callerId, body))
       case 'consolidate': return json(await actionConsolidate(admin, settings, callerId, body))
       case 'refresh': return json(await actionRefresh(admin, settings, body))
+      case 'resend': return json(await actionResend(admin, settings, body))
       case 'credit_notes': return json(await actionCreditNotes(admin, settings))
       case 'run': return json(await actionRun(admin, settings))
       case 'reconcile': return json(await actionReconcile(admin, body))
-      default: return json({ error: 'action must be status, submit_bill, consolidate, refresh, credit_notes, run or reconcile' }, 400)
+      default: return json({ error: 'action must be status, submit_bill, consolidate, refresh, resend, credit_notes, run or reconcile' }, 400)
     }
   } catch (e) {
     if (e instanceof Refusal) return json({ error: e.message, detail: e.detail }, e.status)

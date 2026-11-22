@@ -187,3 +187,44 @@ export async function runJob(s: JobSteps, now: Date): Promise<JobReport> {
   await runCreditNotes(s, report, day)
   return report
 }
+
+// ── Sending a draft exactly once ────────────────────────────────────────────
+/** What a failed submit means: release = LHDN did not take it (send again next run); rejected = a clear no;
+ *  needs_check = we cannot know whether LHDN has it (422 duplicate, other 5xx, network after sending). */
+export type FailureVerdict = 'release' | 'rejected' | 'needs_check'
+
+export function submitFailureVerdict(e: unknown): FailureVerdict {
+  const x = (e ?? {}) as { status?: unknown; notSent?: unknown }
+  if (x.notSent === true) return 'release'
+  const s = typeof x.status === 'number' ? x.status : null
+  if (s === 429 || s === 503 || s === 401) return 'release'
+  if (s === 422) return 'needs_check'
+  if (s !== null && s >= 400 && s < 500) return 'rejected'
+  return 'needs_check'
+}
+
+export type SubmitAnswer = 'accepted' | 'rejected' | 'unclear'
+
+/** Drafts claimed longer ago than this and still draft have an unknown answer. */
+export const STALE_SEND_MS = 15 * 60_000
+
+/**
+ * Claim the draft, and only the winner submits. `submit` returns LHDN's answer or throws; every outcome is
+ * handed to exactly one of `done` (accepted / rejected / unclear answer) or `failed` (a verdict).
+ */
+export async function sendOnce<R>(d: {
+  claim(): Promise<boolean>
+  lost(): Promise<R>
+  submit(): Promise<SubmitAnswer>
+  answered(a: SubmitAnswer): Promise<R>
+  failed(v: FailureVerdict, e: unknown): Promise<R>
+}): Promise<R> {
+  if (!(await d.claim())) return d.lost()
+  let answer: SubmitAnswer
+  try {
+    answer = await d.submit()
+  } catch (e) {
+    return d.failed(submitFailureVerdict(e), e)
+  }
+  return d.answered(answer)
+}

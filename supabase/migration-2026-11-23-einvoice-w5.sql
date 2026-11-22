@@ -225,6 +225,12 @@ begin
   end loop;
 end $$;
 
+-- A draft means "we never recorded LHDN's answer", not "LHDN never got it". send_started_at = a send claimed it
+-- (einvoice_claim_send); needs_check = the answer is unknown (or LHDN said duplicate), so nothing resends it
+-- until the owner has looked in the MyInvois portal and pressed Resend.
+alter table einvoice_documents add column if not exists send_started_at timestamptz;
+alter table einvoice_documents add column if not exists needs_check boolean not null default false;
+
 -- ── E4. What a document is built from (spec W5.2, W5.3, W5.6) ────────────────
 -- The ledger lines of some bills as JSON, one array per bill, in order item id order. Internal.
 create or replace function einvoice_bill_lines(p_bill_ids uuid[]) returns table (bill_id uuid, lines jsonb)
@@ -424,6 +430,18 @@ language sql security definer set search_path = public, pg_temp as $$
 $$;
 revoke all on function einvoice_record_attempt(text, text, uuid, date, uuid, boolean, text) from public, anon, authenticated;
 grant execute on function einvoice_record_attempt(text, text, uuid, date, uuid, boolean, text) to service_role;
+
+-- Claim a draft for sending: exactly one caller gets the row; none if it is not a draft, was claimed or sent
+-- before, or needs a check. Nothing is submitted to LHDN without winning this.
+create or replace function einvoice_claim_send(p_id uuid) returns setof einvoice_documents
+language sql security definer set search_path = public, pg_temp as $$
+  update einvoice_documents
+     set send_started_at = now(), updated_at = now()
+   where id = p_id and status = 'draft' and send_started_at is null and not needs_check
+  returning *
+$$;
+revoke all on function einvoice_claim_send(uuid) from public, anon, authenticated;
+grant execute on function einvoice_claim_send(uuid) to service_role;
 
 -- Every paid bill of the business days p_from..p_to with its ledger lines, and Reports → Overview's nett for each
 -- outlet and business month those bills fall in (pos_report_cards over the whole month). Read only.
