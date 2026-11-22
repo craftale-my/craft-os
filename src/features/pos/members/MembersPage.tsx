@@ -6,14 +6,15 @@ import { formatPhone } from '../../../shared/lib/memberPhone'
 import { readableError } from '../checkout/rpcResult'
 import ConfirmDialog, { type ConfirmRequest } from '../shell/ConfirmDialog'
 import {
-  PAGE_SIZE, adjustPoints, deleteMember, fetchEarnFailures, fetchLedger, fetchMemberSettings, saveMemberSettings, searchMembers,
+  PAGE_SIZE, adjustPoints, deleteMember, fetchEarnFailures, fetchLedger, fetchMemberSettings, resolveEarnFailure, saveMemberSettings, searchMembers,
   type EarnFailure, type MemberLedger, type MemberPage, type MemberRow,
 } from './membersApi'
-import { KIND_LABEL, billOrReason, checkAdjust, checkSettings, dateMy, dateTimeMy, searchDigits, signedPoints } from './membersView'
+import { KIND_LABEL, REASON_MAX, billOrReason, checkAdjust, checkSettings, dateMy, dateTimeMy, searchDigits, signedPoints } from './membersView'
 
 export const SEARCH_DEBOUNCE_MS = 300
 export const DELETE_CONFIRM = 'Delete this member? Their number is removed; past bills keep their totals.'
 export const EARN_HINT = 'Use Adjust points to credit these by hand.'
+export const MARK_DONE_CONFIRM = 'Mark this as handled?'
 
 const input = 'h-10 rounded-lg border border-border-mid bg-card px-3 text-sm'
 const btn = 'min-h-10 rounded-lg px-4 text-sm font-medium disabled:opacity-40'
@@ -42,10 +43,15 @@ export default function MembersPage() {
     return () => { live = false }
   }, [debounced, page, reloadKey])
   const reload = useCallback(() => setReloadKey((k) => k + 1), [])
+  // a page that came back empty (the last members on it were deleted): one page back
+  useEffect(() => {
+    if (result && result.rows.length === 0 && page > 0) setPage((p) => Math.max(0, p - 1))
+  }, [result, page])
 
   const total = result?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   return (
+    <>
     <div className="mx-auto max-w-6xl space-y-4 p-6">
       <h1 className="text-2xl font-semibold">Members</h1>
       <input type="search" inputMode="numeric" aria-label="Search by phone number" placeholder="Search by phone number"
@@ -59,7 +65,7 @@ export default function MembersPage() {
           </div>
         ) : !result ? (
           <p className="text-sm text-brown-muted">Loading…</p>
-        ) : result.rows.length === 0 ? (
+        ) : result.rows.length === 0 && total === 0 ? (
           <p className="text-sm text-brown-muted">{debounced ? 'No member has a number like that.' : 'No members yet.'}</p>
         ) : (
           <>
@@ -88,7 +94,7 @@ export default function MembersPage() {
               </table>
             </div>
             <div className="mt-3 flex items-center justify-between text-sm text-brown-muted">
-              <span>{page * PAGE_SIZE + 1}–{page * PAGE_SIZE + result.rows.length} of {total}</span>
+              <span>{result.rows.length === 0 ? `0 of ${total}` : `${page * PAGE_SIZE + 1}–${page * PAGE_SIZE + result.rows.length} of ${total}`}</span>
               <span className="flex gap-2">
                 <button type="button" disabled={page === 0} onClick={() => setPage((p) => p - 1)} className={`${btn} border border-border-mid`}>Previous</button>
                 <button type="button" disabled={page + 1 >= pages} onClick={() => setPage((p) => p + 1)} className={`${btn} border border-border-mid`}>Next</button>
@@ -100,12 +106,13 @@ export default function MembersPage() {
 
       {isOwner && <SettingsSection />}
       {isOwner && <EarnProblems />}
-
-      {selected && (
-        <MemberPanel member={selected} isOwner={isOwner} onClose={() => setSelected(null)}
-          onChanged={reload} onDeleted={() => { setSelected(null); reload() }} />
-      )}
     </div>
+    {/* outside the space-y list: its margin-top would push the fixed panel 16 px down (seen in the browser) */}
+    {selected && (
+      <MemberPanel member={selected} isOwner={isOwner} onClose={() => setSelected(null)}
+        onChanged={reload} onDeleted={() => { setSelected(null); reload() }} />
+    )}
+    </>
   )
 }
 
@@ -203,7 +210,7 @@ function MemberPanel({ member, isOwner, onClose, onChanged, onDeleted }: {
             <div className="flex flex-wrap gap-2">
               <input aria-label="Points (+ or −)" placeholder="+20 or -20" inputMode="text" value={amount}
                 onChange={(e) => { setAmount(e.target.value); setFormError(null) }} className={`${input} w-32`} />
-              <input aria-label="Reason" placeholder="Reason" value={reason}
+              <input aria-label="Reason" placeholder="Reason" value={reason} maxLength={REASON_MAX}
                 onChange={(e) => { setReason(e.target.value); setFormError(null) }} className={`${input} min-w-0 flex-1`} />
               <button type="submit" disabled={busy} className={`${btn} bg-brown-btn text-white hover:bg-brown-btn-hover`}>Adjust points</button>
             </div>
@@ -217,8 +224,11 @@ function MemberPanel({ member, isOwner, onClose, onChanged, onDeleted }: {
         )}
       </aside>
       {confirm && (
-        <ConfirmDialog {...confirm} busy={busy} onCancel={() => setConfirm(null)}
-          onConfirm={() => { const c = confirm; setConfirm(null); c.onConfirm() }} />
+        // its own clicks stay inside: a tap on the confirm's backdrop cancels the confirm, not the panel
+        <div onClick={(e) => e.stopPropagation()}>
+          <ConfirmDialog {...confirm} busy={busy} onCancel={() => setConfirm(null)}
+            onConfirm={() => { const c = confirm; setConfirm(null); c.onConfirm() }} />
+        </div>
       )}
     </div>
   )
@@ -280,11 +290,25 @@ function SettingsSection() {
 function EarnProblems() {
   const [rows, setRows] = useState<EarnFailure[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [key, setKey] = useState(0)
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [rowError, setRowError] = useState<string | null>(null)
   useEffect(() => {
     let live = true
-    fetchEarnFailures().then((r) => { if (live) setRows(r) }, (e: unknown) => { if (live) setError(readableError(e)) })
+    fetchEarnFailures().then((r) => { if (live) { setRows(r); setError(null) } }, (e: unknown) => { if (live) setError(readableError(e)) })
     return () => { live = false }
-  }, [])
+  }, [key])
+  const markDone = (f: EarnFailure) => setConfirm({
+    title: MARK_DONE_CONFIRM, message: `Bill ${f.billNo ?? '—'} leaves this list.`, confirmLabel: 'Mark done',
+    onConfirm: () => {
+      setBusy(true); setRowError(null)
+      resolveEarnFailure(f.id).then(
+        () => { setRows((rs) => (rs ?? []).filter((x) => x.id !== f.id)); setKey((k) => k + 1) },
+        (e: unknown) => setRowError(readableError(e)),
+      ).finally(() => setBusy(false))
+    },
+  })
   if (error) return <p role="alert" className="rounded bg-red-50 p-3 text-sm text-red-700">Could not load the earn problems: {error}</p>
   if (!rows || rows.length === 0) return null
   return (
@@ -296,6 +320,7 @@ function EarnProblems() {
           <thead>
             <tr className="text-left text-xs text-brown-muted">
               <th className="px-2 py-1">Bill no.</th><th className="px-2 py-1">Outlet</th><th className="px-2 py-1">Time</th><th className="px-2 py-1">Error</th>
+              <th className="px-2 py-1"><span className="sr-only">Action</span></th>
             </tr>
           </thead>
           <tbody>
@@ -305,11 +330,20 @@ function EarnProblems() {
                 <td className="px-2 py-1">{f.branchName ?? '—'}</td>
                 <td className="whitespace-nowrap px-2 py-1">{dateTimeMy(f.at)}</td>
                 <td className="px-2 py-1">{f.error}</td>
+                <td className="px-2 py-1 text-right">
+                  <button type="button" disabled={busy} onClick={() => markDone(f)}
+                    className={`${btn} whitespace-nowrap border border-amber-400 bg-card`}>Mark done</button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {rowError && <p role="alert" className="mt-2 rounded bg-red-50 p-2 text-sm text-red-700">{rowError}</p>}
+      {confirm && (
+        <ConfirmDialog {...confirm} busy={busy} onCancel={() => setConfirm(null)}
+          onConfirm={() => { const c = confirm; setConfirm(null); c.onConfirm() }} />
+      )}
     </section>
   )
 }

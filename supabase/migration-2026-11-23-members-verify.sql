@@ -158,7 +158,8 @@ begin
   end loop;
   foreach t in array array['pos_bill_set_member(uuid,text)', 'pos_bill_clear_member(uuid)', 'member_search(text,integer,integer)',
                            'member_ledger(uuid)', 'member_adjust(uuid,integer,text)', 'member_delete(uuid)',
-                           'member_settings_get()', 'member_settings_set(numeric,boolean,integer)', 'member_earn_failures_list()'] loop
+                           'member_settings_get()', 'member_settings_set(numeric,boolean,integer)', 'member_earn_failures_list()',
+                           'member_earn_failure_resolve(uuid)'] loop
     perform pg_temp.check(not has_function_privilege('anon', t, 'execute'), 'M1 anon cannot run ' || t);
     perform pg_temp.check(has_function_privilege('authenticated', t, 'execute'), 'M1 staff run ' || t);
   end loop;
@@ -190,7 +191,10 @@ begin
     perform pg_temp.check(r.prosecdef, 'M1 security definer: ' || r.f);
     perform pg_temp.check(r.has_path, 'M1 search_path set: ' || r.f);
   end loop;
-  perform pg_temp.check(v_n = 26, 'M1 the member functions counted: ' || v_n);
+  perform pg_temp.check(v_n = 27, 'M1 the member functions counted: ' || v_n);
+  perform pg_temp.check(exists (select 1 from information_schema.columns where table_name = 'member_earn_failures' and column_name = 'resolved_at')
+                        and exists (select 1 from information_schema.columns where table_name = 'member_earn_failures' and column_name = 'resolved_by'),
+                        'M1 member_earn_failures.resolved_at / resolved_by');
   perform pg_temp.check((select count(*) from member_settings) = 1, 'M1 one settings row');
   perform pg_temp.done('M1');
 end $$;
@@ -668,6 +672,9 @@ declare
   v_a   uuid := pg_temp.id('A');
   v_bal integer;
   v_res jsonb;
+  v_frag uuid;
+  v_near uuid;
+  v_fail uuid;
 begin
   -- not the owner
   perform pg_temp.act(pg_temp.id('cashier'));
@@ -699,6 +706,19 @@ begin
   perform pg_temp.check((v_res->>'total')::integer = 1 and v_res->'rows'->0->>'phone' = '+60123456789', 'M8 search by a typed number: ' || v_res::text);
   v_res := member_search('6789', 10, 0);
   perform pg_temp.check(exists (select 1 from jsonb_array_elements(v_res->'rows') r where r->>'id' = v_a::text), 'M8 search by the last digits');
+  -- the leading 60 / 0 drops only from a full number (9+ digits, then 1): a middle fragment is searched as typed
+  insert into members(phone) values ('+60126078111') returning id into v_frag;
+  insert into members(phone) values ('+60127800000') returning id into v_near;
+  v_res := member_search('6078', 50, 0);
+  perform pg_temp.check(exists (select 1 from jsonb_array_elements(v_res->'rows') r where r->>'id' = v_frag::text)
+                        and not exists (select 1 from jsonb_array_elements(v_res->'rows') r where r->>'id' = v_near::text),
+                        'M8 a middle fragment 6078 is searched as typed: ' || v_res::text);
+  perform pg_temp.check((member_search('0126078111', 10, 0)->'rows'->0->>'id') = v_frag::text
+                        and (member_search('60126078111', 10, 0)->'rows'->0->>'id') = v_frag::text
+                        and (member_search('+60 12-607 8111', 10, 0)->>'total')::integer = 1, 'M8 a full number with 0 / 60 / +60');
+  perform pg_temp.check(not exists (select 1 from jsonb_array_elements(member_search('0780', 50, 0)->'rows') r where r->>'id' = v_near::text),
+                        'M8 a short query keeps its 0');
+  delete from members where id in (v_frag, v_near);
   perform pg_temp.check((member_search('', 1, 0)->>'total')::integer >= 3 and jsonb_array_length(member_search('', 1, 0)->'rows') = 1, 'M8 an empty query lists, paged');
   perform pg_temp.check(not exists (select 1 from jsonb_array_elements(member_search('', 200, 0)->'rows') r where r->>'phone' is null), 'M8 deleted members are not listed');
   v_res := member_ledger(v_a);
@@ -731,12 +751,24 @@ begin
   perform pg_temp.check(member_settings_get() ? 'rate', 'M8 a manager reads settings');
   perform pg_temp.expect_error(format('select member_adjust(%L, 5, %L)', v_a, 'gift'), 'Only the owner can do this.', 'M8 a manager adjusts');
   perform pg_temp.expect_error('select member_earn_failures_list()', 'Only the owner can do this.', 'M8 a manager reads earn failures');
+  perform pg_temp.expect_error(format('select member_earn_failure_resolve(%L)', (select id from member_earn_failures where bill_id = pg_temp.id('FAILED'))),
+                               'Only the owner can do this.', 'M8 a manager marks an earn problem done');
   -- the owner reads the earn that failed in M3
   perform pg_temp.act(pg_temp.id('owner'));
   v_res := member_earn_failures_list();
   perform pg_temp.check(exists (select 1 from jsonb_array_elements(v_res) e where (e->>'billId')::uuid = pg_temp.id('FAILED')
                                   and e->>'billNo' is not null and e->>'branchName' = 'VERIFY MEM' and e->>'error' <> ''),
                         'M8 the owner lists earn failures: ' || left(v_res::text, 300));
+  -- Mark done: gone from the list, who and when kept; again is a no-op; an unknown id is refused
+  v_fail := (select id from member_earn_failures where bill_id = pg_temp.id('FAILED'));
+  perform member_earn_failure_resolve(v_fail);
+  perform pg_temp.check(not exists (select 1 from jsonb_array_elements(member_earn_failures_list()) e where (e->>'id')::uuid = v_fail),
+                        'M8 a done earn problem leaves the list');
+  perform pg_temp.check((select resolved_at is not null and resolved_by = pg_temp.id('owner') from member_earn_failures where id = v_fail),
+                        'M8 resolved_at / resolved_by kept');
+  perform member_earn_failure_resolve(v_fail);
+  perform pg_temp.check((select count(*) from member_earn_failures where id = v_fail and resolved_by = pg_temp.id('owner')) = 1, 'M8 marking again changes nothing');
+  perform pg_temp.expect_error(format('select member_earn_failure_resolve(%L)', gen_random_uuid()), 'Earn problem not found', 'M8 unknown earn problem');
   -- an owner who is no longer active is not the owner
   update staff set is_active = false where id = pg_temp.id('owner');
   perform pg_temp.expect_error(format('select member_adjust(%L, 5, %L)', v_a, 'gift'), 'Only the owner can do this.', 'M8 an inactive owner');
@@ -788,7 +820,8 @@ begin
                            format('select member_points_add(%L, ''adjust'', 5, null, null, null, ''x'', %L)', v_d, v_d),
                            format('select member_by_token(%L)', c_tok), 'select member_settings_json()',
                            format('select pos_bill_set_member(%L, %L)', v_b, '0155555555'),
-                           'select member_search('''', 10, 0)', 'select member_earn_failures_list()'] loop
+                           'select member_search('''', 10, 0)', 'select member_earn_failures_list()',
+                           format('select member_earn_failure_resolve(%L)', gen_random_uuid())] loop
     begin
       execute t;
       v_errs := v_errs || ('anon ran: ' || t);

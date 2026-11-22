@@ -2,18 +2,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import MemberDialog from './MemberDialog'
-import { INVALID_PHONE, type BillMember } from './billMember'
+import type { BillMember } from './billMember'
 
 afterEach(cleanup)
 
 const known: BillMember = { memberId: 'm1', phone: '+60123456789', points: 120 }
 
-function open(current: BillMember | null, over: { onAttach?: (p: string) => Promise<BillMember>; onRemove?: () => Promise<void> } = {}) {
+type Over = { onAttach?: (p: string) => Promise<BillMember>; onRemove?: () => Promise<void>; status?: 'loading' | 'ok' | 'error' }
+function open(current: BillMember | null, over: Over = {}) {
   const onAttach = vi.fn(over.onAttach ?? (async () => known))
   const onRemove = vi.fn(over.onRemove ?? (async () => undefined))
   const onClose = vi.fn()
-  render(<MemberDialog billNo="261123-001" current={current} onAttach={onAttach} onRemove={onRemove} onClose={onClose} />)
-  return { onAttach, onRemove, onClose }
+  const onRetry = vi.fn()
+  const el = (status: Over['status'], cur: BillMember | null) => (
+    <MemberDialog billNo="261123-001" status={status ?? 'ok'} current={cur} onRetry={onRetry} onAttach={onAttach} onRemove={onRemove} onClose={onClose} />
+  )
+  const { rerender } = render(el(over.status, current))
+  return { onAttach, onRemove, onClose, onRetry, update: (status: Over['status'], cur: BillMember | null) => rerender(el(status, cur)) }
 }
 const type = (v: string) => fireEvent.change(screen.getByLabelText('Phone number'), { target: { value: v } })
 const attach = () => fireEvent.click(screen.getByRole('button', { name: 'Attach' }))
@@ -45,8 +50,7 @@ describe('MemberDialog', () => {
     const { onAttach } = open(null)
     type('03-1234 5678')
     attach()
-    expect(screen.getByRole('alert').textContent).toBe(INVALID_PHONE)
-    expect(INVALID_PHONE).toBe('Enter a Malaysian mobile number, like 012-345 6789.')
+    expect(screen.getByRole('alert').textContent).toBe('Enter a Malaysian mobile number, like 012-345 6789.')
     expect(onAttach).not.toHaveBeenCalled()
   })
 
@@ -94,5 +98,46 @@ describe('MemberDialog', () => {
   it('one point reads "1 point"', () => {
     open({ ...known, points: 1 })
     expect(screen.getByTestId('member-summary').textContent).toContain('· 1 point')
+  })
+
+  it('until the read is done: Loading…, never the attach form; then the member', () => {
+    const { update } = open(null, { status: 'loading' })
+    expect(screen.getByRole('status').textContent).toBe('Loading…')
+    expect(screen.queryByLabelText('Phone number')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Attach' })).toBeNull()
+    update('ok', known)
+    expect(screen.getByTestId('member-summary').textContent).toContain('Member +60 12-345 6789 · 120 points')
+  })
+
+  it('a failed read: Couldn\'t read the member. with Retry; no attach form', () => {
+    const { onRetry, update } = open(null, { status: 'error' })
+    expect(screen.getByRole('alert').textContent).toBe("Couldn't read the member.")
+    expect(screen.queryByLabelText('Phone number')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetry).toHaveBeenCalledOnce()
+    update('ok', null)
+    expect(screen.getByLabelText('Phone number')).toBeTruthy()
+  })
+
+  it('a double tap on Attach sends once', async () => {
+    let release: (m: BillMember) => void = () => {}
+    const { onAttach } = open(null, { onAttach: () => new Promise<BillMember>((r) => { release = r }) })
+    type('012-345 6789')
+    const form = screen.getByLabelText('Phone number').closest('form') as HTMLFormElement
+    fireEvent.submit(form)
+    fireEvent.submit(form)
+    expect(onAttach).toHaveBeenCalledTimes(1)
+    release(known)
+    await screen.findByTestId('member-summary')
+  })
+
+  it('a double tap on Remove member sends once', async () => {
+    let release: () => void = () => {}
+    const { onRemove } = open(known, { onRemove: () => new Promise<void>((r) => { release = r }) })
+    const btn = screen.getByRole('button', { name: 'Remove member' })
+    fireEvent.click(btn)
+    fireEvent.click(btn)
+    expect(onRemove).toHaveBeenCalledTimes(1)
+    release()
   })
 })

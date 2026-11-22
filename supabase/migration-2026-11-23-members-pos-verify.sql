@@ -1,9 +1,11 @@
 -- Self-check for migration-2026-11-23-members-pos.sql (members at the counter). Run on craft-os-dev after it.
 -- Everything is rolled back. Success = a result row "VERIFY OK".
 -- Sections: FIXTURE; P1 grants, security definer, trigger; P2 pos_bill_member; P3 the receipt's member lines;
--- P4 real callers (anon refused, the till's authenticated session works). The last DO block raises unless all
--- 5 ticked. Outlet VERIFY MEMPOS: no service charge, not SST registered, 5 sen rounding, a receipt route.
--- Latte 10.50, Sugar 0.50. A card method, a cashier with a PIN, one tablet signed in, a shift open, rate 1.
+-- P4 real callers (anon refused, the till's authenticated session works); P5 net points after refunds, part
+-- and unpaid receipts, a staff login without a till. The last DO block raises unless all 6 ticked.
+-- Outlet VERIFY MEMPOS: no service charge, not SST registered, 5 sen rounding, a receipt route.
+-- Latte 10.50, Sugar 0.50. A card method, a cashier and a supervisor with PINs, one tablet signed in, a shift
+-- open, rate 1.
 begin;
 
 create function pg_temp.check(p_cond boolean, p_label text) returns void
@@ -66,6 +68,7 @@ declare
   v_owner uuid := '76cbcf9f-905e-450d-9f5e-1c9e72a9373d';   -- dev test login (owner)
   v_cash  uuid := 'eeeeeeee-0000-0000-0000-0000000009d1';
   v_dev   uuid := 'eeeeeeee-0000-0000-0000-0000000009d3';
+  v_sup   uuid := 'eeeeeeee-0000-0000-0000-0000000009d2';
   v_a uuid; v_t uuid; v_cat uuid; v_catalog uuid; v_p uuid; v_v uuid; v_res jsonb; r record; i integer;
 begin
   update system_role_permissions set permissions = permissions - 'pos_login' - 'all_branches' - 'access_settings' - 'pos_supervise'
@@ -93,11 +96,16 @@ begin
   perform pg_temp.put('card', v_t);
   update staff set branch_id = v_a where id = v_owner;
   perform pg_temp.act(v_owner);
-  insert into auth.users (id) values (v_cash), (v_dev);
+  insert into auth.users (id) values (v_cash), (v_dev), (v_sup);
   insert into staff (id, name, rank, onboarding_completed, joined_at, system_role, branch_id) values
-    (v_cash, 'Verify MemPos Cashier', 'trainee', true, current_date, 'staff', v_a);
+    (v_cash, 'Verify MemPos Cashier', 'trainee', true, current_date, 'staff', v_a),
+    (v_sup,  'Verify MemPos Supervisor', 'trainee', true, current_date, 'staff', v_a);
+  update staff set system_role = 'supervisor' where id = v_sup;
   perform pg_temp.act(v_cash);
   if not coalesce((set_my_pos_pin('1111', null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: PIN'; end if;
+  perform pg_temp.act(v_sup);
+  if not coalesce((set_my_pos_pin('2222', null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: supervisor PIN'; end if;
+  perform pg_temp.put('sup', v_sup);
   insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by) values (v_dev, v_a, 'pos', 'MEMPOS Counter', 'ipad', true, v_owner);
   perform pg_temp.put('owner', v_owner); perform pg_temp.put('cashier', v_cash); perform pg_temp.put('dev', v_dev);
   perform pg_temp.act(v_dev);
@@ -227,12 +235,56 @@ begin
   perform pg_temp.done('P4');
 end $$;
 
+-- ── P5. Net points on reprints; part and unpaid receipts; a staff login without a till ──
+do $$
+declare
+  v_b   uuid;
+  v_o   uuid;
+  v_k   uuid;
+  v_p   jsonb;
+  v_res jsonb;
+begin
+  perform pg_temp.act(pg_temp.id('dev'));
+  -- Latte 10.50 at rate 1 earns 10; a RM 3.00 refund leaves floor(7.50) = 7
+  v_b := pg_temp.bill('p1', array['latte']);
+  perform pos_bill_set_member(v_b, '011-0000 0294');
+  perform pg_temp.pay_bill(v_b);
+  perform pg_temp.check(pg_temp.receipt(v_b)->'member'->>'pointsEarned' = '10', 'P5 paid: 10');
+  v_res := refund_bill(gen_random_uuid(), v_b, 300, pg_temp.id('card'), 'verify partial', pg_temp.id('sup'), '2222');
+  perform pg_temp.check(coalesce((v_res->>'ok')::boolean, false), 'P5 partial refund ' || coalesce(v_res::text, 'null'));
+  perform reprint_receipt(v_b);
+  v_p := pg_temp.receipt(v_b);
+  perform pg_temp.check((v_p->>'reprint')::boolean and v_p->'member' = jsonb_build_object('last4', '0294', 'pointsEarned', 7),
+                        'P5 reprint after a partial refund shows the net 7: ' || coalesce(v_p->>'member', 'none'));
+  -- the rest refunded: the bill holds 0 points, a reprint has no member lines
+  v_res := refund_bill(gen_random_uuid(), v_b, 750, pg_temp.id('card'), 'verify rest', pg_temp.id('sup'), '2222');
+  perform pg_temp.check(coalesce((v_res->>'ok')::boolean, false), 'P5 full refund ' || coalesce(v_res::text, 'null'));
+  perform reprint_receipt(v_b);
+  v_p := pg_temp.receipt(v_b);
+  perform pg_temp.check((v_p->>'reprint')::boolean and not v_p ? 'member', 'P5 reprint after a full refund: no lines ' || coalesce(v_p::text, 'null'));
+  -- an open bill with a member: a receipt printed before payment gets no lines, nor does a part receipt
+  v_o := pg_temp.bill('p2', array['latte']);
+  perform pos_bill_set_member(v_o, '011-0000 0295');
+  insert into print_jobs(branch_id, route, kind, payload)
+  values (pg_temp.id('branch'), 'MemReceipt', 'receipt', jsonb_build_object('kind', 'receipt', 'billNo', (select bill_no from bills where id = v_o)));
+  perform pg_temp.check(not pg_temp.receipt(v_o) ? 'member', 'P5 a receipt before payment: no lines');
+  v_k := gen_random_uuid();
+  v_res := pay_bill_part(v_o, v_k, 300, null, jsonb_build_array(jsonb_build_object('methodId', pg_temp.id('card'), 'amountSen', 300)));
+  perform pg_temp.check(v_res ? 'partNo', 'P5 a part paid ' || coalesce(v_res::text, 'null'));
+  v_p := (select payload from print_jobs where branch_id = pg_temp.id('branch') and payload->>'kind' = 'part' order by seq desc limit 1);
+  perform pg_temp.check(v_p is not null and not v_p ? 'member', 'P5 a part receipt: no lines ' || coalesce(v_p::text, 'null'));
+  -- a staff login without a till (the owner's own session) is refused
+  perform pg_temp.act(pg_temp.id('owner'));
+  perform pg_temp.expect_error(format('select pos_bill_member(%L)', v_o), 'device_unpaired', 'P5 a staff login without a till');
+  perform pg_temp.done('P5');
+end $$;
+
 do $$
 declare
   v_n integer := (select count(*) from pg_temp.sections);
 begin
-  if v_n <> 5 then
-    raise exception 'FAIL: % of 5 sections ran (%)', v_n, (select string_agg(name, ', ' order by name) from pg_temp.sections);
+  if v_n <> 6 then
+    raise exception 'FAIL: % of 6 sections ran (%)', v_n, (select string_agg(name, ', ' order by name) from pg_temp.sections);
   end if;
 end $$;
 

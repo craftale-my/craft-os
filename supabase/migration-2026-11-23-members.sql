@@ -10,7 +10,8 @@
 --   4 guest RPCs (anon): member_public_settings, member_me, member_sign_out, member_link_table
 --   5 till RPCs (device session): pos_bill_set_member, pos_bill_clear_member
 --   6 back office: member_search, member_ledger, member_settings_get (access_settings);
---     member_adjust, member_delete, member_settings_set, member_earn_failures_list (an active owner)
+--     member_adjust, member_delete, member_settings_set, member_earn_failures_list,
+--     member_earn_failure_resolve (an active owner)
 --   7 Edge Function only (service_role): member_otp_request, member_otp_verify, member_otp_void
 -- Every DELETE / UPDATE has a WHERE: Supabase's API role runs pg-safeupdate.
 --
@@ -160,6 +161,9 @@ create table if not exists member_earn_failures (
   at      timestamptz not null default now()
 );
 create index if not exists member_earn_failures_at on member_earn_failures(at desc);
+-- the owner marks a row done once it is put right (Members page, Mark done): the list shows open rows only
+alter table member_earn_failures add column if not exists resolved_at timestamptz;
+alter table member_earn_failures add column if not exists resolved_by uuid;
 alter table member_earn_failures enable row level security;
 revoke all on member_earn_failures from public, anon, authenticated;
 
@@ -503,7 +507,9 @@ begin
 end $$;
 revoke all on function member_require_owner() from public, anon, authenticated;
 
--- Search by number (any part of it; a leading 0 or 60 is ignored). Newest visit first.
+-- Search by number (any part of it). A typed full number drops its leading 60 / 0: only when that is followed
+-- by 1 and the query has at least 9 digits (0123456789, 60123456789). Anything shorter or else, e.g. a middle
+-- fragment such as 6078, is searched as typed. Newest visit first.
 -- Returns {total, rows: [{id, phone, points, joinedAt, lastVisitAt}]}.
 create or replace function member_search(p_query text, p_limit integer, p_offset integer) returns jsonb
 language plpgsql stable security definer set search_path = public, pg_temp as $$
@@ -513,7 +519,7 @@ declare
   v_offset integer := greatest(coalesce(p_offset, 0), 0);
 begin
   perform member_require_back_office();
-  v_digits := regexp_replace(v_digits, '^(60|0)', '');
+  if length(v_digits) >= 9 then v_digits := regexp_replace(v_digits, '^(60|0)(1)', '\2'); end if;
   return (
     with hits as (
       select m.* from members m
@@ -642,7 +648,7 @@ end $$;
 revoke all on function member_settings_set(numeric, boolean, integer) from public, anon;
 grant execute on function member_settings_set(numeric, boolean, integer) to authenticated;
 
--- Owner: earns the bill trigger could not write (newest first, at most 200).
+-- Owner: earns the bill trigger could not write and nobody has marked done yet (newest first, at most 200).
 -- Returns [{id, billId, billNo, branchName, error, at}].
 create or replace function member_earn_failures_list() returns jsonb
 language plpgsql stable security definer set search_path = public, pg_temp as $$
@@ -656,10 +662,23 @@ begin
               from member_earn_failures f
               left join bills b on b.id = f.bill_id
               left join branches br on br.id = b.branch_id
+             where f.resolved_at is null
              order by f.at desc, f.id limit 200) x), '[]'::jsonb);
 end $$;
 revoke all on function member_earn_failures_list() from public, anon;
 grant execute on function member_earn_failures_list() to authenticated;
+
+-- Owner: an earn problem is handled (credited by hand, or nothing to do). Marking one already done again
+-- changes nothing; an unknown id raises 'Earn problem not found'.
+create or replace function member_earn_failure_resolve(p_id uuid) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  perform member_require_owner();
+  if not exists (select 1 from member_earn_failures where id = p_id) then raise exception 'Earn problem not found'; end if;
+  update member_earn_failures set resolved_at = now(), resolved_by = auth.uid() where id = p_id and resolved_at is null;
+end $$;
+revoke all on function member_earn_failure_resolve(uuid) from public, anon;
+grant execute on function member_earn_failure_resolve(uuid) to authenticated;
 
 -- ── 7 Edge Function only (service_role) ───────────────────────────────────────
 -- A code was made by the function (6 digits, hashed there), asked from a QR table (p_table_token).

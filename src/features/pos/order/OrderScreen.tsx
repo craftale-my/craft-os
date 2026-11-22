@@ -40,7 +40,8 @@ import PickerSheet from '../checkout/BillPickers'
 import ConfirmDialog, { type ConfirmRequest } from '../shell/ConfirmDialog'
 import PaxDialog from '../shell/PaxDialog'
 import MemberDialog from './MemberDialog'
-import { clearBillMember, fetchBillMember, memberLine, setBillMember, type BillMember } from './billMember'
+import { clearBillMember, memberLine, setBillMember } from './billMember'
+import { useBillMember } from './useBillMember'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const BILL_GONE = 'This bill is no longer open.'
@@ -240,15 +241,10 @@ export default function OrderScreen({
     return () => { alive = false }
   }, [bill?.id, refreshKey, localKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const loaded = !bill || (items !== null && !itemsError)            // only then is it known whether the bill is empty
-  // members spec §3: the bill's member for the column line and the Member dialog; a failed read shows no line
-  const [member, setMember] = useState<BillMember | null>(null)
-  useEffect(() => { setMember(null) }, [bill?.id])
-  useEffect(() => {
-    if (!bill) return
-    let alive = true
-    fetchBillMember(bill.id).then((m) => { if (alive) setMember(m) }, () => undefined)
-    return () => { alive = false }
-  }, [bill?.id, refreshKey, localKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  // members spec §3: the bill's member for the column line and the Member dialog, per bill: the line shows only
+  // once this bill's read is done (never the previous bill's member, nothing while unknown)
+  const billMember = useBillMember(bill?.id ?? null, `${refreshKey}:${localKey}`)
+  const member = billMember.member
 
   const billDisc = bill ? storedDiscount(bill) : null
   const view = billView({
@@ -561,9 +557,9 @@ export default function OrderScreen({
         <PaxDialog title={title} current={shownPax(target, bill)} currentChildren={shownChildren(target, bill)} onPick={pickPax} onClose={() => setDialog(null)} />
       )}
       {bill && dialog?.kind === 'member' && (
-        <MemberDialog billNo={bill.bill_no} current={member}
-          onAttach={async (phone) => { const m = await setBillMember(bill.id, phone); setMember(m); setLocalKey((k) => k + 1); return m }}
-          onRemove={async () => { await clearBillMember(bill.id); setMember(null); setLocalKey((k) => k + 1) }}
+        <MemberDialog billNo={bill.bill_no} status={billMember.state.status} current={member} onRetry={billMember.retry}
+          onAttach={async (phone) => { const m = await setBillMember(bill.id, phone); billMember.set(m); setLocalKey((k) => k + 1); return m }}
+          onRemove={async () => { await clearBillMember(bill.id); billMember.set(null); setLocalKey((k) => k + 1) }}
           onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'catalog' && (

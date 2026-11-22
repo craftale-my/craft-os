@@ -4,6 +4,7 @@
  *  (migration-2026-11-23-members-pos.sql). All need the till's staff session at the bill's outlet. */
 import { supabase } from '../../../shared/lib/supabase'
 import { shortMask } from '../../../shared/lib/memberPhone'
+import { readableError } from '../checkout/rpcResult'
 
 export interface BillMember {
   memberId: string
@@ -22,8 +23,9 @@ export const memberLine = (phone: string): string => `Member ${shortMask(phone)}
 /** "120 points", "1 point". */
 export const pointsWord = (n: number): string => `${n} ${n === 1 ? 'point' : 'points'}`
 
+/** The server's words, or plain words for a request that got no reply (never the browser's "Load failed"). */
 function fail(error: { message: string } | null): never {
-  throw new Error(error?.message ?? 'Unknown error')
+  throw new Error(readableError(error?.message ?? 'Unknown error'))
 }
 
 function parse(data: unknown): BillMember | null {

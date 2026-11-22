@@ -33,6 +33,11 @@ describe('billMember', () => {
     h.reply = { data: null, error: { message: 'Enter a Malaysian mobile number, e.g. 012-345 6789.' } }
     await expect(setBillMember('b1', 'x')).rejects.toThrow('Enter a Malaysian mobile number, e.g. 012-345 6789.')
   })
+  it('a request with no reply shows plain words, not the browser\'s', async () => {
+    h.reply = { data: null, error: { message: 'TypeError: Load failed' } }
+    await expect(fetchBillMember('b1')).rejects.toThrow('No reply from the server. Check the internet connection and try again.')
+    await expect(clearBillMember('b1')).rejects.toThrow('No reply from the server.')
+  })
   it('pos_bill_clear_member', async () => {
     await clearBillMember('b1')
     expect(h.calls[0]).toEqual(['pos_bill_clear_member', { p_bill_id: 'b1' }])

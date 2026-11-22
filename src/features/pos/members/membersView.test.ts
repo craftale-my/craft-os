@@ -19,6 +19,8 @@ describe('membersView', () => {
   })
   it('adjust: a whole number, not 0, within the limit, and a reason', () => {
     expect(checkAdjust('20', 'Birthday')).toEqual({ points: 20 })
+    expect(checkAdjust('20', 'x'.repeat(200))).toEqual({ points: 20 })
+    expect(checkAdjust('20', 'x'.repeat(201))).toEqual({ error: 'Keep the reason to 200 characters.' })
     expect(checkAdjust('+20', 'x')).toEqual({ points: 20 })
     expect(checkAdjust('-15', 'x')).toEqual({ points: -15 })
     expect(checkAdjust('−15', 'x')).toEqual({ points: -15 })

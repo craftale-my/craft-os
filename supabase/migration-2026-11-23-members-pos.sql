@@ -7,10 +7,13 @@
 --   1 pos_bill_member(p_bill_id) — the member on a bill of the till's outlet, for the bill column and the
 --     Member dialog: {memberId, phone, phoneMasked, points, earned} | null.
 --   2 print_jobs_member_line — a BEFORE INSERT trigger on print_jobs: a customer receipt ('receipt') of a paid
---     bill with a member that earned at least 1 point gets payload.member = {last4, pointsEarned}, which
---     renderReceiptLines prints as "Member ••6789" and "Points earned 42" after the totals. A trigger, so the
---     receipt payload function stays untouched and reprints carry the lines too. It never stops a print job:
---     any error leaves the payload as it was (WARNING).
+--     bill whose member (the earn row's member, not deleted) still holds at least 1 point from it gets
+--     payload.member = {last4, pointsEarned}, which renderReceiptLines prints as "Member **6789" and
+--     "Points earned 42" after the totals. pointsEarned is the bill's NET points (earn + its refunds), so a
+--     reprint after a partial refund shows the lower number and one after a full refund shows no lines. A part
+--     receipt (a bill not yet paid) and a receipt printed before payment get none. A trigger, so the receipt
+--     payload function stays untouched and reprints carry the lines too. It never stops a print job: any error
+--     leaves the payload as it was (WARNING).
 
 -- ── 1 the member on a bill ─────────────────────────────────────────────────────
 -- A till's staff session (pos_ctx), the bill at the device's outlet, any status. Null when the bill has no
@@ -46,10 +49,12 @@ begin
     return new;
   end if;
   begin
-    select m.phone, p.points into v_phone, v_points
+    -- the member is the earn row's (the one the points went to), the number the bill's net points
+    select m.phone, (select coalesce(sum(x.points), 0) from member_points x where x.bill_id = b.id)
+      into v_phone, v_points
       from bills b
-      join members m on m.id = b.member_id and m.deleted_at is null
-      join member_points p on p.bill_id = b.id and p.kind = 'earn'
+      join member_points e on e.bill_id = b.id and e.kind = 'earn'
+      join members m on m.id = e.member_id and m.deleted_at is null
      where b.branch_id = new.branch_id and b.bill_no = new.payload->>'billNo' and b.status = 'paid';
     if v_phone is not null and v_points >= 1 then
       new.payload := new.payload || jsonb_build_object('member', jsonb_build_object('last4', right(v_phone, 4), 'pointsEarned', v_points));
@@ -64,3 +69,6 @@ revoke all on function print_jobs_member_line() from public, anon, authenticated
 drop trigger if exists print_jobs_member_line on print_jobs;
 create trigger print_jobs_member_line before insert on print_jobs
   for each row execute function print_jobs_member_line();
+
+notify pgrst, 'reload schema';
+select 'members-pos applied' as result;

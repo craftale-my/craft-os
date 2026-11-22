@@ -53,9 +53,17 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
   No code — staff are trusted, and the action is logged with the staff id. A number not yet a member is
   created on the spot (`New member`). A bill that has a member opens on it (`Member +60 12-345 6789 · 120
   points`) with `Change` and `Remove member`; `Remove member` takes it off an open bill. Off while offline.
-- The bill column shows `Member ••6789` under the bill number; the receipt of a paid bill whose member
-  earned at least 1 point prints `Member` and `Points earned 42` after the totals (the printer is
-  ASCII-only, so the number prints as `**6789`).
+  Until the bill's member is read the dialog says `Loading…`, or `Couldn't read the member.` with `Retry`;
+  the attach form is never shown over an unknown state. The member is kept per bill: a bill switch never
+  shows the previous bill's member.
+- Payment screen: a `Member` row above the payment methods while the bill is open — `Member` + `Add` (the
+  same dialog) or `Member ••6789` + `Change` — so a takeaway (or any `Send & pay`) gets its member before
+  Pay. Off while offline, as the action is. A part payment (split by item) shows the member read only.
+- The bill column shows `Member ••6789` under the bill number (only once that bill's read is done); the
+  receipt of a paid bill that still holds at least 1 point prints `Member` and `Points earned 42` after the
+  totals (the printer is ASCII-only, so the number prints as `**6789`). The number is the bill's net points
+  (earn plus its refunds): a reprint after a partial refund shows the lower number, after a full refund
+  no member lines. Part receipts and receipts printed before payment have none.
 - Splitting: each part bill carries the member of its parent; points follow what each part pays.
 
 ### Owner (back office)
@@ -65,7 +73,10 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
   member's ledger (date, outlet, kind, points, bill no. / reason, staff). For the owner role only:
   `Adjust points` (± with a required reason, confirmed), `Delete member` (`Delete this member? Their number
   is removed; past bills keep their totals.`), an `Earn problems` list at the bottom when there are any
-  (`Use Adjust points to credit these by hand.`), and the settings.
+  (`Use Adjust points to credit these by hand.`; each row has `Mark done`, confirmed with `Mark this as
+  handled?`, after which it leaves the list), and the settings. Search drops a leading `60` / `0` only from
+  a full number (at least 9 digits, then `1`); a fragment such as `6078` is searched as typed. A page that
+  comes back empty steps back one page; the reason of an adjust is at most 200 characters.
 - Settings (owner): `Points per RM 1` (0–100, default 1), switch `Members on QR page`, `SMS codes per day`
   (the daily SMS cap, default 300).
 
@@ -141,7 +152,8 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
   `member_tokens` (member_id, token_hash, device, expires_at, last_used_at),
   `member_settings` (single row: rate, qr_enabled, sms_daily_cap, dev_codes_allowed),
   `member_bill_events` (who attached / removed / linked a member on a bill: staff and device ids),
-  `member_earn_failures` (bill_id, error, at: an earn the trigger could not write).
+  `member_earn_failures` (bill_id, error, at: an earn the trigger could not write; resolved_at, resolved_by
+  once the owner marks it done).
   RLS on all; no policy for `anon` or `authenticated`; all access through functions.
 - `bills.member_id uuid references members` (the key added `not valid`, then validated); index
   `member_points(bill_id)`.
@@ -154,7 +166,8 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
   `member_me`, `member_sign_out`, `member_link_table` (anon);
   `pos_bill_set_member(p_bill_id, p_phone)` / `pos_bill_clear_member` (a till's staff session, own outlet,
   open bill); `member_search`, `member_ledger`, `member_settings_get` (back office: `access_settings`);
-  `member_adjust`, `member_delete`, `member_settings_set`, `member_earn_failures_list` (an owner who is
+  `member_adjust`, `member_delete`, `member_settings_set`, `member_earn_failures_list` (open rows only),
+  `member_earn_failure_resolve(p_id)` (an owner who is
   also active: `is_active` and `status = 'active'`); `member_otp_request(phone, ip, code_hash, dev_code,
   table_token)` → `ok | disabled | rate_number | rate_ip | rate_table | cap`,
   `member_otp_verify(phone, code_hash, token_hash, device, ip)` → `ok | wrong | expired | locked`,
@@ -186,8 +199,8 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
 - Counter (`migration-2026-11-23-members-pos.sql`, built 2026-11-23): `pos_bill_member(p_bill_id)` →
   `{memberId, phone, phoneMasked, points, earned} | null` (a till's staff session, the bill at its outlet, any
   status) for the bill column and the dialog; and a `before insert` trigger on `print_jobs` that adds
-  `member: {last4, pointsEarned}` to a paid bill's customer receipt (reprints too), so `pos_receipt_payload`
-  is not re-created. The trigger never stops a print job (an error leaves the payload as it was).
+  `member: {last4, pointsEarned}` to a paid bill's customer receipt (reprints too; the member is the earn
+  row's, `pointsEarned` the bill's net points, nothing when ≤ 0), so `pos_receipt_payload` is not re-created. The trigger never stops a print job (an error leaves the payload as it was).
 - Verify script: award once per bill and only on the transition, voided bill earns nothing, refunds by
   running total, a failed earn still closes the bill, staff-meal bill earns nothing, token of a deleted
   member refused, every member function security definer with a search_path, the guest RPCs run as the
@@ -200,7 +213,8 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
 - QR: `src/qr/member/` — `memberApi.ts`, `useMember.ts` (token in `localStorage`, balance),
   `MemberSheet.tsx` (the three steps + signed-in view);
   the top-strip button; `QrApp` calls `member_link_table` after a send and on entry.
-- POS: `Member` bill action + small dialog (`MemberDialog.tsx`, `billMember.ts`); bill column line; receipt
+- POS: `Member` bill action + small dialog (`MemberDialog.tsx`, `billMember.ts`, per-bill state in
+  `useBillMember.ts`); the Payment screen's `Member` row (`PaymentScreen.tsx`); bill column line; receipt
   lines in `receipt.ts` (`memberLines`). The phone rule lives in `src/shared/lib/memberPhone.ts` for the QR
   page, the till and the back office.
 - Back office: `Members` page and the two settings.
@@ -220,7 +234,7 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
 | Two members at one table | First linked wins; the second sees whose number the points go to (once they have ordered on the bill). |
 | Guest signed in but has not ordered on the bill | Nothing is linked and no number is shown; the link happens after their first send. |
 | Table paused for QR ordering | Nothing is linked (`{linked: false}`). |
-| Earn could not be written when the bill closed | The payment still closes; the failure is listed for the owner (`member_earn_failures_list`), who adjusts by hand. |
+| Earn could not be written when the bill closed | The payment still closes; the failure is listed for the owner (`member_earn_failures_list`), who adjusts by hand, then marks it done. |
 | Many small refunds | Counted by running total: they take what one refund of the same sum would. |
 | Equal / by-amount part payments | Accepted for this version: the bill's one member earns on the whole total, whoever paid each part. |
 | No platform client IP on a code request or a verify | `Sign-in is not available yet.` (the SQL refuses a call without an IP). |

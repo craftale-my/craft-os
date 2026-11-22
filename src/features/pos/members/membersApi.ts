@@ -49,3 +49,6 @@ export const saveMemberSettings = (s: { rate: number; qrEnabled: boolean; smsDai
 export async function fetchEarnFailures(): Promise<EarnFailure[]> {
   return (await call<EarnFailure[] | null>('member_earn_failures_list')) ?? []
 }
+
+/** Owner: the earn problem is handled; it leaves the list. */
+export const resolveEarnFailure = (id: string) => call<void>('member_earn_failure_resolve', { p_id: id })

@@ -5,7 +5,7 @@ import type { MemberLedger, MemberPage } from './membersApi'
 
 const h = vi.hoisted(() => ({
   owner: false,
-  search: vi.fn(), ledger: vi.fn(), adjust: vi.fn(), del: vi.fn(), settings: vi.fn(), saveSettings: vi.fn(), failures: vi.fn(),
+  search: vi.fn(), ledger: vi.fn(), adjust: vi.fn(), del: vi.fn(), settings: vi.fn(), saveSettings: vi.fn(), failures: vi.fn(), resolve: vi.fn(),
 }))
 vi.mock('../../../shared/lib/permissions', () => ({ useCan: () => ({ can: () => true, isOwner: h.owner }) }))
 vi.mock('./membersApi', () => ({
@@ -17,9 +17,10 @@ vi.mock('./membersApi', () => ({
   fetchMemberSettings: () => h.settings(),
   saveMemberSettings: (s: unknown) => h.saveSettings(s),
   fetchEarnFailures: () => h.failures(),
+  resolveEarnFailure: (id: string) => h.resolve(id),
 }))
 
-import MembersPage, { DELETE_CONFIRM, EARN_HINT, SEARCH_DEBOUNCE_MS } from './MembersPage'
+import MembersPage, { SEARCH_DEBOUNCE_MS } from './MembersPage'
 
 const PAGE: MemberPage = {
   total: 2,
@@ -59,6 +60,7 @@ beforeEach(() => {
   h.settings.mockReset().mockResolvedValue(SETTINGS)
   h.saveSettings.mockReset().mockImplementation(async (s: object) => ({ ...SETTINGS, ...s }))
   h.failures.mockReset().mockResolvedValue([])
+  h.resolve.mockReset().mockResolvedValue(undefined)
 })
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
@@ -194,8 +196,8 @@ describe('MembersPage', () => {
     await openPage()
     const panel = await openMember()
     fireEvent.click(within(panel).getByRole('button', { name: 'Delete member' }))
-    const dialog = screen.getByRole('dialog', { name: DELETE_CONFIRM })
-    expect(DELETE_CONFIRM).toBe('Delete this member? Their number is removed; past bills keep their totals.')
+    const dialog = screen.getByRole('dialog', { name: 'Delete this member? Their number is removed; past bills keep their totals.' })
+    expect(dialog.textContent).toContain('Delete this member? Their number is removed; past bills keep their totals.')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete member' }))
     await settle()
     expect(h.del).toHaveBeenCalledWith('m1')
@@ -208,11 +210,105 @@ describe('MembersPage', () => {
     h.failures.mockResolvedValue([{ id: 'f', billId: 'b', billNo: '261122-009', branchName: 'Cheras', error: 'boom', at: '2026-11-22T10:00:00Z' }])
     await openPage()
     const section = screen.getByRole('region', { name: 'Earn problems' })
-    expect(section.textContent).toContain(EARN_HINT)
+    expect(section.textContent).toContain('Use Adjust points to credit these by hand.')
     expect(section.textContent).toContain('261122-009')
     expect(section.textContent).toContain('Cheras')
     expect(section.textContent).toContain('boom')
-    expect(EARN_HINT).toBe('Use Adjust points to credit these by hand.')
+  })
+
+  it('the owner: Mark done asks first, then the row leaves the list', async () => {
+    h.owner = true
+    const rows = [
+      { id: 'f1', billId: 'b', billNo: '261122-009', branchName: 'Cheras', error: 'boom', at: '2026-11-22T10:00:00Z' },
+      { id: 'f2', billId: 'c', billNo: '261122-010', branchName: 'Cheras', error: 'bang', at: '2026-11-22T11:00:00Z' },
+    ]
+    h.failures.mockResolvedValueOnce(rows).mockResolvedValue([rows[1]])
+    await openPage()
+    const section = screen.getByRole('region', { name: 'Earn problems' })
+    fireEvent.click(within(section).getAllByRole('button', { name: 'Mark done' })[0])
+    const dialog = screen.getByRole('dialog', { name: 'Mark this as handled?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(h.resolve).not.toHaveBeenCalled()
+    fireEvent.click(within(section).getAllByRole('button', { name: 'Mark done' })[0])
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Mark this as handled?' })).getByRole('button', { name: 'Mark done' }))
+    await settle()
+    expect(h.resolve).toHaveBeenCalledWith('f1')
+    const after = screen.getByRole('region', { name: 'Earn problems' })
+    expect(after.textContent).not.toContain('261122-009')
+    expect(after.textContent).toContain('261122-010')
+  })
+
+  it('the owner: a refused Mark done shows why and keeps the row', async () => {
+    h.owner = true
+    h.failures.mockResolvedValue([{ id: 'f1', billId: 'b', billNo: '261122-009', branchName: 'Cheras', error: 'boom', at: '2026-11-22T10:00:00Z' }])
+    h.resolve.mockRejectedValue(new Error('Only the owner can do this.'))
+    await openPage()
+    const section = screen.getByRole('region', { name: 'Earn problems' })
+    fireEvent.click(within(section).getByRole('button', { name: 'Mark done' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Mark this as handled?' })).getByRole('button', { name: 'Mark done' }))
+    await settle()
+    expect(within(section).getByRole('alert').textContent).toBe('Only the owner can do this.')
+    expect(section.textContent).toContain('261122-009')
+  })
+
+  it('a page that comes back empty steps back one page; the pager stays while there are members', async () => {
+    h.search.mockImplementation(async (_q: string, p: number) => (p === 0 ? { total: 51, rows: PAGE.rows } : { total: 50, rows: [] }))
+    await openPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    await settle()
+    expect(h.search).toHaveBeenCalledWith('', 1)
+    expect(h.search).toHaveBeenLastCalledWith('', 0)
+    expect(screen.getByRole('button', { name: 'Next' })).toBeTruthy()
+    expect(screen.queryByText('No members yet.')).toBeNull()
+  })
+
+  it('a slower answer for an older search never replaces the newer one', async () => {
+    await openPage()
+    const answers: Record<string, (p: MemberPage) => void> = {}
+    h.search.mockImplementation((q: string) => new Promise<MemberPage>((r) => { answers[q] = r }))
+    vi.useFakeTimers()
+    const box = screen.getByLabelText('Search by phone number')
+    fireEvent.change(box, { target: { value: '0123' } })
+    await act(async () => { vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS) })
+    fireEvent.change(box, { target: { value: '0198' } })
+    await act(async () => { vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS) })
+    vi.useRealTimers()
+    await act(async () => { answers['0198']({ total: 1, rows: [{ ...PAGE.rows[1], id: 'new', phone: '+60198000000' }] }) })
+    await act(async () => { answers['0123']({ total: 1, rows: [PAGE.rows[0]] }) })
+    await settle()
+    expect(screen.getByText('+60 19-800 0000')).toBeTruthy()
+    expect(screen.queryByText('+60 12-345 6789')).toBeNull()
+  })
+
+  it('a tap on the confirm\'s backdrop cancels the confirm and leaves the member panel open', async () => {
+    h.owner = true
+    await openPage()
+    await openMember()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete member' }))
+    const confirm = screen.getByRole('dialog', { name: 'Delete this member? Their number is removed; past bills keep their totals.' })
+    fireEvent.click(confirm.parentElement as HTMLElement)
+    expect(screen.queryByRole('dialog', { name: /Delete this member/ })).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Member +60 12-345 6789' })).toBeTruthy()
+  })
+
+  it('the member panel is not inside the spaced list (its margin pushed the fixed panel down)', async () => {
+    await openPage()
+    const panel = await openMember()
+    let el: HTMLElement | null = panel
+    while (el) { expect(el.className ?? '').not.toContain('space-y'); el = el.parentElement }
+  })
+
+  it('the owner: the reason stops at 200 characters', async () => {
+    h.owner = true
+    await openPage()
+    const panel = await openMember()
+    const reason = within(panel).getByLabelText('Reason') as HTMLInputElement
+    expect(reason.maxLength).toBe(200)
+    fireEvent.change(within(panel).getByLabelText('Points (+ or −)'), { target: { value: '5' } })
+    fireEvent.change(reason, { target: { value: 'x'.repeat(201) } })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Adjust points' }))
+    expect(within(panel).getByRole('alert').textContent).toBe('Keep the reason to 200 characters.')
+    expect(screen.queryByRole('dialog', { name: 'Adjust points' })).toBeNull()
   })
 
   it('the owner: no earn problems section when the list is empty', async () => {
