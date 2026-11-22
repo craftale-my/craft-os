@@ -9,6 +9,8 @@ import { readFileSync, readdirSync } from 'node:fs'
 const SUPABASE = new URL('../../../supabase/', import.meta.url)
 // the menu back-office's own migrations (migration-*-menu-*.sql) are scanned too
 const POS_MIGRATION = /^migration-.*-(pos|menu)-.*\.sql$/
+// the e-invoice migrations (migration-*-einvoice*.sql) hold POS-adjacent functions too
+const EINVOICE_MIGRATION = /^migration-.*-einvoice.*\.sql$/
 
 /** Comments removed and string literals emptied; dollar quotes kept, since a
  *  function body is code. Line breaks are kept so error lines still match. */
@@ -110,7 +112,8 @@ describe('pg-safeupdate guard: the checker itself', () => {
 })
 
 describe('pg-safeupdate guard: POS migrations', () => {
-  const files = readdirSync(SUPABASE).filter((f) => POS_MIGRATION.test(f) && !f.includes('verify')).sort()
+  const files = readdirSync(SUPABASE)
+    .filter((f) => (POS_MIGRATION.test(f) || EINVOICE_MIGRATION.test(f)) && !f.includes('verify')).sort()
 
   it('reads the POS function migrations', () => {
     expect(files).toEqual(expect.arrayContaining([
@@ -128,6 +131,8 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-29-pos-outlets.sql',
       'migration-2026-10-29-pos-devices.sql',
       'migration-2026-10-29-pos-device-till.sql',
+      'migration-2026-10-26-einvoice.sql',
+      'migration-2026-11-23-einvoice-w5.sql',
     ]))
   })
 
@@ -438,6 +443,24 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-22-pos-agent-pairing\.sql/)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'pos switchover applied' as result;\s*$/)
     const verify = readFileSync(new URL('migration-2026-11-22-pos-switchover-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+  it('scans the W5 e-invoice migration: the shared ledger lines, internal; pos_report_ledger reads them; a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-23-einvoice-w5.sql', SUPABASE), 'utf8')
+    const bodies = functionBodies(sql)
+    const body = (n: string) => bodies.find((b) => b.name === n)?.body ?? ''
+    expect(bodies.map((b) => b.name).slice(0, 2)).toEqual(['pos_ledger_lines', 'pos_report_ledger'])
+    expect(body('pos_report_ledger')).toContain('from pos_ledger_lines(array(select pb.id from pb)) x')
+    expect(body('pos_report_ledger')).not.toContain('floor_sst')                  // the split lives in one place
+    expect(body('pos_ledger_lines')).toContain('row_number() over (partition by fl.bill_id, fl.sst_rate_bp order by fl.rem desc, fl.item_id)')
+    expect(sql).toContain('revoke all on function pos_ledger_lines(uuid[]) from public, anon, authenticated;')
+    expect(sql).not.toContain('grant execute on function pos_ledger_lines(')
+    expect(sql).toContain('revoke all on function pos_report_ledger(uuid[], date, date) from public, anon;')
+    expect(sql).toContain('grant execute on function pos_report_ledger(uuid[], date, date) to authenticated;')
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-18-pos-reports\.sql and migration-2026-10-26-einvoice\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'einvoice w5 applied' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-11-23-einvoice-w5-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
