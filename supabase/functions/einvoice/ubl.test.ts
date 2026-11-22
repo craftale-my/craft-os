@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   addMix, allocate, billMix, buildDocument, dayLines, documentTotals, GENERAL_PUBLIC, ledgerBillLines, lineAmount, mixLines,
-  mixTotal, refundMix, type BillTotals, type DocInput, type LedgerLine, type Party,
+  mixTotal, refundMix, roundingOnly, type BillTotals, type DocInput, type LedgerLine, type Mix, type Party,
 } from './ubl.ts'
 
 const supplier: Party = {
@@ -134,24 +134,24 @@ describe('billMix and refundMix', () => {
   })
 
   it('credits a whole refund exactly as the bill was', () => {
-    expect(refundMix(billMix(a1), 2310)).toEqual(billMix(a1))
+    expect(refundMix(billMix(a1), 2310, 0)).toEqual(billMix(a1))
   })
 
   it('spreads a partial refund over the bill’s mix by largest remainder, tax inside each SST slice', () => {
-    const m = refundMix(billMix(a1), 300)
+    const m = refundMix(billMix(a1), 300, 0)
     expect(m).toEqual({ taxed: [{ rateBp: 600, baseSen: 236, taxSen: 14 }], untaxedSen: 24, serviceChargeSen: 26, roundingSen: 0 })
     expect(mixTotal(m)).toBe(300)
   })
 
   it('never credits more tax than the bill charged', () => {
-    const m = refundMix(billMix(a1), 2309)
+    const m = refundMix(billMix(a1), 2309, 0)
     expect(m.taxed[0].taxSen).toBeLessThanOrEqual(109)
     expect(mixTotal(m)).toBe(2309)
   })
 
   it('refuses a refund of nothing or of more than the bill', () => {
-    expect(() => refundMix(billMix(a1), 0)).toThrow(/does not fit/)
-    expect(() => refundMix(billMix(a1), 2311)).toThrow(/does not fit/)
+    expect(() => refundMix(billMix(a1), 0, 0)).toThrow(/does not fit/)
+    expect(() => refundMix(billMix(a1), 2311, 0)).toThrow(/does not fit/)
   })
 })
 
@@ -169,21 +169,70 @@ describe('refundMix in pieces', () => {
     expect(addMix(first, second)).toEqual(bill)
   })
 
-  it('never makes a negative slice and always adds up to the refund, over every split of every fixture bill', () => {
-    for (const t of [a1, a2, a3]) {
-      const bill = billMix(t)
+  const three: Mix = {
+    taxed: [{ rateBp: 600, baseSen: 3489, taxSen: 209 }, { rateBp: 800, baseSen: 3489, taxSen: 279 }, { rateBp: 1000, baseSen: 2337, taxSen: 234 }],
+    untaxedSen: 576, serviceChargeSen: 0, roundingSen: -2,
+  }
+  const fixtures: [string, Mix][] = [['EA1', billMix(a1)], ['EA2', billMix(a2)], ['EA3', billMix(a3)], ['three rates', three]]
+  const nonNegative = (m: Mix) => {
+    expect(m.untaxedSen).toBeGreaterThanOrEqual(0)
+    expect(m.serviceChargeSen).toBeGreaterThanOrEqual(0)
+    m.taxed.forEach((p) => { expect(p.baseSen).toBeGreaterThanOrEqual(0); expect(p.taxSen).toBeGreaterThanOrEqual(0) })
+  }
+  const sequence = (bill: Mix, pieces: number[]) => {
+    let before = 0
+    const notes = pieces.map((x) => { const m = refundMix(bill, x, before); before += x; return m })
+    pieces.forEach((x, i) => { expect(mixTotal(notes[i])).toBe(x); nonNegative(notes[i]) })
+    expect(notes.reduce(addMix)).toEqual(bill)
+  }
+
+  it('three pieces of every fixture always add back to the bill, every slice non-negative', () => {
+    for (const [, bill] of fixtures) {
       const total = mixTotal(bill)
-      for (let x = 1; x < total; x++) {
-        const parts = [refundMix(bill, x, 0), refundMix(bill, total - x, x)]
-        parts.forEach((m, k) => {
-          expect(mixTotal(m)).toBe(k === 0 ? x : total - x)
-          expect(m.untaxedSen).toBeGreaterThanOrEqual(0)
-          expect(m.serviceChargeSen).toBeGreaterThanOrEqual(0)
-          m.taxed.forEach((p) => { expect(p.baseSen).toBeGreaterThanOrEqual(0); expect(p.taxSen).toBeGreaterThanOrEqual(0) })
-        })
-        expect(sumTax(parts)).toEqual(bill.taxed.map((p) => p.taxSen))
+      const step = Math.max(1, Math.floor(total / 25))
+      for (let x = 1; x < total - 1; x += x < 8 ? 1 : step) {
+        for (let y = 1; x + y < total; y += y < 8 ? 1 : step) sequence(bill, [x, y, total - x - y])
       }
     }
+  })
+
+  it('the reviewer’s cases: 512 + 2 + 1796 of EA1 and 3333 + 1 + 7277 of the three-rate bill', () => {
+    sequence(billMix(a1), [512, 2, 1796])
+    sequence(three, [3333, 1, 7277])
+  })
+
+  it('seeded random sequences of pieces', () => {
+    let seed = 12345
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+    for (const [, bill] of fixtures) {
+      const total = mixTotal(bill)
+      for (let k = 0; k < 40; k++) {
+        const pieces: number[] = []
+        let left = total
+        while (left > 0) {
+          const x = Math.min(left, 1 + Math.floor(rnd() * rnd() * left))
+          pieces.push(x)
+          left -= x
+        }
+        sequence(bill, pieces)
+      }
+    }
+  })
+
+  it('a rounding-only note is one untaxed line, so the document is valid', () => {
+    const bill = billMix(a2)
+    let found: { before: number; sen: number } | null = null
+    for (let before = 0; before < 918 && !found; before++) {
+      if (roundingOnly(refundMix(bill, 1, before))) found = { before, sen: 1 }
+    }
+    expect(found).not.toBeNull()
+    const note = refundMix(bill, found!.sen, found!.before)
+    expect(roundingOnly(note)).toBe(true)
+    const lines = mixLines(note, 'Refund of receipt X', '022')
+    expect(lines.map((l) => [l.description, l.unitPriceSen, l.taxes[0].rateBp])).toEqual([['Refund of receipt X, rounding adjustment', 1, 0]])
+    const input = doc({ kind: 'credit_note', lines, roundingSen: 0, references: [{ codeNumber: 'INV-1', uuid: 'U' }] })
+    expect(documentTotals(input).payable).toBe(1)
+    expect(() => buildDocument(input)).not.toThrow()
   })
 
   it('pieces of 9 sen add up to the bill’s mix', () => {
@@ -238,13 +287,13 @@ describe('dayLines', () => {
   })
 
   it('labels refunds', () => {
-    const { lines } = dayLines([{ billNo: '261005-002', day: '2026-10-06', mix: refundMix(billMix(a1), 300) }], 'Refunds of receipts')
+    const { lines } = dayLines([{ billNo: '261005-002', day: '2026-10-06', mix: refundMix(billMix(a1), 300, 0) }], 'Refunds of receipts')
     expect(lines[0].description).toBe('Refunds of receipts 261005-002 – 261005-002 (1), SST 6%')
   })
 })
 
 describe('credit notes', () => {
-  const lines = mixLines(refundMix(billMix(a1), 300), 'Refund of receipt 261005-002', '022')
+  const lines = mixLines(refundMix(billMix(a1), 300, 0), 'Refund of receipt 261005-002', '022')
 
   it('is type 02 and names the invoice it corrects', () => {
     expect(lines.map((l) => l.description)).toEqual([

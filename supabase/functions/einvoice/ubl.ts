@@ -159,62 +159,62 @@ export function billMix(t: BillTotals): Mix {
 export const mixTotal = (m: Mix) =>
   m.taxed.reduce((a, p) => a + p.baseSen + p.taxSen, 0) + m.untaxedSen + m.serviceChargeSen + m.roundingSen
 
-/** The part of a bill's mix that `credited` sen of it make: all of it exactly, or a largest-remainder split (no rounding). */
-function splitMix(bill: Mix, credited: number): Mix {
-  const total = mixTotal(bill)
-  if (credited === total) return { ...bill, taxed: bill.taxed.map((p) => ({ ...p })) }
-  // Past the goods, a bill that was rounded up has only its rounding left to credit.
-  const goods = total - bill.roundingSen
-  if (credited > goods) return { ...bill, taxed: bill.taxed.map((p) => ({ ...p })), roundingSen: credited - goods }
-  const n = bill.taxed.length
-  const shares = allocate(credited, [...bill.taxed.map((p) => p.baseSen + p.taxSen), bill.untaxedSen, bill.serviceChargeSen])
-  const taxed = bill.taxed.map((p, i) => {
-    const whole = p.baseSen + p.taxSen
-    const taxSen = whole > 0 ? Math.min(p.taxSen, Math.round((shares[i] * p.taxSen) / whole)) : 0
-    return { rateBp: p.rateBp, baseSen: shares[i] - taxSen, taxSen }
-  })
-  return { taxed, untaxedSen: shares[n], serviceChargeSen: shares[n + 1], roundingSen: 0 }
+/** Slice weights of a bill's mix: per SST rate a base and a tax slice, untaxed goods, service charge, positive rounding. */
+const sliceWeights = (bill: Mix): number[] => [
+  ...bill.taxed.flatMap((p) => [Math.max(0, p.baseSen), Math.max(0, p.taxSen)]),
+  Math.max(0, bill.untaxedSen), Math.max(0, bill.serviceChargeSen), Math.max(0, bill.roundingSen),
+]
+
+/**
+ * What `credited` sen of a bill are, slice by slice: sen are handed out one at a time, each to the slice
+ * furthest below its proportional share (ties to the earlier slice, never above the slice's weight), so
+ * split(c + 1) = split(c) plus one sen: house-monotone, and the notes of one bill can never overlap or
+ * drift. The whole bill is its exact mix. Exact integer arithmetic (t·w − W·given), no floats.
+ */
+function splitSlices(w: number[], credited: number): number[] {
+  const given = w.map(() => 0)
+  const sum = w.reduce((a, b) => a + b, 0)
+  for (let t = 1; t <= credited; t++) {
+    let best = -1
+    let bestVal = 0
+    for (let i = 0; i < w.length; i++) {
+      if (given[i] >= w[i]) continue
+      const v = t * w[i] - sum * given[i]
+      if (best < 0 || v > bestVal) { best = i; bestVal = v }
+    }
+    if (best < 0) throw new Error('More credited than the bill holds')
+    given[best] += 1
+  }
+  return given
 }
+
+/** A note that credits nothing but rounding has no goods line to carry it. */
+export const roundingOnly = (m: Mix) =>
+  m.roundingSen !== 0 && m.untaxedSen === 0 && m.serviceChargeSen === 0 && m.taxed.every((p) => p.baseSen === 0 && p.taxSen === 0)
 
 /**
  * What a refund of `refundSen` credits, when `refundedBeforeSen` of the same bill was refunded earlier:
- * split(before + refund) − split(before), slice by slice, so the credit notes of one bill always add up to
- * the split of what was refunded so far, and a bill refunded in full in pieces credits exactly its mix
- * (rounding on the piece that completes it). A largest-remainder split is not monotone, so a slice
- * difference can come out negative: it is clamped to 0 and the same sen come off the largest positive
- * slice of this note (goods and service charge first), keeping the note's total exact.
+ * split(before + refund) − split(before), slice by slice (see splitSlices), so the credit notes of one bill
+ * always add up to the split of what was refunded so far and a bill refunded in full in pieces credits
+ * exactly its mix. The bill's rounding goes to the note that completes it (a positive rounding as a slice
+ * of its own, a negative one on the completing note). `refundedBeforeSen` has no default on purpose.
  */
-export function refundMix(bill: Mix, refundSen: number, refundedBeforeSen = 0): Mix {
+export function refundMix(bill: Mix, refundSen: number, refundedBeforeSen: number): Mix {
   const total = mixTotal(bill)
   if (!Number.isInteger(refundSen) || refundSen <= 0 || !Number.isInteger(refundedBeforeSen) || refundedBeforeSen < 0
       || refundedBeforeSen + refundSen > total) {
     throw new Error(`A refund of ${refundSen} sen after ${refundedBeforeSen} sen does not fit a bill of ${total} sen`)
   }
-  const after = splitMix(bill, refundedBeforeSen + refundSen)
-  const before = refundedBeforeSen === 0
-    ? { taxed: bill.taxed.map((p) => ({ rateBp: p.rateBp, baseSen: 0, taxSen: 0 })), untaxedSen: 0, serviceChargeSen: 0, roundingSen: 0 }
-    : splitMix(bill, refundedBeforeSen)
-  // components: [base0, tax0, base1, tax1, …, untaxed, service]
+  const w = sliceWeights(bill)
+  const upto = refundedBeforeSen + refundSen
+  const after = upto === total ? w : splitSlices(w, upto)
+  const before = splitSlices(w, refundedBeforeSen)
+  const c = after.map((v, i) => v - before[i])
   const n = bill.taxed.length
-  const c: number[] = []
-  after.taxed.forEach((p, i) => c.push(p.baseSen - before.taxed[i].baseSen, p.taxSen - before.taxed[i].taxSen))
-  c.push(after.untaxedSen - before.untaxedSen, after.serviceChargeSen - before.serviceChargeSen)
-  const isTax = (i: number) => i < 2 * n && i % 2 === 1
-  for (let i = 0; i < c.length; i++) {
-    if (c[i] >= 0) continue
-    let debt = -c[i]
-    c[i] = 0
-    const donors = c.map((v, j) => j).filter((j) => c[j] > 0).sort((x, y) => Number(isTax(x)) - Number(isTax(y)) || c[y] - c[x] || x - y)
-    for (const j of donors) {
-      const take = Math.min(debt, c[j])
-      c[j] -= take
-      debt -= take
-      if (debt === 0) break
-    }
-  }
   return {
     taxed: bill.taxed.map((p, i) => ({ rateBp: p.rateBp, baseSen: c[2 * i], taxSen: c[2 * i + 1] })),
-    untaxedSen: c[2 * n], serviceChargeSen: c[2 * n + 1], roundingSen: after.roundingSen - before.roundingSen,
+    untaxedSen: c[2 * n], serviceChargeSen: c[2 * n + 1],
+    roundingSen: c[2 * n + 2] + (upto === total && bill.roundingSen < 0 ? bill.roundingSen : 0),
   }
 }
 
@@ -247,6 +247,9 @@ export function mixLines(mix: Mix, label: string, classification: string): DocLi
   if (mix.serviceChargeSen > 0) {
     out.push(one(`${label}, service charge`, mix.serviceChargeSen, { rateBp: 0, baseSen: mix.serviceChargeSen, taxSen: 0 }))
   }
+  if (out.length === 0 && mix.roundingSen > 0) {
+    out.push(one(`${label}, rounding adjustment`, mix.roundingSen, { rateBp: 0, baseSen: mix.roundingSen, taxSen: 0 }))
+  }
   return out
 }
 
@@ -263,7 +266,7 @@ export function dayLines(entries: DayEntry[], label = 'Receipts'): { lines: DocL
   for (const day of [...days.keys()].sort()) {
     const list = days.get(day)!
     const mix = list.map((e) => e.mix).reduce(addMix)
-    roundingSen += mix.roundingSen
+    if (!roundingOnly(mix)) roundingSen += mix.roundingSen   // a rounding-only day carries it as a line
     const nos = list.map((e) => e.billNo).sort()
     lines.push(...mixLines(mix, `${label} ${nos[0]} – ${nos[nos.length - 1]} (${list.length})`, '004'))
   }

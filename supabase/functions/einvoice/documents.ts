@@ -3,7 +3,7 @@
 // Design: docs/superpowers/specs/2026-10-26-myinvois-einvoice-design.md (W5.2, W5.5, W5.6)
 
 import {
-  billMix, buildDocument, dayLines, documentTotals, GENERAL_PUBLIC, ledgerBillLines, mixLines, refundMix,
+  billMix, buildDocument, dayLines, documentTotals, GENERAL_PUBLIC, ledgerBillLines, mixLines, refundMix, roundingOnly,
   type BillTotals, type DocInput, type DocKind, type DocRef, type LedgerLine, type Mix, type Party,
 } from './ubl.ts'
 
@@ -139,7 +139,7 @@ export function planCreditNote(r: PendingRefund, ctx: PlanCtx): Planned {
     totalSen: r.amountSen,
     build: (codeNumber) => ({
       kind: 'credit_note', codeNumber, issuedAt: ctx.issuedAt, supplier: ctx.supplier, buyer: r.invoiceBuyer ?? GENERAL_PUBLIC,
-      lines, docChargeSen: 0, roundingSen: mix.roundingSen, references: [ref],
+      lines, docChargeSen: 0, roundingSen: roundingOnly(mix) ? 0 : mix.roundingSen, references: [ref],
     }),
   }, 'the refund is')
 }

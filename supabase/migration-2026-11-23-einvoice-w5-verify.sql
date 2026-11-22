@@ -350,6 +350,10 @@ begin
   end if;
   select string_agg(p.refund_id::text, ',') into v_got from einvoice_pending_consolidated_refunds(v_a, '2026-11-01') p;
   if v_got is distinct from pg_temp.id('RA2')::text then raise exception 'FAIL V4 November refunds: %', v_got; end if;
+  if (select p.refunded_before_sen from einvoice_pending_consolidated_refunds(v_a, '2026-11-01') p) is distinct from 0
+     or (select p.refunded_before_sen from einvoice_pending_consolidated_refunds(v_a, '2026-10-20') p) is distinct from 0 then
+    raise exception 'FAIL V4 consolidated refunds carry refunded_before_sen';
+  end if;
   if (select amount_sen from einvoice_pending_consolidated_refunds(v_a, '2026-11-01')) <> 920 then
     raise exception 'FAIL V4 RA2 is the whole bill';
   end if;
@@ -366,7 +370,7 @@ begin
   if v_got is distinct from pg_temp.id('RA4')::text || '/VERIFY-E-INV-A4/Verify Buyer' then
     raise exception 'FAIL V4 single refunds: %', v_got;
   end if;
-  if (select p.refunded_before_sen from einvoice_pending_single_refunds() p where p.refund_id = pg_temp.id('RA4')) <> 0 then
+  if (select p.refunded_before_sen from einvoice_pending_single_refunds() p where p.refund_id = pg_temp.id('RA4')) is distinct from 0 then
     raise exception 'FAIL V4 the first refund of a bill has refunded_before_sen 0';
   end if;
   perform einvoice_create_document(
@@ -377,7 +381,7 @@ begin
   end if;
   -- a second refund of the same bill carries what was refunded before it (the credit notes split cumulatively)
   perform pg_temp.refund('RA4b', 'A4', 20, '2026-11-02 14:00');
-  if (select p.refunded_before_sen from einvoice_pending_single_refunds() p where p.refund_id = pg_temp.id('RA4b')) <> 100 then
+  if (select p.refunded_before_sen from einvoice_pending_single_refunds() p where p.refund_id = pg_temp.id('RA4b')) is distinct from 100 then
     raise exception 'FAIL V4 the second refund of a bill has refunded_before_sen = the first refund';
   end if;
   perform einvoice_create_document(
