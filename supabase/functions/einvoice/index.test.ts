@@ -1,0 +1,25 @@
+import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+
+const src = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
+
+describe('einvoice Edge Function wiring', () => {
+  it('lets only run and reconcile in on the job secret; every other action needs a login with access_settings', () => {
+    expect(src).toContain("const job = body.action === 'run' || body.action === 'reconcile'")
+    expect(src).toMatch(/if \(job\) \{\s*if \(!jobSecretMatches\(req\.headers\.get\('x-einvoice-job-secret'\), Deno\.env\.get\('EINVOICE_JOB_SECRET'\)\)\)/)
+    expect(src).toContain("asCaller.rpc('has_menu_cap', { p_cap: 'access_settings' })")
+    for (const a of ['status', 'submit_bill', 'consolidate', 'refresh', 'credit_notes', 'run', 'reconcile']) {
+      expect(src).toContain(`case '${a}':`)
+    }
+  })
+
+  it('never creates a document it has not checked: every issue() takes a plan', () => {
+    expect([...src.matchAll(/await issue\(/g)]).toHaveLength(4)
+    expect([...src.matchAll(/plan\(\(\) => plan(Invoice|Consolidated|CreditNote|ConsolidatedCreditNote)\(/g)]).toHaveLength(4)
+  })
+
+  it('records every run and reads the start date before consolidating', () => {
+    expect(src).toContain("admin.from('einvoice_job_runs').insert(")
+    expect(src).toContain("select('id, einvoice_from')")
+  })
+})

@@ -2,23 +2,39 @@
 //
 // The only place that talks to LHDN's MyInvois. The Client Secret (and, later, the
 // signing certificate) live here as function secrets, never in a POS iPad or the
-// customer page. Callers send their own JWT; every action needs access_settings.
+// customer page.
 //
 // Actions (POST { action, ... }):
-//   status       — are credentials and the company's details in place; can we get a token
-//   submit_bill  — { billId, buyer? }  one paid bill as its own e-invoice
-//   consolidate  — { branchId, month: 'YYYY-MM' }  a past month's remaining bills, one line per day
-//   refresh      — { documentId }  read LHDN's verdict (or resend a draft that never reached LHDN)
+//   status        — (user) are credentials and the company's details in place; can we get a token
+//   submit_bill   — (user) { billId, buyer? }  one paid bill as its own e-invoice (over RM 10,000: buyer required)
+//   consolidate   — (user) { branchId, month: 'YYYY-MM' }  a past business month's remaining bills
+//   refresh       — (user) { documentId }  read LHDN's verdict (or resend a draft that never reached LHDN)
+//   credit_notes  — (user) issue every credit note due now, past the 3-attempt stop (the screen's Retry)
+//   run           — (job)  the daily run: refresh, consolidate on days 1–7, credit notes; one einvoice_job_runs row
+//   reconcile     — (job)  { from?, to? }  build (never submit) every paid bill's document and each outlet-month's
+//                    consolidated invoice; compare with the bills and Reports → Overview
+// (user) = a Craft OS login with access_settings, checked here (the function is deployed with --no-verify-jwt).
+// (job)  = header x-einvoice-job-secret equal to the function secret EINVOICE_JOB_SECRET; pg_cron sends it
+//          through pg_net (supabase/migration-2026-11-23-einvoice-w5-cron.sql).
 //
-// Secrets (Dashboard → Edge Functions → Secrets): MYINVOIS_CLIENT_ID, MYINVOIS_CLIENT_SECRET.
+// Secrets (Dashboard → Edge Functions → Secrets): MYINVOIS_CLIENT_ID, MYINVOIS_CLIENT_SECRET, EINVOICE_JOB_SECRET.
 // SUPABASE_URL, SUPABASE_ANON_KEY and the secret key are injected by the platform.
 //
-// Deploy: supabase functions deploy einvoice --project-ref <ref> --use-api
-// Design: docs/superpowers/specs/2026-10-26-myinvois-einvoice-design.md
+// Deploy: supabase functions deploy einvoice --project-ref <ref> --no-verify-jwt
+// Design: docs/superpowers/specs/2026-10-26-myinvois-einvoice-design.md (W5)
 
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2'
-import { billLines, buildDocument, dayLines, documentTotals, GENERAL_PUBLIC,
-  type DocInput, type IdType, type Party } from './ubl.ts'
+import { resolveSecretKey } from '../_shared/secretKey.ts'
+import { buildDocument, type IdType, type Party } from './ubl.ts'
+import {
+  PlanError, planConsolidated, planConsolidatedCreditNote, planCreditNote, planInvoice,
+  type BillSource, type MonthBill, type PendingRefund, type PlanCtx, type Planned,
+} from './documents.ts'
+import {
+  businessDay, conRef, emptyReport, jobSecretMatches, monthEnd, monthOf, runCreditNotes, runJob, runOutcome,
+  type AttemptRef, type JobReport, type JobSteps, type PendingDoc, type StepResult,
+} from './job.ts'
+import { reconcile, type ReconcileSource } from './reconcile.ts'
 import { MyInvoisClient, MyInvoisError, validationUrl, type Environment } from './myinvois.ts'
 
 const CORS = {
@@ -36,25 +52,7 @@ class Refusal extends Error {
   }
 }
 
-/** Same lookup as provision-staff: the new sb_secret_ key first, the legacy service role key as fallback. */
-function resolveSecretKey(): string | null {
-  const raw = Deno.env.get('SUPABASE_SECRET_KEYS')
-  if (raw) {
-    const looksRight = (v: unknown): v is string => typeof v === 'string' && v.startsWith('sb_secret_')
-    if (looksRight(raw)) return raw
-    try {
-      const parsed = JSON.parse(raw)
-      if (looksRight(parsed)) return parsed
-      for (const c of Array.isArray(parsed) ? parsed : Object.values(parsed ?? {})) {
-        if (looksRight(c)) return c
-        if (c && typeof c === 'object') for (const v of Object.values(c)) if (looksRight(v)) return v
-      }
-    } catch {
-      // not JSON — fall through
-    }
-  }
-  return Deno.env.get('SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? null
-}
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 // ── The company as supplier ─────────────────────────────────────────────────
 interface Settings {
@@ -109,6 +107,7 @@ function credentials() {
   return { id, secret, present: { clientId: id !== '', clientSecret: secret !== '' } }
 }
 
+/** The client for sending, or the reason nothing may be sent ("not set up" for the daily run). */
 function readyClient(s: Settings): MyInvoisClient {
   if (s.environment === 'production') {
     throw new Refusal('Production needs signed v1.1 documents, which are not built yet — keep environment = sandbox', 409)
@@ -120,6 +119,18 @@ function readyClient(s: Settings): MyInvoisClient {
   const missing = missingSettings(s)
   if (missing.length) throw new Refusal(`Company details are incomplete: ${missing.join(', ')}`, 409, { missing })
   return new MyInvoisClient(s.environment, c.id, c.secret)
+}
+
+const planCtx = (s: Settings): PlanCtx => ({ supplier: supplierParty(s), issuedAt: new Date() })
+
+/** A builder's refusal becomes the caller's: nothing was created yet. */
+function plan(make: () => Planned): Planned {
+  try {
+    return make()
+  } catch (e) {
+    if (e instanceof PlanError) throw new Refusal(e.message, e.status)
+    throw e
+  }
 }
 
 const releaseLinks = async (admin: SupabaseClient, documentId: string) => {
@@ -134,26 +145,34 @@ async function updateDoc(admin: SupabaseClient, id: string, patch: Record<string
   return data
 }
 
+async function loadDocument(admin: SupabaseClient, id: string) {
+  const { data, error } = await admin.from('einvoice_documents').select('*').eq('id', id).maybeSingle()
+  if (error) throw error
+  if (!data) throw new Refusal('No such document', 404)
+  return data
+}
+
 /**
- * Create the draft (claiming its bills), build the UBL with the draft's code number,
- * send it. A rejection gives the bills back; a failure before LHDN answered leaves a
- * draft that `refresh` resends.
+ * Create the draft (claiming its bills or refunds), build the UBL with the draft's code number,
+ * send it. A rejection gives the bills and refunds back; a failure before LHDN answered leaves a
+ * draft that `refresh` (or the next daily run) resends.
  */
 async function issue(
-  admin: SupabaseClient, client: MyInvoisClient, doc: Record<string, unknown>, billIds: string[],
-  build: (codeNumber: string) => DocInput,
+  admin: SupabaseClient, client: MyInvoisClient, doc: Record<string, unknown>,
+  links: { billIds: string[]; refundIds: string[] }, planned: Planned,
 ) {
   const { data: row, error } = await admin.rpc('einvoice_create_document', {
-    p_doc: { ...doc, environment: client.env }, p_bill_ids: billIds, p_refund_ids: [],
+    p_doc: { ...doc, kind: planned.kind, totalSen: planned.totalSen, environment: client.env },
+    p_bill_ids: links.billIds, p_refund_ids: links.refundIds,
   })
   if (error) throw new Refusal(error.message, 409)
 
   let payload: Record<string, unknown>
   try {
-    payload = buildDocument(build(row.code_number))
+    payload = buildDocument(planned.build(row.code_number))
   } catch (e) {
     await admin.from('einvoice_documents').delete().eq('id', row.id)
-    throw new Refusal((e as Error).message, 422)
+    throw new Refusal(message(e), 422)
   }
   await updateDoc(admin, row.id, { payload })
   return send(admin, client, { ...row, payload })
@@ -178,9 +197,25 @@ async function send(admin: SupabaseClient, client: MyInvoisClient, row: Record<s
     }
     // Credentials, rate limit, network or LHDN down: keep the draft and its bills for a resend.
     return updateDoc(admin, row.id, {
-      errors: { message: (e as Error).message, ...(e instanceof MyInvoisError ? { status: e.status, body: e.body } : {}) },
+      errors: { message: message(e), ...(e instanceof MyInvoisError ? { status: e.status, body: e.body } : {}) },
     })
   }
+}
+
+/** Read LHDN's verdict on a submitted document, or resend a draft that never reached LHDN. */
+async function refreshDocument(admin: SupabaseClient, client: MyInvoisClient, row: Record<string, any>) {
+  if (row.status === 'draft') return send(admin, client, row)
+  if (row.status !== 'submitted') return row
+  const summary = (await client.getSubmission(row.submission_uid)).find((d) => d.uuid === row.lhdn_uuid)
+  if (!summary || summary.status === 'Submitted') return row
+  if (summary.status === 'Valid') {
+    return updateDoc(admin, row.id, { status: 'valid', long_id: summary.longId, validated_at: new Date().toISOString(), errors: null })
+  }
+  await releaseLinks(admin, row.id)
+  const errors = summary.status === 'Invalid'
+    ? await client.getDocumentDetails(row.lhdn_uuid).catch((e) => ({ message: message(e) }))
+    : null
+  return updateDoc(admin, row.id, { status: summary.status === 'Invalid' ? 'invalid' : 'cancelled', errors })
 }
 
 const withLink = (doc: Record<string, any>) => ({
@@ -188,12 +223,136 @@ const withLink = (doc: Record<string, any>) => ({
   validationUrl: doc.lhdn_uuid && doc.long_id ? validationUrl(doc.environment, doc.lhdn_uuid, doc.long_id) : null,
 })
 
-/** The current month in Malaysia time, as YYYY-MM. */
-const currentMonthMyt = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 7)
+async function recordAttempt(admin: SupabaseClient, ref: AttemptRef, ok: boolean, error: string | null) {
+  const { error: e } = await admin.rpc('einvoice_record_attempt', {
+    p_key: ref.key, p_kind: ref.kind, p_branch_id: ref.branchId, p_period_start: ref.periodStart,
+    p_refund_id: ref.refundId, p_ok: ok, p_error: error,
+  })
+  if (e) throw e
+}
 
-function monthEnd(month: string): string {
-  const [y, m] = month.split('-').map(Number)
-  return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10)
+const toPendingRefund = (r: Record<string, any>): PendingRefund => ({
+  refundId: r.refund_id, billId: r.bill_id, branchId: r.branch_id, billNo: r.bill_no, amountSen: r.amount_sen,
+  refundDay: r.refund_day, totals: r.totals ?? null, invoiceCode: r.invoice_code, invoiceUuid: r.invoice_uuid,
+  invoiceBuyer: (r.invoice_buyer as Party | null) ?? null,
+  refundedBeforeSen: r.refunded_before_sen as number,
+})
+
+const monthEnded = (month: string) => month < monthOf(businessDay(new Date()))
+
+// ── What each document covers ───────────────────────────────────────────────
+/** A past business month's remaining bills of one outlet, from its start date, as one consolidated invoice. */
+async function consolidateOutlet(
+  admin: SupabaseClient, s: Settings, client: MyInvoisClient, branchId: string, month: string, callerId: string | null,
+) {
+  if (!monthEnded(month)) throw new Refusal('A month can be consolidated only after its last business day ends (06:00 Malaysia time on the 1st)', 409)
+  const { data: outlet, error: outletErr } = await admin.from('branches').select('id, einvoice_from').eq('id', branchId).maybeSingle()
+  if (outletErr) throw outletErr
+  if (!outlet) throw new Refusal('No such outlet', 404)
+  if (!outlet.einvoice_from) throw new Refusal('This outlet is not reported by us yet: set "Report e-invoices from" first', 409)
+
+  const { data: bills, error } = await admin.rpc('einvoice_unlinked_paid_bills', { p_branch_id: branchId, p_month: `${month}-01` })
+  if (error) throw error
+  if (!bills?.length) return { nothingToDo: true, month }
+
+  const first = `${month}-01`
+  const period = { start: outlet.einvoice_from > first ? outlet.einvoice_from : first, end: monthEnd(month) }
+  const monthBills: MonthBill[] = bills.map((b: any) => ({ id: b.id, billNo: b.bill_no, day: b.day, totalSen: b.total_sen, totals: b.totals }))
+  const planned = plan(() => planConsolidated(monthBills, period, planCtx(s)))
+  const doc = await issue(admin, client, {
+    branchId, periodStart: period.start, periodEnd: period.end, createdBy: callerId,
+  }, { billIds: monthBills.map((b) => b.id), refundIds: [] }, planned)
+  return { ...withLink(doc), bills: monthBills.length }
+}
+
+/** A refund of an individually invoiced bill. */
+async function creditNoteFor(admin: SupabaseClient, s: Settings, client: MyInvoisClient, r: PendingRefund) {
+  const planned = plan(() => planCreditNote(r, planCtx(s)))
+  const doc = await issue(admin, client, {
+    branchId: r.branchId, billId: r.billId, buyer: r.invoiceBuyer, createdBy: null,
+  }, { billIds: [], refundIds: [r.refundId] }, planned)
+  return withLink(doc)
+}
+
+/** An outlet's refunds of one past business month whose bills sit in valid consolidated invoices. */
+async function consolidatedCreditNoteFor(admin: SupabaseClient, s: Settings, client: MyInvoisClient, branchId: string, month: string) {
+  const { data, error } = await admin.rpc('einvoice_pending_consolidated_refunds', { p_branch_id: branchId, p_month: `${month}-01` })
+  if (error) throw error
+  const refunds = (data ?? []).map(toPendingRefund)
+  if (!refunds.length) return { nothingToDo: true, month }
+  const period = { start: `${month}-01`, end: monthEnd(month) }
+  const planned = plan(() => planConsolidatedCreditNote(refunds, period, planCtx(s)))
+  const doc = await issue(admin, client, {
+    branchId, periodStart: period.start, periodEnd: period.end, createdBy: null,
+  }, { billIds: [], refundIds: refunds.map((r: PendingRefund) => r.refundId) }, planned)
+  return withLink(doc)
+}
+
+// ── The daily run's steps ───────────────────────────────────────────────────
+/** One step as the runner sees it; a refusal never stops the run. */
+async function step(run: () => Promise<Record<string, any>>): Promise<StepResult> {
+  try {
+    const d = await run()
+    if (d.nothingToDo) return { outcome: 'nothing' }
+    const base = { codeNumber: d.code_number as string, status: d.status as string }
+    if (d.status === 'rejected') return { ...base, outcome: 'rejected', error: JSON.stringify(d.errors ?? null).slice(0, 500) }
+    if (d.status === 'draft') return { ...base, outcome: 'waiting', ...(d.errors ? { error: JSON.stringify(d.errors).slice(0, 500) } : {}) }
+    return { ...base, outcome: 'issued' }
+  } catch (e) {
+    return { outcome: 'refused', error: message(e) }
+  }
+}
+
+function jobSteps(admin: SupabaseClient, s: Settings): JobSteps {
+  let client: MyInvoisClient | null = null
+  const ready = () => client ?? (client = readyClient(s))
+  return {
+    async setUp() {
+      try {
+        ready()
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, reason: message(e) }
+      }
+    },
+    async pendingDocuments(): Promise<PendingDoc[]> {
+      const { data, error } = await admin.from('einvoice_documents')
+        .select('id, code_number, kind, branch_id, period_start, status')
+        .in('status', ['draft', 'submitted']).eq('environment', s.environment).order('created_at')
+      if (error) throw error
+      return (data ?? []).map((d: any) => ({
+        id: d.id, codeNumber: d.code_number, kind: d.kind, branchId: d.branch_id, periodStart: d.period_start, status: d.status,
+      }))
+    },
+    async refresh(doc) {
+      const after = await refreshDocument(admin, ready(), await loadDocument(admin, doc.id))
+      return { status: after.status }
+    },
+    async outlets() {
+      const { data, error } = await admin.from('branches').select('id, einvoice_from').not('einvoice_from', 'is', null)
+      if (error) throw error
+      return (data ?? []).map((b: any) => ({ id: b.id, einvoiceFrom: b.einvoice_from }))
+    },
+    async failures(key) {
+      const { data, error } = await admin.from('einvoice_job_attempts').select('failures').eq('key', key).maybeSingle()
+      if (error) throw error
+      return data?.failures ?? 0
+    },
+    record: (ref, ok, error) => recordAttempt(admin, ref, ok, error),
+    consolidate: (branchId, month) => step(() => consolidateOutlet(admin, s, ready(), branchId, month, null)),
+    async singleRefunds() {
+      const { data, error } = await admin.rpc('einvoice_pending_single_refunds')
+      if (error) throw error
+      return (data ?? []).map(toPendingRefund)
+    },
+    creditNote: (r) => step(() => creditNoteFor(admin, s, ready(), r)),
+    async refundMonths(before) {
+      const { data, error } = await admin.rpc('einvoice_consolidated_refund_months', { p_before: before })
+      if (error) throw error
+      return (data ?? []).map((m: any) => ({ branchId: m.branch_id, month: String(m.month).slice(0, 7) }))
+    },
+    consolidatedCreditNote: (branchId, month) => step(() => consolidatedCreditNoteFor(admin, s, ready(), branchId, month)),
+  }
 }
 
 // ── Actions ─────────────────────────────────────────────────────────────────
@@ -205,7 +364,7 @@ async function actionStatus(s: Settings) {
       await new MyInvoisClient(s.environment, c.id, c.secret).accessToken()
       token = 'ok'
     } catch (e) {
-      token = e instanceof MyInvoisError ? `refused (${e.status})` : `failed: ${(e as Error).message}`
+      token = e instanceof MyInvoisError ? `refused (${e.status})` : `failed: ${message(e)}`
     }
   }
   return {
@@ -217,80 +376,77 @@ async function actionStatus(s: Settings) {
   }
 }
 
-async function actionSubmitBill(admin: SupabaseClient, s: Settings, callerId: string, body: any) {
+async function actionSubmitBill(admin: SupabaseClient, s: Settings, callerId: string | null, body: any) {
   if (typeof body.billId !== 'string') throw new Refusal('billId is required')
   const buyer = buyerParty(body.buyer)
   const client = readyClient(s)
-
   const { data: src, error } = await admin.rpc('einvoice_bill_source', { p_bill_id: body.billId })
   if (error) throw error
   if (!src) throw new Refusal('No such bill', 404)
-  if (src.bill.status !== 'paid') throw new Refusal(`Only a paid bill can be e-invoiced (this one is ${src.bill.status})`, 409)
-
-  const parts = billLines(src.items, src.totals)
-  const build = (codeNumber: string): DocInput => ({
-    kind: 'invoice', codeNumber, issuedAt: new Date(), supplier: supplierParty(s), buyer: buyer ?? GENERAL_PUBLIC,
-    lines: parts.lines, docChargeSen: parts.docChargeSen, docChargeReason: 'Service charge', roundingSen: parts.roundingSen,
-  })
-  const payable = documentTotals(build('check')).payable
-  if (payable !== src.bill.totalSen) throw new Refusal(`The document adds up to ${payable} sen, the bill is ${src.bill.totalSen} sen`, 422)
-
+  const source = src as BillSource
+  const planned = plan(() => planInvoice(source, planCtx(s), buyer))
   const doc = await issue(admin, client, {
-    kind: 'invoice', branchId: src.bill.branchId, billId: src.bill.id, buyer, totalSen: payable, createdBy: callerId,
-  }, [src.bill.id], build)
+    branchId: source.bill.branchId, billId: source.bill.id, buyer, createdBy: callerId,
+  }, { billIds: [source.bill.id], refundIds: [] }, planned)
   return withLink(doc)
 }
 
-async function actionConsolidate(admin: SupabaseClient, s: Settings, callerId: string, body: any) {
+async function actionConsolidate(admin: SupabaseClient, s: Settings, callerId: string | null, body: any) {
   if (typeof body.branchId !== 'string') throw new Refusal('branchId is required')
   if (typeof body.month !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(body.month)) throw new Refusal('month must be YYYY-MM')
-  if (body.month >= currentMonthMyt()) throw new Refusal('A month can be consolidated only after it ends (Malaysia time)', 409)
+  if (!monthEnded(body.month)) throw new Refusal('A month can be consolidated only after its last business day ends (06:00 Malaysia time on the 1st)', 409)
   const client = readyClient(s)
-
-  const { data: bills, error } = await admin.rpc('einvoice_unlinked_paid_bills', {
-    p_branch_id: body.branchId, p_month: `${body.month}-01`,
-  })
-  if (error) throw error
-  if (!bills?.length) return { nothingToDo: true, month: body.month }
-
-  const parts = dayLines(bills.map((b: any) => ({ billNo: b.bill_no, day: b.day, totals: b.totals })))
-  const period = { start: `${body.month}-01`, end: monthEnd(body.month) }
-  const build = (codeNumber: string): DocInput => ({
-    kind: 'consolidated_invoice', codeNumber, issuedAt: new Date(), supplier: supplierParty(s), buyer: GENERAL_PUBLIC,
-    lines: parts.lines, docChargeSen: 0, roundingSen: parts.roundingSen, period,
-  })
-  const expected = bills.reduce((a: number, b: any) => a + b.total_sen, 0)
-  const payable = documentTotals(build('check')).payable
-  if (payable !== expected) throw new Refusal(`The document adds up to ${payable} sen, the bills to ${expected} sen`, 422)
-
-  const doc = await issue(admin, client, {
-    kind: 'consolidated_invoice', branchId: body.branchId, periodStart: period.start, periodEnd: period.end,
-    totalSen: payable, createdBy: callerId,
-  }, bills.map((b: any) => b.id), build)
-  return { ...withLink(doc), bills: bills.length }
+  const ref = conRef(body.branchId, body.month)
+  try {
+    const r: Record<string, any> = await consolidateOutlet(admin, s, client, body.branchId, body.month, callerId)
+    const rejected = r.status === 'rejected'
+    await recordAttempt(admin, ref, !rejected, rejected ? 'LHDN rejected the document' : null)
+    return r
+  } catch (e) {
+    if (e instanceof Refusal) await recordAttempt(admin, ref, false, e.message).catch((err) => console.error(err))
+    throw e
+  }
 }
 
 async function actionRefresh(admin: SupabaseClient, s: Settings, body: any) {
   if (typeof body.documentId !== 'string') throw new Refusal('documentId is required')
-  const { data: row, error } = await admin.from('einvoice_documents').select('*').eq('id', body.documentId).maybeSingle()
-  if (error) throw error
-  if (!row) throw new Refusal('No such document', 404)
+  const row = await loadDocument(admin, body.documentId)
   if (row.environment !== s.environment) throw new Refusal(`This document was sent to ${row.environment}; settings now say ${s.environment}`, 409)
-  const client = readyClient(s)
+  return withLink(await refreshDocument(admin, readyClient(s), row))
+}
 
-  if (row.status === 'draft') return withLink(await send(admin, client, row))
-  if (row.status !== 'submitted') return withLink(row)
+/** The screen's Retry for credit notes: everything due now, stopped ones included. */
+async function actionCreditNotes(admin: SupabaseClient, s: Settings): Promise<JobReport> {
+  readyClient(s)
+  const report = emptyReport(businessDay(new Date()))
+  await runCreditNotes(jobSteps(admin, s), report, report.businessDay, true)
+  return report
+}
 
-  const summary = (await client.getSubmission(row.submission_uid)).find((d) => d.uuid === row.lhdn_uuid)
-  if (!summary || summary.status === 'Submitted') return withLink(row)
-  if (summary.status === 'Valid') {
-    return withLink(await updateDoc(admin, row.id, {
-      status: 'valid', long_id: summary.longId, validated_at: new Date().toISOString(), errors: null,
-    }))
+async function actionRun(admin: SupabaseClient, s: Settings) {
+  const startedAt = new Date()
+  let report: JobReport
+  try {
+    report = await runJob(jobSteps(admin, s), startedAt)
+  } catch (e) {
+    report = { ...emptyReport(businessDay(startedAt)), errors: [`Run: ${message(e)}`] }
   }
-  await releaseLinks(admin, row.id)
-  const errors = summary.status === 'Invalid' ? await client.getDocumentDetails(row.lhdn_uuid).catch((e) => ({ message: e.message })) : null
-  return withLink(await updateDoc(admin, row.id, { status: summary.status === 'Invalid' ? 'invalid' : 'cancelled', errors }))
+  const outcome = runOutcome(report)
+  const { error } = await admin.from('einvoice_job_runs').insert({
+    started_at: startedAt.toISOString(), finished_at: new Date().toISOString(), environment: s.environment, outcome, report,
+  })
+  if (error) throw error
+  return { outcome, report }
+}
+
+/** The overview is per full business month, so the window is widened to whole months. */
+async function actionReconcile(admin: SupabaseClient, body: any) {
+  const day = (v: unknown, fallback: string) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : fallback)
+  const from = `${monthOf(day(body.from, '2000-01-01'))}-01`
+  const to = monthEnd(monthOf(day(body.to, businessDay(new Date()))))
+  const { data, error } = await admin.rpc('einvoice_reconcile_source', { p_from: from, p_to: to })
+  if (error) throw error
+  return reconcile(data as ReconcileSource)
 }
 
 // ── Entry ───────────────────────────────────────────────────────────────────
@@ -303,33 +459,44 @@ Deno.serve(async (req) => {
   const secretKey = resolveSecretKey()
   if (!url || !anonKey || !secretKey) return json({ error: 'Function is not configured: missing platform keys' }, 500)
 
-  const authHeader = req.headers.get('Authorization')
-  if (!authHeader) return json({ error: 'Missing Authorization header' }, 401)
-  const asCaller = createClient(url, anonKey, {
-    global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false, autoRefreshToken: false },
-  })
-  const { data: userData, error: userErr } = await asCaller.auth.getUser(authHeader.replace(/^Bearer\s+/i, ''))
-  if (userErr || !userData.user) return json({ error: 'Invalid session' }, 401)
-  const { data: allowed } = await asCaller.rpc('has_menu_cap', { p_cap: 'access_settings' })
-  if (allowed !== true) return json({ error: 'You need Access Settings to work with e-invoices' }, 403)
+  const body = await req.json().catch(() => ({}))
+  const job = body.action === 'run' || body.action === 'reconcile'
+  let callerId: string | null = null
+  if (job) {
+    if (!jobSecretMatches(req.headers.get('x-einvoice-job-secret'), Deno.env.get('EINVOICE_JOB_SECRET'))) {
+      return json({ error: 'Not allowed' }, 401)
+    }
+  } else {
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) return json({ error: 'Missing Authorization header' }, 401)
+    const asCaller = createClient(url, anonKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    })
+    const { data: userData, error: userErr } = await asCaller.auth.getUser(authHeader.replace(/^Bearer\s+/i, ''))
+    if (userErr || !userData.user) return json({ error: 'Invalid session' }, 401)
+    const { data: allowed } = await asCaller.rpc('has_menu_cap', { p_cap: 'access_settings' })
+    if (allowed !== true) return json({ error: 'You need Access Settings to work with e-invoices' }, 403)
+    callerId = userData.user.id
+  }
 
   const admin = createClient(url, secretKey, { auth: { persistSession: false, autoRefreshToken: false } })
-  const body = await req.json().catch(() => ({}))
-
   try {
     const { data: settings, error } = await admin.from('einvoice_settings').select('*').eq('id', true).single()
     if (error) throw error
     switch (body.action) {
       case 'status': return json(await actionStatus(settings))
-      case 'submit_bill': return json(await actionSubmitBill(admin, settings, userData.user.id, body))
-      case 'consolidate': return json(await actionConsolidate(admin, settings, userData.user.id, body))
+      case 'submit_bill': return json(await actionSubmitBill(admin, settings, callerId, body))
+      case 'consolidate': return json(await actionConsolidate(admin, settings, callerId, body))
       case 'refresh': return json(await actionRefresh(admin, settings, body))
-      default: return json({ error: 'action must be status, submit_bill, consolidate or refresh' }, 400)
+      case 'credit_notes': return json(await actionCreditNotes(admin, settings))
+      case 'run': return json(await actionRun(admin, settings))
+      case 'reconcile': return json(await actionReconcile(admin, body))
+      default: return json({ error: 'action must be status, submit_bill, consolidate, refresh, credit_notes, run or reconcile' }, 400)
     }
   } catch (e) {
     if (e instanceof Refusal) return json({ error: e.message, detail: e.detail }, e.status)
     console.error(e)
-    return json({ error: (e as Error).message ?? 'Unexpected error' }, 500)
+    return json({ error: message(e) || 'Unexpected error' }, 500)
   }
 })
