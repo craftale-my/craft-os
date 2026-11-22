@@ -4,7 +4,7 @@
  *  import's Photos step. The rules themselves are in photo.ts, the canvas work in photoResize.ts. */
 import { supabase } from '../../../shared/lib/supabase'
 import { fetchProductExtras, setProductImage } from './slotsApi'
-import { PHOTO_BUCKET, animationProblem, photoInputProblem, photoPath, sniffAnimation, versionedPhotoUrl, type PhotoMime } from './photo'
+import { PHOTO_BUCKET, animationProblem, mayBeAnimated, photoInputProblem, photoPath, sniffAnimation, versionedPhotoUrl, type PhotoMime } from './photo'
 import { resizePhoto } from './photoResize'
 
 export const publicPhotoUrl = (path: string): string => supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path).data.publicUrl
@@ -21,7 +21,9 @@ export const productThumbUrl = (path: string, updatedAt: string | null): string 
 export async function uploadProductPhoto(productId: string, file: Blob): Promise<{ warning: string | null }> {
   const problem = photoInputProblem(file)
   if (problem) throw new Error(problem)
-  const anim = sniffAnimation(new Uint8Array(await file.arrayBuffer()))
+  // only a GIF or a WebP is read whole (to count its frames); every other picture just its first bytes
+  const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+  const anim = mayBeAnimated(head) ? sniffAnimation(new Uint8Array(await file.arrayBuffer())) : null
   let blob: Blob
   let mime: PhotoMime
   if (anim) {

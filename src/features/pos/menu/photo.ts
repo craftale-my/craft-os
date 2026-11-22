@@ -56,38 +56,51 @@ const startsWith = (b: Uint8Array, at: number, text: string) =>
 const isGif = (b: Uint8Array) => startsWith(b, 0, 'GIF87a') || startsWith(b, 0, 'GIF89a')
 const isVp8x = (b: Uint8Array) => startsWith(b, 0, 'RIFF') && startsWith(b, 8, 'WEBP') && startsWith(b, 12, 'VP8X') && b.length >= 30
 
-/** True when the GIF has more than one image (frame). Walks the blocks; a cut-off file counts the
- *  frames it has. */
-export function isAnimatedGif(b: Uint8Array): boolean {
-  if (!isGif(b) || b.length < 13) return false
+/** Walks the GIF's blocks: how many images (frames) it has, at most `stopAt`, and the largest frame
+ *  size met on the way. A cut-off file counts the complete frame descriptors it has; a stray zero
+ *  byte between blocks (some encoders pad) is skipped, as browsers do. */
+function walkGif(b: Uint8Array, stopAt = Infinity): { frames: number; width: number; height: number } {
+  const out = { frames: 0, width: 0, height: 0 }
+  if (!isGif(b) || b.length < 13) return out
   let i = 13
   if (b[10] & 0x80) i += 3 * (2 << (b[10] & 0x07))             // global colour table
   const skipSubBlocks = () => { while (i < b.length && b[i] !== 0) i += b[i] + 1; i++ }
-  let frames = 0
-  while (i < b.length) {
+  while (i < b.length && out.frames < stopAt) {
     const kind = b[i]
-    if (kind === 0x21) { i += 2; skipSubBlocks() }               // extension: label, then data sub-blocks
+    if (kind === 0x00) i++                                       // padding
+    else if (kind === 0x21) { i += 2; skipSubBlocks() }          // extension: label, then data sub-blocks
     else if (kind === 0x2c) {                                    // image descriptor
-      if (i + 10 > b.length) return false
-      if (++frames > 1) return true
+      if (i + 10 > b.length) break
+      out.frames++
+      out.width = Math.max(out.width, b[i + 5] | (b[i + 6] << 8))
+      out.height = Math.max(out.height, b[i + 7] | (b[i + 8] << 8))
       const packed = b[i + 9]
       i += 10
       if (packed & 0x80) i += 3 * (2 << (packed & 0x07))         // local colour table
       i++                                                        // LZW minimum code size
       skipSubBlocks()
-    } else return false                                          // trailer (0x3b) or something unreadable
+    } else break                                                 // trailer (0x3b) or something unreadable
   }
-  return false
+  return out
 }
+
+/** True when the GIF has more than one image (frame). */
+export const isAnimatedGif = (b: Uint8Array): boolean => walkGif(b, 2).frames > 1
 
 /** True when the WebP's extended header (VP8X) has the ANIM flag. */
 export const isAnimatedWebp = (b: Uint8Array): boolean => isVp8x(b) && (b[20] & 0x02) !== 0
 
-/** The GIF's logical screen size, or null when it is not a GIF. */
+/** The GIF's pixel size — its logical screen or its largest frame, whichever is larger (some encoders
+ *  write a screen of 0 × 0 or smaller than the frames) — or null when it is not a GIF. */
 export function gifSize(b: Uint8Array): { width: number; height: number } | null {
   if (!isGif(b) || b.length < 10) return null
-  return { width: b[6] | (b[7] << 8), height: b[8] | (b[9] << 8) }
+  const w = walkGif(b)
+  return { width: Math.max(b[6] | (b[7] << 8), w.width), height: Math.max(b[8] | (b[9] << 8), w.height) }
 }
+
+/** True when the first bytes say GIF or WebP — the only files worth reading whole to look for frames. */
+export const mayBeAnimated = (head: Uint8Array): boolean =>
+  startsWith(head, 0, 'GIF8') || (startsWith(head, 0, 'RIFF') && startsWith(head, 8, 'WEBP'))
 
 /** The canvas size of an extended (VP8X) WebP — every animated one is — or null. */
 export function webpSize(b: Uint8Array): { width: number; height: number } | null {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  mayBeAnimated,
   ANIMATION_MAX_BYTES, animatedLabel, animationProblem, gifSize, isAnimatedGif, isAnimatedPhoto, isAnimatedWebp, sniffAnimation, webpSize,
   PHOTO_MAX_HEIGHT, PHOTO_MAX_INPUT_BYTES, PHOTO_MAX_WIDTH, PHOTO_QUALITY, imageTypeFromName, photoInputProblem, photoPath, resizeTarget,
   versionedPhotoUrl,
@@ -140,5 +141,23 @@ describe('animated photos', () => {
     expect(animatedLabel(1024 * 1024)).toBe('Animated · 1.0 MB')
     expect(animatedLabel(340 * 1024)).toBe('Animated · 340 KB')
     expect(animatedLabel(null)).toBe('Animated')
+  })
+})
+
+describe('GIF edge cases (review)', () => {
+  // header + 1×1 logical screen, no colour table
+  const head = (w: number, h: number) => [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, w & 255, w >> 8, h & 255, h >> 8, 0, 0, 0]
+  const frame = (w: number, h: number) => [0x2c, 0, 0, 0, 0, w & 255, w >> 8, h & 255, h >> 8, 0, 2, 1, 0, 0]
+  it('skips a stray zero byte between frames', () => {
+    expect(isAnimatedGif(new Uint8Array([...head(1, 1), ...frame(1, 1), 0x00, ...frame(1, 1), 0x3b]))).toBe(true)
+  })
+  it('takes the largest frame when the screen size understates it', () => {
+    expect(gifSize(new Uint8Array([...head(0, 0), ...frame(4000, 30), ...frame(20, 2000), 0x3b]))).toEqual({ width: 4000, height: 2000 })
+  })
+  it('only GIF and WebP heads are worth reading whole', () => {
+    const t = (s: string) => new Uint8Array([...s].map((c) => c.charCodeAt(0)))
+    expect(mayBeAnimated(t('GIF89a'))).toBe(true)
+    expect(mayBeAnimated(t('RIFFxxxxWEBPVP8 '))).toBe(true)
+    expect(mayBeAnimated(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe(false)
   })
 })
