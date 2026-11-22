@@ -174,11 +174,15 @@ owner asked Claude to make those). Branch `feature/pos-demo` (feature/einvoice m
   database side, function secret `EINVOICE_JOB_SECRET` on the function side; generated, never shown).
 - Each run, in order:
   1. Refresh every submitted document still waiting for LHDN.
-  2. Days 1–7 of a month: for each outlet with a start date, consolidate the previous month if it has no
-     valid consolidated invoice yet; at most 3 attempts per outlet and month, then stop and raise the
-     banner.
+  2. Every day: consolidate each closed business month of an outlet with a start date that still has
+     unreported bills (`einvoice_unreported_months`), oldest first — last month's goes out on the 1st, and a
+     missed or killed run, or a start date set into a month already past, is caught up. At most 6
+     outlet-months per run (the rest are reported as "later"); at most 3 attempts per outlet and month, then
+     stop and raise the banner. *(Final review, 2026-11-23: was "days 1–7, previous month only", which let a
+     closed month go silently unreported.)*
   3. Credit notes (W5.5).
-  4. Write one `einvoice_job_runs` row: when, what was done per outlet, and errors.
+  4. One `einvoice_job_runs` row: written `running` when the run starts and completed at the end (when, what
+     was done per outlet, and errors), so a run killed half-way still shows on the screen.
 - Not set up (no LHDN credentials or company details missing): the run records "not set up" and calls
   nothing. In sandbox that raises no banner; in production it does.
 
@@ -193,6 +197,10 @@ owner asked Claude to make those). Branch `feature/pos-demo` (feature/einvoice m
   A refund of a bill before the outlet's start date is never reported by us.
 - Refunds store an amount only, so a credit note splits the refund over the bill's own mix (each SST rate
   group, the untaxed part and the service charge) by largest remainder; its tax never exceeds the bill's.
+- **As built (W5.5 note, 2026-11-23):** a consolidated credit note is issued by the first daily run after its
+  refunds' business month has ended *and* the original consolidated invoice is valid — not only together with
+  the next month's consolidation. A single credit note LHDN finds invalid counts against its refund
+  (`CN|<refund>`) and stops after 3, like a month.
 
 ### W5.6 Bills over RM10,000
 
@@ -206,6 +214,23 @@ owner asked Claude to make those). Branch `feature/pos-demo` (feature/einvoice m
   and the bills over RM10,000 waiting for a buyer. The banner (access_settings users) shows when a
   document is rejected or invalid, a consolidation failed 3 times, a bill over RM10,000 waits, or (in
   production only) e-invoicing is not set up.
+- Added in the final review (2026-11-23): Needs attention lists every closed outlet-month not reported yet
+  ("Kepong · October 2026 · 212 bills · RM x.xx", Retry = consolidate), and the banner says "Some months'
+  sales have not been reported to LHDN yet." (once the daily run has had its chance at the month) and "The
+  daily e-invoice run has not run for 2 days." (an outlet has a start date and no run started in 48 h). A
+  submitted document whose LHDN status is unknown keeps its bills and is flagged for a check in the portal.
+
+### Before the production switch (final review, 2026-11-23)
+
+- Links and the start-date guard ignore the environment today: a bill linked to a **sandbox** document counts
+  as reported, `branches_einvoice_from_guard` and the screen's `hasLiveDocument` count sandbox documents as
+  "already sent", and `einvoice_unlinked_paid_bills` / `einvoice_unreported_months` skip bills linked in
+  sandbox. Before switching `einvoice_settings.environment` to production, either scope the links, the guard
+  and `hasLiveDocument` to the current environment, or archive (delete) the sandbox links at the switch so
+  every bill is reported again in production.
+- `pg_net` keeps each request in its queue table (`net.http_request_queue`, readable by the `postgres` role
+  only) until it is sent, so the job secret header is briefly stored there; it is never in any client-readable
+  table or log.
 
 ### W5.8 Out of W5
 
