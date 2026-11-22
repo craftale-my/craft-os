@@ -349,12 +349,15 @@ grant execute on function einvoice_create_document(jsonb, uuid[], uuid[]) to ser
 -- A refund is due once its bill sits in a VALID document (the credit note quotes its LHDN UUID) and the refund
 -- is in no live credit note. A refund of a bill not reported yet waits; a bill before the start date is never
 -- reported, so its refunds never come up. refund_day = the refund's own business day.
+drop function if exists einvoice_pending_single_refunds();
 create or replace function einvoice_pending_single_refunds()
 returns table (refund_id uuid, bill_id uuid, branch_id uuid, bill_no text, amount_sen integer, refund_day date,
-               totals jsonb, invoice_code text, invoice_uuid text, invoice_buyer jsonb)
+               totals jsonb, invoice_code text, invoice_uuid text, invoice_buyer jsonb, refunded_before_sen integer)
 language sql stable security definer set search_path = public, pg_temp as $$
   select r.id, b.id, b.branch_id, b.bill_no, r.amount_sen, pos_business_day(r.created_at), b.totals,
-         d.code_number, d.lhdn_uuid, d.buyer
+         d.code_number, d.lhdn_uuid, d.buyer,
+         (select coalesce(sum(r2.amount_sen), 0)::integer from refunds r2          -- the bill's refunds before this one
+           where r2.bill_id = r.bill_id and (r2.created_at, r2.id) < (r.created_at, r.id))
     from refunds r
     join bills b on b.id = r.bill_id
     join einvoice_bill_links l on l.bill_id = b.id
@@ -366,12 +369,15 @@ revoke all on function einvoice_pending_single_refunds() from public, anon, auth
 grant execute on function einvoice_pending_single_refunds() to service_role;
 
 -- An outlet's refunds of one business month (p_month: any day in it) whose bills sit in valid consolidated invoices.
+drop function if exists einvoice_pending_consolidated_refunds(uuid, date);
 create or replace function einvoice_pending_consolidated_refunds(p_branch_id uuid, p_month date)
 returns table (refund_id uuid, bill_id uuid, branch_id uuid, bill_no text, amount_sen integer, refund_day date,
-               totals jsonb, invoice_code text, invoice_uuid text, invoice_buyer jsonb)
+               totals jsonb, invoice_code text, invoice_uuid text, invoice_buyer jsonb, refunded_before_sen integer)
 language sql stable security definer set search_path = public, pg_temp as $$
   select r.id, b.id, b.branch_id, b.bill_no, r.amount_sen, pos_business_day(r.created_at), b.totals,
-         d.code_number, d.lhdn_uuid, d.buyer
+         d.code_number, d.lhdn_uuid, d.buyer,
+         (select coalesce(sum(r2.amount_sen), 0)::integer from refunds r2          -- the bill's refunds before this one
+           where r2.bill_id = r.bill_id and (r2.created_at, r2.id) < (r.created_at, r.id))
     from refunds r
     join bills b on b.id = r.bill_id
     join einvoice_bill_links l on l.bill_id = b.id

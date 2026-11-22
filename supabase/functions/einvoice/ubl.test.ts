@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  allocate, billMix, buildDocument, dayLines, documentTotals, GENERAL_PUBLIC, ledgerBillLines, lineAmount, mixLines,
+  addMix, allocate, billMix, buildDocument, dayLines, documentTotals, GENERAL_PUBLIC, ledgerBillLines, lineAmount, mixLines,
   mixTotal, refundMix, type BillTotals, type DocInput, type LedgerLine, type Party,
 } from './ubl.ts'
 
@@ -155,6 +155,56 @@ describe('billMix and refundMix', () => {
   })
 })
 
+describe('refundMix in pieces', () => {
+  const sumTax = (ms: ReturnType<typeof refundMix>[]) =>
+    ms[0].taxed.map((_, i) => ms.reduce((a, m) => a + m.taxed[i].taxSen, 0))
+
+  it('credits the bill’s SST exactly when 11 sen and 2299 sen are refunded in turn', () => {
+    const bill = billMix(a1)
+    const first = refundMix(bill, 11, 0)
+    const second = refundMix(bill, 2299, 11)
+    expect(sumTax([first, second])).toEqual([109])
+    expect(mixTotal(first)).toBe(11)
+    expect(mixTotal(second)).toBe(2299)
+    expect(addMix(first, second)).toEqual(bill)
+  })
+
+  it('never makes a negative slice and always adds up to the refund, over every split of every fixture bill', () => {
+    for (const t of [a1, a2, a3]) {
+      const bill = billMix(t)
+      const total = mixTotal(bill)
+      for (let x = 1; x < total; x++) {
+        const parts = [refundMix(bill, x, 0), refundMix(bill, total - x, x)]
+        parts.forEach((m, k) => {
+          expect(mixTotal(m)).toBe(k === 0 ? x : total - x)
+          expect(m.untaxedSen).toBeGreaterThanOrEqual(0)
+          expect(m.serviceChargeSen).toBeGreaterThanOrEqual(0)
+          m.taxed.forEach((p) => { expect(p.baseSen).toBeGreaterThanOrEqual(0); expect(p.taxSen).toBeGreaterThanOrEqual(0) })
+        })
+        expect(sumTax(parts)).toEqual(bill.taxed.map((p) => p.taxSen))
+      }
+    }
+  })
+
+  it('pieces of 9 sen add up to the bill’s mix', () => {
+    const bill = billMix(a1)
+    let before = 0
+    let acc: ReturnType<typeof refundMix> | null = null
+    while (before < 2310) {
+      const piece = Math.min(9, 2310 - before)
+      const m = refundMix(bill, piece, before)
+      acc = acc ? addMix(acc, m) : m
+      before += piece
+    }
+    expect(acc!.taxed[0].taxSen).toBe(109)
+    expect(mixTotal(acc!)).toBe(2310)
+  })
+
+  it('refuses pieces that together pass the bill', () => {
+    expect(() => refundMix(billMix(a1), 300, 2100)).toThrow(/does not fit/)
+  })
+})
+
 describe('dayLines', () => {
   const entries = [
     { billNo: '261005-002', day: '2026-10-05', mix: billMix(a1) },
@@ -221,6 +271,11 @@ describe('buildDocument', () => {
   it('refuses an empty document and a line whose tax bases do not cover it', () => {
     expect(() => buildDocument(doc({}))).toThrow(/at least one line/)
     expect(() => buildDocument(doc({ lines: [{ ...plain, taxes: [{ rateBp: 600, baseSen: 50, taxSen: 3 }] }] }))).toThrow(/do not cover/)
+  })
+  it('refuses a credit note whose reference has no UUID', () => {
+    const l = { ...plain, taxes: [{ rateBp: 0, baseSen: 100, taxSen: 0 }] }
+    expect(() => buildDocument(doc({ kind: 'credit_note', lines: [l], references: [{ codeNumber: 'INV-1', uuid: '' }] })))
+      .toThrow(/code number and UUID/)
   })
   it('refuses a discount larger than the line', () => {
     expect(() => buildDocument(doc({ lines: [{ ...plain, allowanceSen: 101, taxes: [{ rateBp: 0, baseSen: -1, taxSen: 0 }] }] })))

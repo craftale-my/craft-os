@@ -366,12 +366,23 @@ begin
   if v_got is distinct from pg_temp.id('RA4')::text || '/VERIFY-E-INV-A4/Verify Buyer' then
     raise exception 'FAIL V4 single refunds: %', v_got;
   end if;
+  if (select p.refunded_before_sen from einvoice_pending_single_refunds() p where p.refund_id = pg_temp.id('RA4')) <> 0 then
+    raise exception 'FAIL V4 the first refund of a bill has refunded_before_sen 0';
+  end if;
   perform einvoice_create_document(
     jsonb_build_object('kind', 'credit_note', 'environment', 'sandbox', 'branchId', v_a, 'billId', pg_temp.id('A4'), 'totalSen', 100),
     '{}', array[pg_temp.id('RA4')]);
   if exists (select 1 from einvoice_pending_single_refunds() p where p.branch_id = v_a) then
     raise exception 'FAIL V4 a credited refund is still due';
   end if;
+  -- a second refund of the same bill carries what was refunded before it (the credit notes split cumulatively)
+  perform pg_temp.refund('RA4b', 'A4', 20, '2026-11-02 14:00');
+  if (select p.refunded_before_sen from einvoice_pending_single_refunds() p where p.refund_id = pg_temp.id('RA4b')) <> 100 then
+    raise exception 'FAIL V4 the second refund of a bill has refunded_before_sen = the first refund';
+  end if;
+  perform einvoice_create_document(
+    jsonb_build_object('kind', 'credit_note', 'environment', 'sandbox', 'branchId', v_a, 'billId', pg_temp.id('A4'), 'totalSen', 20),
+    '{}', array[pg_temp.id('RA4b')]);
   perform pg_temp.expect_error(
     format('select einvoice_create_document(%L::jsonb, %L::uuid[], array[%L]::uuid[])',
            jsonb_build_object('kind', 'credit_note', 'environment', 'sandbox', 'branchId', v_a, 'totalSen', 100), '{}', pg_temp.id('RA4')),

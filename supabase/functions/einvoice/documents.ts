@@ -3,7 +3,7 @@
 // Design: docs/superpowers/specs/2026-10-26-myinvois-einvoice-design.md (W5.2, W5.5, W5.6)
 
 import {
-  billMix, dayLines, documentTotals, GENERAL_PUBLIC, ledgerBillLines, mixLines, refundMix,
+  billMix, buildDocument, dayLines, documentTotals, GENERAL_PUBLIC, ledgerBillLines, mixLines, refundMix,
   type BillTotals, type DocInput, type DocKind, type DocRef, type LedgerLine, type Mix, type Party,
 } from './ubl.ts'
 
@@ -45,12 +45,19 @@ export interface PendingRefund {
   invoiceCode: string
   invoiceUuid: string
   invoiceBuyer: Party | null
+  refundedBeforeSen: number   // the same bill's refunds booked before this one
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 function checked(p: Planned, what: string): Planned {
-  const payable = documentTotals(p.build('check')).payable
+  const input = p.build('check')
+  try {
+    buildDocument(input)
+  } catch (e) {
+    throw new PlanError(message(e))
+  }
+  const payable = documentTotals(input).payable
   if (payable !== p.totalSen) throw new PlanError(`The document adds up to ${payable} sen, ${what} ${p.totalSen} sen`)
   return p
 }
@@ -67,7 +74,7 @@ function mixOf(totals: BillTotals | null, billNo: string): Mix {
 function refundShare(r: PendingRefund): Mix {
   const bill = mixOf(r.totals, r.billNo)
   try {
-    return refundMix(bill, r.amountSen)
+    return refundMix(bill, r.amountSen, r.refundedBeforeSen)
   } catch (e) {
     throw new PlanError(`Refund of ${r.billNo}: ${message(e)}`)
   }

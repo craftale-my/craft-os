@@ -54,7 +54,7 @@ const source = (over: Partial<BillSource['bill']> = {}, rest: Partial<Omit<BillS
 
 const refund = (over: Partial<PendingRefund> = {}): PendingRefund => ({
   refundId: 'r1', billId: 'b1', branchId: 'o1', billNo: '261005-002', amountSen: 300, refundDay: '2026-10-06',
-  totals: a1, invoiceCode: 'CON-261101-AAAAAA', invoiceUuid: 'UUID-OCT', invoiceBuyer: null, ...over,
+  totals: a1, invoiceCode: 'CON-261101-AAAAAA', invoiceUuid: 'UUID-OCT', invoiceBuyer: null, refundedBeforeSen: 0, ...over,
 })
 
 describe('planInvoice', () => {
@@ -150,6 +150,18 @@ describe('credit notes', () => {
     ])
     expect(input.lines[0].description).toBe('Refunds of receipts 261005-002 – 261005-002 (2), SST 6%')
     expect(documentTotals(input).payable).toBe(2530)
+  })
+
+  it('refuses a credit note whose invoice has no UUID, before anything is created', () => {
+    expect(() => planCreditNote(refund({ invoiceUuid: '' }), ctx)).toThrow(PlanError)
+    expect(() => planCreditNote(refund({ invoiceUuid: '' }), ctx)).toThrow(/UUID/)
+  })
+
+  it('credits a second partial refund against what was refunded before it', () => {
+    const first = planCreditNote(refund({ amountSen: 11 }), ctx).build('CN-1')
+    const second = planCreditNote(refund({ refundId: 'r2', amountSen: 2299, refundedBeforeSen: 11 }), ctx).build('CN-2')
+    const tax = (d: typeof first) => d.lines.reduce((a, l) => a + l.taxes.reduce((b, p) => b + p.taxSen, 0), 0)
+    expect(tax(first) + tax(second)).toBe(109)
   })
 
   it('refuses a refund larger than its bill', () => {
