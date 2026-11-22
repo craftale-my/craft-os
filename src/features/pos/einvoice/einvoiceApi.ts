@@ -1,9 +1,9 @@
 import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
-import type { CleanSettings, EinvoiceDoc, SettingsField } from './einvoice'
+import { STOP_AT, type Attempt, type CleanSettings, type EinvoiceDoc, type JobRun, type LargeBill, type SettingsField } from './einvoice'
 
 const DOC_COLUMNS =
-  'id, kind, environment, branch_id, code_number, bill_id, period_start, period_end, buyer, total_sen, status, errors, created_at, lhdn_uuid, long_id, bill:bills!einvoice_documents_bill_id_fkey(bill_no)'
+  'id, kind, environment, branch_id, code_number, bill_id, period_start, period_end, buyer, total_sen, status, errors, created_at, lhdn_uuid, long_id, needs_check, send_started_at, bill:bills!einvoice_documents_bill_id_fkey(bill_no)'
 
 export type SettingsRow = Partial<Record<SettingsField, string | null>> & { environment: 'sandbox' | 'production' }
 
@@ -76,3 +76,42 @@ const PORTAL = { sandbox: 'https://preprod.myinvois.hasil.gov.my', production: '
 /** LHDN's public validation page for a valid document (same link the receipt QR will carry). */
 export const validationLink = (d: Pick<EinvoiceDoc, 'environment' | 'lhdn_uuid' | 'long_id'>) =>
   d.lhdn_uuid && d.long_id ? `${PORTAL[d.environment]}/${d.lhdn_uuid}/share/${d.long_id}` : null
+
+// ── W5: outlets' start dates, the daily run, stopped attempts, bills over RM 10,000 ──
+export interface OutletRow { id: string; name: string; einvoice_from: string | null }
+
+export async function fetchOutlets(): Promise<OutletRow[]> {
+  const { data, error } = await supabase.from('branches').select('id, name, einvoice_from').order('name')
+  if (error) throw new Error(`Loading the outlets failed: ${error.message}`)
+  return (data ?? []) as OutletRow[]
+}
+
+/** null clears the date. The database refuses what the rules do not allow; its message is shown. */
+export async function setOutletStart(branchId: string, from: string | null): Promise<void> {
+  const { error } = await supabase.rpc('einvoice_set_outlet_start', { p_branch_id: branchId, p_from: from })
+  if (error) throw new Error(error.message)
+}
+
+export async function fetchJobRuns(limit = 10): Promise<JobRun[]> {
+  const { data, error } = await supabase.from('einvoice_job_runs')
+    .select('id, started_at, environment, outcome, report').order('started_at', { ascending: false }).limit(limit)
+  if (error) throw new Error(`Loading the daily runs failed: ${error.message}`)
+  return (data ?? []) as JobRun[]
+}
+
+export async function fetchStoppedAttempts(): Promise<Attempt[]> {
+  const { data, error } = await supabase.from('einvoice_job_attempts')
+    .select('key, kind, branch_id, period_start, refund_id, failures, last_error, updated_at')
+    .gte('failures', STOP_AT).order('updated_at', { ascending: false })
+  if (error) throw new Error(`Loading the stopped e-invoice runs failed: ${error.message}`)
+  return (data ?? []) as Attempt[]
+}
+
+export async function fetchLargeBills(): Promise<LargeBill[]> {
+  const { data, error } = await supabase.rpc('einvoice_large_bills')
+  if (error) throw new Error(`Loading the bills over RM 10,000 failed: ${error.message}`)
+  return (data ?? []) as LargeBill[]
+}
+
+/** Send a needs-check draft once, after the owner looked in the MyInvois portal and it is not there. */
+export const resendDocument = (documentId: string) => callEinvoice({ action: 'resend', documentId })

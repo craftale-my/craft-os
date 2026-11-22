@@ -85,6 +85,9 @@ export interface EinvoiceDoc {
   created_at: string
   lhdn_uuid: string | null
   long_id: string | null
+  /** A draft with needs_check: LHDN's answer to a send is unknown (reason in `errors`); never resent automatically. */
+  needs_check?: boolean | null
+  send_started_at?: string | null
   /** Joined for display; absent in tests. */
   bill?: { bill_no: string } | null
 }
@@ -100,24 +103,39 @@ export const KIND_LABEL: Record<DocKind, string> = {
 const coverKey = (d: EinvoiceDoc) =>
   d.kind.startsWith('consolidated') ? `${d.kind}|${d.branch_id}|${d.period_start}` : `${d.kind}|${d.bill_id}`
 
-const needsOwner = (d: EinvoiceDoc) =>
-  d.status === 'rejected' || d.status === 'invalid' || (d.status === 'draft' && d.errors != null)
+/** A draft whose send has an unknown answer (check the MyInvois portal, then Send again). */
+export const isNeedsCheck = (d: EinvoiceDoc) => d.status === 'draft' && d.needs_check === true
 
-/** Documents whose latest attempt failed — the only ones the owner has to look at. */
-export function openProblems(docs: EinvoiceDoc[]): EinvoiceDoc[] {
+const needsOwner = (d: EinvoiceDoc) =>
+  !isNeedsCheck(d) && (d.status === 'rejected' || d.status === 'invalid' || (d.status === 'draft' && d.errors != null))
+
+function latestPerCover(docs: EinvoiceDoc[]): EinvoiceDoc[] {
   const latest = new Map<string, EinvoiceDoc>()
   for (const d of docs) {
     const k = coverKey(d)
     const cur = latest.get(k)
     if (!cur || d.created_at > cur.created_at) latest.set(k, d)
   }
-  return [...latest.values()].filter(needsOwner).sort((a, b) => b.created_at.localeCompare(a.created_at))
+  return [...latest.values()]
 }
+
+const newestFirst = (a: EinvoiceDoc, b: EinvoiceDoc) => b.created_at.localeCompare(a.created_at)
+
+/** Documents whose latest attempt failed — the only ones the owner has to look at. */
+export function openProblems(docs: EinvoiceDoc[]): EinvoiceDoc[] {
+  return latestPerCover(docs).filter(needsOwner).sort(newestFirst)
+}
+
+/** Latest documents that are needs-check drafts; never resent automatically. */
+export const needsCheckDocs = (docs: EinvoiceDoc[]): EinvoiceDoc[] => latestPerCover(docs).filter(isNeedsCheck).sort(newestFirst)
+
+export const NEEDS_CHECK_COPY = 'Check the MyInvois portal for this document. If it is not there, press Send again.'
 
 export interface Retry { label: string; body: Record<string, unknown> }
 
 /** The Edge Function call that moves this document forward, or null when there is nothing to do. */
 export function retryFor(d: EinvoiceDoc): Retry | null {
+  if (isNeedsCheck(d)) return { label: 'Send again', body: { action: 'resend', documentId: d.id } }
   if (d.status === 'draft') return { label: 'Resend', body: { action: 'refresh', documentId: d.id } }
   if (d.status === 'submitted') return { label: 'Check with LHDN', body: { action: 'refresh', documentId: d.id } }
   if (d.status !== 'rejected' && d.status !== 'invalid') return null
@@ -127,7 +145,10 @@ export function retryFor(d: EinvoiceDoc): Retry | null {
   if (d.kind === 'invoice' && d.bill_id) {
     return { label: 'Retry', body: { action: 'submit_bill', billId: d.bill_id, buyer: d.buyer ?? undefined } }
   }
-  return null // credit notes: not built yet
+  if (d.kind === 'credit_note' || d.kind === 'consolidated_credit_note') {
+    return { label: 'Retry', body: { action: 'credit_notes' } }   // its refunds were given back: issue what is due
+  }
+  return null
 }
 
 /** LHDN's error payloads vary by endpoint; pull out something a person can read. */
@@ -148,4 +169,138 @@ export function errorText(errors: unknown): string {
   }
   walk(errors, 0)
   return found.length ? found.join(' · ') : JSON.stringify(errors).slice(0, 200)
+}
+
+// ── Outlet start dates (W5.3) ───────────────────────────────────────────────
+export const LIVE_STATUSES: DocStatus[] = ['draft', 'submitted', 'valid']
+
+export const hasLiveDocument = (docs: EinvoiceDoc[], branchId: string) =>
+  docs.some((d) => d.branch_id === branchId && LIVE_STATUSES.includes(d.status))
+
+export const START_DATE_LOCKED = 'E-invoices were already sent for this outlet: the start date can only move later.'
+
+/** The screen's copy of branches_einvoice_from_guard; null = fine to save. '' clears the date. */
+export function startDateProblem(next: string, current: string | null, live: boolean): string | null {
+  if (next !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(next)) return 'Pick a date'
+  if (live && current && (next === '' || next < current)) return START_DATE_LOCKED
+  return null
+}
+
+// ── The buyer of a bill over RM 10,000 (W5.6) ───────────────────────────────
+export type BuyerIdType = 'BRN' | 'NRIC' | 'PASSPORT' | 'ARMY'
+export const BUYER_ID_TYPES: { value: BuyerIdType; label: string }[] = [
+  { value: 'BRN', label: 'Company (SSM no.)' }, { value: 'NRIC', label: 'MyKad (IC no.)' },
+  { value: 'PASSPORT', label: 'Passport' }, { value: 'ARMY', label: 'Army / police ID' },
+]
+
+export interface BuyerForm {
+  name: string; tin: string; idType: BuyerIdType; idValue: string; email: string; phone: string
+  addressLine: string; city: string; postcode: string; stateCode: string
+}
+
+export const emptyBuyer = (): BuyerForm => ({
+  name: '', tin: '', idType: 'BRN', idValue: '', email: '', phone: '', addressLine: '', city: '', postcode: '', stateCode: '',
+})
+
+const cleanTin = (v: string) => v.trim().toUpperCase().replace(/\s+/g, '')
+
+/** The `buyer` submit_bill reads (buyerParty in supabase/functions/einvoice/index.ts). */
+export function buyerPayload(f: BuyerForm) {
+  const t = (v: string) => v.trim() || undefined
+  return {
+    name: f.name.trim(), tin: cleanTin(f.tin), idType: f.idType, idValue: f.idValue.trim().replace(/[\s-]+/g, ''),
+    email: t(f.email), phone: f.phone.replace(/[\s-]+/g, '') || undefined,
+    address: { line: t(f.addressLine), city: t(f.city), postcode: t(f.postcode), stateCode: f.stateCode || undefined },
+  }
+}
+
+export function checkBuyer(f: BuyerForm): Partial<Record<keyof BuyerForm, string>> {
+  const errs: Partial<Record<keyof BuyerForm, string>> = {}
+  if (!f.name.trim()) errs.name = 'Required'
+  const tin = cleanTin(f.tin)
+  if (!tin) errs.tin = 'Required'
+  else if (!/^[A-Z]{1,2}\d{8,12}$/.test(tin)) errs.tin = 'A TIN looks like C12345678090 or IG12345678901'
+  if (!f.idValue.trim()) errs.idValue = 'Required'
+  if (f.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) errs.email = 'Not an email address'
+  if (f.postcode.trim() && !/^\d{5}$/.test(f.postcode.trim())) errs.postcode = 'Postcode is 5 digits'
+  return errs
+}
+
+export interface LargeBill { id: string; branch_id: string; bill_no: string; day: string; total_sen: number }
+
+// ── The daily run (W5.4) ────────────────────────────────────────────────────
+interface JobStepJson { key: string; outcome: string; codeNumber?: string; error?: string }
+/** einvoice_job_runs.report: the JobReport of supabase/functions/einvoice/job.ts. */
+export interface JobReportJson {
+  setUp?: boolean
+  notSetUp?: string
+  refreshed?: { codeNumber: string; status: string }[]
+  consolidated?: JobStepJson[]
+  creditNotes?: JobStepJson[]
+  errors?: string[]
+}
+export interface JobRun {
+  id: string
+  started_at: string
+  environment: 'sandbox' | 'production'
+  outcome: 'not_set_up' | 'ok' | 'errors'
+  report: JobReportJson
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+export function runSummary(r: JobRun): string {
+  if (r.outcome === 'not_set_up') return `Not set up — nothing sent${r.report.notSetUp ? ` (${r.report.notSetUp})` : ''}`
+  const rep = r.report
+  const sent = (l?: JobStepJson[]) => (l ?? []).filter((x) => x.outcome === 'issued').length
+  const problems = (rep.errors?.length ?? 0)
+    + [...(rep.consolidated ?? []), ...(rep.creditNotes ?? [])].filter((x) => ['rejected', 'refused', 'stopped'].includes(x.outcome)).length
+  return [
+    `${rep.refreshed?.length ?? 0} checked with LHDN`,
+    `${sent(rep.consolidated)} monthly sent`,
+    `${plural(sent(rep.creditNotes), 'credit note')} sent`,
+    ...(problems ? [plural(problems, 'problem')] : []),
+  ].join(' · ')
+}
+
+// ── Stopped attempts (einvoice_job_attempts) ────────────────────────────────
+export const STOP_AT = 3
+
+export interface Attempt {
+  key: string
+  kind: 'consolidated_invoice' | 'consolidated_credit_note' | 'credit_note'
+  branch_id: string
+  period_start: string | null
+  refund_id: string | null
+  failures: number
+  last_error: string | null
+  updated_at: string
+}
+
+/** What Retry sends for an attempt the daily run stopped. */
+export function retryForAttempt(a: Attempt): Retry {
+  if (a.kind === 'consolidated_invoice' && a.period_start) {
+    return { label: 'Retry', body: { action: 'consolidate', branchId: a.branch_id, month: a.period_start.slice(0, 7) } }
+  }
+  return { label: 'Retry', body: { action: 'credit_notes' } }
+}
+
+// ── The banner (W5.7) ───────────────────────────────────────────────────────
+export interface BannerInput { docs: EinvoiceDoc[]; stopped: Attempt[]; largeBills: LargeBill[]; lastRun: JobRun | null }
+
+export function bannerMessages(i: BannerInput): string[] {
+  const out: string[] = []
+  const rejected = openProblems(i.docs).length
+  if (rejected) out.push(`LHDN did not accept ${rejected === 1 ? 'an e-invoice' : `${rejected} e-invoices`}.`)
+  const stopped = i.stopped.filter((a) => a.failures >= STOP_AT).length
+  if (stopped) out.push(`${stopped === 1 ? 'An e-invoice run' : `${stopped} e-invoice runs`} stopped after 3 failed attempts.`)
+  const large = i.largeBills.length
+  if (large) {
+    out.push(`${large === 1 ? 'A bill' : `${large} bills`} over RM 10,000 ${large === 1 ? 'needs' : 'need'} the buyer's details for an individual e-invoice.`)
+  }
+  if (i.lastRun?.outcome === 'not_set_up' && i.lastRun.environment === 'production') {
+    out.push('E-invoicing is not set up: nothing is being sent to LHDN.')
+  }
+  if (needsCheckDocs(i.docs).length) out.push('An e-invoice needs checking in the MyInvois portal.')
+  return out
 }
