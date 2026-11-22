@@ -9,10 +9,12 @@
 --     pos_report_ledger re-created to read its lines from it (same output), so an e-invoice and
 --     Reports → Ledger export agree to the sen.
 -- E2  branches.einvoice_from (the outlet's start date) with its guard trigger and einvoice_set_outlet_start.
--- E3  einvoice_job_runs (one row per daily run) and einvoice_job_attempts (failures per outlet-month or refund).
+-- E3  einvoice_job_runs (one row per daily run, 'running' until it ends) and einvoice_job_attempts (failures per
+--     outlet-month or refund).
 -- E4  What a document is built from: einvoice_bill_lines, einvoice_bill_source (ledger lines),
 --     einvoice_unlinked_paid_bills (business month, start date, RM 10,000 out), einvoice_large_bills (the
---     screen), einvoice_create_document (refuses bills before the start date).
+--     screen), einvoice_unreported_months (closed months still to report: the daily run and the screen),
+--     einvoice_create_document (refuses bills before the start date).
 -- E5  Refunds due a credit note: einvoice_pending_single_refunds, einvoice_pending_consolidated_refunds,
 --     einvoice_consolidated_refund_months.
 -- E6  einvoice_record_attempt; einvoice_reconcile_source (the reconciliation's input).
@@ -189,7 +191,8 @@ revoke all on function einvoice_set_outlet_start(uuid, date) from public, anon;
 grant execute on function einvoice_set_outlet_start(uuid, date) to authenticated;
 
 -- ── E3. The daily job's bookkeeping (spec W5.4) ──────────────────────────────
--- One row per run (written by the Edge Function's `run`), and one row per thing that can fail repeatedly:
+-- One row per run (the Edge Function's `run` writes it 'running' with no finished_at when it starts and completes it
+-- at the end, so a run killed half-way stays visible), and one row per thing that can fail repeatedly:
 -- CON|<outlet>|YYYY-MM (a month's consolidated invoice), CCN|<outlet>|YYYY-MM (its consolidated credit note),
 -- CN|<refund id> (a single credit note). At 3 failures the run skips the key and the banner shows it.
 create table if not exists einvoice_job_runs (
@@ -197,10 +200,14 @@ create table if not exists einvoice_job_runs (
   started_at   timestamptz not null default now(),
   finished_at  timestamptz,
   environment  text not null check (environment in ('sandbox', 'production')),
-  outcome      text not null check (outcome in ('not_set_up', 'ok', 'errors')),
+  outcome      text not null check (outcome in ('running', 'not_set_up', 'ok', 'errors')),
   report       jsonb not null default '{}'::jsonb
 );
 create index if not exists einvoice_job_runs_started_idx on einvoice_job_runs(started_at desc);
+-- the table may exist from before 'running' (dev): the check re-created with it
+alter table einvoice_job_runs drop constraint if exists einvoice_job_runs_outcome_check;
+alter table einvoice_job_runs add constraint einvoice_job_runs_outcome_check
+  check (outcome in ('running', 'not_set_up', 'ok', 'errors'));
 
 create table if not exists einvoice_job_attempts (
   key           text primary key,
@@ -305,6 +312,33 @@ language sql stable security definer set search_path = public, pg_temp as $$
 $$;
 revoke all on function einvoice_large_bills() from public, anon;
 grant execute on function einvoice_large_bills() to authenticated;
+
+-- Closed business months not reported yet: for each outlet with a start date and each business month before the
+-- current one, the paid bills of at most RM 10,000 on or after the start date that sit in no live document (as
+-- einvoice_unlinked_paid_bills selects them), with their count and sum, oldest first. The daily run consolidates
+-- these; the screen and the banner list them. No signed-in user (the service role, the SQL editor) sees every
+-- row; a signed-in caller sees nothing without access_settings.
+create or replace function einvoice_unreported_months()
+returns table (branch_id uuid, month date, bills integer, total_sen bigint)
+language sql stable security definer set search_path = public, pg_temp as $$
+  select b.branch_id, date_trunc('month', pos_business_day(b.closed_at)::timestamp)::date,
+         count(*)::integer, sum(b.total_sen)::bigint
+    from bills b
+    join branches br on br.id = b.branch_id
+   where (auth.uid() is null or has_menu_cap('access_settings'))
+     and b.status = 'paid'
+     and br.einvoice_from is not null
+     and b.closed_at >= (br.einvoice_from + time '06:00') at time zone 'Asia/Kuala_Lumpur'
+     and b.closed_at <  (date_trunc('month', pos_business_day(now())::timestamp)::date + time '06:00')
+                        at time zone 'Asia/Kuala_Lumpur'
+     and b.total_sen <= 1000000
+     and not exists (select 1 from einvoice_bill_links l where l.bill_id = b.id)
+   group by 1, 2
+   order by 2, 1
+$$;
+revoke all on function einvoice_unreported_months() from public, anon;
+grant execute on function einvoice_unreported_months() to authenticated;
+grant execute on function einvoice_unreported_months() to service_role;
 
 -- einvoice_create_document: the live text of migration-2026-10-26-einvoice.sql with the guard marked W5 added:
 -- every bill it claims, and the bill of every refund, is paid, of the document's outlet and on or after the

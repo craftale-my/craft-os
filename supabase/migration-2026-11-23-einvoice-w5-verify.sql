@@ -1,7 +1,8 @@
 -- Self-check for e-invoice W5. Run on craft-os-dev after migration-2026-11-23-einvoice-w5.sql. Everything is
 -- rolled back. Success = a result row "VERIFY OK". Sections (one DO block each, ids in the temp table fixture):
 -- FIXTURE; V1 the shared ledger lines; V2 the outlet start date; V3 bills over RM 10,000; V4 refunds due a credit
--- note; V5 job bookkeeping and access; V6 bill source and reconciliation source.
+-- note; V5 job bookkeeping and access; V6 bill source and reconciliation source; V7 claiming a draft; V8 closed months
+-- not reported yet, and a run written 'running' first.
 -- Bills are written straight into the tables (no till) and priced by pos_bill_totals, as checkout freezes them.
 -- Outlet VERIFY E A: SST registered (the default), 10% service charge on dine-in lines, 5 sen rounding; VERIFY E B:
 -- no service charge, no start date. Malaysia time:
@@ -520,6 +521,63 @@ begin
      or has_function_privilege('anon', 'einvoice_claim_send(uuid)', 'execute') then
     raise exception 'FAIL V7 einvoice_claim_send grants';
   end if;
+end $$;
+
+-- ── V8. Closed months not reported yet (einvoice_unreported_months), and a run written 'running' first ──
+-- Outlet B starts mid-month (15 Aug): EB0 (10 Aug) is before it, EB2 (20 Aug) counts; September holds only a bill
+-- over RM 10,000 (EB3); October holds EB1 until it is consolidated; a bill of the current business month (EB4)
+-- never counts. Outlet A's bills from its start date on all sit in documents (V2–V4).
+do $$
+declare
+  v_a   uuid := pg_temp.id('a');
+  v_b   uuid := pg_temp.id('b');
+  v_got text;
+  v_run uuid;
+begin
+  update branches set einvoice_from = '2026-08-15' where id = v_b;
+  perform pg_temp.paid_bill('B0', 'b', 'EB0', null, '2026-08-10 12:00', '[{"name": "Verify E Latte", "sen": 1000, "bp": 600}]');
+  perform pg_temp.paid_bill('B2', 'b', 'EB2', null, '2026-08-20 12:00', '[{"name": "Verify E Latte", "sen": 1000, "bp": 600}]');
+  perform pg_temp.paid_bill('B3', 'b', 'EB3', null, '2026-09-12 12:00', '[{"name": "Verify E Catering", "sen": 1100000, "bp": 0}]');
+  perform pg_temp.paid_bill('B4', 'b', 'EB4', null, to_char(pos_business_day(now()), 'YYYY-MM-DD') || ' 12:00',
+                            '[{"name": "Verify E Latte", "sen": 1000, "bp": 600}]');
+
+  -- access_settings: B's August (1 bill, the mid-month start) and October, oldest first; nothing of A
+  perform pg_temp.act(pg_temp.id('owner'));
+  select string_agg(to_char(u.month, 'YYYY-MM') || '/' || u.bills || '/' || u.total_sen, ',') into v_got
+    from einvoice_unreported_months() u where u.branch_id = v_b;
+  if v_got is distinct from '2026-08/1/1060,2026-10/1/1060' then raise exception 'FAIL V8 outlet B: %', v_got; end if;
+  if exists (select 1 from einvoice_unreported_months() u where u.branch_id = v_a) then
+    raise exception 'FAIL V8 outlet A has unreported months: %', (select string_agg(u.month::text, ',') from einvoice_unreported_months() u where u.branch_id = v_a);
+  end if;
+  -- a caller without access_settings sees nothing; no signed-in user (the service role) sees everything
+  perform pg_temp.act(pg_temp.id('cashier'));
+  if exists (select 1 from einvoice_unreported_months()) then raise exception 'FAIL V8 a cashier sees unreported months'; end if;
+  perform set_config('request.jwt.claims', json_build_object('role', 'service_role')::text, true);
+  if (select count(*) from einvoice_unreported_months() u where u.branch_id = v_b) <> 2 then
+    raise exception 'FAIL V8 the service role does not see the unreported months';
+  end if;
+  perform set_config('request.jwt.claims', '', true);
+
+  -- October consolidated: only August is left
+  perform einvoice_create_document(
+    jsonb_build_object('kind', 'consolidated_invoice', 'environment', 'sandbox', 'branchId', v_b,
+                       'periodStart', '2026-10-01', 'periodEnd', '2026-10-31', 'totalSen', 1060),
+    array[pg_temp.id('B1')], '{}');
+  select string_agg(to_char(u.month, 'YYYY-MM'), ',') into v_got from einvoice_unreported_months() u where u.branch_id = v_b;
+  if v_got is distinct from '2026-08' then raise exception 'FAIL V8 after consolidating October: %', v_got; end if;
+
+  if not has_function_privilege('authenticated', 'einvoice_unreported_months()', 'execute')
+     or not has_function_privilege('service_role', 'einvoice_unreported_months()', 'execute')
+     or has_function_privilege('anon', 'einvoice_unreported_months()', 'execute') then
+    raise exception 'FAIL V8 einvoice_unreported_months grants';
+  end if;
+
+  -- a run is written 'running' with no finish, then completed
+  insert into einvoice_job_runs(environment, outcome, report) values ('sandbox', 'running', '{"verify": "running"}')
+  returning id into v_run;
+  if (select finished_at from einvoice_job_runs where id = v_run) is not null then raise exception 'FAIL V8 a running run has finished'; end if;
+  update einvoice_job_runs set outcome = 'ok', finished_at = now() where id = v_run;
+  if (select outcome from einvoice_job_runs where id = v_run) <> 'ok' then raise exception 'FAIL V8 the run was not completed'; end if;
 end $$;
 
 select 'VERIFY OK' as result;

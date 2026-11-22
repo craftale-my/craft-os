@@ -455,7 +455,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'pos_ledger_lines', 'pos_report_ledger',
       'branches_einvoice_from_guard', 'einvoice_set_outlet_start',
       'einvoice_bill_lines', 'einvoice_bill_source', 'einvoice_unlinked_paid_bills', 'einvoice_large_bills',
-      'einvoice_create_document',
+      'einvoice_unreported_months', 'einvoice_create_document',
       'einvoice_pending_single_refunds', 'einvoice_pending_consolidated_refunds', 'einvoice_consolidated_refund_months',
       'einvoice_record_attempt', 'einvoice_claim_send', 'einvoice_reconcile_source',
     ])
@@ -475,7 +475,16 @@ describe('pg-safeupdate guard: POS migrations', () => {
       expect(sql).toContain(`grant execute on function ${f} to service_role;`)
     }
     expect([...sql.matchAll(/grant execute on function (\w+)\([^)]*\) to authenticated;/g)].map((m) => m[1]).sort())
-      .toEqual(['einvoice_large_bills', 'einvoice_set_outlet_start', 'pos_report_ledger'])
+      .toEqual(['einvoice_large_bills', 'einvoice_set_outlet_start', 'einvoice_unreported_months', 'pos_report_ledger'])
+    // the closed months still to report: the screen (access_settings) and the daily run (service role)
+    expect(sql).toContain('revoke all on function einvoice_unreported_months() from public, anon;')
+    expect(sql).toContain('grant execute on function einvoice_unreported_months() to service_role;')
+    expect(body('einvoice_unreported_months')).toContain("(auth.uid() is null or has_menu_cap(''))")
+    expect(body('einvoice_unreported_months')).toContain('b.total_sen <= 1000000')
+    expect(body('einvoice_unreported_months')).toContain('not exists (select 1 from einvoice_bill_links l where l.bill_id = b.id)')
+    // a run is written 'running' first; the check is re-created so it re-applies over the table already on dev
+    expect(sql).toContain('alter table einvoice_job_runs drop constraint if exists einvoice_job_runs_outcome_check;')
+    expect(sql).toContain("check (outcome in ('running', 'not_set_up', 'ok', 'errors'));")
     expect(body('branches_einvoice_from_guard')).toContain("d.status in ('', '', '')")       // strings emptied: draft, submitted, valid
     expect(body('branches_einvoice_from_guard')).toContain('new.einvoice_from < old.einvoice_from')
     expect(body('einvoice_unlinked_paid_bills')).toContain('b.total_sen <= 1000000')
@@ -486,7 +495,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'einvoice w5 applied' as result;\s*$/)
     const verify = readFileSync(new URL('migration-2026-11-23-einvoice-w5-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)
-    for (const v of ['V1', 'V2', 'V3', 'V4', 'V5', 'V6']) expect(verify).toContain(`-- ── ${v}. `)
+    for (const v of ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8']) expect(verify).toContain(`-- ── ${v}. `)
     expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
   it('scans the W5 cron file: einvoice_call_job internal, secrets only from Vault, 07:00 Malaysia time, a STOP guard', () => {
