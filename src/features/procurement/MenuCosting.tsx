@@ -49,12 +49,19 @@ export default function MenuCostingPage() {
 
   const load = useCallback(async () => {
     const id = ++reqId.current
-    const { data, error: err } = await supabase
-      .from('menu_variant_costs').select('*').eq('is_active', true)
-    if (id !== reqId.current) return
-    if (err) setError(err.message)
-    setRows(((data as MenuVariantCost[]) ?? []).map(normalise))
-    setLoading(false)
+    try {
+      const { data, error: err } = await supabase
+        .from('menu_variant_costs').select('*').eq('is_active', true)
+      if (id !== reqId.current) return
+      // On error keep the rows already on screen rather than wiping the list.
+      if (err) { setError(err.message); return }
+      setRows(((data as MenuVariantCost[]) ?? []).map(normalise))
+      setError('')
+    } catch (e) {
+      if (id === reqId.current) setError(e instanceof Error ? e.message : 'Could not load menu costs. Check your connection and try again.')
+    } finally {
+      if (id === reqId.current) setLoading(false)
+    }
   }, [])
   useEffect(() => { load(); return () => { reqId.current++ } }, [load])
 
@@ -71,6 +78,8 @@ export default function MenuCostingPage() {
       ;({ error: err } = await supabase.rpc('set_category_target', {
         p_category_id: categoryId, p_target_bp: pct === null ? null : Math.round(pct * 100),
       }))
+    } catch (e) {
+      err = { message: e instanceof Error ? e.message : 'Could not save the target. Check your connection and try again.' }
     } finally {
       busy.current = false
     }
@@ -100,6 +109,7 @@ export default function MenuCostingPage() {
     for (const g of list) {
       g.rows.sort(sortWorst
         ? (a, b) => (b.food_cost_bp ?? -1) - (a.food_cost_bp ?? -1)
+            || a.product_name.localeCompare(b.product_name) || a.variant_name.localeCompare(b.variant_name)
         : (a, b) => a.product_name.localeCompare(b.product_name) || a.variant_name.localeCompare(b.variant_name))
     }
     return list
