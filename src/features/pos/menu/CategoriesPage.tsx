@@ -1,6 +1,7 @@
 // src/features/pos/menu/CategoriesPage.tsx
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchLookups, reorderCategories, saveCategory, setCategoryActive, type LookupCategory } from './menuEditorApi'
+import { fetchLookups, reorderCategories, saveCategory, setCategoryActive, setCategoryKind, type LookupCategory } from './menuEditorApi'
+import type { CategoryKind } from '../order/cart'
 import { listNameProblem, reorderedIds } from './listAdmin'
 import { cleanName } from './menuForms'
 import { OutcomeLine, PageHeader, btnCls, errorText, inputCls, linkBtnCls, type Outcome } from './editorUi'
@@ -82,6 +83,12 @@ export default function CategoriesPage() {
     const ids = categories && reorderedIds(categories, index, delta)
     if (ids) void run(ids[index + delta], () => reorderCategories(ids), 'Moved')
   }
+  /** Type: Drink / Food / Other — the QR page's AI Pick suggests food with drinks and a drink with food. */
+  const setKind = (c: LookupCategory, value: string) => {
+    const kind: CategoryKind | null = value === 'drink' || value === 'food' ? value : null
+    if (kind === (c.kind ?? null)) return
+    void run(c.id, () => setCategoryKind(c.id, kind), 'Type saved')
+  }
   const toggle = (c: LookupCategory) => {
     if (c.isActive && c.productCount > 0
         && !window.confirm(`${c.productCount} products in ${c.name} leave the counter and the QR menu until you switch it back on.`)) return
@@ -90,7 +97,7 @@ export default function CategoriesPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-6">
-      <PageHeader title="Categories" count={categories?.length} hint="The order here is the order of the counter and the QR menu." />
+      <PageHeader title="Categories" count={categories?.length} hint="The order here is the order of the counter and the QR menu. Type (Drink / Food) lets the QR page suggest food with drinks and a drink with food." />
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
@@ -123,6 +130,15 @@ export default function CategoriesPage() {
                     <span className="font-medium">{c.name}</span>{c.isActive ? '' : ' (off)'}
                     <span className="ml-2 text-xs text-brown-muted">{c.productCount} product{c.productCount === 1 ? '' : 's'}</span>
                   </span>
+                  <label className="flex items-center gap-1 text-sm text-brown-muted">
+                    Type
+                    <select className={inputCls} disabled={locked} aria-label={`Type of ${c.name}`} value={c.kind ?? ''}
+                      onChange={(e) => setKind(c, e.target.value)}>
+                      <option value="drink">Drink</option>
+                      <option value="food">Food</option>
+                      <option value="">Other</option>
+                    </select>
+                  </label>
                   <button className={linkBtnCls} disabled={locked} onClick={() => setRenaming({ id: c.id, name: c.name })}>Rename</button>
                   <button className={linkBtnCls} disabled={locked || i === 0} aria-label="Move up" onClick={() => move(i, -1)}>↑</button>
                   <button className={linkBtnCls} disabled={locked || i === categories.length - 1} aria-label="Move down" onClick={() => move(i, 1)}>↓</button>

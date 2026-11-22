@@ -5,10 +5,12 @@
  *  in the words the editor shows. All of them need Edit menu (manage_menu). */
 import { supabase } from '../../../shared/lib/supabase'
 import type { Availability } from './feedmeExport'
+import type { CategoryKind } from '../order/cart'
 
 export type CatalogRole = 'dine_in' | 'takeaway' | 'qr' | 'additional'
 
-export interface LookupCategory { id: string; name: string; isActive: boolean; sortOrder: number; productCount: number }
+/** kind: drink / food / null = Other (migration-2026-11-23-menu-category-kind.sql); absent from an older server */
+export interface LookupCategory { id: string; name: string; isActive: boolean; sortOrder: number; productCount: number; kind?: CategoryKind | null }
 export interface LookupCatalog {
   id: string
   name: string
@@ -164,3 +166,5 @@ export const saveCatalogRow = (p: CatalogRowPayload) => call<null>('menu_save_ca
 export const saveCategory = (id: string | null, name: string) => call<string>('menu_save_category', { p_id: id, p_name: name })
 export const reorderCategories = (ids: string[]) => call<null>('menu_reorder_categories', { p_ids: ids })
 export const setCategoryActive = (id: string, active: boolean) => call<null>('menu_set_category_active', { p_id: id, p_active: active })
+/** The category's Type: the QR page's AI Pick suggests food with drinks and a drink with food. */
+export const setCategoryKind = (id: string, kind: CategoryKind | null) => call<null>('menu_set_category_kind', { p_id: id, p_kind: kind })
