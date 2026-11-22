@@ -30,8 +30,16 @@ async function toCodeStep(a: Api, member = outMember()) {
   render(<MemberSheet member={member} api={a} tableToken="TABLETOK" onClose={() => {}} />)
   typeNumber('12-345 6789')
   fireEvent.click(screen.getByRole('button', { name: 'Send code' }))
-  await screen.findByRole('heading', { name: 'Enter the code we sent to +60 12-345 6789' })
+  await screen.findByRole('heading', { name: 'Enter the code we sent to your WhatsApp' })
 }
+
+describe('MemberSheet — the code step copy', () => {
+  it('the number under the heading, and what to do when nothing arrives', async () => {
+    await toCodeStep(api())
+    expect(screen.getByText('+60 12-345 6789')).toBeTruthy()
+    expect(screen.getByText('Nothing in WhatsApp? Check the number, or ask our staff to add it for you.')).toBeTruthy()
+  })
+})
 
 describe('MemberSheet — the number', () => {
   it('fixed +60, numeric keypad, tel-national, the small print', () => {
@@ -41,14 +49,14 @@ describe('MemberSheet — the number', () => {
     const input = screen.getByLabelText('Phone number')
     expect(input.getAttribute('inputmode')).toBe('numeric')
     expect(input.getAttribute('autocomplete')).toBe('tel-national')
-    expect(screen.getByText('We text you a 6-digit code. We only use your number for your points.')).toBeTruthy()
+    expect(screen.getByText('We send a 6-digit code to your WhatsApp. We only use your number for your points.')).toBeTruthy()
   })
   it('How we use your number opens the notice inside the sheet', () => {
     render(<MemberSheet member={outMember()} api={api()} tableToken="TABLETOK" onClose={() => {}} />)
     expect(screen.queryByRole('note')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'How we use your number' }))
     const note = screen.getByRole('note')
-    expect(note.textContent).toContain('We keep your phone number, your points and the visits they came from, the type of device you sign in on, and — for two days — the network address used to ask for a code. We use them only to run your points.')
+    expect(note.textContent).toContain('We keep your phone number, your points and the visits they came from, the type of device you sign in on, and — for two days — the network address used to ask for a code. We use them only to run your points. The code is sent through WhatsApp.')
     expect(note.textContent).toContain('To delete your details, ask our staff.')
     expect(note.textContent).not.toMatch(/@|email/i)
   })
@@ -99,7 +107,7 @@ describe('MemberSheet — the code', () => {
     await screen.findByRole('heading', { name: "You're in!" })
   })
   it.each([
-    ['a pasted SMS', 'Craft Cafe: your code is 654321. It expires in 5 minutes.'],
+    ['a pasted WhatsApp message', '654321 is your verification code. For your security, do not share this code.'],
     ['spaces and dashes', ' 65-43 21 '],
     ['full-width digits', '６５４３２１'],
     ['more than six digits', '6543219999'],
@@ -225,7 +233,7 @@ describe('MemberSheet — dialog', () => {
     expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy()
     typeNumber('12-345 6789')
     fireEvent.click(screen.getByRole('button', { name: 'Send code' }))
-    expect(await screen.findByRole('dialog', { name: 'Enter the code we sent to +60 12-345 6789' })).toBeTruthy()
+    expect(await screen.findByRole('dialog', { name: 'Enter the code we sent to your WhatsApp' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy()
     fireEvent.change(screen.getByLabelText('6-digit code'), { target: { value: '123456' } })
     expect(await screen.findByRole('dialog', { name: "You're in!" })).toBeTruthy()

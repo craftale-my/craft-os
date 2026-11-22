@@ -275,13 +275,13 @@ function SettingsSection() {
           Members on QR page
         </label>
         <label className="text-sm">
-          <span className="block text-xs text-brown-muted">SMS codes per day</span>
+          <span className="block text-xs text-brown-muted">Sign-in codes per day</span>
           <input type="number" min={0} max={100000} step="1" value={cap} disabled={!loaded}
             onChange={(e) => { setCap(e.target.value); setStatus(null) }} className={`${input} w-28`} />
         </label>
         <button type="submit" disabled={!loaded || busy} className={`${btn} bg-brown-btn text-white hover:bg-brown-btn-hover`}>{busy ? 'Saving…' : 'Save'}</button>
       </form>
-      {sentToday !== null && <p className="mt-2 text-xs text-brown-muted">SMS codes sent today: {sentToday}</p>}
+      {sentToday !== null && <p className="mt-2 text-xs text-brown-muted">Sign-in codes sent today: {sentToday}</p>}
       {status && <p role={status.ok ? 'status' : 'alert'} className={`mt-2 text-sm ${status.ok ? 'text-green-800' : 'text-red-700'}`}>{status.text}</p>}
     </section>
   )

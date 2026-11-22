@@ -120,12 +120,12 @@ export default function MemberSheet({ member, api, tableToken, onClose, now = sy
       await member.signIn(r.token)
     } finally { busyRef.current = false; setBusyWhat(null) }
   }
-  // no maxLength on the input: a pasted "123 456" or a whole SMS arrives whole, and its first six digits
+  // no maxLength on the input: a pasted "123 456" or a whole message arrives whole, and its first six digits
   // count (NFKC: full-width digits too)
   const typeCode = (raw: string) => {
     const v = raw.normalize('NFKC').replace(/\D/g, '').slice(0, CODE_LENGTH)
     setCode(v)
-    if (v.length === CODE_LENGTH) void confirm(v)                 // fills itself from the SMS or a paste: no tap needed
+    if (v.length === CODE_LENGTH) void confirm(v)                 // fills itself from the keyboard's suggestion or a paste: no tap needed
   }
 
   // signed in (a stored token counts before its balance is back: "Loading your points…")
@@ -170,7 +170,8 @@ export default function MemberSheet({ member, api, tableToken, onClose, now = sy
           </div>
         ) : step.kind === 'code' ? (
           <>
-            <h2 id={titleId} className="pr-10 text-lg font-semibold text-brown-dark">Enter the code we sent to <span className="whitespace-nowrap">{formatPhone(step.phone)}</span></h2>
+            <h2 id={titleId} className="pr-10 text-lg font-semibold text-brown-dark">Enter the code we sent to your WhatsApp</h2>
+            <p className="mt-1 whitespace-nowrap text-sm text-brown-muted">{formatPhone(step.phone)}</p>
             <label className="relative mt-4 block">
               <input ref={codeRef} value={code} onChange={(e) => typeCode(e.target.value)} readOnly={busy}
                 inputMode="numeric" autoComplete="one-time-code" autoFocus pattern="[0-9]*"
@@ -185,6 +186,8 @@ export default function MemberSheet({ member, api, tableToken, onClose, now = sy
                 ))}
               </span>
             </label>
+            {/* a 200 from Meta only means accepted: whether the number has WhatsApp is not known */}
+            <p className="mt-2 text-xs text-brown-muted">Nothing in WhatsApp? Check the number, or ask our staff to add it for you.</p>
             {error && <p role="alert" className="mt-2 text-sm text-red-700">{error}</p>}
             <button type="button" onClick={() => void confirm(code)} disabled={busy || code.length !== CODE_LENGTH}
               className="mt-4 w-full rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover disabled:opacity-40">
@@ -217,12 +220,12 @@ export default function MemberSheet({ member, api, tableToken, onClose, now = sy
               className="mt-3 w-full rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover disabled:opacity-40">
               {busy ? 'Sending…' : 'Send code'}
             </button>
-            <p className="mt-2 text-sm text-brown-muted">We text you a 6-digit code. We only use your number for your points.</p>
+            <p className="mt-2 text-sm text-brown-muted">We send a 6-digit code to your WhatsApp. We only use your number for your points.</p>
             <button type="button" aria-expanded={notice} onClick={() => setNotice((v) => !v)}
               className="mt-2 min-h-10 text-sm font-medium text-brown-btn underline">How we use your number</button>
             {notice && (
               <div role="note" className="mt-1 rounded-xl bg-cream p-3 text-sm text-brown-dark">
-                <p>We keep your phone number, your points and the visits they came from, the type of device you sign in on, and — for two days — the network address used to ask for a code. We use them only to run your points.</p>
+                <p>We keep your phone number, your points and the visits they came from, the type of device you sign in on, and — for two days — the network address used to ask for a code. We use them only to run your points. The code is sent through WhatsApp.</p>
                 <p className="mt-1">To delete your details, ask our staff.</p>
               </div>
             )}

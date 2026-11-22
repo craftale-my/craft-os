@@ -46,13 +46,13 @@ export function checkAdjust(amount: string, reason: string): { error: string } |
   return { points }
 }
 
-/** Settings: points per RM 1 from 0 to 100 (2 decimals), SMS codes per day a whole number from 0 to 100000. */
+/** Settings: points per RM 1 from 0 to 100 (2 decimals), Sign-in codes per day a whole number from 0 to 100000. */
 export function checkSettings(rate: string, cap: string): { error: string } | { rate: number; smsDailyCap: number } {
   const r = Number(rate)
   if (rate.trim() === '' || !Number.isFinite(r) || r < 0 || r > 100 || Math.abs(Math.round(r * 100) - r * 100) > 1e-6) {
     return { error: 'Points per RM 1 must be a number from 0 to 100.' }
   }
   const c = Number(cap)
-  if (cap.trim() === '' || !Number.isInteger(c) || c < 0 || c > 100000) return { error: 'SMS codes per day must be a whole number from 0 to 100000.' }
+  if (cap.trim() === '' || !Number.isInteger(c) || c < 0 || c > 100000) return { error: 'Sign-in codes per day must be a whole number from 0 to 100000.' }
   return { rate: r, smsDailyCap: c }
 }

@@ -4,8 +4,14 @@
 import {
   type RealProviderFactory, type RequestReply, type VerifyReply,
   cleanCode, codeHash, deviceLabel, makeCode as makeCodeReal, makeToken as makeTokenReal, maskForLog,
-  memberClientIp, normalisePhone, parseBody, requestRefusal, selectProvider, sha256Hex, smsText, verifyReply,
+  memberClientIp, normalisePhone, parseBody, requestRefusal, selectProvider, SendFailure, sha256Hex, verifyReply,
 } from './logic.ts'
+import { whatsappProvider } from './whatsapp.ts'
+
+/** The real channels, keyed by the SMS_PROVIDER value (every other value but 'log' answers `unavailable`). */
+export const REAL_PROVIDERS: Record<string, RealProviderFactory> = {
+  whatsapp: (env) => whatsappProvider(env),
+}
 
 export interface RpcResult { data: unknown; error: { message: string } | null }
 
@@ -14,7 +20,7 @@ export interface Deps {
   rpc(fn: string, args: Record<string, unknown>): Promise<RpcResult>
   env(name: string): string | undefined
   log?: { info(...a: unknown[]): void; error(...a: unknown[]): void }
-  /** Test seams; the real ones by default. */
+  /** Test seams; the real ones (REAL_PROVIDERS, makeCode, makeToken) by default. */
   realProviders?: Record<string, RealProviderFactory>
   makeCode?: () => string
   makeToken?: () => string
@@ -129,9 +135,9 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
 }
 
 async function requestCode(deps: Deps, log: NonNullable<Deps['log']>, phone: string, ip: string, table: string): Promise<RequestReply> {
-  const provider = selectProvider(deps.env, deps.realProviders)
+  const provider = selectProvider(deps.env, deps.realProviders ?? REAL_PROVIDERS)
   if (!provider) {
-    log.error('member-auth: no SMS provider (SMS_PROVIDER unset or unknown, or log mode not allowed)')
+    log.error('member-auth: no code provider (SMS_PROVIDER unset or unknown, its secrets missing, or log mode not allowed)')
     return { ok: false, reason: 'unavailable' }
   }
   const code = (deps.makeCode ?? makeCodeReal)()
@@ -152,14 +158,17 @@ async function requestCode(deps: Deps, log: NonNullable<Deps['log']>, phone: str
     return requestRefusal(String(data))
   }
   try {
-    await provider.sendSms(phone, smsText(code))
+    await provider.sendCode(phone, code)
   } catch (e) {
-    // a vendor's message may echo the number or the text: digit runs are cut out
-    log.error('sendSms', provider.name, maskForLog(phone), (e instanceof Error ? e.message : String(e)).replace(/\d{4,}/g, '…'))
-    // the SMS never left: the stored code must not be confirmable
+    const reason = e instanceof SendFailure ? e.reason : 'unavailable'
+    // a SendFailure's detail holds only status / codes / trace id; any other message may echo the number
+    // or the code: digit runs are cut out
+    const what = e instanceof SendFailure ? e.detail : (e instanceof Error ? e.message : String(e)).replace(/\d{4,}/g, '…')
+    log.error('sendCode', provider.name, maskForLog(phone), reason, what)
+    // the code never left: the stored one must not be confirmable
     const { error: voidErr } = await deps.rpc('member_otp_void', { p_phone: phone, p_code_hash: hash })
     if (voidErr) log.error('member_otp_void', maskForLog(phone), voidErr.message)
-    return { ok: false, reason: 'unavailable' }
+    return { ok: false, reason }
   }
   return { ok: true }
 }

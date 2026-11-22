@@ -324,7 +324,7 @@ describe('MembersPage', () => {
     const rate = within(section).getByLabelText('Points per RM 1') as HTMLInputElement
     expect(rate.value).toBe('1')
     expect((within(section).getByRole('switch', { name: 'Members on QR page' }) as HTMLInputElement).checked).toBe(true)
-    expect((within(section).getByLabelText('SMS codes per day') as HTMLInputElement).value).toBe('300')
+    expect((within(section).getByLabelText('Sign-in codes per day') as HTMLInputElement).value).toBe('300')
     fireEvent.change(rate, { target: { value: '101' } })
     fireEvent.click(within(section).getByRole('button', { name: 'Save' }))
     expect(within(section).getByRole('alert').textContent).toBe('Points per RM 1 must be a number from 0 to 100.')

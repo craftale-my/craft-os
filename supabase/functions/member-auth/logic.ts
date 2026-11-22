@@ -83,42 +83,41 @@ export function codeHash(e164: string, code: string): Promise<string> {
   return sha256Hex(`${e164}:${code}`)
 }
 
-export function smsText(code: string): string {
-  return `Craft Cafe: your code is ${code}. It expires in 5 minutes.`
-}
+// ── Code provider ─────────────────────────────────────────────────────────────
+// The channel the code goes out on, chosen by the secret SMS_PROVIDER (the name is kept; it now names the
+// channel): 'log' on dev, 'whatsapp' for real (whatsapp.ts). Each adapter builds its own message.
 
-// ── SMS provider ──────────────────────────────────────────────────────────────
-
-export interface SmsProvider {
+export interface CodeProvider {
   /** 'log' sends nothing and hands the plain code to SQL (member_otps.dev_code); a real one sends. */
   kind: 'log' | 'real'
   name: string
-  sendSms(to: string, text: string): Promise<void>
+  /** Sends `code` to the E.164 number; throws when it did not go (a SendFailure says which reply). */
+  sendCode(toE164: string, code: string): Promise<void>
+}
+
+/** A failed send with the reply it gives the guest and a log line that holds nothing sensitive (no
+ *  token, no code, no number). Any other thrown error counts as `unavailable`. */
+export class SendFailure extends Error {
+  constructor(readonly reason: 'busy' | 'unavailable', readonly detail: string) {
+    super(detail)
+    this.name = 'SendFailure'
+  }
 }
 
 type Env = (name: string) => string | undefined
 
 /** A real provider's adapter: reads its own secrets, returns null when they are missing. */
-export type RealProviderFactory = (env: Env) => SmsProvider | null
-
-// ── REAL PROVIDER (Task 20) ───────────────────────────────────────────────────
-// The owner picks and signs up for the vendor. Its adapter goes here, keyed by the SMS_PROVIDER value,
-// e.g. `example: exampleProvider`. Until then every value but 'log' answers `unavailable`.
-//
-//   const exampleProvider: RealProviderFactory = (env) => {
-//     const key = env('EXAMPLE_SMS_KEY'); if (!key) return null
-//     return { kind: 'real', name: 'example', async sendSms(to, text) { /* POST to the vendor; throw on failure */ } }
-//   }
-export const REAL_PROVIDERS: Record<string, RealProviderFactory> = {}
+export type RealProviderFactory = (env: Env) => CodeProvider | null
 
 /** The provider the secrets choose, or null (→ `unavailable`): unset, unknown, a real one missing its
- *  secrets, or `log` without MEMBER_AUTH_ALLOW_LOG=1 (dev sets it; prod never will). */
-export function selectProvider(env: Env, real: Record<string, RealProviderFactory> = REAL_PROVIDERS): SmsProvider | null {
+ *  secrets, or `log` without MEMBER_AUTH_ALLOW_LOG=1 (dev sets it; prod never will). The guard is for
+ *  `log` only. `real` is handler.ts's REAL_PROVIDERS (or a test's). */
+export function selectProvider(env: Env, real: Record<string, RealProviderFactory> = {}): CodeProvider | null {
   const name = (env('SMS_PROVIDER') ?? '').trim().toLowerCase()
   if (!name) return null
   if (name === 'log') {
     if (env('MEMBER_AUTH_ALLOW_LOG') !== '1') return null
-    return { kind: 'log', name: 'log', async sendSms() { /* nothing leaves: the code is in member_otps.dev_code */ } }
+    return { kind: 'log', name: 'log', async sendCode() { /* nothing leaves: the code is in member_otps.dev_code */ } }
   }
   const factory = Object.prototype.hasOwnProperty.call(real, name) ? real[name] : undefined
   return factory ? factory(env) : null
@@ -131,7 +130,7 @@ export type VerifyReply =
   | { ok: true; token: string }
   | { ok: false; reason: 'wrong' | 'expired' | 'locked' | 'invalid_phone' | 'unavailable' }
 
-/** member_otp_request's answer → the reply when it is not 'ok' (then the SMS still has to go). */
+/** member_otp_request's answer → the reply when it is not 'ok' (then the code still has to go). */
 export function requestRefusal(sql: string): RequestReply {
   switch (sql) {
     case 'rate_number':

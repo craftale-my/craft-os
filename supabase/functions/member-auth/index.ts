@@ -1,6 +1,6 @@
 // Edge Function: member-auth
 //
-// A QR-page guest signs in as a member with an SMS code (spec
+// A QR-page guest signs in as a member with a 6-digit code sent by WhatsApp (spec
 // docs/superpowers/specs/2026-11-22-members-phone-points-design.md §5). Guests have no login, so this
 // runs without a JWT check and reaches the database only through the service-role functions of
 // supabase/migration-2026-11-23-members.sql, which carry the limits and the storage.
@@ -14,9 +14,13 @@
 //             | { ok: false, reason: 'wrong' | 'expired' | 'locked' | 'invalid_phone' | 'unavailable' }
 //   A body that is neither → 400 { error }.
 //
-// Secrets: MEMBER_AUTH_ORIGINS (the QR sites, comma-separated). SMS_PROVIDER ('log' on dev; a real provider
-// later, Task 20). 'log' sends nothing and stores the plain code in member_otps.dev_code, and runs only
-// with MEMBER_AUTH_ALLOW_LOG=1 (never set on prod).
+// Secrets: MEMBER_AUTH_ORIGINS (the QR sites, comma-separated). SMS_PROVIDER names the channel (the name is
+// kept from the SMS plan): 'log' on dev, 'whatsapp' for real (whatsapp.ts, Meta's Cloud API, an
+// authentication template with a copy-code button). 'log' sends nothing and stores the plain code in
+// member_otps.dev_code, and runs only with MEMBER_AUTH_ALLOW_LOG=1 (never set on prod). 'whatsapp' needs
+// WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TEMPLATE, and optionally WHATSAPP_TEMPLATE_LANG
+// (default en_US) and WHATSAPP_GRAPH_VERSION (default v27.0); without them it answers `unavailable`.
+// Owner setup: docs/pos/2026-11-23-members-whatsapp-setup.md.
 // Never logged: the code, the token, a full phone number.
 //
 // The handler is handler.ts (tested with a fake rpc in handler.test.ts); this file wires the real client.

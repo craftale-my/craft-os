@@ -30,11 +30,11 @@ describe('membersView', () => {
     expect(checkAdjust('100001', 'x')).toEqual({ error: 'Enter a number of points between -100000 and 100000, not 0.' })
     expect(checkAdjust('5', '   ')).toEqual({ error: 'A reason is required.' })
   })
-  it('settings: rate 0–100 with two decimals, a whole SMS cap 0–100000', () => {
+  it('settings: rate 0–100 with two decimals, a whole sign-in code cap 0–100000', () => {
     expect(checkSettings('1', '300')).toEqual({ rate: 1, smsDailyCap: 300 })
     expect(checkSettings('1.1', '0')).toEqual({ rate: 1.1, smsDailyCap: 0 })
     expect(checkSettings('100', '100000')).toEqual({ rate: 100, smsDailyCap: 100000 })
     for (const r of ['', '-1', '101', '1.234', 'x']) expect(checkSettings(r, '300')).toEqual({ error: 'Points per RM 1 must be a number from 0 to 100.' })
-    for (const c of ['', '-1', '1.5', '100001']) expect(checkSettings('1', c)).toEqual({ error: 'SMS codes per day must be a whole number from 0 to 100000.' })
+    for (const c of ['', '-1', '1.5', '100001']) expect(checkSettings('1', c)).toEqual({ error: 'Sign-in codes per day must be a whole number from 0 to 100000.' })
   })
 })

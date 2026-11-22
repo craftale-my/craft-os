@@ -5,7 +5,7 @@ Builds on: QR shared table cart (guests, `qr_cart_send`), POS checkout (`pos_pay
 
 ## 1. Goal
 
-A guest signs in on the QR page with their phone number, confirmed once by an SMS code, and from then
+A guest signs in on the QR page with their phone number, confirmed once by a code sent to their WhatsApp, and from then
 on collects points for what their table pays. Staff can also put a member on a bill at the counter.
 The guest sees their points on the QR page.
 
@@ -15,7 +15,8 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
 
 ## 2. Owner decisions (2026-11-22)
 
-- Sign-in is by phone number **with an SMS code**.
+- Sign-in is by phone number **with a 6-digit code sent by WhatsApp** (2026-11-23: a WhatsApp
+  authentication template through Meta's Cloud API directly, no reseller; not SMS).
 - Earn only in this version; redeeming comes later (it has to work with the discount rules).
 - Earn rate: **1 point per RM 1 paid** (my proposal, accepted with the design).
 
@@ -28,10 +29,12 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
 - Tap → a sheet (a modal dialog: labelled by its title, `✕` and Escape close it, focus moves in and goes
   back to the strip button):
   1. `Collect points with your phone number` — a field with `+60` fixed in front, numeric keypad;
-     button `Send code`. Under it: `We text you a 6-digit code. We only use your number for your points.`
-  2. `Enter the code we sent to +60 12-345 6789` — six boxes (`autocomplete="one-time-code"`), `Confirm`;
-     `Send again` becomes available after 60 s; `Change number`. A pasted `123 456` or a whole SMS works: the
-     first six digits are the code. After a refused code the input has focus again.
+     button `Send code`. Under it: `We send a 6-digit code to your WhatsApp. We only use your number for your points.`
+  2. `Enter the code we sent to your WhatsApp`, under it the number (`+60 12-345 6789`) — six boxes
+     (`autocomplete="one-time-code"`); under them, small: `Nothing in WhatsApp? Check the number, or ask our
+     staff to add it for you.`; `Confirm`; `Send again` becomes available after 60 s; `Change number`. A
+     pasted `123 456` or the whole WhatsApp message works: the first six digits are the code. After a
+     refused code the input has focus again.
   3. `You're in!`, the balance (`0 points`), and `Order from this table and your points are added when the
      bill is paid.`
 - The number field takes what people paste from contacts: full-width digits, Unicode spaces and dashes.
@@ -77,8 +80,8 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
   handled?`, after which it leaves the list), and the settings. Search drops a leading `60` / `0` only from
   a full number (at least 9 digits, then `1`); a fragment such as `6078` is searched as typed. A page that
   comes back empty steps back one page; the reason of an adjust is at most 200 characters.
-- Settings (owner): `Points per RM 1` (0–100, default 1), switch `Members on QR page`, `SMS codes per day`
-  (the daily SMS cap, default 300).
+- Settings (owner): `Points per RM 1` (0–100, default 1), switch `Members on QR page`, `Sign-in codes per day`
+  (the daily cap on codes sent, default 300; the column keeps its name `sms_daily_cap`).
 
 ## 4. Rules
 
@@ -109,8 +112,7 @@ guest must never hold such a session. Members get their own small token scheme, 
 - **Request a code** — Edge Function `member-auth` (`POST {action: 'request', phone, table}`, `table` = the
   QR table token): validates the number, checks the table (it must exist, be active and not QR-paused, else
   `Sign-in is not available yet.`), rate-limits, creates a 6-digit code (stored hashed with its table,
-  expires in 5 minutes, 5 tries per IP), asks the SMS provider to send
-  `Craft Cafe: your code is 123456. It expires in 5 minutes.`
+  expires in 5 minutes, 5 tries per IP), and sends it by WhatsApp (see **Code provider** below).
 - **Confirm** — `POST {action: 'verify', phone, code}`: checks the code; creates the member if new; returns a member token
   (32 random bytes; only its SHA-256 is stored, with device label and expiry 180 days). More than 20
   wrong codes from one IP in an hour answer `locked` without touching any guest's code, and the 5 tries
@@ -119,24 +121,43 @@ guest must never hold such a session. Members get their own small token scheme, 
   `member_link_table` so the server can link the bill. `member_sign_out(p_token)`.
 - **Limits:** per number 3 codes per 15 minutes and 10 per day; per IP 30 codes per hour and 100 per
   24 hours (a whole café shares one Wi-Fi address); per table 20 codes per 24 hours (`Sign-in is busy
-  right now. Please ask our staff to add your number.`); a global daily cap on SMS sent (default 300, a
-  setting) that turns sign-in off with the same `busy` copy — protects the SMS bill.
+  right now. Please ask our staff to add your number.`); a global daily cap on codes sent (default 300, a
+  setting) that turns sign-in off with the same `busy` copy — protects the message bill.
   The IP is `cf-connecting-ip` only (set by the platform, refused from a client), an IPv6 address cut to
   its /64; never `X-Forwarded-For` or `sb-forwarded-for`. Without it the function answers
   `Sign-in is not available yet.`; `member_otp_request` and `member_otp_verify` refuse a call without an IP.
 - **Only the newest code counts:** asking for a new code makes an older one fail even inside its 5 minutes.
 - **No enumeration:** `request` answers the same for a member and a non-member (byte for byte).
-- **SMS provider:** behind one small interface (`sendSms(to, text)`) in the function, chosen by the
-  secret `SMS_PROVIDER`. Adapters in this version: `log` (dev: no SMS; the code is written to the
-  `member_otps.dev_code` column, readable only by SQL — used for testing on dev) and one real provider.
-  **The owner chooses and signs up for the provider**; until its secrets are set on a project the
-  function runs in `log` mode on dev and answers `Sign-in is not available yet.` on prod.
+- **Code provider:** behind one small interface (`sendCode(toE164, code)`; each adapter builds its own
+  message) in the function, chosen by the secret `SMS_PROVIDER` (the name is kept from the SMS plan; it now
+  names the channel). Adapters: `log` (dev: nothing is sent; the code is written to the
+  `member_otps.dev_code` column, readable only by SQL — used for testing on dev; runs only with
+  `MEMBER_AUTH_ALLOW_LOG=1`) and `whatsapp` (Meta's WhatsApp Cloud API, called directly:
+  `POST https://graph.facebook.com/<version>/<phone number id>/messages` with an **authentication
+  template** that has a copy-code button; the code goes in the body parameter and in the button's url
+  parameter). Its secrets: `WHATSAPP_TOKEN` (a System User's permanent token), `WHATSAPP_PHONE_NUMBER_ID`,
+  `WHATSAPP_TEMPLATE` (the template name), `WHATSAPP_TEMPLATE_LANG` (default `en_US`),
+  `WHATSAPP_GRAPH_VERSION` (default `v27.0`, the version in Meta's docs on 2026-11-23). A missing secret →
+  `Sign-in is not available yet.` The send times out after 8 s. A failed send (no answer, non-2xx, an
+  `error` body, or a 2xx without a message id) voids the stored code; Meta's rate limits (HTTP 429, error
+  codes 4, 80007, 130429, 131048, 131056) answer `busy`, everything else `unavailable`. Logged: the HTTP
+  status, Meta's `error.code`, `error_subcode` and `fbtrace_id`, the number's last 4 — never the token, the
+  code or Meta's message text.
+  **The message wording is Meta's, not ours:** an authentication template's text is fixed (`<code> is
+  your verification code. For your security, do not share this code.` + `This code expires in 5
+  minutes.`, a `Copy code` button); no brand line, URL, media or emoji is possible.
+  **Delivery is not known when the call returns:** a 200 means Meta accepted the message, not that the
+  number has WhatsApp or that it arrived. Hence the line under the code boxes; a guest without WhatsApp is
+  added by staff at the counter.
+  The owner creates the Meta app, number and template (`docs/pos/2026-11-23-members-whatsapp-setup.md`);
+  until the secrets are set on a project the function runs in `log` mode on dev and answers
+  `Sign-in is not available yet.` on prod.
   Plain dev codes are stored only where `member_settings.dev_codes_allowed` is on (default off; set by
   hand on dev, never in a migration, never on prod); with it off `member_otp_request` refuses any dev code.
   A successful sign-in clears every dev code of that number.
 - **Privacy (PDPA):** the join sheet links a short notice: `We keep your phone number, your points and the
   visits they came from, the type of device you sign in on, and — for two days — the network address used
-  to ask for a code. We use them only to run your points.` / `To delete your details, ask our staff.` (Codes
+  to ask for a code. We use them only to run your points. The code is sent through WhatsApp.` / `To delete your details, ask our staff.` (Codes
   and wrong-code records, with their IPs, are deleted after two days.) `member_delete` (owner) removes the number and keeps anonymous ledger rows.
 
 ## 6. Server
@@ -171,7 +192,7 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
   also active: `is_active` and `status = 'active'`); `member_otp_request(phone, ip, code_hash, dev_code,
   table_token)` → `ok | disabled | rate_number | rate_ip | rate_table | cap`,
   `member_otp_verify(phone, code_hash, token_hash, device, ip)` → `ok | wrong | expired | locked`,
-  `member_otp_void` (the SMS never left: the code is made unusable) (service role, for the Edge Function).
+  `member_otp_void` (the code never left: it is made unusable) (service role, for the Edge Function).
 - Staff Meal is read from each item's own record of its catalog's discount (`order_items.catalog_discount_bp`,
   written when the item is ordered), not from the catalog as it is now.
 - **Refunds by running total:** the bill should still hold `floor((total − all its refunds so far) in RM ×
@@ -223,7 +244,7 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
 
 | Case | What happens |
 |---|---|
-| SMS does not arrive | `Send again` after 60 s; after the per-number limit: `Too many tries. Please ask our staff to add your number.` |
+| Code does not arrive (no WhatsApp on the number, or not delivered) | The line under the code boxes sends the guest to staff; `Send again` after 60 s; after the per-number limit: `Too many tries. Please ask our staff to add your number.` |
 | Wrong code 5 times | The code is dead for that IP; `Send again`. |
 | More than 20 wrong codes from one IP in an hour | `Too many wrong tries. Send a new code.` for that IP; no guest's code is touched. |
 | Too many codes from one table in a day (20) | `Sign-in is busy right now. Please ask our staff to add your number.` |
@@ -251,10 +272,12 @@ it; staff attach at the counter; second guest sees the notice.
 ## 10. Rollout and what waits for the owner
 
 SQL → Edge Function (+ secrets) → back office → POS → QR. Dev can run end to end in `log` mode now.
-**Prod needs the owner's SMS provider account** (sender name registration in Malaysia can take days).
+**Prod waits for the owner's Meta setup** (`docs/pos/2026-11-23-members-whatsapp-setup.md`): a verified
+Meta Business account, a WhatsApp number not used in the WhatsApp apps, a payment method, a System User
+token and an approved authentication template; then the `WHATSAPP_*` secrets and `SMS_PROVIDER=whatsapp`.
 
 ## 11. Build order
 
 1. SQL: tables, ledger, triggers, RPCs, verify. 2. Edge Function with the `log` adapter. 3. QR sheet, token,
-link. 4. POS attach, bill column, receipt. 5. Back office page + settings. 6. Real SMS adapter once the
-provider is chosen. Plan: `docs/superpowers/plans/2026-11-23-members-phone-points.md`.
+link. 4. POS attach, bill column, receipt. 5. Back office page + settings. 6. The WhatsApp adapter (Meta
+Cloud API). Plan: `docs/superpowers/plans/2026-11-23-members-phone-points.md`.

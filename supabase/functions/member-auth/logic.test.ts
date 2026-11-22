@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
   cleanCode, codeHash, deviceLabel, ipv6Prefix64, makeCode, makeToken, maskForLog, memberClientIp, normalisePhone, parseBody,
-  requestRefusal, selectProvider, sha256Hex, smsText, verifyReply, type RealProviderFactory,
+  requestRefusal, selectProvider, SendFailure, sha256Hex, verifyReply, type RealProviderFactory,
 } from './logic'
 
 import { MEMBER_PHONE_CASES } from '../../../src/shared/lib/memberPhoneCases'
@@ -73,9 +73,11 @@ describe('hashes and tokens', () => {
   })
 })
 
-describe('smsText', () => {
-  it('the exact wording', () => {
-    expect(smsText('123456')).toBe('Craft Cafe: your code is 123456. It expires in 5 minutes.')
+describe('SendFailure', () => {
+  it('carries the reason and the loggable detail', () => {
+    const f = new SendFailure('busy', 'http 429')
+    expect(f).toBeInstanceOf(Error)
+    expect([f.reason, f.detail, f.message, f.name]).toEqual(['busy', 'http 429', 'http 429', 'SendFailure'])
   })
 })
 
@@ -93,13 +95,17 @@ describe('selectProvider', () => {
   })
   it('a registered real provider, null when its secrets are missing', () => {
     const fake: RealProviderFactory = (env) =>
-      env('FAKE_KEY') ? { kind: 'real', name: 'fake', async sendSms() {} } : null
+      env('FAKE_KEY') ? { kind: 'real', name: 'fake', async sendCode() {} } : null
     expect(selectProvider(envOf({ SMS_PROVIDER: 'fake', FAKE_KEY: 'k' }), { fake })?.name).toBe('fake')
     expect(selectProvider(envOf({ SMS_PROVIDER: 'fake' }), { fake })).toBeNull()
   })
+  it('a real provider needs no MEMBER_AUTH_ALLOW_LOG (the guard is for log only)', () => {
+    const fake: RealProviderFactory = () => ({ kind: 'real', name: 'whatsapp', async sendCode() {} })
+    expect(selectProvider(envOf({ SMS_PROVIDER: 'WhatsApp' }), { whatsapp: fake })?.name).toBe('whatsapp')
+  })
   it('the log adapter sends nothing and does not throw', async () => {
     const p = selectProvider(envOf({ SMS_PROVIDER: 'LOG', MEMBER_AUTH_ALLOW_LOG: '1' }))
-    await expect(p!.sendSms('+60123456789', 'x')).resolves.toBeUndefined()
+    await expect(p!.sendCode('+60123456789', '123456')).resolves.toBeUndefined()
   })
 })
 

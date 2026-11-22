@@ -1,6 +1,6 @@
 // src/qr/member/memberApi.ts
 /** The member calls of the QR page (spec 2026-11-22-members-phone-points-design.md §5): the Edge Function
- *  `member-auth` for the SMS code, and the anon RPCs `member_me`, `member_sign_out`, `member_link_table`,
+ *  `member-auth` for the sign-in code, and the anon RPCs `member_me`, `member_sign_out`, `member_link_table`,
  *  `member_public_settings` (supabase/migration-2026-11-23-members.sql). */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { qrClient } from '../qrClient'
