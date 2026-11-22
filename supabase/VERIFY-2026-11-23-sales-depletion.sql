@@ -5,14 +5,19 @@
 -- ============================================================================
 do $verify$
 declare
-  c_cheras  constant uuid := '75bb97bb-dedb-4aee-b326-373fd883780e';
-  c_manager constant uuid := '193e1294-9c20-4425-b796-1cbff287e7a5';  -- test.manager.cheras
+  c_cheras  uuid;   -- a dedicated [TEST] branch, so exact figures cannot be disturbed by dev data
+  c_manager constant uuid := '193e1294-9c20-4425-b796-1cbff287e7a5';  -- test.manager.cheras (manager: every branch)
+  c_sup_other constant uuid := 'd93522a5-218e-473c-8c4e-8e35a2bbd90a'; -- test.supervisor.puchong (other branch)
+  c_staff   constant uuid := '406b1762-107b-42ea-b27b-71c38d15d1a4';  -- test.staff.cheras (no use_procurement)
+  v_br2 uuid; v_b uuid; v_c uuid; v_c0 uuid; v_c3 uuid; v_msg text; v_ts timestamptz := now();
   v_out text := ''; v_fail boolean := false; v_ok boolean;
   v_a uuid; v_cat uuid; v_prod uuid; v_var uuid; v_var_norecipe uuid; v_grp uuid; v_opt_add uuid; v_opt_swap uuid;
   v_bill uuid; v_bill2 uuid; v_bill3 uuid; v_order uuid; v_n int; v_q numeric; v_row record;
   v_c1 uuid; v_c2 uuid; v_sum jsonb;
 begin
   -- Fixture (as postgres) -------------------------------------------------------
+  insert into branches (name) values ('[TEST] SD Branch') returning id into c_cheras;
+  insert into branches (name) values ('[TEST] SD Branch 2') returning id into v_br2;
   insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price)
   values ('[TEST] SD Beans', 'raw', 'pack', 'g', 1000, 50) returning id into v_a;           -- RM 0.05/g
   insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type)
@@ -114,45 +119,139 @@ begin
   v_fail := v_fail or v_ok is not true;
 
   -- PART B: usage report ---------------------------------------------------------------
-  -- Previous count a day ago, current count a minute from now; between them:
-  -- the -380 g sale (bill 1) and a 30 g wastage; the current count found 40 g less than book.
+  -- Timeline (T = now): C0 full T-10d [A, B]; wastage B 10 g T-5d; sale A 999 g T-3d (before C1);
+  -- C1 weekly T-1d [A]; sale A 7 g exactly at C1 (excluded); sale C 50 g T-2h; bill 1 sale A 380 g
+  -- and wastage A 30 g at T; sale A 3 g and the target's own stocktake row exactly at C2;
+  -- C2 weekly T+1min [A -40 g, B 0] is the target. B was last counted in C0, so its window starts there.
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price)
+  values ('[TEST] SD Sugar', 'raw', 'pack', 'g', 1000, 100) returning id into v_b;
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price)
+  values ('[TEST] SD Milk', 'raw', 'pack', 'g', 1000, 20) returning id into v_c;
+
   insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
-  values (c_cheras, 'full', 'submitted', now() - interval '1 day', now() - interval '1 day', 0, 0, 0, 0) returning id into v_c1;
-  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type)
-  values (v_a, c_cheras, 'wastage', -30, 0.05, 'manual');
-  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
-  values (c_cheras, 'full', 'submitted', now(), now() + interval '1 minute', 1, 0, 2, -2) returning id into v_c2;
+  values (c_cheras, 'full', 'submitted', v_ts - interval '10 days', v_ts - interval '10 days', 2, 0, 0, 0) returning id into v_c0;
   insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
-  values (v_c2, v_a, 4550, 4590, -40, 0.05, -2);
+  values (v_c0, v_a, 5000, 5000, 0, 0.05, 0), (v_c0, v_b, 100, 100, 0, 0.1, 0);
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (c_cheras, 'weekly', 'submitted', v_ts - interval '1 day', v_ts - interval '1 day', 1, 0, 0, 0) returning id into v_c1;
+  insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
+  values (v_c1, v_a, 5000, 5000, 0, 0.05, 0);
+
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type, created_at) values
+    (v_b, c_cheras, 'wastage', -10, 0, 'manual', v_ts - interval '5 days'),
+    (v_a, c_cheras, 'sale', -999, 0, 'manual', v_ts - interval '3 days'),
+    (v_a, c_cheras, 'sale', -7, 0, 'manual', v_ts - interval '1 day'),
+    (v_c, c_cheras, 'sale', -50, 0, 'manual', v_ts - interval '2 hours'),
+    (v_a, c_cheras, 'wastage', -30, 0.05, 'manual', v_ts),
+    (v_a, c_cheras, 'sale', -3, 0, 'manual', v_ts + interval '1 minute'),
+    (v_a, c_cheras, 'stocktake', -40, 0.05, 'manual', v_ts + interval '1 minute');
+
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (c_cheras, 'weekly', 'submitted', v_ts, v_ts + interval '1 minute', 2, 0, 2, -2) returning id into v_c2;
+  insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
+  values (v_c2, v_a, 4550, 4590, -40, 0.05, -2), (v_c2, v_b, 100, 100, 0, 0.1, 0);
+
+  -- Another branch whose only count is the first ever (30-day fallback)
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (v_br2, 'full', 'submitted', v_ts, v_ts, 0, 0, 0, 0) returning id into v_c3;
+  -- A count still in progress
+  insert into stock_counts (branch_id, kind, status, started_at, item_count)
+  values (c_cheras, 'weekly', 'in_progress', v_ts, 0) returning id into v_c1;
 
   perform set_config('request.jwt.claims', json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
   execute 'set local role authenticated';
 
-  -- B1. Per-item usage ------------------------------------------------------------------
+  -- B1. Item A: sold 380 + 3 (boundary at the end included, at the start excluded, older sale ignored),
+  --     the target's own stocktake row is not sold/wasted ------------------------------------
   select * into v_row from stock_count_usage(v_c2) where item_id = v_a;
-  v_ok := v_row.sold_base = 380 and round(v_row.sold_value, 2) = 19.00
+  v_ok := v_row.sold_base = 383 and round(v_row.sold_value, 2) = 19.00
       and v_row.wasted_base = 30 and round(v_row.wasted_value, 2) = 1.50
       and v_row.unexplained_base = -40 and round(v_row.unexplained_value, 2) = -2.00
-      and round(v_row.unexplained_pct, 2) = 10.53;
-  v_out := v_out || format(E'%s  usage: sold 380 g RM 19.00, wasted 30 g RM 1.50, unexplained -40 g RM -2.00 = 10.53%% (got %s / %s / %s / %s)\n',
-                           case when v_ok is true then 'PASS' else 'FAIL' end, v_row.sold_base, v_row.wasted_base, v_row.unexplained_base, v_row.unexplained_pct);
+      and round(v_row.unexplained_pct, 2) = round(40.0 / 383 * 100, 2)
+      and v_row.counted is true and v_row.period_start = v_ts - interval '1 day';
+  v_out := v_out || format(E'%s  item A: sold 383 g (sale at period start excluded, at period end included, own stocktake row ignored), wasted 30 g, unexplained -40 g = %s%%, window from C1 (got %s / %s / %s / %s / %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, round(v_row.unexplained_pct, 2), v_row.sold_base, v_row.wasted_base, v_row.unexplained_base, v_row.counted, v_row.period_start);
   v_fail := v_fail or v_ok is not true;
 
-  -- B2. Summary -----------------------------------------------------------------------
+  -- B1b. Item B was only in the older full count: its window starts there, so the 5-day-old wastage shows
+  select * into v_row from stock_count_usage(v_c2) where item_id = v_b;
+  v_ok := v_row.wasted_base = 10 and v_row.sold_base = 0 and v_row.counted is true
+      and v_row.period_start = v_ts - interval '10 days' and v_row.unexplained_pct is null;
+  v_out := v_out || format(E'%s  per-item start: item B window starts at the older full count (wasted %s g, start %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_row.wasted_base, v_row.period_start);
+  v_fail := v_fail or v_ok is not true;
+
+  -- B1c. Item C sold but not in the target count: counted false, pct null, summary-level start
+  select * into v_row from stock_count_usage(v_c2) where item_id = v_c;
+  v_ok := v_row.sold_base = 50 and v_row.counted is false and v_row.unexplained_pct is null
+      and v_row.unexplained_base = 0 and v_row.period_start = v_ts - interval '1 day';
+  v_out := v_out || format(E'%s  item sold but not counted: counted false, pct null, summary-level start (got %s / %s / %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_row.sold_base, v_row.counted, v_row.unexplained_pct);
+  v_fail := v_fail or v_ok is not true;
+
+  -- B2. Summary (exact; the branch holds only fixture rows) --------------------------------
   v_sum := stock_count_usage_summary(v_c2);
   v_ok := (v_sum->>'from_previous')::boolean = true
-      and (v_sum->>'lines_without_recipe')::int >= 1
-      and (v_sum->>'depletion_errors')::int >= 1
-      and (v_sum->>'bills_paid')::int >= 2
-      and round((v_sum->>'sold_value')::numeric, 2) >= 19.00;
-  v_out := v_out || format(E'%s  summary: previous count found, paid bills, lines without recipe, errors (%s)\n',
+      and (v_sum->>'period_start')::timestamptz = v_ts - interval '1 day'
+      and (v_sum->>'bills_paid')::int = 2
+      and (v_sum->>'lines_without_recipe')::int = 1
+      and (v_sum->>'depletion_errors')::int = 1
+      and round((v_sum->>'sold_value')::numeric, 2) = 19.00
+      and round((v_sum->>'wasted_value')::numeric, 2) = 1.50
+      and round((v_sum->>'unexplained_value')::numeric, 2) = -2.00
+      and (v_sum->>'rows_without_cost')::int = 0;
+  v_out := v_out || format(E'%s  summary exact: 2 bills, 1 line without recipe, 1 error, sold 19.00, wasted 1.50, unexplained -2.00, 0 rows without cost (%s)\n',
                            case when v_ok is true then 'PASS' else 'FAIL' end, v_sum);
+  v_fail := v_fail or v_ok is not true;
+
+  -- B2b. A sale row with no cost is counted in rows_without_cost (value stays unchanged)
+  execute 'reset role';
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type, created_at)
+  values (v_c, c_cheras, 'sale', -1, 0, 'manual', v_ts - interval '1 hour');
+  update inventory_transactions set unit_cost = null   -- an insert trigger stamps the cost, so blank it afterwards
+   where item_id = v_c and branch_id = c_cheras and quantity = -1;
+  perform set_config('request.jwt.claims', json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  execute 'set local role authenticated';
+  v_sum := stock_count_usage_summary(v_c2);
+  v_ok := (v_sum->>'rows_without_cost')::int = 1 and round((v_sum->>'sold_value')::numeric, 2) = 19.00;
+  v_out := v_out || format(E'%s  summary counts a ledger row with no unit cost (rows_without_cost %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'rows_without_cost');
+  v_fail := v_fail or v_ok is not true;
+
+  -- B2c. First count at a branch: from_previous false, window = 30 days
+  v_sum := stock_count_usage_summary(v_c3);
+  v_ok := (v_sum->>'from_previous')::boolean = false
+      and (v_sum->>'period_end')::timestamptz - (v_sum->>'period_start')::timestamptz = interval '30 days';
+  v_out := v_out || format(E'%s  first count at a branch: from_previous false, 30-day window (%s -> %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'period_start', v_sum->>'period_end');
   v_fail := v_fail or v_ok is not true;
 
   -- B3. Sold without recipe -------------------------------------------------------------
   select exists (select 1 from stock_count_unrecipe_sales(v_c2) where variant_name = 'No recipe' and qty_sold = 1)
     into v_ok;
   v_out := v_out || format(E'%s  sold-without-recipe lists the no-recipe variant\n', case when v_ok is true then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or v_ok is not true;
+
+  -- B3b. Refusals: unknown count, in-progress count, supervisor of another branch -> one generic message
+  v_ok := true;
+  begin perform stock_count_usage(gen_random_uuid()); v_ok := false;
+  exception when others then v_ok := v_ok and sqlerrm = 'Not authorised or count not found'; end;
+  begin perform stock_count_usage_summary(v_c1); v_ok := false;
+  exception when others then v_ok := v_ok and sqlerrm = 'Not authorised or count not found'; end;
+  perform set_config('request.jwt.claims', json_build_object('sub', c_sup_other, 'role', 'authenticated')::text, true);
+  begin perform stock_count_usage(v_c2); v_ok := false;
+  exception when others then v_ok := v_ok and sqlerrm = 'Not authorised or count not found'; end;
+  begin perform stock_count_unrecipe_sales(v_c2); v_ok := false;
+  exception when others then v_ok := v_ok and sqlerrm = 'Not authorised or count not found'; end;
+  v_out := v_out || format(E'%s  unknown, unsubmitted and other-branch counts all give the generic refusal\n', case when v_ok is true then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or v_ok is not true;
+
+  -- B3c. A user without use_procurement keeps the capability message
+  perform set_config('request.jwt.claims', json_build_object('sub', c_staff, 'role', 'authenticated')::text, true);
+  v_msg := null;
+  begin perform stock_count_usage_summary(v_c2); exception when others then v_msg := sqlerrm; end;
+  v_ok := v_msg = 'Not authorised to see stock usage';
+  v_out := v_out || format(E'%s  staff without use_procurement is refused (%s)\n', case when v_ok is true then 'PASS' else 'FAIL' end, v_msg);
   v_fail := v_fail or v_ok is not true;
   execute 'reset role';
 
