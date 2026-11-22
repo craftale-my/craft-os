@@ -53,6 +53,18 @@ describe('the ordering window (W7 spec §3)', () => {
     expect(padPastLastOrder('09:00', '21:30', noon)).toBeNull()
     expect(padPastLastOrder(null, null, late)).toBeNull()
   })
+  it('the pad says when orders open before opening time, by the nearer event', () => {
+    const pad = (w: [string, string], iso: string) => padPastLastOrder(w[0], w[1], at(iso))
+    // 09:00–21:30: 22:00 is 0.5 h after the last order; 07:00 is 2 h before opening; 03:00 is 5.5 h after vs 6 h before
+    expect(pad(['09:00', '21:30'], '2026-01-05T22:00:00+08:00')).toBe('Past last order (21:30)')
+    expect(pad(['09:00', '21:30'], '2026-01-06T07:00:00+08:00')).toBe('Orders open at 09:00')
+    expect(pad(['09:00', '21:30'], '2026-01-06T03:00:00+08:00')).toBe('Past last order (21:30)')
+    expect(pad(['09:00', '21:30'], '2026-01-06T03:15:00+08:00')).toBe('Past last order (21:30)')   // 5.75 h each way: a tie
+    expect(pad(['09:00', '21:30'], '2026-01-06T03:16:00+08:00')).toBe('Orders open at 09:00')
+    // 09:00–02:00: 05:00 is 3 h after the last order and 4 h before opening, so the last order is nearer
+    expect(pad(['09:00', '02:00'], '2026-01-06T05:00:00+08:00')).toBe('Past last order (02:00)')
+    expect(pad(['09:00', '02:00'], '2026-01-06T07:00:00+08:00')).toBe('Orders open at 09:00')
+  })
   it('the settings check: both or neither, not the same time', () => {
     expect(orderWindowProblem(null, null)).toBeNull()
     expect(orderWindowProblem('09:00', null)).toBe('Set both times or neither.')

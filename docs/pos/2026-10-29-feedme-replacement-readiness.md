@@ -79,9 +79,13 @@ then testing and cut-over. Check items off as they land.
       details, then production credentials.
 - [ ] **W6 Print agent pairing, Part D** — the agent pairs like a device instead of an email/password login; one
       printing tablet per outlet also kicks the cash drawer.
-- [ ] **W7 Smaller Feedme habits** — customer item remark on QR orders; last-order time before closing; takeaway
+- [x] **W7 Smaller Feedme habits** — customer item remark on QR orders; last-order time before closing; takeaway
       line inside a dine-in bill (Feedme "Takeaway 1.06" add-on); adults / children pax; "Serve" marking;
       member lookup (only if D2 = c).
+      Built on dev 2026-11-22 (spec docs/superpowers/specs/2026-11-22-pos-feedme-habits-design.md): QR Remark;
+      Orders open at / Last order at per outlet (QR refused outside, POS banner only); Takeaway switch on a
+      dine-in line (packaging fee, no service charge, TAKEAWAY on the ticket); Of which children in the pax;
+      Serve / Not served / Mark all served. Member lookup skipped (D2 = a). Browser-checked with the owner.
 - [x] **W8 Known defects** — order pad opened while offline shows no menu and no Retry; a stalled "Check bill"
       shows the raw "AbortError" text. Fixed 2026-11-18: the pad says "Could not load the menu" with Retry and
       reads the menu again when the iPad is back online; no-reply errors read as plain words.
@@ -112,7 +116,8 @@ then testing and cut-over. Check items off as they land.
       sales reports (`migration-2026-11-18-pos-reports.sql`) → receipt numbers and cash drawer
       (`migration-2026-11-22-pos-receipt-numbers.sql`, then the POS builds, then restart the print agent) →
       QR table cart (`migration-2026-11-22-qr-table-cart.sql`, which re-creates `pos_insert_order` and
-      `qr_table_state`; SQL before the front end)),
+      `qr_table_state`; SQL before the front end) → Feedme habits (`migration-2026-11-22-pos-feedme-habits.sql`;
+      SQL first, then the POS, Craft OS and QR builds, then restart the print agent)),
       each with its `-verify.sql`, after the prod menu import. After the QR table cart file, never re-run
       `migration-2026-10-24-pos-slots-photos-fn.sql` or `migration-2026-10-30-pos-discounts.sql`: they would
       silently put back `pos_insert_order` and `qr_table_state` without the guest fields (the verify script

@@ -355,7 +355,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
     const internal: [string, string][] = [
       ['pos_orders_open', 'uuid, timestamptz'], ['pos_orders_closed_message', 'uuid'], ['order_items_order_type', ''],
       ['pos_insert_order', 'uuid, uuid, text, integer, text, uuid, jsonb, uuid, uuid'], ['pos_queue_void_tickets', 'uuid[]'],
-      ['pos_receipt_payload', 'uuid, boolean'], ['pos_part_receipt_payload', 'uuid'],
+      ['pos_receipt_payload', 'uuid, boolean'], ['pos_part_receipt_payload', 'uuid'], ['pos_move_units', 'jsonb, uuid'],
     ]
     const staff: [string, string][] = [
       ['save_receipt_settings', 'uuid, jsonb'], ['place_counter_order', 'uuid, text, integer, jsonb, uuid, uuid, uuid, integer'],

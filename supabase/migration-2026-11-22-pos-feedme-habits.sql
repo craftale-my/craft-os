@@ -17,6 +17,7 @@
 -- H3  Children in the pax: bills.pax_children (0 ≤ children ≤ pax); place_counter_order (p_pax_children),
 --     pos_set_bill_pax and open_table (p_children) set it; both receipts carry paxChildren.
 -- H4  Serve: order_items.served_at / served_by and set_items_served (no PIN; money unchanged; nothing prints).
+-- H5  pos_move_units copies served_at / served_by into the cut row (a partly moved served line stays served).
 -- Re-run hazards: re-running migration-2026-11-22-qr-table-cart.sql puts back pos_insert_order, qr_cart_put
 -- and qr_cart_send without H1 / H2; migration-2026-10-24-pos-slots-photos-fn.sql qr_menu (and
 -- pos_insert_order); migration-2026-11-22-pos-receipt-numbers.sql save_receipt_settings and both receipt
@@ -1002,6 +1003,53 @@ begin
 end $$;
 revoke all on function set_items_served(uuid[], boolean) from public, anon;
 grant execute on function set_items_served(uuid[], boolean) to authenticated;
+
+-- ── H5. A moved or split part of a served line stays served ────────────────
+-- pos_move_units (migration-2026-11-16-pos-split-bill.sql) copied every snapshot column into the cut row but
+-- not served_at / served_by; the cut row now carries the line's served state. Everything else as it was.
+create or replace function pos_move_units(p_items jsonb, p_to uuid) returns jsonb
+language plpgsql set search_path = public, pg_temp as $$
+declare
+  v_e    jsonb;
+  v_line order_items;
+  v_take integer;
+  v_cut  jsonb;
+  v_new  uuid;
+  v_map  jsonb := '{}'::jsonb;
+begin
+  for v_e in select * from jsonb_array_elements(p_items) loop
+    select * into v_line from order_items where id = (v_e->>'itemId')::uuid;
+    v_take := (v_e->'qty')::numeric::integer;
+    if v_take >= v_line.qty then
+      update order_items set bill_id = p_to where id = v_line.id;
+    else
+      v_cut := pos_split_line_discount(v_line.discount_kind, v_line.discount_value, v_line.qty, v_take);
+      insert into order_items(order_id, bill_id, product_id, variant_id, name_snapshot, unit_price_sen, sst_rate_bp,
+                              modifiers_snapshot, print_route, qty, note, takeaway_fee_sen, order_type,
+                              catalog_discount_bp, catalog_discount_name,
+                              discount_kind, discount_value, discount_reason, discount_approved_by, discount_by, discount_at,
+                              split_from_item, served_at, served_by)   -- H5
+      values (v_line.order_id, p_to, v_line.product_id, v_line.variant_id, v_line.name_snapshot, v_line.unit_price_sen, v_line.sst_rate_bp,
+              v_line.modifiers_snapshot, v_line.print_route, v_take, v_line.note, v_line.takeaway_fee_sen, v_line.order_type,
+              v_line.catalog_discount_bp, v_line.catalog_discount_name,
+              v_cut->>'kind', (v_cut->>'value')::integer,
+              case when v_cut is not null then v_line.discount_reason end,
+              case when v_cut is not null then v_line.discount_approved_by end,
+              case when v_cut is not null then v_line.discount_by end,
+              case when v_cut is not null then v_line.discount_at end,
+              v_line.id, v_line.served_at, v_line.served_by)   -- H5
+      returning id into v_new;
+      update order_items
+         set qty = qty - v_take,
+             discount_value = case when discount_kind = 'amount'
+                                   then discount_value - coalesce((v_cut->>'value')::integer, 0) else discount_value end
+       where id = v_line.id;
+      v_map := v_map || jsonb_build_object(v_line.id::text, v_new);
+    end if;
+  end loop;
+  return v_map;
+end $$;
+revoke all on function pos_move_units(jsonb, uuid) from public, anon, authenticated;
 
 -- PostgREST picks up the new and changed functions now, not at its next poll
 notify pgrst, 'reload schema';
