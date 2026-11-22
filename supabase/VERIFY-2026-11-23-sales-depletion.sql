@@ -9,7 +9,7 @@ declare
   c_manager constant uuid := '193e1294-9c20-4425-b796-1cbff287e7a5';  -- test.manager.cheras (manager: every branch)
   c_sup_other constant uuid := 'd93522a5-218e-473c-8c4e-8e35a2bbd90a'; -- test.supervisor.puchong (other branch)
   c_staff   constant uuid := '406b1762-107b-42ea-b27b-71c38d15d1a4';  -- test.staff.cheras (no use_procurement)
-  v_br2 uuid; v_b uuid; v_c uuid; v_c0 uuid; v_c3 uuid; v_msg text; v_ts timestamptz := now();
+  v_br2 uuid; v_d uuid; v_e uuid; v_c4 uuid; v_c5 uuid; v_c6 uuid; v_br3 uuid; v_b uuid; v_c uuid; v_c0 uuid; v_c3 uuid; v_msg text; v_ts timestamptz := now();
   v_out text := ''; v_fail boolean := false; v_ok boolean;
   v_a uuid; v_cat uuid; v_prod uuid; v_var uuid; v_var_norecipe uuid; v_grp uuid; v_opt_add uuid; v_opt_swap uuid;
   v_bill uuid; v_bill2 uuid; v_bill3 uuid; v_order uuid; v_n int; v_q numeric; v_row record;
@@ -18,6 +18,7 @@ begin
   -- Fixture (as postgres) -------------------------------------------------------
   insert into branches (name) values ('[TEST] SD Branch') returning id into c_cheras;
   insert into branches (name) values ('[TEST] SD Branch 2') returning id into v_br2;
+  insert into branches (name) values ('[TEST] SD Branch 3') returning id into v_br3;
   insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price)
   values ('[TEST] SD Beans', 'raw', 'pack', 'g', 1000, 50) returning id into v_a;           -- RM 0.05/g
   insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type)
@@ -132,6 +133,13 @@ begin
   values (c_cheras, 'full', 'submitted', v_ts - interval '10 days', v_ts - interval '10 days', 2, 0, 0, 0) returning id into v_c0;
   insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
   values (v_c0, v_a, 5000, 5000, 0, 0.05, 0), (v_c0, v_b, 100, 100, 0, 0.1, 0);
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price)
+  values ('[TEST] SD Tea', 'raw', 'pack', 'g', 1000, 20) returning id into v_d;
+  insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
+  values (v_c0, v_d, 100, 100, 0, 0.02, 0);
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type, created_at) values
+    (v_d, c_cheras, 'sale', -400, 0, 'manual', v_ts - interval '5 days'),
+    (v_d, c_cheras, 'sale', -4, 0, 'manual', v_ts - interval '2 hours');
   insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
   values (c_cheras, 'weekly', 'submitted', v_ts - interval '1 day', v_ts - interval '1 day', 1, 0, 0, 0) returning id into v_c1;
   insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
@@ -158,8 +166,29 @@ begin
   insert into stock_counts (branch_id, kind, status, started_at, item_count)
   values (c_cheras, 'weekly', 'in_progress', v_ts, 0) returning id into v_c1;
 
+  -- 180-day cap: item E last counted 250 days before the target; a sale at 200 days is outside the cap
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price)
+  values ('[TEST] SD Salt', 'raw', 'pack', 'g', 1000, 10) returning id into v_e;
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (v_br3, 'full', 'submitted', v_ts - interval '250 days', v_ts - interval '250 days', 1, 0, 0, 0) returning id into v_c4;
+  insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
+  values (v_c4, v_e, 10, 10, 0, 0.01, 0);
+  insert into stock_counts (branch_id, kind, status, started_at, submitted_at, item_count, gain_value, loss_value, net_value)
+  values (v_br3, 'weekly', 'submitted', v_ts + interval '1 hour', v_ts + interval '1 hour', 1, 0, 0, 0) returning id into v_c5;
+  insert into stock_count_items (count_id, item_id, counted_base, expected_base, variance_base, unit_cost, variance_value)
+  values (v_c5, v_e, 10, 10, 0, 0.01, 0);
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type, created_at) values
+    (v_e, v_br3, 'sale', -9, 0, 'manual', v_ts - interval '200 days'),
+    (v_e, v_br3, 'sale', -2, 0, 'manual', v_ts - interval '100 days');
+
   perform set_config('request.jwt.claims', json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
   execute 'set local role authenticated';
+
+  select * into v_row from stock_count_usage(v_c5) where item_id = v_e;
+  v_ok := v_row.sold_base = 2 and v_row.period_start = v_ts + interval '1 hour' - interval '180 days';
+  v_out := v_out || format(E'%s  180-day cap: item last counted 250 days ago is bounded at period_end - 180 days (sold %s, start %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_row.sold_base, v_row.period_start);
+  v_fail := v_fail or v_ok is not true;
 
   -- B1. Item A: sold 380 + 3 (boundary at the end included, at the start excluded, older sale ignored),
   --     the target's own stocktake row is not sold/wasted ------------------------------------
@@ -187,6 +216,13 @@ begin
       and v_row.unexplained_base = 0 and v_row.period_start = v_ts - interval '1 day';
   v_out := v_out || format(E'%s  item sold but not counted: counted false, pct null, summary-level start (got %s / %s / %s)\n',
                            case when v_ok is true then 'PASS' else 'FAIL' end, v_row.sold_base, v_row.counted, v_row.unexplained_pct);
+  v_fail := v_fail or v_ok is not true;
+
+  -- B1d. Item D was in an older count but is absent from the target: summary-level start, not the older one
+  select * into v_row from stock_count_usage(v_c2) where item_id = v_d;
+  v_ok := v_row.sold_base = 4 and v_row.counted is false and v_row.period_start = v_ts - interval '1 day';
+  v_out := v_out || format(E'%s  item in an older count but not the target: summary-level start (sold %s, start %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_row.sold_base, v_row.period_start);
   v_fail := v_fail or v_ok is not true;
 
   -- B2. Summary (exact; the branch holds only fixture rows) --------------------------------

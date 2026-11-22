@@ -34,8 +34,9 @@ $$;
 revoke all on function stock_count_usage_period(uuid) from public, anon, authenticated;
 
 -- Ledger index: every usage query filters by branch and a created_at range.
-create index if not exists inventory_transactions_branch_time_idx
-  on inventory_transactions (branch_id, created_at);
+drop index if exists inventory_transactions_branch_time_idx;
+create index if not exists inventory_transactions_sale_waste_idx
+  on inventory_transactions (branch_id, created_at) where transaction_type in ('sale', 'wastage');
 
 -- One guard for all report functions: capability first (own message), then ONE generic
 -- error for "count missing / not submitted / no access to its branch" so nothing leaks.
@@ -62,7 +63,9 @@ revoke all on function stock_count_usage_guard(uuid) from public, anon, authenti
 -- Per-item window (decided 2026-11-23): weekly counts cover only key items, so an item's
 -- previous count may be older than the latest count. Each item's window starts at the latest
 -- earlier submitted count at the branch that CONTAINS the item (a stock_count_items row);
--- if there is none, at the summary-level start (stock_count_usage_period). The window is
+-- if there is none, at the summary-level start (stock_count_usage_period). Items NOT in the
+-- target count always use the summary-level start. Hard cap: no window reaches back more than
+-- 180 days before period_end, so the ledger scan is always bounded. The window is
 -- (period_start, period_end]: a row exactly at the start is excluded, at the end included.
 -- Internal: no access check, callers go through stock_count_usage_guard first.
 create or replace function stock_count_usage_calc(p_count_id uuid)
@@ -87,14 +90,19 @@ begin
       union
       select t.item_id from inventory_transactions t
        where t.branch_id = p.branch_id and t.transaction_type in ('sale', 'wastage')
+         and t.created_at > greatest(p.period_start, p.period_end - interval '180 days')
          and t.created_at <= p.period_end
     ), st as (
       select c.item_id,
-             coalesce((select max(sc.submitted_at)
-                         from stock_counts sc
-                         join stock_count_items si on si.count_id = sc.id and si.item_id = c.item_id
-                        where sc.branch_id = p.branch_id and sc.status = 'submitted'
-                          and sc.submitted_at < p.period_end), p.period_start) as pstart
+             greatest(
+               case when exists (select 1 from ci where ci.item_id = c.item_id)
+                    then coalesce((select max(sc.submitted_at)
+                                     from stock_counts sc
+                                     join stock_count_items si on si.count_id = sc.id and si.item_id = c.item_id
+                                    where sc.branch_id = p.branch_id and sc.status = 'submitted'
+                                      and sc.submitted_at < p.period_end), p.period_start)
+                    else p.period_start end,
+               p.period_end - interval '180 days') as pstart
         from cand c
     ), tx as (
       select t.item_id,
@@ -108,6 +116,7 @@ begin
        where t.branch_id = p.branch_id
          and t.transaction_type in ('sale', 'wastage')
          and t.created_at > st.pstart and t.created_at <= p.period_end
+         and t.created_at > p.period_end - interval '180 days'
        group by t.item_id
     )
     select st.item_id, i.name, i.base_unit,
