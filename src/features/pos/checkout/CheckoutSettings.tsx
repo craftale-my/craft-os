@@ -343,13 +343,13 @@ function ApproversSection({ branchId, run, onError, outcome }: { branchId: strin
   const load = () => fetchOutletApprovers(branchId).then(setRows, (e) => onError(msg(e)))
   useEffect(() => { void load() }, [branchId]) // eslint-disable-line react-hooks/exhaustive-deps
   const clear = (a: Approver) => {
-    if (!window.confirm(`Clear ${a.name}'s PIN? They set a new one under My PIN on the POS.`)) return
+    if (!window.confirm(`Clear ${a.name}'s PIN? They set a new one in Craft OS under POS → Register → My PIN.`)) return
     void run(async () => { await clearPin(a.staffId); await load() }, `${a.name}'s PIN cleared`)
   }
   return (
     <section className={box}>
       <h2 className="font-semibold">Approvers</h2>
-      <p className="text-xs text-brown-muted">Staff who may work at this outlet and hold "Approve POS voids &amp; refunds" (Settings → System Roles). Each sets a PIN under My PIN on the POS.</p>
+      <p className="text-xs text-brown-muted">Staff who may work at this outlet and hold "Approve POS voids &amp; refunds" (Settings → System Roles). Each sets a PIN in Craft OS under POS → Register → My PIN.</p>
       {rows.map((a) => (
         <div key={a.staffId} className="mt-1 flex items-center justify-between text-sm">
           <span>{a.name} · {a.hasPin ? 'PIN set' : 'no PIN yet'}</span>

@@ -1,30 +1,24 @@
 // src/features/pos/order/PosPage.tsx
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useAuth } from '../../auth/AuthContext'
-import { useCan } from '../../../shared/lib/permissions'
-import { fetchBranchName } from './posApi'
-import PosTill from './PosTill'
+import { useState } from 'react'
+import MyPinDialog from '../checkout/MyPinDialog'
+import { posAppUrl } from './posAppUrl'
 
-/** /pos in Craft OS: the till on the staff login's home branch. It stays until the POS app
- *  replaces it (Sub-plan C3 turns this route into a notice). */
-export default function PosPage() {
-  const { staff } = useAuth()
-  const { can } = useCan()
-  const navigate = useNavigate()
-  const branchId = staff?.branch_id ?? null
-  const [branchName, setBranchName] = useState<string | null>(null)
-  useEffect(() => {
-    if (branchId) fetchBranchName(branchId).then(setBranchName, () => setBranchName(null))
-  }, [branchId])
-
-  if (!staff) return null
-  if (!branchId) {
-    return <div className="p-8 text-center">Your account has no branch — ask a manager to set it in Team.</div>
-  }
+/** /pos in Craft OS since C3: front-of-house runs only on activated devices (the POS app), so this
+ *  page points there. It keeps My PIN — the only place staff set the PIN they sign in with. */
+export default function PosPage({ appUrl = posAppUrl(import.meta.env.VITE_POS_APP_URL as string | undefined) }: { appUrl?: string | null }) {
+  const [pinOpen, setPinOpen] = useState(false)
   return (
-    <PosTill branchId={branchId} branchName={branchName ?? staff.branch ?? 'Branch'} staffId={null} staffName={staff.name}
-      can={{ manageMenu: can('manage_menu'), supervise: can('pos_supervise'), settings: can('access_settings') }}
-      prints locked={false} myPin onBackOffice={(path) => navigate(path)} onExit={() => navigate('/profile')} />
+    <div className="mx-auto max-w-xl space-y-4 p-6">
+      <h1 className="text-xl font-semibold text-brown-dark">The POS has moved to its own app.</h1>
+      {appUrl
+        ? <p><a href={appUrl} target="_blank" rel="noreferrer" className="break-all font-medium text-brown-dark underline">{appUrl}</a></p>
+        : <p className="text-sm text-brown-muted">Ask HQ for the POS app address.</p>}
+      <p className="text-sm text-brown-dark">Activate a tablet: open the address on it and approve it in Devices.</p>
+      <div className="space-y-2 border-t border-border pt-4">
+        <p className="text-sm text-brown-muted">Staff sign in on the tablet with their name and POS PIN.</p>
+        <button type="button" onClick={() => setPinOpen(true)} className="min-h-12 rounded-xl border border-border-mid px-4 text-brown-dark">My PIN</button>
+      </div>
+      {pinOpen && <MyPinDialog onClose={() => setPinOpen(false)} />}
+    </div>
   )
 }
