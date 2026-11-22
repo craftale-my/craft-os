@@ -52,8 +52,12 @@ then testing and cut-over. Check items off as they land.
 
 ## 2. Build (in this order)
 
-- [ ] **W1 POS app, Part C** — separate `craft-pos` app, tablets sign in as devices, staff name + PIN, the RPC
-      swap to `pos_ctx`, scoped read policies (plan to write; Parts A and B are live on dev).
+- [x] **W1 POS app, Part C** — separate `craft-pos` app, tablets sign in as devices, staff name + PIN, the RPC
+      swap to `pos_ctx`, scoped read policies. C1–C2 live on dev 2026-10-30; C3 switch-over done on dev
+      2026-11-23 (plan docs/superpowers/plans/2026-11-22-pos-agent-pairing-switchover.md): a staff email login no
+      longer runs the till or prints (device_unpaired); the back office (settings, menu, reports, Devices, My PIN,
+      test print from POS Settings) is unchanged; Craft OS → POS → Register says "The POS has moved to its own
+      app." with the POS app address (`VITE_POS_APP_URL`).
 - [x] **W2 Bill discount** — spec from the paused design (D4), server totals, PIN approval, receipt and Z report
       lines, discount report; Staff Meal catalog at 50% off the normal price. Built on dev 2026-10-30 (plan
       docs/superpowers/plans/2026-10-30-pos-discounts.md); prod runs with the POS chain (step 4). The full
@@ -77,8 +81,11 @@ then testing and cut-over. Check items off as they land.
       numbers, Open drawer, Z report line) and a real receipt + drawer kick on the office ZyWell.
 - [ ] **W5 E-invoice** — merge `feature/einvoice` into this branch, add MyInvois sandbox secrets and company
       details, then production credentials.
-- [ ] **W6 Print agent pairing, Part D** — the agent pairs like a device instead of an email/password login; one
-      printing tablet per outlet also kicks the cash drawer.
+- [x] **W6 Print agent pairing, Part D** — the agent pairs like a device instead of an email/password login; one
+      printing tablet per outlet also kicks the cash drawer. Done on dev 2026-11-23: `pair.ts` asks for a pairing
+      code, the owner approves it in Craft OS → Devices (kind Print agent), the agent keeps its device login in
+      `tools/print-agent/.device.json` (git-ignored, 0600) and finds its outlet itself (`pos_agent_whoami`). This
+      Mac's agent is paired to Demo on dev; the office computer's agent still needs pairing (and a real print).
 - [x] **W7 Smaller Feedme habits** — customer item remark on QR orders; last-order time before closing; takeaway
       line inside a dine-in bill (Feedme "Takeaway 1.06" add-on); adults / children pax; "Serve" marking;
       member lookup (only if D2 = c).
@@ -132,6 +139,15 @@ then testing and cut-over. Check items off as they land.
 - [ ] Deploy Edge Functions `pos-device-activation` (with `--no-verify-jwt`) and `einvoice`.
 - [ ] Redeploy tools/print-agent together with the POS build (new 'part' receipt kind).
 - [ ] Create the `craft-pos` Vercel project; staff email logins lose front-of-house RPCs at the same time.
+- [ ] Device switch-over, last of all, in this order (the server cannot tell whether a staff-login print agent
+      still runs somewhere): print agent pairing SQL (`migration-2026-11-22-pos-agent-pairing.sql` + verify) →
+      pair every outlet's print agent (`tools/print-agent/pair.ts`, approve in Devices) and give every
+      browser-printed route a POS-app tablet set to print → deploy the Craft OS build with the /pos notice
+      (`VITE_POS_APP_URL` = the prod POS app address) → the pre-C3 coverage query in plan Task 6 Step 6 (every
+      row `covered = true`) → `migration-2026-11-22-pos-switchover.sql` + verify, then re-run the device-fixture
+      verifies. After it, the verifies that run the till as a staff login (pre-device ones, menu-picks,
+      device-till's "C1 transition" block, qr-table-cart L2 / L3) pass only before the switch-over; re-running
+      `migration-2026-10-29-pos-device-till.sql` puts the transition back — re-run the switch-over after it.
 - [ ] Revoke the access tokens that were pasted in chat (Supabase dashboard → Account → Access tokens).
 
 ## 5. Testing
