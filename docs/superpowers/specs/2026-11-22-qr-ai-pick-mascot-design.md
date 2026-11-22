@@ -66,15 +66,16 @@ Pure function `aiPick(menu, picks, mine, all, kinds, seed)` in `src/qr/aiPick.ts
 (null = neither; such products only take part in `mixed`). Set in the back office category editor
 (`Type: Drink / Food / Other`). The QR menu RPC returns it per category.
 
-**Sentences** (`src/qr/aiPickCopy.ts`, English, `{name}` = product name) — at least five per situation, e.g.:
+**Sentences** (`src/qr/aiPickCopy.ts`, English) — six per situation. They never name the product: its name,
+photo and price sit right under the line on the card, so a line reads well with any name. Examples:
 
-- `drinks_only`: `A drink on its own? {name} would keep it company.` · `Something to nibble with that? Try {name}.`
-- `food_only`: `That needs a drink. {name} goes down well with it.` · `Thirsty work, eating. {name}?`
-- `solo_small`: `Treat yourself — {name} is a favourite here.` · `Room for one more? {name}.`
-- `mixed`: `Tables like yours often add {name}.` · `One for the table: {name}.`
+- `drinks_only`: `A drink on its own? This would keep it company.` · `Something to nibble with that?`
+- `food_only`: `That needs a drink. This one goes down well.` · `Every plate likes a cup beside it.`
+- `solo_small`: `Room for one more?` · `Just the one? This would make it two.`
+- `mixed`: `One for the table?` · `Still deciding? This is a safe bet.`
 
-Rules for the copy: no health or allergy claims, no "best", no price talk, at most 60 characters before
-the name is filled in.
+Rules for the copy: no health or allergy claims, no "best", no price talk, no claim about what other guests
+order (a new outlet's suggestions come from the owner's choices, not from sales), at most 60 characters.
 
 **Seam for later** — the card takes `{ product, sentence }`; a future source may replace `sentence`
 (falling back to the picked one when it fails or is slow). Nothing else is built for it now.

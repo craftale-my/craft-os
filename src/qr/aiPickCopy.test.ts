@@ -12,8 +12,9 @@ describe('AI Pick copy rules', () => {
     }
   })
   it.each(all)('%s: "%s" obeys the rules', (_s, t) => {
-    expect(t.split('{name}').length - 1).toBe(1)                      // the name once
-    expect(t.length).toBeLessThanOrEqual(60)                          // before the name is filled in
+    expect(t).not.toContain('{')                                      // no name: the card shows it under the line
+    expect(t.length).toBeLessThanOrEqual(60)
+    expect(t).not.toMatch(/guests|tables like|favourite|popular|often/i) // no claims about what others order
     expect(t).not.toMatch(/\bbest\b/i)
     expect(t).not.toMatch(/health|allerg|gluten|vegan|vegetarian|halal|sugar|calorie|diet|nut-free|dairy/i)
     expect(t).not.toMatch(/price|\bRM\b|cheap|free\b|deal|discount|save|value|\d/i)
@@ -23,16 +24,11 @@ describe('AI Pick copy rules', () => {
 })
 
 describe('aiPickSentence', () => {
-  it('fills in the name', () => {
-    const t = aiPickSentence('mixed', 'p1', 'Iced Latte', 7)
-    expect(t).toContain('Iced Latte')
-    expect(t).not.toContain('{name}')
-  })
   it('is stable for a seed and product, and comes from its situation', () => {
     for (const s of SITUATIONS) {
       const a = aiPickSentence(s, 'p1', 'X', 12345)
       expect(aiPickSentence(s, 'p1', 'X', 12345)).toBe(a)
-      expect(AI_PICK_COPY[s].map((t) => t.replace('{name}', 'X'))).toContain(a)
+      expect(AI_PICK_COPY[s]).toContain(a)
     }
   })
   it('different seeds reach different lines', () => {

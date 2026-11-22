@@ -63,9 +63,17 @@ export default function QrApp() {
   const [sentGroups, setSentGroups] = useState<GuestGroup[]>([])         // what the send sheet showed when the order went: the "Order placed" view
   // AI Pick (spec 2026-11-22-qr-ai-pick-mascot-design.md §5): hidden with ✕ for this visit; the seed keeps
   // its sentence fixed for the visit; one Add from the card at a time
-  const [aiHidden, setAiHidden] = useState(false)
-  const [aiSeed] = useState(() => Math.floor(Math.random() * 2 ** 31))
+  const [aiHidden, setAiHiddenState] = useState(() => { try { return sessionStorage.getItem(`qr-ai-hidden:${token}`) === '1' } catch { return false } })
+  const setAiHidden = (v: boolean) => { setAiHiddenState(v); try { sessionStorage.setItem(`qr-ai-hidden:${token}`, v ? '1' : '0') } catch { /* private mode */ } }
+  const [aiSeed] = useState(() => {
+    try { const k = sessionStorage.getItem('qr-ai-seed'); if (k) return Number(k) } catch { /* private mode */ }
+    const n = Math.floor(Math.random() * 2 ** 31)
+    try { sessionStorage.setItem('qr-ai-seed', String(n)) } catch { /* private mode */ }
+    return n
+  })
   const [aiBusy, setAiBusy] = useState(false)
+  const aiBusyRef = useRef(false)
+  const [aiAdded, setAiAdded] = useState<string[]>([])               // added from the card: not offered again while the cart catches up
 
   const { screen, loadMenu, picks, menuRef, refreshNow } = useQrMenu(token, sendingRef, {
     loaded: () => { void loadState() },
@@ -203,16 +211,20 @@ export default function QrApp() {
   const closedMsg = qrClosedMessage(info.ordersOpenAt ?? null, info.lastOrderAt ?? null, new Date(clock))
   // AI Pick: not past last order, not offline (CartPage checks both too), not once hidden
   const pick = aiHidden || closedMsg || table.status !== 'ready' ? null : aiPick(menu, picks, mine, cartLines, kindsOf(menu), aiSeed)
+  const pickShown = pick && !aiAdded.includes(pick.product.id) ? pick : null
 
   /** The AI Pick card's Add: the product's default line to the table's cart. A failure keeps the card and
    *  says so in the cart's error line; on success the card moves on to the next suggestion (or goes). */
   const addPick = async (p: PosProduct) => {
-    if (aiBusy) return
-    setAiBusy(true); setError(null)
-    try { await table.add(guest, defaultLine(p)); setPlaced(false) } catch (e) {
+    if (aiBusyRef.current) return
+    aiBusyRef.current = true; setAiBusy(true); setError(null)
+    let refused = false
+    try { await table.add(guest, defaultLine(p)); setPlaced(false); setAiAdded((a) => [...a, p.id]) } catch (e) {
       const msg = errorText(e)
-      setError(isNetworkError(msg) ? 'Not added — no connection. Try again.' : `Not added: ${msg}`)
-    } finally { setAiBusy(false) }
+      refused = !isNetworkError(msg)
+      setError(refused ? `Not added: ${msg}` : 'Not added — no connection. Try again.')
+    } finally { aiBusyRef.current = false; setAiBusy(false) }
+    if (refused) refreshNow.current?.()                                // it left the menu or sold out: read the menu now, so the card moves on
   }
 
   /** The item page's Add / Save: the line goes to the table's cart on the server, then each ticked pairing
@@ -328,7 +340,7 @@ export default function QrApp() {
           sendable={sendable.length > 0} status={table.status} error={error} closed={closedMsg} onBack={goMenu}
           onEdit={(p, lineId) => openItem(p, lineId)} onRemove={(id) => void remove(id)} onQty={changeQty}
           onOpenProduct={(p) => openItem(p, null)}
-          aiPick={pick} aiBusy={aiBusy} onAiAdd={(p) => void addPick(p)} onAiHide={() => setAiHidden(true)}
+          aiPick={pickShown} aiBusy={aiBusy} onAiAdd={(p) => void addPick(p)} onAiHide={() => setAiHidden(true)}
           onPlace={() => {
             seen.current = table.cart ? sentKey(table.cart, skipIds(menu, cartLines)) : null
             setSendError(null); setSendMessage(null); setSendOpen(true)
