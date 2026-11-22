@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext'
 import {
   checkSettings, cleanSettings, emptySettings, errorText, KIND_LABEL, openProblems, retryFor, retryForAttempt, STATE_CODES, toForm,
-  isNeedsCheck, NEEDS_CHECK_COPY,
+  isNeedsCheck, isUnexpectedStatus, isWaitingToResend, NEEDS_CHECK_COPY, UNEXPECTED_STATUS_COPY, WAITING_TO_RESEND_COPY,
+  overdueMonths, retryForMonth, unreportedLabel,
   type Attempt, type EinvoiceDoc, type JobRun, type LargeBill, type Retry, type SettingsField, type SettingsForm,
+  type UnreportedMonth,
 } from './einvoice'
 import {
   callEinvoice, fetchBranchNames, fetchDocuments, fetchJobRuns, fetchLargeBills, fetchReceiptDetails, fetchSettings,
-  fetchStoppedAttempts, saveSettings, validationLink, type EinvoiceStatus,
+  fetchStoppedAttempts, fetchUnreportedMonths, saveSettings, validationLink, type EinvoiceStatus,
 } from './einvoiceApi'
 import { EinvoiceJobRuns } from './EinvoiceJobRuns'
 import { EinvoiceLargeBills } from './EinvoiceLargeBills'
@@ -54,6 +56,7 @@ export default function EinvoicePage() {
   const [stopped, setStopped] = useState<Attempt[]>([])
   const [largeBills, setLargeBills] = useState<LargeBill[]>([])
   const [runs, setRuns] = useState<JobRun[]>([])
+  const [months, setMonths] = useState<UnreportedMonth[]>([])
   const [branches, setBranches] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<EinvoiceStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
@@ -69,10 +72,10 @@ export default function EinvoicePage() {
   }
 
   const loadDocs = async () => {
-    const [d, b, st, lb, jr] = await Promise.all([
-      fetchDocuments(), fetchBranchNames(), fetchStoppedAttempts(), fetchLargeBills(), fetchJobRuns(),
+    const [d, b, st, lb, jr, um] = await Promise.all([
+      fetchDocuments(), fetchBranchNames(), fetchStoppedAttempts(), fetchLargeBills(), fetchJobRuns(), fetchUnreportedMonths(),
     ])
-    setDocs(d); setBranches(b); setStopped(st); setLargeBills(lb); setRuns(jr)
+    setDocs(d); setBranches(b); setStopped(st); setLargeBills(lb); setRuns(jr); setMonths(um)
   }
 
   useEffect(() => {
@@ -132,6 +135,10 @@ export default function EinvoicePage() {
   }
 
   const problems = openProblems(docs)
+  // closed months not reported yet, once the daily run had its chance; a month already listed as stopped is not repeated
+  const unreported = overdueMonths(months, runs[0] ?? null)
+    .filter((m) => !stopped.some((a) => a.key === `CON|${m.branch_id}|${m.month.slice(0, 7)}`))
+  const attention = problems.length + stopped.length + unreported.length
   const set = (key: SettingsField, value: string) => { setForm({ ...form, [key]: value }); setSaved(false) }
 
   return (
@@ -149,10 +156,10 @@ export default function EinvoicePage() {
       {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {notice && <p className="rounded bg-green-50 p-3 text-sm text-green-800">{notice}</p>}
 
-      {problems.length + stopped.length > 0 && (
+      {attention > 0 && (
         <section className="rounded-xl border border-red-200 bg-red-50 p-4">
-          <h2 className="font-semibold text-red-800">Needs attention ({problems.length + stopped.length})</h2>
-          <p className="text-xs text-red-700">LHDN did not accept these. Fix the cause (usually the company details below), then press Retry.</p>
+          <h2 className="font-semibold text-red-800">Needs attention ({attention})</h2>
+          <p className="text-xs text-red-700">These were not reported to LHDN, or LHDN did not accept them. Fix the cause (usually the company details below), then press Retry.</p>
           <ul className="mt-2 space-y-2 text-sm">
             {problems.map((d) => {
               const r = retryFor(d)
@@ -183,6 +190,22 @@ export default function EinvoicePage() {
                 </button>
               </li>
             ))}
+            {unreported.map((m) => {
+              const key = `month|${m.branch_id}|${m.month}`
+              const label = unreportedLabel(m, branches[m.branch_id] ?? 'Outlet')
+              return (
+                <li key={key} className="flex items-start justify-between gap-3 rounded bg-white p-2">
+                  <div>
+                    <div className="font-medium">{label}</div>
+                    <div className="text-xs text-red-700">Not reported to LHDN yet</div>
+                  </div>
+                  <button disabled={busy === key} onClick={() => void runRetry(key, label, retryForMonth(m))}
+                    className="shrink-0 rounded bg-brown-btn px-3 py-1 text-xs text-white hover:bg-brown-btn-hover disabled:opacity-50">
+                    {busy === key ? 'Sending…' : 'Retry'}
+                  </button>
+                </li>
+              )
+            })}
           </ul>
         </section>
       )}
@@ -275,10 +298,15 @@ export default function EinvoicePage() {
                     <tr key={d.id} className="border-t border-border align-top">
                       <td className="py-2 whitespace-nowrap">{day(d.created_at)}</td>
                       <td>{KIND_LABEL[d.kind]}<div className="text-xs text-brown-muted">{d.code_number}</div>
-                        {isNeedsCheck(d) && (
+                        {(isNeedsCheck(d) || isUnexpectedStatus(d)) && (
                           <div className="mt-1 max-w-xs rounded bg-amber-50 p-1 text-xs text-amber-900">
-                            <div>{NEEDS_CHECK_COPY}</div>
+                            <div>{isNeedsCheck(d) ? NEEDS_CHECK_COPY : UNEXPECTED_STATUS_COPY}</div>
                             {errorText(d.errors) && <div className="text-red-700">{errorText(d.errors)}</div>}
+                          </div>
+                        )}
+                        {isWaitingToResend(d) && (
+                          <div className="mt-1 max-w-xs text-xs text-amber-900">
+                            {WAITING_TO_RESEND_COPY}{errorText(d.errors) ? ` (${errorText(d.errors)})` : ''}
                           </div>
                         )}
                       </td>

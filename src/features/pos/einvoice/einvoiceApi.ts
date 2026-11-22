@@ -1,6 +1,8 @@
 import { supabase } from '../../../shared/lib/supabase'
 import { writeOutcome } from '../../../shared/lib/db-write'
-import { STOP_AT, type Attempt, type CleanSettings, type EinvoiceDoc, type JobRun, type LargeBill, type SettingsField } from './einvoice'
+import {
+  STOP_AT, type Attempt, type CleanSettings, type EinvoiceDoc, type JobRun, type LargeBill, type SettingsField, type UnreportedMonth,
+} from './einvoice'
 
 const DOC_COLUMNS =
   'id, kind, environment, branch_id, code_number, bill_id, period_start, period_end, buyer, total_sen, status, errors, created_at, lhdn_uuid, long_id, needs_check, send_started_at, bill:bills!einvoice_documents_bill_id_fkey(bill_no)'
@@ -94,7 +96,7 @@ export async function setOutletStart(branchId: string, from: string | null): Pro
 
 export async function fetchJobRuns(limit = 10): Promise<JobRun[]> {
   const { data, error } = await supabase.from('einvoice_job_runs')
-    .select('id, started_at, environment, outcome, report').order('started_at', { ascending: false }).limit(limit)
+    .select('id, started_at, finished_at, environment, outcome, report').order('started_at', { ascending: false }).limit(limit)
   if (error) throw new Error(`Loading the daily runs failed: ${error.message}`)
   return (data ?? []) as JobRun[]
 }
@@ -111,6 +113,13 @@ export async function fetchLargeBills(): Promise<LargeBill[]> {
   const { data, error } = await supabase.rpc('einvoice_large_bills')
   if (error) throw new Error(`Loading the bills over RM 10,000 failed: ${error.message}`)
   return (data ?? []) as LargeBill[]
+}
+
+/** Closed months still to report, per outlet, oldest first (nothing without access_settings). */
+export async function fetchUnreportedMonths(): Promise<UnreportedMonth[]> {
+  const { data, error } = await supabase.rpc('einvoice_unreported_months')
+  if (error) throw new Error(`Loading the months not reported yet failed: ${error.message}`)
+  return ((data ?? []) as UnreportedMonth[]).map((m) => ({ ...m, total_sen: Number(m.total_sen) }))
 }
 
 /** Send a needs-check draft once, after the owner looked in the MyInvois portal and it is not there. */

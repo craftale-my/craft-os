@@ -9,6 +9,8 @@ const api = vi.hoisted(() => ({
   fetchStoppedAttempts: vi.fn(),
   fetchLargeBills: vi.fn(),
   fetchJobRuns: vi.fn(),
+  fetchUnreportedMonths: vi.fn(),
+  fetchOutlets: vi.fn(),
 }))
 vi.mock('./einvoiceApi', () => api)
 const caps = vi.hoisted(() => ({ allowed: true }))
@@ -30,6 +32,8 @@ beforeEach(() => {
   api.fetchStoppedAttempts.mockResolvedValue([])
   api.fetchLargeBills.mockResolvedValue([])
   api.fetchJobRuns.mockResolvedValue([])
+  api.fetchUnreportedMonths.mockResolvedValue([])
+  api.fetchOutlets.mockResolvedValue([])
 })
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
@@ -54,6 +58,15 @@ describe('EinvoiceProblemBanner', () => {
     show()
     expect(await screen.findByText(/An e-invoice needs checking in the MyInvois portal\./)).toBeTruthy()
     expect(screen.queryByText(/did not accept/)).toBeNull()
+  })
+
+  it('says when a closed month has not been reported, and when the daily run has not run for 2 days', async () => {
+    api.fetchOutlets.mockResolvedValue([{ id: 'b1', name: 'Kepong', einvoice_from: '2026-10-01' }])
+    api.fetchUnreportedMonths.mockResolvedValue([{ branch_id: 'b1', month: '2026-10-01', bills: 3, total_sen: 3000 }])
+    api.fetchJobRuns.mockResolvedValue([{ id: 'j', started_at: '2026-11-01T23:00:00Z', environment: 'sandbox', outcome: 'ok', report: {} }])
+    show()
+    expect(await screen.findByText(/Some months' sales have not been reported to LHDN yet\./)).toBeTruthy()
+    expect(screen.getByText(/The daily e-invoice run has not run for 2 days\./)).toBeTruthy()
   })
 
   it('stays quiet when a read fails (tables not on this database yet)', async () => {

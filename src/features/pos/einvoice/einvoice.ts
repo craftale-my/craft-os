@@ -85,7 +85,8 @@ export interface EinvoiceDoc {
   created_at: string
   lhdn_uuid: string | null
   long_id: string | null
-  /** A draft with needs_check: LHDN's answer to a send is unknown (reason in `errors`); never resent automatically. */
+  /** A draft with needs_check: LHDN's answer to a send is unknown (reason in `errors`); never resent automatically.
+   *  A submitted document with needs_check: LHDN reported a status we do not know. */
   needs_check?: boolean | null
   send_started_at?: string | null
   /** Joined for display; absent in tests. */
@@ -106,8 +107,15 @@ const coverKey = (d: EinvoiceDoc) =>
 /** A draft whose send has an unknown answer (check the MyInvois portal, then Send again). */
 export const isNeedsCheck = (d: EinvoiceDoc) => d.status === 'draft' && d.needs_check === true
 
-const needsOwner = (d: EinvoiceDoc) =>
-  !isNeedsCheck(d) && (d.status === 'rejected' || d.status === 'invalid' || (d.status === 'draft' && d.errors != null))
+/** A submitted document LHDN reports an unknown status for: it keeps its bills; check the portal (no Send again). */
+export const isUnexpectedStatus = (d: EinvoiceDoc) => d.status === 'submitted' && d.needs_check === true
+
+/** A draft LHDN did not take (busy, rate limit, no token): the claim was cleared and the next run sends it again. */
+export const isWaitingToResend = (d: EinvoiceDoc) =>
+  d.status === 'draft' && d.needs_check !== true && !d.send_started_at && d.errors != null
+
+/** Only LHDN's own no needs the owner; a draft is never "not accepted". */
+const needsOwner = (d: EinvoiceDoc) => d.status === 'rejected' || d.status === 'invalid'
 
 function latestPerCover(docs: EinvoiceDoc[]): EinvoiceDoc[] {
   const latest = new Map<string, EinvoiceDoc>()
@@ -126,10 +134,13 @@ export function openProblems(docs: EinvoiceDoc[]): EinvoiceDoc[] {
   return latestPerCover(docs).filter(needsOwner).sort(newestFirst)
 }
 
-/** Latest documents that are needs-check drafts; never resent automatically. */
-export const needsCheckDocs = (docs: EinvoiceDoc[]): EinvoiceDoc[] => latestPerCover(docs).filter(isNeedsCheck).sort(newestFirst)
+/** Latest documents to check in the MyInvois portal: needs-check drafts and unexpected statuses. */
+export const needsCheckDocs = (docs: EinvoiceDoc[]): EinvoiceDoc[] =>
+  latestPerCover(docs).filter((d) => isNeedsCheck(d) || isUnexpectedStatus(d)).sort(newestFirst)
 
 export const NEEDS_CHECK_COPY = 'Check the MyInvois portal for this document. If it is not there, press Send again.'
+export const UNEXPECTED_STATUS_COPY = 'LHDN reports an unexpected status for this document. Check the MyInvois portal.'
+export const WAITING_TO_RESEND_COPY = 'Waiting to be sent again'
 
 export interface Retry { label: string; body: Record<string, unknown> }
 
@@ -242,23 +253,35 @@ export interface JobReportJson {
 export interface JobRun {
   id: string
   started_at: string
+  /** null while running, and forever for a run killed half-way. */
+  finished_at?: string | null
   environment: 'sandbox' | 'production'
-  outcome: 'not_set_up' | 'ok' | 'errors'
+  outcome: 'running' | 'not_set_up' | 'ok' | 'errors'
   report: JobReportJson
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
-export function runSummary(r: JobRun): string {
+/** A run still 'running' after this long was killed (an Edge Function lives minutes, not this). */
+export const RUN_UNFINISHED_MS = 30 * 60_000
+
+export function runSummary(r: JobRun, now: Date = new Date()): string {
+  if (r.outcome === 'running') {
+    return now.getTime() - new Date(r.started_at).getTime() < RUN_UNFINISHED_MS
+      ? 'Running…'
+      : 'Did not finish — it stopped before saving what it did'
+  }
   if (r.outcome === 'not_set_up') return `Not set up — nothing sent${r.report.notSetUp ? ` (${r.report.notSetUp})` : ''}`
   const rep = r.report
   const sent = (l?: JobStepJson[]) => (l ?? []).filter((x) => x.outcome === 'issued').length
   const problems = (rep.errors?.length ?? 0)
     + [...(rep.consolidated ?? []), ...(rep.creditNotes ?? [])].filter((x) => ['rejected', 'refused', 'stopped'].includes(x.outcome)).length
+  const later = (rep.consolidated ?? []).filter((x) => x.outcome === 'later').length
   return [
     `${rep.refreshed?.length ?? 0} checked with LHDN`,
     `${sent(rep.consolidated)} monthly sent`,
     `${plural(sent(rep.creditNotes), 'credit note')} sent`,
+    ...(later ? [`${plural(later, 'month')} left for the next run`] : []),
     ...(problems ? [plural(problems, 'problem')] : []),
   ].join(' · ')
 }
@@ -285,21 +308,59 @@ export function retryForAttempt(a: Attempt): Retry {
   return { label: 'Retry', body: { action: 'credit_notes' } }
 }
 
+// ── Closed months not reported yet (einvoice_unreported_months) ────────────
+/** One outlet's closed business month with bills in no live document; month = its first day (YYYY-MM-DD). */
+export interface UnreportedMonth { branch_id: string; month: string; bills: number; total_sen: number }
+
+/** The business month (YYYY-MM) of a moment: 06:00–05:59 Malaysia time, as the Edge Function's businessDay. */
+export const businessMonthOf = (at: Date) => new Date(at.getTime() + 2 * 3600_000).toISOString().slice(0, 7)
+
+/**
+ * The months that are overdue: the daily run has had its chance (a run started after the month closed) and the
+ * month is still not reported. Just after 06:00 on the 1st, last month is not overdue until the 07:00 run.
+ */
+export function overdueMonths(months: UnreportedMonth[], lastRun: JobRun | null): UnreportedMonth[] {
+  if (!lastRun) return months
+  const ranIn = businessMonthOf(new Date(lastRun.started_at))
+  return months.filter((m) => m.month.slice(0, 7) < ranIn)
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const rmText = (sen: number) => `RM ${(sen / 100).toFixed(2)}`
+
+/** "<Outlet> · <Month YYYY> · n bills · RM x.xx" */
+export const unreportedLabel = (m: UnreportedMonth, outlet: string) =>
+  `${outlet} · ${MONTHS[Number(m.month.slice(5, 7)) - 1]} ${m.month.slice(0, 4)} · ${plural(m.bills, 'bill')} · ${rmText(m.total_sen)}`
+
+export const retryForMonth = (m: UnreportedMonth): Retry =>
+  ({ label: 'Retry', body: { action: 'consolidate', branchId: m.branch_id, month: m.month.slice(0, 7) } })
+
 // ── The banner (W5.7) ───────────────────────────────────────────────────────
-export interface BannerInput { docs: EinvoiceDoc[]; stopped: Attempt[]; largeBills: LargeBill[]; lastRun: JobRun | null }
+export interface BannerInput {
+  docs: EinvoiceDoc[]; stopped: Attempt[]; largeBills: LargeBill[]; lastRun: JobRun | null
+  unreported: UnreportedMonth[]; outlets: { einvoice_from: string | null }[]; now: Date
+}
+
+/** The daily run is late after this long without a run (a day's run plus a day's grace). */
+export const RUN_LATE_MS = 48 * 3600_000
 
 export function bannerMessages(i: BannerInput): string[] {
   const out: string[] = []
   const rejected = openProblems(i.docs).length
   if (rejected) out.push(`LHDN did not accept ${rejected === 1 ? 'an e-invoice' : `${rejected} e-invoices`}.`)
   const stopped = i.stopped.filter((a) => a.failures >= STOP_AT).length
-  if (stopped) out.push(`${stopped === 1 ? 'An e-invoice run' : `${stopped} e-invoice runs`} stopped after 3 failed attempts.`)
+  if (stopped) out.push(`${stopped === 1 ? 'An e-invoice run' : `${stopped} e-invoice runs`} stopped after ${STOP_AT} failed attempts.`)
+  if (overdueMonths(i.unreported, i.lastRun).length) out.push("Some months' sales have not been reported to LHDN yet.")
   const large = i.largeBills.length
   if (large) {
     out.push(`${large === 1 ? 'A bill' : `${large} bills`} over RM 10,000 ${large === 1 ? 'needs' : 'need'} the buyer's details for an individual e-invoice.`)
   }
   if (i.lastRun?.outcome === 'not_set_up' && i.lastRun.environment === 'production') {
     out.push('E-invoicing is not set up: nothing is being sent to LHDN.')
+  }
+  const reporting = i.outlets.some((o) => o.einvoice_from)
+  if (reporting && (!i.lastRun || i.now.getTime() - new Date(i.lastRun.started_at).getTime() > RUN_LATE_MS)) {
+    out.push('The daily e-invoice run has not run for 2 days.')
   }
   if (needsCheckDocs(i.docs).length) out.push('An e-invoice needs checking in the MyInvois portal.')
   return out

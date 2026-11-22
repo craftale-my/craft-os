@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   bannerMessages, buyerPayload, checkBuyer, checkSettings, cleanSettings, emptyBuyer, errorText, hasLiveDocument, isNeedsCheck, needsCheckDocs,
-  openProblems, retryFor, retryForAttempt, runSummary, START_DATE_LOCKED, startDateProblem,
-  type Attempt, type EinvoiceDoc, type JobRun, type SettingsForm,
+  isUnexpectedStatus, isWaitingToResend, openProblems, overdueMonths, retryFor, retryForAttempt, retryForMonth, runSummary,
+  START_DATE_LOCKED, startDateProblem, unreportedLabel,
+  type Attempt, type BannerInput, type EinvoiceDoc, type JobRun, type SettingsForm, type UnreportedMonth,
 } from './einvoice'
 
 const filled: SettingsForm = {
@@ -79,9 +80,15 @@ describe('openProblems', () => {
     expect(openProblems(docs).map((d) => d.id)).toEqual(['x'])
   })
 
-  it('flags a draft that never reached LHDN, but not a fresh draft without errors', () => {
-    expect(openProblems([doc({ status: 'draft', errors: { message: 'network' } })])).toHaveLength(1)
+  it('never flags a draft as not accepted: one LHDN did not take waits to be sent again', () => {
+    const waiting = doc({ status: 'draft', errors: { message: 'MyInvois POST → 503' }, needs_check: false, send_started_at: null })
+    expect(openProblems([waiting])).toEqual([])
+    expect(isWaitingToResend(waiting)).toBe(true)
+    expect(isWaitingToResend(doc({ status: 'draft', errors: null }))).toBe(false)
+    expect(isWaitingToResend({ ...waiting, send_started_at: '2026-11-01T00:00:00Z' })).toBe(false)   // being sent
+    expect(isWaitingToResend({ ...waiting, needs_check: true })).toBe(false)
     expect(openProblems([doc({ status: 'draft', errors: null })])).toEqual([])
+    expect(bannerMessages(quiet({ docs: [waiting] }))).toEqual([])
   })
 })
 
@@ -163,6 +170,10 @@ describe('the buyer form', () => {
   })
 })
 
+const quiet = (over: Partial<BannerInput> = {}): BannerInput => ({
+  docs: [], stopped: [], largeBills: [], lastRun: null, unreported: [], outlets: [], now: new Date('2026-11-23T04:00:00Z'), ...over,
+})
+
 describe('runSummary', () => {
   const run = (over: Partial<JobRun>): JobRun => ({
     id: 'j1', started_at: '2026-11-01T23:00:05Z', environment: 'sandbox', outcome: 'ok',
@@ -182,6 +193,18 @@ describe('runSummary', () => {
       },
     }))).toBe('1 checked with LHDN · 1 monthly sent · 1 credit note sent · 2 problems')
   })
+  it('counts the months left for the next run', () => {
+    expect(runSummary(run({
+      report: { setUp: true, consolidated: [{ key: 'CON|o1|2026-01', outcome: 'issued' }, { key: 'CON|o1|2026-02', outcome: 'later' }] },
+    }))).toBe('0 checked with LHDN · 1 monthly sent · 0 credit notes sent · 1 month left for the next run')
+  })
+  it('shows a running run, and one that never finished', () => {
+    const started = '2026-11-22T23:00:00Z'
+    expect(runSummary(run({ outcome: 'running', started_at: started, finished_at: null }), new Date('2026-11-22T23:05:00Z')))
+      .toBe('Running…')
+    expect(runSummary(run({ outcome: 'running', started_at: started, finished_at: null }), new Date('2026-11-23T01:00:00Z')))
+      .toBe('Did not finish — it stopped before saving what it did')
+  })
 })
 
 describe('stopped attempts and the banner', () => {
@@ -198,13 +221,14 @@ describe('stopped attempts and the banner', () => {
     const notSetUp = (environment: 'sandbox' | 'production'): JobRun => ({
       id: 'j', started_at: '2026-11-01T23:00:00Z', environment, outcome: 'not_set_up', report: { setUp: false },
     })
-    expect(bannerMessages({ docs: [], stopped: [], largeBills: [], lastRun: notSetUp('sandbox') })).toEqual([])
-    expect(bannerMessages({
+    expect(bannerMessages(quiet({ lastRun: notSetUp('sandbox') }))).toEqual([])
+    expect(bannerMessages(quiet({
       docs: [doc({ status: 'rejected' })],
       stopped: [attempt({}), attempt({ key: 'CN|r1', kind: 'credit_note', failures: 2 })],
       largeBills: [{ id: 'x', branch_id: 'b1', bill_no: '261010-001', day: '2026-10-10', total_sen: 1100000 }],
       lastRun: notSetUp('production'),
-    })).toEqual([
+      now: new Date('2026-11-02T00:00:00Z'),
+    }))).toEqual([
       'LHDN did not accept an e-invoice.',
       'An e-invoice run stopped after 3 failed attempts.',
       "A bill over RM 10,000 needs the buyer's details for an individual e-invoice.",
@@ -228,7 +252,52 @@ describe('needs-check drafts', () => {
     expect(retryFor(nc())).toEqual({ label: 'Send again', body: { action: 'resend', documentId: 'd1' } })
   })
   it('adds a fifth banner case', () => {
-    expect(bannerMessages({ docs: [nc()], stopped: [], largeBills: [], lastRun: null }))
-      .toEqual(['An e-invoice needs checking in the MyInvois portal.'])
+    expect(bannerMessages(quiet({ docs: [nc()] }))).toEqual(['An e-invoice needs checking in the MyInvois portal.'])
+  })
+})
+
+describe('a submitted document with an unexpected LHDN status', () => {
+  const odd = doc({ status: 'submitted', needs_check: true, errors: { message: 'LHDN reports an unexpected status: Frozen' } })
+  it('is a check in the portal, not a rejection, and is never sent again', () => {
+    expect(isUnexpectedStatus(odd)).toBe(true)
+    expect(isNeedsCheck(odd)).toBe(false)
+    expect(openProblems([odd])).toEqual([])
+    expect(needsCheckDocs([odd]).map((d) => d.id)).toEqual(['d1'])
+    expect(retryFor(odd)?.label).toBe('Check with LHDN')
+    expect(bannerMessages(quiet({ docs: [odd] }))).toEqual(['An e-invoice needs checking in the MyInvois portal.'])
+  })
+})
+
+describe('closed months not reported yet', () => {
+  const oct: UnreportedMonth = { branch_id: 'b1', month: '2026-10-01', bills: 212, total_sen: 1234550 }
+  const run = (started_at: string): JobRun => ({ id: 'j', started_at, environment: 'sandbox', outcome: 'ok', report: {} })
+  it('labels a month and retries it by consolidating it', () => {
+    expect(unreportedLabel(oct, 'Kepong')).toBe('Kepong · October 2026 · 212 bills · RM 12345.50')
+    expect(unreportedLabel({ ...oct, bills: 1, total_sen: 1060 }, 'Kepong')).toBe('Kepong · October 2026 · 1 bill · RM 10.60')
+    expect(retryForMonth(oct)).toEqual({ label: 'Retry', body: { action: 'consolidate', branchId: 'b1', month: '2026-10' } })
+  })
+  it('are overdue once a run started after the month closed (not between 06:00 and the 07:00 run on the 1st)', () => {
+    expect(overdueMonths([oct], run('2026-10-31T23:00:00Z'))).toEqual([oct])   // 1 Nov 07:00 run
+    expect(overdueMonths([oct], run('2026-10-30T23:00:00Z'))).toEqual([])      // 31 Oct 07:00: November's first run not yet
+    expect(overdueMonths([oct], null)).toEqual([oct])
+  })
+  it('raise the banner', () => {
+    expect(bannerMessages(quiet({ unreported: [oct], lastRun: run('2026-11-22T23:00:00Z'), outlets: [{ einvoice_from: '2026-10-01' }] })))
+      .toEqual(["Some months' sales have not been reported to LHDN yet."])
+  })
+})
+
+describe('the daily run not running', () => {
+  const now = new Date('2026-11-23T04:00:00Z')
+  const run = (started_at: string): JobRun => ({ id: 'j', started_at, environment: 'sandbox', outcome: 'ok', report: {} })
+  const late = 'The daily e-invoice run has not run for 2 days.'
+  it('raises the banner after 48 hours without a run, or with none, once an outlet has a start date', () => {
+    const outlets = [{ einvoice_from: null }, { einvoice_from: '2026-11-01' }]
+    expect(bannerMessages(quiet({ now, outlets, lastRun: run('2026-11-22T23:00:00Z') }))).toEqual([])
+    expect(bannerMessages(quiet({ now, outlets, lastRun: run('2026-11-21T03:59:00Z') }))).toEqual([late])
+    expect(bannerMessages(quiet({ now, outlets, lastRun: null }))).toEqual([late])
+  })
+  it('says nothing while no outlet is reported by us', () => {
+    expect(bannerMessages(quiet({ now, outlets: [{ einvoice_from: null }], lastRun: null }))).toEqual([])
   })
 })

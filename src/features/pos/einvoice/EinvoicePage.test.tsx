@@ -16,6 +16,7 @@ const api = vi.hoisted(() => ({
   fetchJobRuns: vi.fn(),
   fetchStoppedAttempts: vi.fn(),
   fetchLargeBills: vi.fn(),
+  fetchUnreportedMonths: vi.fn(),
 }))
 vi.mock('./einvoiceApi', () => api)
 vi.mock('../../auth/AuthContext', () => ({ useAuth: () => ({ staff: { branch_id: 'b1' } }) }))
@@ -49,6 +50,7 @@ beforeEach(() => {
   api.fetchJobRuns.mockResolvedValue([])
   api.fetchStoppedAttempts.mockResolvedValue([])
   api.fetchLargeBills.mockResolvedValue([])
+  api.fetchUnreportedMonths.mockResolvedValue([])
 })
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
@@ -144,6 +146,56 @@ describe('EinvoicePage', () => {
     }])
     render(<EinvoicePage />)
     expect(await screen.findByText('Not set up — nothing sent (MyInvois credentials are not set)')).toBeTruthy()
+  })
+
+  it('lists a closed month not reported yet under Needs attention and consolidates it on Retry', async () => {
+    api.fetchDocuments.mockResolvedValue([])
+    api.fetchJobRuns.mockResolvedValue([{ id: 'j1', started_at: '2026-11-22T23:00:05Z', environment: 'sandbox', outcome: 'ok', report: {} }])
+    api.fetchUnreportedMonths.mockResolvedValue([{ branch_id: 'b1', month: '2026-10-01', bills: 212, total_sen: 1234550 }])
+    render(<EinvoicePage />)
+    expect(await screen.findByText('Needs attention (1)')).toBeTruthy()
+    expect(screen.getByText('Kepong · October 2026 · 212 bills · RM 12345.50')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(api.callEinvoice).toHaveBeenCalledWith({ action: 'consolidate', branchId: 'b1', month: '2026-10' }))
+  })
+
+  it('does not repeat a month already listed as stopped after 3 failed attempts', async () => {
+    api.fetchDocuments.mockResolvedValue([])
+    api.fetchStoppedAttempts.mockResolvedValue([{
+      key: 'CON|b1|2026-10', kind: 'consolidated_invoice', branch_id: 'b1', period_start: '2026-10-01', refund_id: null,
+      failures: 3, last_error: 'TIN', updated_at: '2026-11-03T23:00:00Z',
+    }])
+    api.fetchUnreportedMonths.mockResolvedValue([{ branch_id: 'b1', month: '2026-10-01', bills: 2, total_sen: 2000 }])
+    render(<EinvoicePage />)
+    expect(await screen.findByText('Needs attention (1)')).toBeTruthy()
+    expect(screen.queryByText(/October 2026 · 2 bills/)).toBeNull()
+  })
+
+  it('shows a running daily run', async () => {
+    api.fetchJobRuns.mockResolvedValue([{
+      id: 'j1', started_at: new Date().toISOString(), finished_at: null, environment: 'sandbox', outcome: 'running', report: {},
+    }])
+    render(<EinvoicePage />)
+    expect(await screen.findByText('Running…')).toBeTruthy()
+  })
+
+  it('a submitted document with an unexpected status says to check the portal, with no Send again', async () => {
+    api.fetchDocuments.mockResolvedValue([{
+      ...rejected, id: 'd8', status: 'submitted', needs_check: true, errors: { message: 'LHDN reports an unexpected status: Frozen' },
+    }])
+    render(<EinvoicePage />)
+    expect(await screen.findByText('LHDN reports an unexpected status for this document. Check the MyInvois portal.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Send again' })).toBeNull()
+    expect(screen.queryByText(/Needs attention/)).toBeNull()
+  })
+
+  it('a draft LHDN did not take is waiting to be sent again, not a rejection', async () => {
+    api.fetchDocuments.mockResolvedValue([{
+      ...rejected, id: 'd7', status: 'draft', needs_check: false, send_started_at: null, errors: { message: 'MyInvois POST → 503' },
+    }])
+    render(<EinvoicePage />)
+    expect(await screen.findByText(/Waiting to be sent again/)).toBeTruthy()
+    expect(screen.queryByText(/Needs attention/)).toBeNull()
   })
 
   it('shows a needs-check draft with its reason and sends it again', async () => {
