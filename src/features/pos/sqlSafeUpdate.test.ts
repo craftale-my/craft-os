@@ -415,6 +415,32 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
+  it('scans the C3 migration: the transition gone from pos_ctx, pos_print_branch and pos_session_branch; grants kept; a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-22-pos-switchover.sql', SUPABASE), 'utf8')
+    const bodies = functionBodies(sql)
+    expect(bodies.map((b) => b.name).sort()).toEqual(['pos_ctx', 'pos_print_branch', 'pos_session_branch'])
+    const body = (n: string) => bodies.find((b) => b.name === n)?.body ?? ''
+    // no staff-login path left (strings are emptied by the scanner)
+    expect(body('pos_ctx')).not.toMatch(/\bfrom staff\b/)
+    expect(body('pos_ctx')).toContain("if not found then raise exception ''; end if;")
+    expect(body('pos_ctx')).toContain('pos_staff_may_work(v_ses.staff_id, v_dev.branch_id)')      // the device path is the live one
+    expect(body('pos_print_branch')).not.toContain('pos_my_branch(')
+    expect(body('pos_print_branch')).toContain("v_dev.kind = ''")
+    expect(body('pos_session_branch')).not.toMatch(/\bfrom staff\b/)
+    expect(body('pos_session_branch')).toContain('else null end')
+    expect(sql).not.toMatch(/^\s*--.*TRANSITION \(removed/m)                                       // no live TRANSITION line copied over
+    for (const f of ['pos_ctx', 'pos_print_branch']) {
+      expect(sql).toContain(`revoke all on function ${f}() from public, anon, authenticated;`)
+      expect(sql).not.toContain(`grant execute on function ${f}(`)
+    }
+    expect(sql).toContain('revoke all on function pos_session_branch() from public, anon;')
+    expect(sql).toContain('grant execute on function pos_session_branch() to authenticated;')
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-22-pos-agent-pairing\.sql/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'pos switchover applied' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-11-22-pos-switchover-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
 })
 
 describe('the discount RPCs act as the POS session, never auth.uid()', () => {
