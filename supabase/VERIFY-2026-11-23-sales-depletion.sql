@@ -14,7 +14,7 @@ declare
   v_a uuid; v_cat uuid; v_prod uuid; v_var uuid; v_var_norecipe uuid; v_grp uuid; v_opt_add uuid; v_opt_swap uuid;
   v_bill uuid; v_bill2 uuid; v_bill3 uuid; v_order uuid; v_n int; v_q numeric; v_row record;
   v_c1 uuid; v_c2 uuid; v_sum jsonb;
-  v_tbl uuid; v_part uuid;                                  -- A8 split simulation
+  v_tbl uuid; v_part uuid; v_w uuid;                                  -- A8 split simulation
   c_owner constant uuid := '76cbcf9f-905e-450d-9f5e-1c9e72a9373d';  -- dev test login (owner), PART C
   c_cash  constant uuid := 'eeeeeeee-0000-0000-0000-0000000005d1';  -- PART C cashier (rolled back)
   c_dev   constant uuid := 'eeeeeeee-0000-0000-0000-0000000005d3';  -- PART C tablet (rolled back)
@@ -357,6 +357,32 @@ begin
   execute 'reset role';
   v_out := v_out || format(E'%s  partial_period: true when deduction started inside the window or never, false when before (%s)\n',
                            case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'depletion_started_at');
+  v_fail := v_fail or v_ok is not true;
+
+  -- B6. Wastage may exceed on-hand (owner 2026-11-23); manual negative adjustments keep their guard
+  insert into items (name, category, purchase_unit, base_unit, conversion_rate, latest_price)
+  values ('[TEST] SD Cream', 'raw', 'pack', 'g', 1000, 30) returning id into v_w;
+  insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, unit_cost, reference_type)
+  values (v_w, v_br2, 'stock_in', 10, 0.03, 'manual');
+  perform set_config('request.jwt.claims', json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  execute 'set local role authenticated';
+  v_msg := null;
+  begin perform log_wastage(v_br2, v_w, 25, 'damaged', null, null); exception when others then v_msg := sqlerrm; end;
+  execute 'reset role';
+  select coalesce(sum(quantity), 0) into v_q from inventory_transactions where item_id = v_w and branch_id = v_br2;
+  v_ok := v_msg is null and v_q = -15
+      and exists (select 1 from wastage_logs where item_id = v_w and branch_id = v_br2 and quantity = 25);
+  v_out := v_out || format(E'%s  log_wastage of 25 g with 10 g on hand succeeds, balance -15 g (error %s, balance %s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, coalesce(v_msg, 'none'), v_q);
+  v_fail := v_fail or v_ok is not true;
+  v_msg := null;
+  begin
+    insert into inventory_transactions (item_id, branch_id, transaction_type, quantity, reference_type)
+    values (v_w, v_br2, 'adjustment', -5, 'manual');
+  exception when others then v_msg := sqlerrm; end;
+  v_ok := coalesce(v_msg like 'Cannot adjust out%', false);
+  v_out := v_out || format(E'%s  a manual negative adjustment below on-hand is still refused (%s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, coalesce(v_msg, 'no error'));
   v_fail := v_fail or v_ok is not true;
 
   -- PART C: the real checkout_items RPC (pay 1 of 2 lattes as a split part, as a POS tablet) ----

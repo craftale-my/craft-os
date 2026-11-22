@@ -12,6 +12,7 @@ Menu recipes (menu costing) say what each menu size and add-on uses. Stock count
 1. **Deduct when the bill is paid** — only lines not voided. Lines voided before payment do not deduct; if the kitchen had already made them, the loss shows up as unexplained at the next count.
 2. **Refunds do not return stock** — refunds stay money-only.
 3. **Build the variance report in the same round.**
+4. **Wastage may exceed the system on-hand** (stock may go negative, like sales); HQ shipping, production and manual negative adjustments keep their on-hand guards — `migration-2026-11-23-wastage-allow-negative.sql` (`log_wastage` without the on-hand refusal).
 
 Decided by Claude (owner allows small decisions):
 - One `sale` ledger row per ingredient per bill, costed at the branch's moving average (`inventory_avg_unit_cost`'s formula, computed once per bill in `deplete_bill`).
@@ -81,7 +82,7 @@ On the stock count result view (`StockCountResult`), a new section **Since last 
 1. Confirm POS, menu costing and stocktake are live on prod (the depletion migration's guard refuses otherwise).
 2. Recipes entered in Menu Costing for the menu (lines without a recipe deduct nothing).
 3. Pick a quiet window (outside trading hours): both migrations `set lock_timeout = '5s'` and fail fast rather than queue behind checkouts; just retry.
-4. Apply `migration-2026-11-23-stock-count-usage.sql` (ledger index), then `migration-2026-11-23-sales-depletion.sql` (constraint, covering index, trigger) — one transaction each.
+4. Apply `migration-2026-11-23-stock-count-usage.sql` (ledger index), then `migration-2026-11-23-sales-depletion.sql` (constraint, covering index, trigger), then `migration-2026-11-23-wastage-allow-negative.sql` (changes behaviour already live on prod: wastage no longer refused above on-hand) — one transaction each. Never re-run `migration-2026-10-29-owner-decisions.sql` afterwards (it puts the refusal back).
 5. Immediately run a baseline **full** count per branch, so the first "Since last count" window starts after deduction began (otherwise it is a partial period).
 6. Deploy the frontend.
 7. For a week, watch `bill_depletions` for `status = 'error'` rows and checkout latency.
