@@ -189,42 +189,83 @@ export async function runJob(s: JobSteps, now: Date): Promise<JobReport> {
 }
 
 // ── Sending a draft exactly once ────────────────────────────────────────────
-/** What a failed submit means: release = LHDN did not take it (send again next run); rejected = a clear no;
- *  needs_check = we cannot know whether LHDN has it (422 duplicate, other 5xx, network after sending). */
+/** What a failed submit means: release = LHDN did not take it (send again next run); rejected = a clear no
+ *  (a 4xx whose body names the rejection); needs_check = we cannot know whether LHDN has it (422 duplicate,
+ *  other 5xx, network after sending, a 4xx with no body from a proxy or firewall). */
 export type FailureVerdict = 'release' | 'rejected' | 'needs_check'
 
 export function submitFailureVerdict(e: unknown): FailureVerdict {
-  const x = (e ?? {}) as { status?: unknown; notSent?: unknown }
+  const x = (e ?? {}) as { status?: unknown; notSent?: unknown; body?: unknown }
   if (x.notSent === true) return 'release'
   const s = typeof x.status === 'number' ? x.status : null
   if (s === 429 || s === 503 || s === 401) return 'release'
   if (s === 422) return 'needs_check'
-  if (s !== null && s >= 400 && s < 500) return 'rejected'
+  if (s !== null && s >= 400 && s < 500 && x.body != null) return 'rejected'
   return 'needs_check'
 }
-
-export type SubmitAnswer = 'accepted' | 'rejected' | 'unclear'
 
 /** Drafts claimed longer ago than this and still draft have an unknown answer. */
 export const STALE_SEND_MS = 15 * 60_000
 
-/**
- * Claim the draft, and only the winner submits. `submit` returns LHDN's answer or throws; every outcome is
- * handed to exactly one of `done` (accepted / rejected / unclear answer) or `failed` (a verdict).
- */
-export async function sendOnce<R>(d: {
+export interface SubmitReply {
+  submissionUid: string | null
+  accepted: { uuid: string; codeNumber: string }[]
+  rejected: { codeNumber: string; error: unknown }[]
+}
+
+/** Everything sendDraft does to the outside; each port is one write or call. */
+export interface SendPorts<R> {
   claim(): Promise<boolean>
   lost(): Promise<R>
-  submit(): Promise<SubmitAnswer>
-  answered(a: SubmitAnswer): Promise<R>
-  failed(v: FailureVerdict, e: unknown): Promise<R>
-}): Promise<R> {
-  if (!(await d.claim())) return d.lost()
-  let answer: SubmitAnswer
+  submit(): Promise<SubmitReply>
+  markSubmitted(uuid: string, submissionUid: string | null): Promise<R>
+  markRejected(errors: unknown): Promise<R>
+  releaseLinks(): Promise<void>
+  markNeedsCheck(errors: unknown): Promise<R>
+  clearClaim(errors: unknown): Promise<R>
+}
+
+const detailOf = (e: unknown) => ({
+  message: message(e),
+  ...(typeof (e as any)?.status === 'number' ? { status: (e as any).status, body: (e as any).body } : {}),
+})
+
+/**
+ * Claim the draft, and only the winner submits. Classification first, then the database: a clear rejection
+ * saves its status BEFORE giving the bills back (a failed save must never leave a draft without its bills);
+ * a database error never releases anything and never clears the claim, so the daily run flags the draft
+ * for a check. If LHDN accepted but saving fails twice, the thrown error carries LHDN's identifiers.
+ */
+export async function sendDraft<R>(codeNumber: string, p: SendPorts<R>): Promise<R> {
+  if (!(await p.claim())) return p.lost()
+  let r: SubmitReply
   try {
-    answer = await d.submit()
+    r = await p.submit()
   } catch (e) {
-    return d.failed(submitFailureVerdict(e), e)
+    const verdict = submitFailureVerdict(e)
+    if (verdict === 'rejected') {
+      const out = await p.markRejected(detailOf(e))
+      await p.releaseLinks()
+      return out
+    }
+    return verdict === 'release' ? p.clearClaim(detailOf(e)) : p.markNeedsCheck(detailOf(e))
   }
-  return d.answered(answer)
+  const ok = r.accepted.find((a) => a.codeNumber === codeNumber)
+  if (ok) {
+    try {
+      return await p.markSubmitted(ok.uuid, r.submissionUid)
+    } catch {
+      try {
+        return await p.markSubmitted(ok.uuid, r.submissionUid)
+      } catch (e2) {
+        throw new Error(`LHDN accepted ${codeNumber} (uuid ${ok.uuid}, submission ${r.submissionUid ?? 'unknown'}) but saving it failed: ${message(e2)}`)
+      }
+    }
+  }
+  if (r.rejected.some((x) => x.codeNumber === codeNumber)) {
+    const out = await p.markRejected(r.rejected)
+    await p.releaseLinks()
+    return out
+  }
+  return p.markNeedsCheck({ message: 'LHDN answered without naming this document' })
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   businessDay, ccnRef, cnRef, conRef, emptyReport, inConsolidationWindow, jobSecretMatches, MAX_ATTEMPTS, monthEnd,
-  previousMonth, refOfDocument, runCreditNotes, runJob, runOutcome, sendOnce, submitFailureVerdict, type JobSteps, type PendingDoc, type StepResult,
+  previousMonth, refOfDocument, runCreditNotes, runJob, runOutcome, sendDraft, submitFailureVerdict, type JobSteps, type SendPorts, type SubmitReply, type PendingDoc, type StepResult,
 } from './job.ts'
 import type { PendingRefund } from './documents.ts'
 
@@ -206,39 +206,93 @@ describe('runCreditNotes with force (the screen’s Retry)', () => {
 })
 
 describe('sending a draft once', () => {
-  const err = (status: number) => Object.assign(new Error('x'), { status })
+  const err = (status: number, body: unknown = { error: 'x' }) => Object.assign(new Error('x'), { status, body })
   it('classifies a failed submit', () => {
     expect(submitFailureVerdict(Object.assign(new Error('no token'), { notSent: true }))).toBe('release')
     expect(submitFailureVerdict(err(429))).toBe('release')
     expect(submitFailureVerdict(err(503))).toBe('release')
+    expect(submitFailureVerdict(err(401))).toBe('release')
     expect(submitFailureVerdict(err(422))).toBe('needs_check')
     expect(submitFailureVerdict(err(400))).toBe('rejected')
+    expect(submitFailureVerdict(err(400, null))).toBe('needs_check')     // a bodiless 4xx: proxy, firewall, 408
+    expect(submitFailureVerdict(err(408, null))).toBe('needs_check')
     expect(submitFailureVerdict(err(500))).toBe('needs_check')
     expect(submitFailureVerdict(new TypeError('network'))).toBe('needs_check')
     expect(submitFailureVerdict(null)).toBe('needs_check')
   })
 
+  const reply = (over: Partial<SubmitReply> = {}): SubmitReply =>
+    ({ submissionUid: 'S1', accepted: [{ uuid: 'U1', codeNumber: 'CON-1' }], rejected: [], ...over })
+  function ports(o: { claim?: boolean; submit?: () => Promise<SubmitReply>; failOn?: string[] } = {}) {
+    const calls: string[] = []
+    const step = (name: string) => async () => {
+      calls.push(name)
+      if (o.failOn?.includes(name)) throw new Error(`${name} failed`)
+      return name
+    }
+    const p: SendPorts<string> = {
+      claim: async () => { calls.push('claim'); return o.claim ?? true },
+      lost: step('lost'),
+      submit: async () => { calls.push('submit'); return (o.submit ?? (async () => reply()))() },
+      markSubmitted: step('markSubmitted'),
+      markRejected: step('markRejected'),
+      releaseLinks: async () => { calls.push('releaseLinks') },
+      markNeedsCheck: step('markNeedsCheck'),
+      clearClaim: step('clearClaim'),
+    }
+    return { p, calls }
+  }
+
   it('a second send of the same draft does not call submit', async () => {
-    let claimed = false
-    let submits = 0
-    const send = () => sendOnce<string>({
-      claim: async () => (claimed ? false : (claimed = true)),
-      lost: async () => 'lost',
-      submit: async () => { submits++; return 'accepted' },
-      answered: async (a) => a,
-      failed: async (v) => v,
-    })
-    expect(await send()).toBe('accepted')
-    expect(await send()).toBe('lost')
-    expect(submits).toBe(1)
+    const { p, calls } = ports({ claim: false })
+    expect(await sendDraft('CON-1', p)).toBe('lost')
+    expect(calls).toEqual(['claim', 'lost'])
   })
 
-  it('hands a thrown submit to failed with its verdict, and never submits when the claim is lost', async () => {
-    const r = await sendOnce<string>({
-      claim: async () => true, lost: async () => 'lost',
-      submit: async () => { throw Object.assign(new Error('dup'), { status: 422 }) },
-      answered: async (a) => a, failed: async (v) => v,
-    })
-    expect(r).toBe('needs_check')
+  it('accepted: submitted with the uuid, links kept', async () => {
+    const { p, calls } = ports()
+    expect(await sendDraft('CON-1', p)).toBe('markSubmitted')
+    expect(calls).toEqual(['claim', 'submit', 'markSubmitted'])
+  })
+
+  it('LHDN names a rejection: status saved before the links are released; a failed save releases nothing', async () => {
+    const rej = () => Promise.resolve(reply({ accepted: [], rejected: [{ codeNumber: 'CON-1', error: 'bad' }] }))
+    const ok = ports({ submit: rej })
+    await sendDraft('CON-1', ok.p)
+    expect(ok.calls).toEqual(['claim', 'submit', 'markRejected', 'releaseLinks'])
+    const bad = ports({ submit: rej, failOn: ['markRejected'] })
+    await expect(sendDraft('CON-1', bad.p)).rejects.toThrow('markRejected failed')
+    expect(bad.calls).not.toContain('releaseLinks')
+    expect(bad.calls).not.toContain('clearClaim')
+  })
+
+  it('a clear 4xx with a body rejects in the same order', async () => {
+    const t = ports({ submit: () => Promise.reject(err(400)) })
+    await sendDraft('CON-1', t.p)
+    expect(t.calls).toEqual(['claim', 'submit', 'markRejected', 'releaseLinks'])
+  })
+
+  it('422, 5xx, a network error, a bodiless 4xx or an unnamed answer: needs_check, links kept', async () => {
+    for (const failure of [err(422), err(500), new TypeError('network'), err(400, null)]) {
+      const t = ports({ submit: () => Promise.reject(failure) })
+      expect(await sendDraft('CON-1', t.p)).toBe('markNeedsCheck')
+      expect(t.calls).toEqual(['claim', 'submit', 'markNeedsCheck'])
+    }
+    const t = ports({ submit: () => Promise.resolve(reply({ accepted: [] })) })
+    expect(await sendDraft('CON-1', t.p)).toBe('markNeedsCheck')
+  })
+
+  it('429, 503, 401 and a token failure clear the claim', async () => {
+    for (const failure of [err(429), err(503), err(401), Object.assign(new Error('token'), { notSent: true })]) {
+      const t = ports({ submit: () => Promise.reject(failure) })
+      expect(await sendDraft('CON-1', t.p)).toBe('clearClaim')
+      expect(t.calls).toEqual(['claim', 'submit', 'clearClaim'])
+    }
+  })
+
+  it('accepted but the save fails: retried once, then an error carrying LHDN identifiers, no release, no clear', async () => {
+    const t = ports({ failOn: ['markSubmitted'] })
+    await expect(sendDraft('CON-1', t.p)).rejects.toThrow(/uuid U1, submission S1/)
+    expect(t.calls).toEqual(['claim', 'submit', 'markSubmitted', 'markSubmitted'])
   })
 })

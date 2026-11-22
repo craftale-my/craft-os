@@ -23,12 +23,17 @@ describe('einvoice Edge Function wiring', () => {
     expect(src).toContain("select('id, einvoice_from')")
   })
 
-  it('claims a draft before submitting, flags stale sends, refuses reconcile windows over 3 months', () => {
-    expect(src).toContain("admin.rpc('einvoice_claim_send'")
-    expect(src.indexOf("einvoice_claim_send")).toBeLessThan(src.indexOf('client.submit('))
+  it('sends only through sendDraft (claim, then submit), and saves a status before releasing links', () => {
     expect([...src.matchAll(/client\.submit\(/g)]).toHaveLength(1)
+    expect(src).toContain("admin.rpc('einvoice_claim_send'")
     expect(src).toContain("lt('send_started_at', cutoff)")
     expect(src).toContain('Reconcile at most 3 months at a time')
-    expect(src).toContain("The request body must be a JSON object")
+    expect(src).toContain('The request body must be a JSON object')
+    expect(src).toContain('This document has no bills left; it cannot be sent again.')
+    // every releaseLinks call comes after a status write in the same function
+    for (const m of src.matchAll(/await releaseLinks\(admin, row\.id\)/g)) {
+      const before = src.slice(Math.max(0, m.index! - 400), m.index)
+      expect(before).toMatch(/markRejected\(|status: summary\.status === 'Invalid'/)
+    }
   })
 })

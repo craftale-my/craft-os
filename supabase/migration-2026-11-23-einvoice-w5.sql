@@ -230,6 +230,8 @@ end $$;
 -- until the owner has looked in the MyInvois portal and pressed Resend.
 alter table einvoice_documents add column if not exists send_started_at timestamptz;
 alter table einvoice_documents add column if not exists needs_check boolean not null default false;
+-- Drafts from before the claim existed that carry an error or a submission may already be at LHDN: check first.
+update einvoice_documents set needs_check = true where status = 'draft' and (errors is not null or submission_uid is not null);
 
 -- ── E4. What a document is built from (spec W5.2, W5.3, W5.6) ────────────────
 -- The ledger lines of some bills as JSON, one array per bill, in order item id order. Internal.

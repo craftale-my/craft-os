@@ -33,7 +33,7 @@ import {
 } from './documents.ts'
 import {
   STALE_SEND_MS, businessDay, conRef, emptyReport, jobSecretMatches, monthEnd, monthOf, previousMonth, runCreditNotes,
-  runJob, runOutcome, sendOnce,
+  runJob, runOutcome, sendDraft,
   type AttemptRef, type JobReport, type JobSteps, type PendingDoc, type StepResult,
 } from './job.ts'
 import { reconcile, type ReconcileSource } from './reconcile.ts'
@@ -188,48 +188,27 @@ async function issue(
  */
 async function send(admin: SupabaseClient, client: MyInvoisClient, row: Record<string, any>) {
   if (row.status !== 'draft') return row
+  const markRejected = (errors: unknown) => updateDoc(admin, row.id, { status: 'rejected', errors })
   if (!row.payload) {
+    const out = await markRejected({ message: 'The document was never built, so it was not sent' })
     await releaseLinks(admin, row.id)
-    return updateDoc(admin, row.id, { status: 'rejected', errors: { message: 'The document was never built, so it was not sent' } })
+    return out
   }
-  const checkNeeded = (errors: unknown) => updateDoc(admin, row.id, { needs_check: true, errors })
-  return sendOnce<Record<string, any>>({
+  return sendDraft<Record<string, any>>(row.code_number, {
     async claim() {
       const { data, error } = await admin.rpc('einvoice_claim_send', { p_id: row.id })
       if (error) throw error
       return Array.isArray(data) && data.length > 0
     },
     lost: () => loadDocument(admin, row.id),
-    async submit() {
-      const r = await client.submit([{ codeNumber: row.code_number, document: row.payload }])
-      const ok = r.accepted.find((a) => a.codeNumber === row.code_number)
-      if (ok) {
-        await updateDoc(admin, row.id, {
-          status: 'submitted', submission_uid: r.submissionUid, lhdn_uuid: ok.uuid,
-          submitted_at: new Date().toISOString(), errors: null,
-        })
-        return 'accepted'
-      }
-      if (r.rejected.some((x) => x.codeNumber === row.code_number)) {
-        await releaseLinks(admin, row.id)
-        await updateDoc(admin, row.id, { status: 'rejected', submission_uid: r.submissionUid, errors: r.rejected })
-        return 'rejected'
-      }
-      return 'unclear'
-    },
-    async answered(a) {
-      if (a === 'unclear') return checkNeeded({ message: 'LHDN answered without naming this document' })
-      return loadDocument(admin, row.id)
-    },
-    async failed(verdict, e) {
-      const detail = { message: message(e), ...(e instanceof MyInvoisError ? { status: e.status, body: e.body } : {}) }
-      if (verdict === 'rejected') {
-        await releaseLinks(admin, row.id)
-        return updateDoc(admin, row.id, { status: 'rejected', errors: detail })
-      }
-      if (verdict === 'release') return updateDoc(admin, row.id, { send_started_at: null, errors: detail })
-      return checkNeeded(detail)
-    },
+    submit: () => client.submit([{ codeNumber: row.code_number, document: row.payload }]),
+    markSubmitted: (uuid, submissionUid) => updateDoc(admin, row.id, {
+      status: 'submitted', submission_uid: submissionUid, lhdn_uuid: uuid, submitted_at: new Date().toISOString(), errors: null,
+    }),
+    markRejected,
+    releaseLinks: () => releaseLinks(admin, row.id),
+    markNeedsCheck: (errors) => updateDoc(admin, row.id, { needs_check: true, errors }),
+    clearClaim: (errors) => updateDoc(admin, row.id, { send_started_at: null, errors }),
   })
 }
 
@@ -242,11 +221,12 @@ async function refreshDocument(admin: SupabaseClient, client: MyInvoisClient, ro
   if (summary.status === 'Valid') {
     return updateDoc(admin, row.id, { status: 'valid', long_id: summary.longId, validated_at: new Date().toISOString(), errors: null })
   }
-  await releaseLinks(admin, row.id)
   const errors = summary.status === 'Invalid'
     ? await client.getDocumentDetails(row.lhdn_uuid).catch((e) => ({ message: message(e) }))
     : null
-  return updateDoc(admin, row.id, { status: summary.status === 'Invalid' ? 'invalid' : 'cancelled', errors })
+  const out = await updateDoc(admin, row.id, { status: summary.status === 'Invalid' ? 'invalid' : 'cancelled', errors })
+  await releaseLinks(admin, row.id)       // after the status is saved, never before
+  return out
 }
 
 const withLink = (doc: Record<string, any>) => ({
@@ -458,6 +438,13 @@ async function actionResend(admin: SupabaseClient, s: Settings, body: any) {
   const client = readyClient(s)
   const row = await loadDocument(admin, body.documentId)
   if (row.environment !== s.environment) throw new Refusal(`This document was sent to ${row.environment}; settings now say ${s.environment}`, 409)
+  const [bl, rl] = await Promise.all([
+    admin.from('einvoice_bill_links').select('document_id', { count: 'exact', head: true }).eq('document_id', row.id),
+    admin.from('einvoice_refund_links').select('document_id', { count: 'exact', head: true }).eq('document_id', row.id),
+  ])
+  if (bl.error) throw bl.error
+  if (rl.error) throw rl.error
+  if (!(bl.count ?? 0) && !(rl.count ?? 0)) throw new Refusal('This document has no bills left; it cannot be sent again.', 409)
   const { data, error } = await admin.from('einvoice_documents')
     .update({ needs_check: false, send_started_at: null, updated_at: new Date().toISOString() })
     .eq('id', row.id).eq('status', 'draft').eq('needs_check', true).select('*')
@@ -497,8 +484,9 @@ async function actionRun(admin: SupabaseClient, s: Settings) {
 async function actionReconcile(admin: SupabaseClient, body: any) {
   const day = (v: unknown, name: string): string | null => {
     if (v == null) return null
-    if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw new Refusal(`${name} must be YYYY-MM-DD`)
-    return v
+    const real = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v
+    if (!real) throw new Refusal(`${name} must be a real date, YYYY-MM-DD`)
+    return v as string
   }
   const given = { from: day(body.from, 'from'), to: day(body.to, 'to') }
   const today = monthOf(businessDay(new Date()))
