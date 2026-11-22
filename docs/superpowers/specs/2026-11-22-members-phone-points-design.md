@@ -54,9 +54,14 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
 
 ### Owner (back office)
 
-- `Members` page: search by number; list with joined date, balance, last visit; a member's ledger;
-  `Adjust points` (± with a required reason) for the owner role only.
-- Settings: earn rate (points per RM 1, default 1), on/off switch `Members on QR page`.
+- `Members` page (POS → Members, `/pos/members`, `access_settings`): search by number (digits, debounced);
+  list with the full number, joined date, balance, last visit, 50 a page; a row opens a side panel with the
+  member's ledger (date, outlet, kind, points, bill no. / reason, staff). For the owner role only:
+  `Adjust points` (± with a required reason, confirmed), `Delete member` (`Delete this member? Their number
+  is removed; past bills keep their totals.`), an `Earn problems` list at the bottom when there are any
+  (`Use Adjust points to credit these by hand.`), and the settings.
+- Settings (owner): `Points per RM 1` (0–100, default 1), switch `Members on QR page`, `SMS codes per day`
+  (the daily SMS cap, default 300).
 
 ## 4. Rules
 

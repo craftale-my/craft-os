@@ -57,9 +57,9 @@ describe('visibleNav', () => {
       return g && isGroup(g) ? g.children.map(c => c.id) : []
     }
     expect(pos(canWith())).toEqual(['pos-register'])
-    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'pos-reports', 'pos-settings', 'pos-devices'])
+    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'pos-reports', 'pos-members', 'pos-settings', 'pos-devices'])
     expect(pos(canWith('manage_menu'))).toEqual(['pos-register', 'menu'])
-    expect(pos(canWith('access_settings', 'manage_menu'))).toEqual(['pos-register', 'pos-reports', 'menu', 'pos-settings', 'pos-devices'])
+    expect(pos(canWith('access_settings', 'manage_menu'))).toEqual(['pos-register', 'pos-reports', 'pos-members', 'menu', 'pos-settings', 'pos-devices'])
   })
 
   it('不修改原始 NAV', () => {
@@ -97,6 +97,7 @@ describe('activeEntry', () => {
 
   it('/pos/reports lights Reports, not the Register (longest prefix wins)', () => {
     expect(activeEntry(full, '/pos/reports')).toEqual({ leafId: 'pos-reports', groupId: 'pos' })
+    expect(activeEntry(full, '/pos/members')).toEqual({ leafId: 'pos-members', groupId: 'pos' })
   })
 
   it('专案详情页 /team/projects/:id 一样归 Projects', () => {

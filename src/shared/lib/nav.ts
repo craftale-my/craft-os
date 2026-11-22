@@ -59,6 +59,7 @@ export const NAV: NavEntry[] = [
     children: [
       { id: 'pos-register', label: 'Register',          to: '/pos', activePaths: ['/pos'] },
       { id: 'pos-reports',  label: 'Reports',           to: '/pos/reports', cap: 'access_settings' },
+      { id: 'pos-members',  label: 'Members',           to: '/pos/members', cap: 'access_settings' },
       { id: 'menu',         label: 'Menu',              to: '/menu', activePaths: ['/menu'], cap: 'manage_menu' },
       { id: 'pos-settings', label: 'POS Settings',      to: '/pos/settings', cap: 'access_settings' },
       { id: 'pos-devices',  label: 'Devices',           to: '/pos/devices', cap: 'access_settings' },
