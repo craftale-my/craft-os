@@ -1,8 +1,9 @@
 // src/qr/qrCart.ts
 /** The table's shared cart, as the QR page reads it (spec 2026-11-22-qr-shared-table-cart-design.md).
  *  Pure: the server holds the lines; this groups them, judges them against the menu and words the toast. */
-import { findProduct, linePriceSen, validateLine, type OrderLine, type PosMenu } from '../features/pos/order/cart'
+import { findProduct, linePriceSen, validateLine, type OrderLine, type PosMenu, type PosProduct } from '../features/pos/order/cart'
 import { looksOffline } from '../features/pos/checkout/rpcResult'
+import { pairsFor, type MenuPicks } from '../features/pos/order/picks'
 import { avatarEmoji } from './qrGuest'
 
 export interface CartLine extends OrderLine { id: string; guestId: string; guestLabel: string; guestAvatar: string }
@@ -92,6 +93,28 @@ export function cartTotalSen(menu: PosMenu, lines: CartLine[]): number {
     total += (p ? linePriceSen(p, l) ?? 0 : 0) * l.qty
   }
   return total
+}
+
+/** Units of each product in the table's cart, available lines only (the tile's badge). */
+export function unitsByProduct(menu: PosMenu, lines: CartLine[]): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const l of lines) if (lineAvailable(menu, l)) out.set(l.productId, (out.get(l.productId) ?? 0) + l.qty)
+  return out
+}
+
+/** Total units of the available lines (the cart button). */
+export const cartUnits = (menu: PosMenu, lines: CartLine[]): number =>
+  lines.reduce((n, l) => n + (lineAvailable(menu, l) ? l.qty : 0), 0)
+
+/** "Goes well with your order": the pairings of the products in MY lines, in cart order, without
+ *  duplicates and without anything already in the table's cart; the first CART_PAIRS. */
+export const CART_PAIRS = 6
+export function cartPairs(menu: PosMenu, picks: MenuPicks | null, mine: CartLine[], all: CartLine[]): PosProduct[] {
+  const out: PosProduct[] = []
+  for (const l of mine) {
+    for (const p of pairsFor(menu, picks, l.productId, all)) if (!out.some((x) => x.id === p.id)) out.push(p)
+  }
+  return out.slice(0, CART_PAIRS)
 }
 
 /** What to tell this guest about lines the others added since the last read; null = nothing. */

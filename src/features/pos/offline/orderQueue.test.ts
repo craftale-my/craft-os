@@ -169,3 +169,21 @@ describe('toSendResult', () => {
     })
   })
 })
+
+describe('a takeaway line (W7 spec §4)', () => {
+  it('goes to place_counter_order as it is, the flag on the item', () => {
+    const ta = { ...line, takeaway: true as const }
+    expect(counterOrderArgs(newQueuedOrder('dine_in', 't1', 2, [line, ta], 5, 'id')).p_items).toEqual([line, ta])
+  })
+})
+
+describe('children with the first order (W7 spec §5)', () => {
+  it('kept on the queued order and sent as p_pax_children, only when given', () => {
+    const withKids = newQueuedOrder('dine_in', 't1', 4, [line], 5, 'id', null, 1)
+    expect(withKids.paxChildren).toBe(1)
+    expect(counterOrderArgs(withKids)).toMatchObject({ p_pax: 4, p_pax_children: 1 })
+    const none = newQueuedOrder('dine_in', 't1', 4, [line], 5, 'id')
+    expect('paxChildren' in none).toBe(false)
+    expect('p_pax_children' in counterOrderArgs(none)).toBe(false)
+  })
+})

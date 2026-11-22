@@ -1,11 +1,11 @@
 // src/features/pos/order/ItemActionsOverlay.tsx
 import type { ComponentType } from 'react'
-import { Ban, Percent, Undo2 } from 'lucide-react'
+import { Ban, Check, Percent, RotateCcw, Undo2 } from 'lucide-react'
 import ActionsOverlay from './ActionsOverlay'
 import { ITEM_ACTION_LABEL, type ItemAction } from './billActions'
 
 const ICON: Record<ItemAction, ComponentType<{ size?: number }>> = {
-  discount_item: Percent, edit_item_discount: Percent, remove_item_discount: Undo2, void_item: Ban,
+  serve: Check, unserve: RotateCcw, discount_item: Percent, edit_item_discount: Percent, remove_item_discount: Undo2, void_item: Ban,
 }
 
 /** What a tapped sent item offers: discount it (or edit / remove its discount) and void it (red). An

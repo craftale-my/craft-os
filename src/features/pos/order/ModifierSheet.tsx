@@ -2,18 +2,20 @@
 import { useState } from 'react'
 import { Minus, Plus, X } from 'lucide-react'
 import { defaultLine, formatSen, linePriceSen, validateLine, type OrderLine, type PosProduct } from './cart'
-import { groupBadge, toggleOption } from './modifiers'
+import { groupBadge, toggleOption, withTakeaway } from './modifiers'
 import PickPill from './PickPill'
 
 /** The order screen's modifier sheet, Feedme style (spec §2): each group with a red SELECT n badge
  *  when it is required, options as a two-column grid of name and price, qty and a kitchen note,
  *  Confirm at the bottom. Same rules as LineSheet (which the QR page keeps): validateLine judges
  *  the line, toggleOption is LineSheet's tap rule. A draft being edited also offers Remove. */
-export default function ModifierSheet({ product, initial, mostPicked, onCancel, onDone, onRemove }: {
+export default function ModifierSheet({ product, initial, mostPicked, takeawaySwitch = false, onCancel, onDone, onRemove }: {
   product: PosProduct
   initial?: OrderLine
   /** Most picked (menu picks): group id → option id, marked with a pill — never chosen for the cashier */
   mostPicked?: Readonly<Record<string, string>>
+  /** W7 spec §4: a dine-in bill — the Takeaway switch makes this a takeaway line inside the bill */
+  takeawaySwitch?: boolean
   onCancel: () => void
   onDone: (line: OrderLine) => void
   onRemove?: () => void
@@ -22,7 +24,8 @@ export default function ModifierSheet({ product, initial, mostPicked, onCancel, 
   const [touched, setTouched] = useState(initial !== undefined)
   const problem = validateLine(product, line)
   const price = linePriceSen(product, line)
-  const confirm = () => { if (problem) setTouched(true); else onDone(line) }
+  // a takeaway bill has no switch: a line never leaves this sheet with the flag there
+  const confirm = () => { if (problem) setTouched(true); else onDone(takeawaySwitch ? line : withTakeaway(line, false)) }
   const tile = (on: boolean) =>
     `flex min-h-12 items-center justify-between gap-2 rounded-xl border px-3 text-left text-sm disabled:opacity-40 ${on ? 'border-brown-btn bg-brown-btn text-white' : 'border-border-mid bg-canvas text-brown-dark'}`
 
@@ -81,6 +84,16 @@ export default function ModifierSheet({ product, initial, mostPicked, onCancel, 
           </section>
           <input className="h-12 w-full rounded-xl border border-border-mid px-3 text-base" placeholder="Note for the kitchen (optional)"
             value={line.note ?? ''} onChange={(e) => setLine({ ...line, note: e.target.value || null })} maxLength={120} />
+          {takeawaySwitch && (
+            <button type="button" role="switch" aria-checked={line.takeaway === true}
+              onClick={() => setLine((l) => withTakeaway(l, l.takeaway !== true))}
+              className="flex min-h-12 w-full items-center justify-between rounded-xl border border-border-mid px-3 text-left">
+              <span className="font-semibold text-brown-dark">Takeaway</span>
+              <span aria-hidden="true" className={`h-7 w-12 rounded-full p-1 ${line.takeaway ? 'bg-brown-btn' : 'bg-border'}`}>
+                <span className={`block h-5 w-5 rounded-full bg-white ${line.takeaway ? 'translate-x-5' : ''}`} />
+              </span>
+            </button>
+          )}
           {touched && problem && <p role="alert" className="text-sm text-red-700">{problem}</p>}
         </div>
         <div className="flex gap-2 border-t border-border p-4">

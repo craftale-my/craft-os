@@ -19,15 +19,16 @@ import ItemActionsOverlay from './ItemActionsOverlay'
 import MoveToGrid from './MoveToGrid'
 import { billActionNotes, billActions, clearedNotice, itemActionNotes, itemActions, type BillAction, type ItemAction } from './billActions'
 import { SPLIT_ACTION_LABEL } from './splitSelection'
-import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, type DraftRow, type SentRow } from './billView'
+import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, unservedIds, type DraftRow, type SentRow } from './billView'
 import { moveTargets, type MoveTarget } from './moveTargets'
-import { shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
+import { shownChildren, shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
 import { withPhotos, type PadProductInfo } from './padInfo'
 import { goesWellVisible, mostPickedFor, pairsFor, visiblePopular, type MenuPicks } from './picks'
 import { tileSlotLabel } from './padSlots'
+import { padPastLastOrder } from './orderWindow'
 import type { BillSummary } from './billSummaries'
 import {
-  clearBillDiscount, clearItemDiscount, mergeBills, moveBill, openTable, setBillDiscount, setBillPax, setItemDiscount, voidBill, voidItem,
+  clearBillDiscount, clearItemDiscount, mergeBills, moveBill, openTable, setBillDiscount, setBillPax, setItemDiscount, setItemsServed, voidBill, voidItem,
   type BillingConfig,
 } from '../checkout/checkoutApi'
 import ApprovalDialog from '../checkout/ApprovalDialog'
@@ -292,8 +293,9 @@ export default function OrderScreen({
       if (late) { setError(late); return null }                     // the server would refuse it with the same words
       // the pax chosen for an empty table goes with its first order (the server only fills an empty pax)
       const pax = target.kind === 'table' && !bill?.pax ? target.pax : null
+      const children = target.kind === 'table' && pax !== null ? target.children ?? null : null   // W7: with that pax only
       const res = await submit(newQueuedOrder(orderType, target.kind === 'table' ? target.tableId : null, pax, lines,
-        Date.now(), crypto.randomUUID(), catalogId))
+        Date.now(), crypto.randomUUID(), catalogId, children))
       // the menu is read again first: a successful load clears the error, the rejection must stay
       if (res.rejectedReason) { await load(); setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); return null }
       setLines([]); setError(null); setGoesWellFor(null)
@@ -334,6 +336,7 @@ export default function OrderScreen({
   const actions = billActions({
     isTable: target.kind === 'table', hasBill: !!bill, loaded, liveSentCount: view.liveSentCount, draftCount: view.draftCount,
     qrPaused: paused, qrRequiresOpenBill: billing?.settings.qrRequiresOpenBill ?? false, billDiscount: billDisc !== null,
+    unservedCount: unservedIds(view.sent).length,
   })
   const partPaid = bill ? summaries.get(bill.id)?.paidSen ?? 0 : 0       // split spec §3.5
   // shown off with why: offline (split), or a part paid (split, discount, void: the server refuses them)
@@ -343,6 +346,10 @@ export default function OrderScreen({
     setDialog(null)
     if (actionNotes[a]) return
     if (a === 'send') void send()
+    else if (a === 'mark_served') {
+      const ids = unservedIds(view.sent)                              // W7: every live line not served yet
+      if (ids.length > 0) void run(async () => { await setItemsServed(ids, true) })
+    }
     else if (a === 'move') setDialog({ kind: 'move' })
     else if (a === 'split' && bill) {
       if (view.draftCount > 0) {
@@ -373,6 +380,7 @@ export default function OrderScreen({
   }
   const pickItemAction = (row: SentRow, a: ItemAction) => {
     if (itemNotes[a]) return
+    if (a === 'serve' || a === 'unserve') { void run(async () => { await setItemsServed([row.item.id], a === 'serve') }); return }   // W7
     if (a === 'void_item') setDialog({ kind: 'void_item', row })
     else if (a === 'discount_item' || a === 'edit_item_discount') setDialog({ kind: 'discount_item', row })
     else {
@@ -380,12 +388,12 @@ export default function OrderScreen({
       setConfirm({ title: 'Remove this discount?', confirmLabel: 'Remove discount', onConfirm: () => void run(() => clearItemDiscount(row.item.id)) })
     }
   }
-  const pickPax = (n: number) => {
+  const pickPax = (n: number, children: number | null) => {
     const purpose = dialog?.kind === 'pax' ? dialog.purpose : 'set'
     setDialog(null)
-    if (purpose === 'open_qr' && table) { void run(async () => { await openTable(table.id, n) }); return }
-    if (bill) { void run(() => setBillPax(bill.id, n)); return }
-    if (target.kind === 'table') onTarget({ ...target, pax: n })
+    if (purpose === 'open_qr' && table) { void run(async () => { await openTable(table.id, n, children) }); return }
+    if (bill) { void run(() => setBillPax(bill.id, n, children)); return }
+    if (target.kind === 'table') onTarget({ ...target, pax: n, children })
   }
   const pickMove = (m: MoveTarget) => {
     if (!bill || busyRef.current || m.kind === 'refused') return
@@ -423,6 +431,8 @@ export default function OrderScreen({
 
   const title = targetTitle(target, bill, tables)
   const tileNotice = !takesNewItems(target) ? (bill ? TAKEAWAY_ONE_ORDER : BILL_GONE) : null
+  // W7 spec §3: past the outlet's last-order time the pad says so (the pad's server-time clock); the POS still orders
+  const pastLast = billing ? padPastLastOrder(billing.settings.ordersOpenAt, billing.settings.lastOrderAt, slots.now) : null
   return (
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
@@ -452,6 +462,7 @@ export default function OrderScreen({
             })}
           </nav>
           <div className="flex min-w-0 flex-1 flex-col">
+            {pastLast && <p role="status" className="mx-2 mt-2 rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">{pastLast}</p>}
             {soldOutMode && <p className="m-2 rounded bg-red-50 p-2 text-sm text-red-700">Tap items to mark them sold out, or back on sale.</p>}
             {error && <p role="alert" className="m-2 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
             {notice && <p role="status" className="m-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{notice}</p>}
@@ -486,6 +497,7 @@ export default function OrderScreen({
         title={title}
         billNo={bill?.bill_no ?? null}
         pax={shownPax(target, bill)}
+        paxChildren={shownChildren(target, bill)}
         onPax={target.kind === 'table' ? () => setDialog({ kind: 'pax', purpose: 'set' }) : null}
         catalogName={current?.name ?? null}
         partPaidSen={partPaid}
@@ -514,6 +526,7 @@ export default function OrderScreen({
       {sheet && (
         <ModifierSheet product={sheet.product} initial={sheet.index === null ? undefined : lines[sheet.index]}
           mostPicked={mostPickedFor(picks, sheet.product.id)}
+          takeawaySwitch={orderType === 'dine_in'}
           onCancel={() => setSheet(null)}
           onRemove={sheet.index === null ? undefined : () => { const i = sheet.index; setLines((ls) => ls.filter((_, k) => k !== i)); setSheet(null) }}
           onDone={(line) => {
@@ -531,7 +544,7 @@ export default function OrderScreen({
           onPick={pickMove} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'pax' && (
-        <PaxDialog title={title} current={shownPax(target, bill)} onPick={pickPax} onClose={() => setDialog(null)} />
+        <PaxDialog title={title} current={shownPax(target, bill)} currentChildren={shownChildren(target, bill)} onPick={pickPax} onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'catalog' && (
         <PickerSheet title="Catalog" hint="This order is priced from the catalog you choose."
@@ -541,7 +554,7 @@ export default function OrderScreen({
       )}
       {bill && dialog?.kind === 'item_actions' && (
         <ItemActionsOverlay title={`${dialog.row.qty} × ${dialog.row.name}`}
-          actions={itemActions({ discounted: storedDiscount(dialog.row.item) !== null })}
+          actions={itemActions({ discounted: storedDiscount(dialog.row.item) !== null, served: dialog.row.served })}
           notes={itemNotes}
           disabled={busy || sending} onPick={(a) => pickItemAction(dialog.row, a)} onClose={() => setDialog(null)} />
       )}

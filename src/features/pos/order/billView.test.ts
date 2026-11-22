@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { billView, discardQuestion, draftsDiscarded, itemsWord, payGate, sendFirstQuestion } from './billView'
+import { billView, discardQuestion, draftsDiscarded, itemsWord, payGate, sendFirstQuestion, TAKEAWAY_SUFFIX, unservedIds } from './billView'
 import type { BillingConfig } from '../checkout/checkoutApi'
 import { DEFAULT_POS_SETTINGS } from '../checkout/checkoutApi'
 import type { PosMenu } from './cart'
@@ -112,5 +112,45 @@ describe('billView discounts', () => {
     const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1', true, staff)], lines: [], menu, info, billing })
     expect(v.sentSubtotalSen).toBe(0)
     expect(v.catalogTag).toBeNull()
+  })
+})
+
+describe('a takeaway line inside a dine-in bill (W7 spec §4)', () => {
+  const sc: BillingConfig = {
+    settings: { ...billing.settings, sstRegistered: false },
+    rules: [{ rateBp: 1000, orderTypes: ['dine_in'], tableIds: null, productIds: null }],
+  }
+  const ta = item('i3', false, { order_type: 'takeaway', takeaway_fee_sen: 100 })
+  it('a sent takeaway line reads " (Takeaway)" on a dine-in bill, not on a takeaway bill', () => {
+    expect(TAKEAWAY_SUFFIX).toBe(' (Takeaway)')
+    expect(billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1'), ta], lines: [], menu, info, billing }).sent.map((s) => s.name))
+      .toEqual(['Nasi Lemak', 'Nasi Lemak (Takeaway)'])
+    expect(billView({ orderType: 'takeaway', tableId: null, items: [ta], lines: [], menu, info, billing }).sent[0].name).toBe('Nasi Lemak')
+  })
+  it('a takeaway draft: named so, its packaging fee, no dine-in service charge', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [], lines: [draft, { ...draft, takeaway: true }], menu, info, billing: sc })
+    expect(v.drafts.map((d) => d.name)).toEqual(['Nasi Lemak', 'Nasi Lemak (Takeaway)'])
+    // 7.00 + 7.00; service charge 10% of the dine-in 7.00 only = 0.70; packaging 1.00
+    expect([v.totals?.subtotalSen, v.totals?.serviceChargeSen, v.totals?.takeawayFeeSen]).toEqual([1400, 70, 100])
+  })
+  it('a sent takeaway line is priced by its own type', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1'), ta], lines: [], menu, info, billing: sc })
+    // 20.00 + 20.00; service charge 10% of the dine-in 20.00 = 2.00; packaging 1.00 × 2
+    expect([v.totals?.serviceChargeSen, v.totals?.takeawayFeeSen]).toEqual([200, 200])
+  })
+})
+
+describe('served lines (W7 spec §6)', () => {
+  const at = '2026-11-22T03:00:00Z'
+  it('a line with served_at is served; a voided one never is; Mark all served takes the live unserved lines', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1', false, { served_at: at }), item('i2'), item('i3', true, { served_at: at })],
+      lines: [], menu, info, billing })
+    expect(v.sent.map((s) => s.served)).toEqual([true, false, false])
+    expect(unservedIds(v.sent)).toEqual(['i2'])
+  })
+  it('money is the same served or not', () => {
+    const open = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1')], lines: [], menu, info, billing })
+    const served = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1', false, { served_at: at })], lines: [], menu, info, billing })
+    expect(served.totals).toEqual(open.totals)
   })
 })

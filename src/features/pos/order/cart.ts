@@ -13,6 +13,8 @@ export interface OrderLine {
   qty: number
   note: string | null
   optionIds: string[]
+  /** W7: a takeaway line inside a dine-in bill (POS only; the server ignores it elsewhere). Absent = the bill's type */
+  takeaway?: true
 }
 
 export interface PosVariant { id: string; name: string; priceSen: number; isBase: boolean }
@@ -128,6 +130,9 @@ export interface QrMenuJson {
   tableLabel: string
   paused: boolean
   needsPax: boolean
+  /** W7: the outlet's ordering window, "HH:MM" Malaysia time; null (or absent from an older server) = no limit */
+  ordersOpenAt?: string | null
+  lastOrderAt?: string | null
   categories: {
     name: string
     products: {

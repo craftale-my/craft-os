@@ -1,5 +1,6 @@
 /** Pure helpers for the checkout sections of /pos/settings. */
 import type { PaymentKind } from './tender'
+import { orderWindowProblem } from '../order/orderWindow'
 
 /** "10" → 1000, "6.5" → 650, "0" → 0; null when not a percentage between 0 and 100 with at most two decimals. */
 export function parsePercentBp(text: string): number | null {
@@ -29,6 +30,8 @@ export interface ReceiptDetailsForm {
   email: string
   footer: string
   footerQr?: string // W4: printed as a QR code under the footer
+  ordersOpenAt?: string | null // W7: "HH:MM" Malaysia time, with lastOrderAt or not at all
+  lastOrderAt?: string | null
 }
 
 export function receiptDetailsProblem(f: ReceiptDetailsForm): string | null {
@@ -36,7 +39,7 @@ export function receiptDetailsProblem(f: ReceiptDetailsForm): string | null {
   if (f.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) return 'The email address does not look right'
   if (f.footer.length > 300) return 'The footer is too long (300 characters at most)'
   if ((f.footerQr ?? '').trim().length > 300) return 'The QR text is too long (300 characters at most).'
-  return null
+  return orderWindowProblem(f.ordersOpenAt ?? null, f.lastOrderAt ?? null)
 }
 
 /** Choosing a payment method's kind (W4 spec §5): a new (unsaved) method opens the cash drawer when it is

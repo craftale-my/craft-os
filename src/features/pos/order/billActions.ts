@@ -3,11 +3,11 @@
  *  bill right now, Feedme order. */
 import { SPLIT_ACTION_LABEL, SPLIT_OFFLINE, canSplit } from './splitSelection'
 
-export type BillAction = 'send' | 'move' | 'split' | 'discount_bill' | 'edit_bill_discount' | 'remove_bill_discount'
+export type BillAction = 'send' | 'mark_served' | 'move' | 'split' | 'discount_bill' | 'edit_bill_discount' | 'remove_bill_discount'
   | 'void_bill' | 'close_empty' | 'pax' | 'pause_qr' | 'resume_qr' | 'clear_qr_cart' | 'open_qr'
 
 export const BILL_ACTION_LABEL: Record<BillAction, string> = {
-  send: 'Send', move: 'Move', split: SPLIT_ACTION_LABEL, discount_bill: 'Discount bill', edit_bill_discount: 'Edit discount',
+  send: 'Send', mark_served: 'Mark all served', move: 'Move', split: SPLIT_ACTION_LABEL, discount_bill: 'Discount bill', edit_bill_discount: 'Edit discount',
   remove_bill_discount: 'Remove discount', void_bill: 'Void bill', close_empty: 'Close empty bill', pax: 'Pax',
   pause_qr: 'Pause QR', resume_qr: 'Resume QR', clear_qr_cart: 'Clear QR cart', open_qr: 'Open for QR',
 }
@@ -20,9 +20,11 @@ export const BILL_ACTION_LABEL: Record<BillAction, string> = {
 export function billActions(p: {
   isTable: boolean; hasBill: boolean; loaded: boolean; liveSentCount: number; draftCount: number
   qrPaused: boolean; qrRequiresOpenBill: boolean; billDiscount: boolean
+  unservedCount?: number   // W7: live sent lines not served yet — Mark all served right after Send
 }): BillAction[] {
   const out: BillAction[] = []
   if (p.draftCount > 0) out.push('send')
+  if (p.hasBill && p.loaded && (p.unservedCount ?? 0) > 0) out.push('mark_served')
   if (p.hasBill) out.push('move')
   if (p.hasBill && p.loaded) {
     if (canSplit(p.liveSentCount)) out.push('split')
@@ -54,15 +56,18 @@ export function billActionNotes(p: { online: boolean; partPaid: boolean }): Part
   return p.online ? {} : { split: SPLIT_OFFLINE }
 }
 
-export type ItemAction = 'discount_item' | 'edit_item_discount' | 'remove_item_discount' | 'void_item'
+export type ItemAction = 'serve' | 'unserve' | 'discount_item' | 'edit_item_discount' | 'remove_item_discount' | 'void_item'
 
 export const ITEM_ACTION_LABEL: Record<ItemAction, string> = {
+  serve: 'Serve', unserve: 'Not served',
   discount_item: 'Discount item', edit_item_discount: 'Edit discount', remove_item_discount: 'Remove discount', void_item: 'Void item',
 }
 
-/** A tapped sent item: Discount item (Edit and Remove discount when it has one), then Void item. */
-export function itemActions(p: { discounted: boolean }): ItemAction[] {
-  return p.discounted ? ['edit_item_discount', 'remove_item_discount', 'void_item'] : ['discount_item', 'void_item']
+/** A tapped sent item (W7: the Feedme long-press menu): Serve, or Not served once served; then Discount item
+ *  (Edit and Remove discount when it has one), then Void item. */
+export function itemActions(p: { discounted: boolean; served: boolean }): ItemAction[] {
+  const rest: ItemAction[] = p.discounted ? ['edit_item_discount', 'remove_item_discount', 'void_item'] : ['discount_item', 'void_item']
+  return [p.served ? 'unserve' : 'serve', ...rest]
 }
 
 /** A tapped item of a bill with a part paid: discounting it (set or edit) and voiding it are off with the

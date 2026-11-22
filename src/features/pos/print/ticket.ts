@@ -6,6 +6,7 @@ export interface TicketLine {
   note: string | null
   mods?: string[] // modifier names, e.g. ["Oat milk"]; absent on Phase 0 payloads
   guest?: string // QR table cart: the guest who added the line ("Eric", "Guest 2"); absent for the counter
+  takeaway?: true // W7: a takeaway line of a dine-in bill ("TAKEAWAY" before the name); absent otherwise and before W7
 }
 
 export interface TicketPayload {
@@ -77,7 +78,7 @@ export function renderTicketLines(t: TicketPayload, cols: number): string[] {
   const body = t.lines.flatMap((l) => {
     const g = ticketGuest(l.guest)
     return [
-      ...wrap(`${l.qty} x ${l.name}${g ? ` - ${g}` : ''}`, cols, '    '),
+      ...wrap(`${l.qty} x ${l.takeaway ? 'TAKEAWAY ' : ''}${l.name}${g ? ` - ${g}` : ''}`, cols, '    '),
       ...(l.mods ?? []).flatMap((m) => wrap(`+ ${m}`, cols - 4, '  ').map((s) => `    ${s}`)),
       ...(l.note ? wrap(`* ${l.note}`, cols - 4, '  ').map((s) => `    ${s}`) : []),
     ]

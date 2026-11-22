@@ -6,18 +6,19 @@ import type { BillOrderType, BillTotals, CashRounding, DiscountInput, DiscountKi
 import { storedDiscount, type StoredDiscount } from './discounts'
 import type { PaymentKind } from './tender'
 import type { ReasonAction, ReasonTemplate } from './reasons'
-import { parseCheckoutResult, parseRefundResult, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
+import { parseCheckoutResult, parseRefundResult, readableError, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
 import { parseCheckoutState, type CheckoutState } from './follow'
 import type { SplitItem } from '../order/splitSelection'
 import { parsePartQuote, parsePartResult, type PartQuote, type PartResult } from './partSplit'
 import type { FontSize } from '../print/doc'
 import type { ReceiptLogo } from '../print/logo'
+import { hhmm } from '../order/orderWindow'
 
 const CHECKOUT_TIMEOUT_MS = 10_000
 const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
 
 function fail(error: { message: string } | null): never {
-  throw new Error(error?.message ?? 'Unknown error')
+  throw new Error(error ? readableError(new Error(error.message)) : 'Unknown error')
 }
 
 function saved(res: { data: unknown[] | null; error: { message: string } | null }, what: string): void {
@@ -35,10 +36,12 @@ export interface PosSettings {
   footerQr: string
   fontSize: FontSize
   hideFreeMods: boolean
+  ordersOpenAt: string | null       // W7: "HH:MM" Malaysia time; both null = QR orders at any time
+  lastOrderAt: string | null
 }
 export const DEFAULT_POS_SETTINGS: PosSettings = {
   sstRegistered: true, cashRounding: 'nearest_5_sen', receiptRoute: null, receiptFooter: DEFAULT_FOOTER, qrRequiresOpenBill: false,
-  receiptLogo: null, footerQr: '', fontSize: 'normal', hideFreeMods: false,
+  receiptLogo: null, footerQr: '', fontSize: 'normal', hideFreeMods: false, ordersOpenAt: null, lastOrderAt: null,
 }
 
 export interface PaymentMethodRow {
@@ -88,6 +91,8 @@ export interface ReceiptDetails {
   footerQr: string                  // W4: '' = no QR code
   fontSize: FontSize                // W4
   hideFreeMods: boolean             // W4
+  ordersOpenAt: string | null       // W7: "HH:MM"; null with lastOrderAt = no limit
+  lastOrderAt: string | null        // W7
 }
 
 export interface BillingConfig { settings: PosSettings; rules: ServiceChargeRuleInput[] }
@@ -111,17 +116,19 @@ export type { CheckoutResult }
 interface SettingsRow {
   sst_registered: boolean; cash_rounding: CashRounding; receipt_route: string | null; receipt_footer: string; qr_requires_open_bill: boolean
   receipt_logo: ReceiptLogo | null; receipt_footer_qr: string | null; receipt_font_size: FontSize; receipt_hide_free_mods: boolean
+  orders_open_at: string | null; last_order_at: string | null   // W7: Postgres times, "09:00:00"
 }
 const toSettings = (r: SettingsRow | null): PosSettings => (r ? {
   sstRegistered: r.sst_registered, cashRounding: r.cash_rounding, receiptRoute: r.receipt_route,
   receiptFooter: r.receipt_footer, qrRequiresOpenBill: r.qr_requires_open_bill,
   receiptLogo: r.receipt_logo, footerQr: r.receipt_footer_qr ?? '', fontSize: r.receipt_font_size ?? 'normal',
   hideFreeMods: r.receipt_hide_free_mods ?? false,
+  ordersOpenAt: hhmm(r.orders_open_at), lastOrderAt: hhmm(r.last_order_at),
 } : DEFAULT_POS_SETTINGS)
 
 export async function fetchPosSettings(branchId: string): Promise<PosSettings> {
   const { data, error } = await supabase.from('branch_pos_settings')
-    .select('sst_registered, cash_rounding, receipt_route, receipt_footer, qr_requires_open_bill, receipt_logo, receipt_footer_qr, receipt_font_size, receipt_hide_free_mods')
+    .select('sst_registered, cash_rounding, receipt_route, receipt_footer, qr_requires_open_bill, receipt_logo, receipt_footer_qr, receipt_font_size, receipt_hide_free_mods, orders_open_at, last_order_at')
     .eq('branch_id', branchId).maybeSingle()
   if (error) fail(error)
   return toSettings(data as SettingsRow | null)
@@ -178,6 +185,7 @@ export async function fetchReceiptDetails(branchId: string): Promise<ReceiptDeta
     footer: s.receiptFooter, receiptRoute: s.receiptRoute, sstRegistered: s.sstRegistered,
     cashRounding: s.cashRounding, qrRequiresOpenBill: s.qrRequiresOpenBill,
     receiptLogo: s.receiptLogo, footerQr: s.footerQr, fontSize: s.fontSize, hideFreeMods: s.hideFreeMods,
+    ordersOpenAt: s.ordersOpenAt, lastOrderAt: s.lastOrderAt,
   }
 }
 
@@ -354,15 +362,23 @@ export async function refundBill(refundId: string, billId: string, amountSen: nu
 }
 
 /** Change the guests of an open dine-in bill (pos_set_bill_pax: 1–99, staff of its branch). */
-export async function setBillPax(billId: string, pax: number): Promise<void> {
-  const { error } = await supabase.rpc('pos_set_bill_pax', { p_bill_id: billId, p_pax: pax })
+/** The pax of an open dine-in bill and, W7, of which children (null = none given; the server clamps to the pax). */
+export async function setBillPax(billId: string, pax: number, children: number | null = null): Promise<void> {
+  const { error } = await supabase.rpc('pos_set_bill_pax', { p_bill_id: billId, p_pax: pax, p_children: children })
   if (error) fail(error)
 }
 
-export async function openTable(tableId: string, pax: number | null): Promise<string> {
-  const { data, error } = await supabase.rpc('open_table', { p_table_id: tableId, p_pax: pax })
+export async function openTable(tableId: string, pax: number | null, children: number | null = null): Promise<string> {
+  const { data, error } = await supabase.rpc('open_table', { p_table_id: tableId, p_pax: pax, p_children: children })
   if (error) fail(error)
   return data as string
+}
+
+/** W7 spec §6: mark sent, live lines of one open bill served (or not served); how many changed. No PIN. */
+export async function setItemsServed(itemIds: string[], served: boolean): Promise<number> {
+  const { data, error } = await supabase.rpc('set_items_served', { p_item_ids: itemIds, p_served: served })
+  if (error) fail(error)
+  return Number(data ?? 0)
 }
 
 /** Paid, voided and merged bills of the branch closed since `sinceIso` (newest first). */

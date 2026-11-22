@@ -350,6 +350,55 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
+  it('scans the W7 migration: last-order time, takeaway lines, children and Serve; grants like their neighbours; a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-22-pos-feedme-habits.sql', SUPABASE), 'utf8')
+    const internal: [string, string][] = [
+      ['pos_orders_open', 'uuid, timestamptz'], ['pos_orders_closed_message', 'uuid'], ['order_items_order_type', ''],
+      ['pos_insert_order', 'uuid, uuid, text, integer, text, uuid, jsonb, uuid, uuid'], ['pos_queue_void_tickets', 'uuid[]'],
+      ['pos_receipt_payload', 'uuid, boolean'], ['pos_part_receipt_payload', 'uuid'], ['pos_move_units', 'jsonb, uuid'],
+    ]
+    const staff: [string, string][] = [
+      ['save_receipt_settings', 'uuid, jsonb'], ['place_counter_order', 'uuid, text, integer, jsonb, uuid, uuid, uuid, integer'],
+      ['pos_set_bill_pax', 'uuid, integer, integer'], ['open_table', 'uuid, integer, integer'], ['set_items_served', 'uuid[], boolean'],
+    ]
+    const guests: [string, string][] = [
+      ['qr_menu', 'text'], ['qr_cart_put', 'text, jsonb, jsonb, uuid'], ['qr_cart_send', 'text, integer, text, uuid[], uuid'],
+    ]
+    const bodies = functionBodies(sql)
+    expect(bodies.map((b) => b.name).sort()).toEqual([...internal, ...staff, ...guests].map(([n]) => n).sort())
+    for (const { name, body } of bodies) expect(body, name).not.toMatch(/auth\.uid\(\)/)
+    for (const [f, args] of internal) {
+      expect(sql).toContain(`revoke all on function ${f}(${args}) from public, anon, authenticated;`)
+      expect(sql).not.toContain(`grant execute on function ${f}(`)
+    }
+    for (const [f, args] of staff) {
+      expect(sql).toContain(`revoke all on function ${f}(${args}) from public, anon;`)
+      expect(sql).toContain(`grant execute on function ${f}(${args}) to authenticated;`)
+    }
+    for (const [f, args] of guests) {
+      expect(sql).toContain(`revoke all on function ${f}(${args}) from public;`)
+      expect(sql).toContain(`grant execute on function ${f}(${args}) to anon, authenticated;`)
+    }
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-22-pos-receipt-numbers\.sql and migration-2026-11-22-qr-table-cart\.sql first/)
+    const body = (n: string) => bodies.find((b) => b.name === n)?.body ?? ''
+    // the window refuses QR in the add and send RPCs, and in pos_insert_order (place_table_order goes through it)
+    for (const f of ['qr_cart_put', 'qr_cart_send', 'pos_insert_order']) expect(body(f), f).toContain('pos_orders_open(')
+    expect(body('pos_insert_order')).toContain('guest_label')                            // still the QR table cart's version
+    expect(body('order_items_order_type')).toContain("if new.order_type = '' then return new; end if;")   // bodies have their strings emptied
+    // H3: the old signatures go first, so PostgREST has one candidate each
+    for (const d of ['place_counter_order(uuid, text, integer, jsonb, uuid, uuid, uuid)', 'pos_set_bill_pax(uuid, integer)', 'open_table(uuid, integer)']) {
+      expect(sql).toContain(`drop function if exists ${d};`)
+    }
+    expect(sql).toContain('alter table bills add column if not exists pax_children integer;')
+    expect(sql).toContain('alter table order_items add column if not exists served_at timestamptz;')
+    expect(body('set_items_served')).toContain('pos_ctx()')
+    // least() skips a null: every clamp of p_children sits inside a case that handles null first
+    expect(sql).not.toMatch(/least\(p_children, p_pax\)(?! end)/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select '[^']+' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-11-22-pos-feedme-habits-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
 })
 
 describe('the discount RPCs act as the POS session, never auth.uid()', () => {

@@ -5,6 +5,7 @@ import { partPaidTag } from '../checkout/partSplit'
 import { formatRate, type BillTotals } from '../checkout/bill'
 import { itemsWord, type BillView, type DraftRow, type SentRow } from './billView'
 import DiscountRows from '../checkout/DiscountRows'
+import { paxChildrenNote } from '../print/receipt'
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kuala_Lumpur' })
 
@@ -15,6 +16,7 @@ export default function BillColumn(p: {
   title: string                       // "Table T3"
   billNo: string | null               // null = no bill yet
   pax: number | null
+  paxChildren?: number | null         // W7: of which children ("3 pax (1 child)")
   onPax: (() => void) | null          // null = no pax here (takeaway)
   catalogName: string | null
   partPaidSen?: number                 // what the bill's parts paid (split spec §3.5)
@@ -46,7 +48,7 @@ export default function BillColumn(p: {
           <h2 className="truncate text-lg font-semibold text-brown-dark">{p.title}</h2>
           {p.onPax && (
             <button type="button" onClick={p.onPax} className="flex min-h-11 items-center gap-1 rounded-lg border border-border-mid px-3 text-sm">
-              <Users size={16} />{p.pax ?? '—'} pax
+              <Users size={16} />{p.pax ?? '—'} pax{paxChildrenNote(p.paxChildren)}
             </button>
           )}
         </div>
@@ -77,9 +79,9 @@ export default function BillColumn(p: {
             <div className="text-xs text-brown-muted">#{o.order_no} · {o.source === 'qr' ? 'QR' : 'Counter'} · {time(o.placed_at)}</div>
             {view.sent.filter((s) => s.item.order_id === orderId).map((s) => (
               <button key={s.item.id} type="button" disabled={s.voided} onClick={() => p.onSentTap(s)}
-                className={`flex min-h-11 w-full justify-between gap-2 py-1.5 text-left ${s.voided ? 'line-through opacity-50' : ''}`}>
+                className={`flex min-h-11 w-full justify-between gap-2 py-1.5 text-left ${s.voided ? 'line-through opacity-50' : s.served ? 'text-brown-muted' : ''}`}>
                 <span>
-                  <LineText qty={s.qty} name={s.name} mods={s.mods} note={s.note} guest={s.item.guest_label} />
+                  <LineText qty={s.qty} name={s.name} mods={s.mods} note={s.note} guest={s.item.guest_label} served={s.served} />
                   <DiscountRows rows={s.discountRows} />
                 </span>
                 <span className="tabular-nums">{formatSen(s.amountSen)}</span>
@@ -133,10 +135,13 @@ export default function BillColumn(p: {
   )
 }
 
-function LineText({ qty, name, mods, note, guest }: { qty: number; name: string; mods: string[]; note: string | null; guest?: string | null }) {
+function LineText({ qty, name, mods, note, guest, served = false }: {
+  qty: number; name: string; mods: string[]; note: string | null; guest?: string | null
+  served?: boolean   // W7: ✓ before the line; nothing prints
+}) {
   return (
     <span>
-      {qty} × {name}{guest && <span className="ml-1 text-xs text-brown-muted">· {guest}</span>}
+      {served && <span aria-hidden="true">✓ </span>}{qty} × {name}{guest && <span className="ml-1 text-xs text-brown-muted">· {guest}</span>}
       {mods.map((m, k) => <span key={k} className="block pl-4 text-xs text-brown-muted">+ {m}</span>)}
       {note && <span className="block pl-4 text-xs italic text-brown-muted">* {note}</span>}
     </span>

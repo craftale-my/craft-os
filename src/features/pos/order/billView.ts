@@ -12,6 +12,7 @@ import type { BillItemRow } from './posApi'
 
 export interface SentRow {
   item: BillItemRow; qty: number; name: string; mods: string[]; note: string | null; amountSen: number; voided: boolean
+  served: boolean               // W7: marked served (✓); a voided line never is
   discountRows: DiscountRow[]   // its catalog and item discounts, as they come off now
   afterCatalogSen: number       // what an item discount applies to
 }
@@ -47,12 +48,16 @@ export interface BillViewInput {
   draftCatalogDiscountBp?: number       // the discount of the catalog the drafts are ordered from
 }
 
+/** W7 spec §4: a takeaway line inside a dine-in bill reads "Nasi Lemak (Takeaway)" (the receipt says the same). */
+export const TAKEAWAY_SUFFIX = ' (Takeaway)'
+
 export function billView(i: BillViewInput): BillView {
   const sent: SentRow[] = i.items.map((it) => {
     const d = lineDiscounts({ unitPriceSen: it.unit_price_sen, qty: it.qty, catalogDiscountBp: it.catalog_discount_bp, discount: storedDiscount(it) })
     return {
-      item: it, qty: it.qty, name: it.name_snapshot, mods: it.modifiers_snapshot.map((m) => m.name), note: it.note,
-      amountSen: d.grossSen, voided: it.voided_at !== null,
+      item: it, qty: it.qty, mods: it.modifiers_snapshot.map((m) => m.name), note: it.note,
+      name: it.name_snapshot + (i.orderType === 'dine_in' && it.order_type === 'takeaway' ? TAKEAWAY_SUFFIX : ''),
+      amountSen: d.grossSen, voided: it.voided_at !== null, served: it.voided_at === null && !!it.served_at,
       discountRows: it.voided_at === null ? lineDiscountRows(it, d) : [],
       afterCatalogSen: d.grossSen - d.catalogDiscountSen,
     }
@@ -61,7 +66,8 @@ export function billView(i: BillViewInput): BillView {
     const p = i.menu ? findProduct(i.menu, line.productId) : undefined
     if (!p) return { index, line, qty: line.qty, name: 'Unavailable item', mods: [], note: line.note, unitSen: null }
     const { name, mods } = lineLabel(p, line)
-    return { index, line, qty: line.qty, name, mods, note: line.note, unitSen: linePriceSen(p, line) }
+    const shown = name + (i.orderType === 'dine_in' && line.takeaway ? TAKEAWAY_SUFFIX : '')
+    return { index, line, qty: line.qty, name: shown, mods, note: line.note, unitSen: linePriceSen(p, line) }
   })
   // in order item id order, as pos_bill_totals sends them: a bill discount's leftover sen lands on the same line
   const sentLines: BillLineInput[] = [...i.items].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map((it) => ({
@@ -74,8 +80,9 @@ export function billView(i: BillViewInput): BillView {
   const draftLines: BillLineInput[] = drafts.flatMap((d) => {
     const info = i.info.get(d.line.productId)
     if (d.unitSen === null || !info) return []
+    const type: OrderType = i.orderType === 'dine_in' && d.line.takeaway ? 'takeaway' : i.orderType
     return [{ productId: d.line.productId, unitPriceSen: d.unitSen, qty: d.qty, sstRateBp: info.sstRateBp,
-              takeawayFeeSen: i.orderType === 'takeaway' ? info.takeawayFeeSen : 0, voided: false, orderType: i.orderType,
+              takeawayFeeSen: type === 'takeaway' ? info.takeawayFeeSen : 0, voided: false, orderType: type,
               catalogDiscountBp: i.draftCatalogDiscountBp ?? 0 }]
   })
   const totalsIncludeDrafts = draftLines.length === drafts.length
@@ -96,6 +103,9 @@ export function billView(i: BillViewInput): BillView {
     draftCount: i.lines.reduce((n, l) => n + l.qty, 0),
   }
 }
+
+/** W7 spec §6: the lines Mark all served sends — sent, live and not served yet. */
+export const unservedIds = (sent: SentRow[]): string[] => sent.filter((s) => !s.voided && !s.served).map((s) => s.item.id)
 
 /** What the Payment button does (spec §2 rules), in this order: no open shift → disabled; drafts →
  *  ask "Send n new items first?"; nothing live on the bill → disabled; else open Payment. A shift
