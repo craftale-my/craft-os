@@ -499,11 +499,13 @@ begin
        jsonb_build_object('outlet', 'VERIFY R', 'openedAt', '2026-01-06T00:00:00.000Z', 'closedAt', '2026-01-06T14:00:00.000Z',
                           'openedBy', 'Verify R Cashier', 'closedBy', 'Verify R Cashier', 'floatSen', 10000,
                           'cashSalesSen', 3990, 'cashRefundSen', 300, 'payInSen', 2000, 'payOutSen', 500,
-                          'expectedSen', 15190, 'countedSen', 15150, 'varianceSen', -40, 'reason', 'Short at close'),
+                          'expectedSen', 15190, 'countedSen', 15150, 'varianceSen', -40, 'reason', 'Short at close',
+                          'noSaleOpens', 0),   -- W4 C5
        jsonb_build_object('outlet', 'VERIFY R', 'openedAt', '2026-01-06T12:00:00.000Z', 'closedAt', null,
                           'openedBy', 'Verify R Cashier', 'closedBy', null, 'floatSen', 10000,
                           'cashSalesSen', 1910, 'cashRefundSen', 0, 'payInSen', 0, 'payOutSen', 0,
-                          'expectedSen', 11910, 'countedSen', null, 'varianceSen', null, 'reason', null))) then
+                          'expectedSen', 11910, 'countedSen', null, 'varianceSen', null, 'reason', null,
+                          'noSaleOpens', 0))) then   -- W4 C5
     raise exception 'FAIL R4 drawer: %', v;
   end if;
 

@@ -26,6 +26,8 @@ import PosSettingsPage from './features/pos/order/PosSettingsPage'
 import DevicesPage from './features/pos/devices/DevicesPage'
 import ReportsPage from './features/pos/reports/ReportsPage'
 import MembersPage from './features/pos/members/MembersPage'
+import EinvoicePage from './features/pos/einvoice/EinvoicePage'
+import { EinvoiceProblemBanner } from './features/pos/einvoice/EinvoiceProblemBanner'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
@@ -36,7 +38,10 @@ function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-[#F5F0E8]">
       <Sidebar />
-      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen">{children}</main>
+      <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen">
+        <EinvoiceProblemBanner />
+        {children}
+      </main>
     </div>
   )
 }
@@ -287,6 +292,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="access_settings">
             <AppLayout><DevicesPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/pos/einvoice"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><EinvoicePage /></AppLayout>
           </ProtectedRoute>
         }
       />
