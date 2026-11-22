@@ -8,6 +8,16 @@ export interface ActivationClient {
   poll: (p: Pending) => Promise<PollReply>
 }
 
+const STATUSES = ['pending', 'rejected', 'expired', 'unknown', 'approved']
+const filled = (v: unknown): boolean => typeof v === 'string' && v !== ''
+
+/** A known status; an approved reply carries the device's sign-in and kind. */
+function isPollReply(json: Record<string, unknown>): boolean {
+  if (!STATUSES.includes(json.status as string)) return false
+  if (json.status !== 'approved') return true
+  return filled(json.deviceId) && filled(json.email) && filled(json.password) && filled(json.kind)
+}
+
 export function activationClient(supabaseUrl: string, anonKey: string, fetchFn: typeof fetch = fetch): ActivationClient {
   const endpoint = `${supabaseUrl.replace(/\/+$/, '')}/functions/v1/pos-device-activation`
   const call = async (body: unknown): Promise<{ status: number; json: Record<string, unknown> | null }> => {
@@ -33,6 +43,7 @@ export function activationClient(supabaseUrl: string, anonKey: string, fetchFn: 
       if (status !== 200 || !json || typeof json.status !== 'string') {
         throw new Error(typeof json?.error === 'string' ? json.error : 'Could not check the activation.')
       }
+      if (!isPollReply(json)) throw new Error('Unexpected reply from the activation service.')
       return json as unknown as PollReply
     },
   }

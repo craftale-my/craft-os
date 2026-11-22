@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEVICE_PATH, hasDeviceFile, readDeviceFile, writeDeviceFile } from './deviceFile.ts'
@@ -23,12 +23,15 @@ describe('the device file', () => {
     expect(statSync(path).mode & 0o777).toBe(0o600)
     expect(hasDeviceFile(path)).toBe(true)
     expect(readDeviceFile(path)).toEqual(file)
+    expect(readdirSync(dir)).toEqual(['.device.json'])   // no temp file left
   })
   it('never overwrites a pairing', () => {
     const path = tmp()
     writeDeviceFile(file, path)
     expect(() => writeDeviceFile({ ...file, deviceId: 'dev-2' }, path)).toThrow(/EEXIST/)
     expect(readDeviceFile(path)?.deviceId).toBe('dev-1')
+    expect(readdirSync(dir)).toEqual(['.device.json'])   // the refused write left no temp file
+    expect(statSync(path).mode & 0o777).toBe(0o600)
   })
   it('a broken file says what to do', () => {
     const path = tmp()

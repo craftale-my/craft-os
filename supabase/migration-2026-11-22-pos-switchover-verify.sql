@@ -108,6 +108,8 @@ begin
     perform pg_temp.expect_error(format('select claim_print_job(%L)', v_job_a), 'device_unpaired', 'X1 claim_print_job, ' || r.who);
     perform pg_temp.expect_error(format('select finish_print_job(%L, true, null)', v_job_a), 'device_unpaired', 'X1 finish_print_job, ' || r.who);
     perform pg_temp.expect_error('select insert_test_print(''Bar'')', 'device_unpaired', 'X1 a test print with no outlet, ' || r.who);
+    perform pg_temp.expect_error(format('select requeue_print_job(%L)', v_job_a), 'device_unpaired', 'X1 requeue_print_job, ' || r.who);
+    perform pg_temp.expect_error('select pos_whoami()', 'device_unpaired', 'X1 pos_whoami, ' || r.who);
     if pos_session_branch() is not null then raise exception 'FAIL X1 pos_session_branch of %: %', r.who, pos_session_branch(); end if;
   end loop;
   perform set_config('request.jwt.claims', '', true);

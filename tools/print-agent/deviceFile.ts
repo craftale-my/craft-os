@@ -1,6 +1,8 @@
 // tools/print-agent/.device.json: the print agent's device account (git-ignored, mode 0600).
 // Written once by the pair command; deleting it is how the agent is paired again.
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { chmodSync, existsSync, linkSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseDeviceFile, type DeviceFile } from './pairing.ts'
 
@@ -18,8 +20,15 @@ export function readDeviceFile(path: string = DEVICE_PATH): DeviceFile | null {
   return file
 }
 
-/** Owner-only (0600) and never over an existing pairing ('wx' fails with EEXIST). */
+/** Owner-only (0600), complete before it appears, and never over an existing pairing: the JSON goes to a
+ *  temp file next to the target, then a hard link makes it the target (EEXIST if one is there). */
 export function writeDeviceFile(file: DeviceFile, path: string = DEVICE_PATH): void {
-  writeFileSync(path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
-  chmodSync(path, 0o600)   // the umask cannot widen it, but an odd one could narrow the create mode
+  const temp = join(dirname(path), `.device.json.tmp-${process.pid}-${randomBytes(6).toString('hex')}`)
+  writeFileSync(temp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
+  try {
+    chmodSync(temp, 0o600)   // the umask cannot widen it, but an odd one could narrow the create mode
+    linkSync(temp, path)
+  } finally {
+    unlinkSync(temp)
+  }
 }

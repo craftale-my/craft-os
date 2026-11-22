@@ -65,6 +65,9 @@ export function messageOf(e: unknown): string {
   return String(e)
 }
 
+/** A message as a sentence: a full stop is added unless it already ends with . ! or ?. */
+const sentence = (m: string): string => (/[.!?]$/.test(m) ? m : `${m}.`)
+
 export interface PairDeps {
   paired: () => boolean
   request: (name: string | null) => Promise<Pending>
@@ -85,7 +88,7 @@ export async function runPair(name: string | null, deps: PairDeps): Promise<numb
   for (;;) {
     await deps.sleep(POLL_MS)
     let reply: PollReply
-    try { reply = await deps.poll(pending) } catch (e) { deps.log(`${messageOf(e)} Trying again.`); continue }
+    try { reply = await deps.poll(pending) } catch (e) { deps.log(`${sentence(messageOf(e))} Trying again.`); continue }
     const step = afterAgentPoll(reply, deps.now())
     if (step.kind === 'wait') continue
     if (step.kind === 'stop') { deps.log(step.message); return 1 }
@@ -111,6 +114,14 @@ export function parseWhoami(data: unknown): AgentWhoami {
 /** The server's word for a device that may no longer work (unpaired, or not a print agent). */
 export const isUnpairedError = (e: unknown): boolean => !!e && messageOf(e) === 'device_unpaired'
 
+/** Supabase refused the login itself: HTTP 400 / 401 / 403, or an auth error code that says so. Nothing else is an unpairing. */
+const REFUSED_STATUS = [400, 401, 403]
+const REFUSED_CODES = ['invalid_credentials', 'user_banned', 'invalid_grant']
+export function loginRefused(e: unknown): boolean {
+  const { status, code } = (e ?? {}) as { status?: unknown; code?: unknown }
+  return (typeof status === 'number' && REFUSED_STATUS.includes(status)) || (typeof code === 'string' && REFUSED_CODES.includes(code))
+}
+
 export interface StartDeps {
   readDevice: () => DeviceFile | null
   /** null when signed in; Supabase's error otherwise (its name tells a network failure). */
@@ -130,9 +141,9 @@ export async function startAgent(deps: StartDeps): Promise<AgentStart> {
     signInError = e instanceof Error ? e : new Error(String(e))
   }
   if (signInError) {
-    return retryableSignIn(signInError)
-      ? { ok: false, message: `Could not reach Supabase to sign in: ${signInError.message}` }
-      : { ok: false, message: UNPAIRED }
+    if (retryableSignIn(signInError)) return { ok: false, message: `Could not reach Supabase to sign in: ${signInError.message}` }
+    if (loginRefused(signInError)) return { ok: false, message: UNPAIRED }
+    return { ok: false, message: `Could not sign in: ${signInError.message}. Check the internet connection and start the agent again.` }
   }
   try {
     return { ok: true, who: await deps.whoami() }

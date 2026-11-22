@@ -1893,7 +1893,7 @@ EOF
 
 ### Task 6: Dev SQL, pairing this Mac's agent, the switch-over on dev, docs, push, redeploy (controller)
 
-Run by the controller, not an implementer. A fix found here goes back to the task that owns the file, with its own commit, and this task starts again from the step that failed. **Order is the point of this task: D (SQL, pair, print) before the C3 SQL; the C3 SQL before the Craft OS build with the notice.**
+Run by the controller, not an implementer. A fix found here goes back to the task that owns the file, with its own commit, and this task starts again from the step that failed. **Order is the point of this task (changed after the final review): D SQL → pair every agent (and make sure every outlet's browser-printed routes have a POS-app tablet set to print) → the new Craft OS build with the /pos notice → the pre-C3 check → the C3 SQL last.**
 
 **Files:**
 - Modify: `docs/pos/2026-10-29-feedme-replacement-readiness.md` (§2 W1 Part C, W6 Part D; §4 the rollout chain)
@@ -1926,19 +1926,39 @@ Check the editor URL holds `egznnbjmicebbhwasloy`; load `supabase/migration-2026
 Start in the background: `node --env-file=tools/print-agent/.env tools/print-agent/agent.ts`.
 Expected log: `Paired as "Office Mac agent" — printing for Demo.`, `agent routes: { … }`, `realtime: SUBSCRIBED`. In craft-os-dev → POS Settings → outlet Demo → a route of kind agent → **Test print** → the agent logs the job as `printed` (on the office network, the ZyWell at `192.168.0.32:9100` prints `Test print — <route>`) or `failed: Not sent: …` off it — either proves the claim. Devices shows `Office Mac agent`, kind Print agent, last seen just now (the minute heartbeat).
 
-- [ ] **Step 5: C3 SQL on craft-os-dev**
+- [ ] **Step 5: Craft OS build with the /pos notice (before the C3 SQL)**
 
-Only after Step 4. Load `supabase/migration-2026-11-22-pos-switchover.sql`, Run → `pos switchover applied`. Load `supabase/migration-2026-11-22-pos-switchover-verify.sql`, Run → `VERIFY OK` (`FAIL X…` → Task 4's files). Re-run the device-fixture verifies, each → `VERIFY OK`: `migration-2026-11-22-pos-agent-pairing-verify.sql`, `migration-2026-10-30-pos-app-verify.sql`, `migration-2026-10-30-pos-discounts-verify.sql`, `migration-2026-11-16-pos-split-bill-verify.sql`, `migration-2026-11-17-pos-bill-parts-verify.sql`, `migration-2026-11-18-pos-reports-verify.sql`, `migration-2026-11-22-pos-receipt-numbers-verify.sql`, `migration-2026-11-22-pos-feedme-habits-verify.sql`. A FAIL there that comes from a till call made as a staff login is a verify that belongs on the "pass only before C3" list (Spec conflict 4): record file and line in progress.md and add it to the list in the switchover header and readiness §4 (Task 4's file, own commit); any other FAIL is a defect — stop and report. Do not run the pre-C3 verifies.
+The new Craft OS build does not depend on C3, so it goes out first: the old build's till still works until C3 runs, the new one only shows the notice.
+
+1. Add to this worktree's `.claude/launch.json`, after the `craft-os-dev` entry: `{ "name": "pos-app-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:pos"], "port": 5179 }`. Add `VITE_POS_APP_URL=https://craft-pos-dev.vercel.app` to `.env.local` (git-ignored).
+2. Start `craft-os-dev` from this worktree's launch.json (signed in as the dev owner): POS → Register → `The POS has moved to its own app.`, the link `https://craft-pos-dev.vercel.app`, `Activate a tablet: open the address on it and approve it in Devices.`, `My PIN` opens the PIN dialog (Cancel). POS Settings, Reports, Menu and Devices load; no console errors.
+3. Deploy craft-os-dev with this build (the recipe of Step 11, from the current commit; craft-pos-dev is redeployed in Step 11 as before).
+
+- [ ] **Step 6: Pre-C3 check — every route has something to print it**
+
+Run on craft-os-dev (dev project only), read-only:
+
+```sql
+select r.branch_id, r.name, r.kind,
+       case when r.kind = 'agent' then exists(select 1 from pos_devices d where d.branch_id = r.branch_id and d.kind = 'print_agent' and d.revoked_at is null)
+            else exists(select 1 from pos_devices d where d.branch_id = r.branch_id and d.kind = 'pos' and d.prints and d.revoked_at is null) end as covered
+  from print_routes r order by 1, 2;
+```
+
+Every row must show `covered = true` before Step 7: an `agent` route needs a paired print agent at its outlet, and every browser-printed route (`epson-epos`, `star-webprnt`) needs a POS app tablet set to print there. A `false` row: pair the agent or set a tablet to print, then run the query again.
+
+- [ ] **Step 7: C3 SQL on craft-os-dev**
+
+Only after Step 4 (the agent prints) and after Steps 5 and 6 (the Craft OS build with the notice is deployed, and the pre-C3 check shows every route covered). Load `supabase/migration-2026-11-22-pos-switchover.sql`, Run → `pos switchover applied`. Load `supabase/migration-2026-11-22-pos-switchover-verify.sql`, Run → `VERIFY OK` (`FAIL X…` → Task 4's files). Re-run the device-fixture verifies, each → `VERIFY OK`: `migration-2026-11-22-pos-agent-pairing-verify.sql`, `migration-2026-10-30-pos-app-verify.sql`, `migration-2026-10-30-pos-discounts-verify.sql`, `migration-2026-11-16-pos-split-bill-verify.sql`, `migration-2026-11-17-pos-bill-parts-verify.sql`, `migration-2026-11-18-pos-reports-verify.sql`, `migration-2026-11-22-pos-receipt-numbers-verify.sql`, `migration-2026-11-22-pos-feedme-habits-verify.sql`. A FAIL there that comes from a till call made as a staff login is a verify that belongs on the "pass only before C3" list (Spec conflict 4): record file and line in progress.md and add it to the list in the switchover header and readiness §4 (Task 4's file, own commit); any other FAIL is a defect — stop and report. Do not run the pre-C3 verifies.
 
 The agent from Step 4 keeps printing (it is a device): Test print again → claimed.
 
-- [ ] **Step 6: The POS app still sells; Craft OS /pos shows the notice**
+- [ ] **Step 8: The POS app still sells, after C3**
 
-1. Add to this worktree's `.claude/launch.json`, after the `craft-os-dev` entry: `{ "name": "pos-app-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:pos"], "port": 5179 }`. Add `VITE_POS_APP_URL=https://craft-pos-dev.vercel.app` to `.env.local` (git-ignored).
-2. Start `pos-app-dev` (http://localhost:5179; its requests go to `egznnbjmicebbhwasloy.supabase.co` — stop if `yfsoesxzurzjdwstszru`). If this origin is not activated yet, activate it (Devices, kind POS). The owner signs in with their name and PIN; on a table, send one item and pay it by cash; the Bar ticket job is claimed by the agent (its log). The bill shows in Transactions.
-3. Start `craft-os-dev` from this worktree's launch.json (signed in as the dev owner): POS → Register → `The POS has moved to its own app.`, the link `https://craft-pos-dev.vercel.app`, `Activate a tablet: open the address on it and approve it in Devices.`, `My PIN` opens the PIN dialog (Cancel). POS Settings, Reports, Menu and Devices load; POS Settings → Test print still queues (the agent claims it); no console errors.
+1. Start `pos-app-dev` (http://localhost:5179; its requests go to `egznnbjmicebbhwasloy.supabase.co` — stop if `yfsoesxzurzjdwstszru`). If this origin is not activated yet, activate it (Devices, kind POS). The owner signs in with their name and PIN; on a table, send one item and pay it by cash; the Bar ticket job is claimed by the agent (its log). The bill shows in Transactions.
+2. In craft-os-dev (the build deployed in Step 5): POS Settings → Test print still queues (the agent claims it); the notice is still shown at POS → Register.
 
-- [ ] **Step 7: Docs — W1 Part C, W6 Part D and the rollout chain**
+- [ ] **Step 9: Docs — W1 Part C, W6 Part D and the rollout chain**
 
 In `docs/pos/2026-10-29-feedme-replacement-readiness.md` §2, replace:
 
@@ -1992,8 +2012,11 @@ with:
       (`migration-2026-11-22-pos-agent-pairing.sql`; then pair every print agent with
       `tools/print-agent/pair.ts`, approve it in Devices as Print agent, restart it and see it print) → the
       switch-over (`migration-2026-11-22-pos-switchover.sql`, LAST: only once every agent prints as a device —
-      from here a staff-login agent stops printing and staff logins lose the till; then the Craft OS build
-      with the /pos notice and `VITE_POS_APP_URL`)),
+      from here a staff-login agent stops printing and staff logins lose the till). Order: D SQL → pair every
+      agent, and every outlet's browser-printed routes need a POS-app tablet set to print → deploy the new Craft
+      OS build (the /pos notice, `VITE_POS_APP_URL`; it does not depend on C3) → check that every print route is
+      covered (the `print_routes` / `pos_devices` query of the plan's Task 6 Step 6, all `covered = true`) → the
+      C3 SQL last)),
 ```
 
 and replace:
@@ -2006,14 +2029,14 @@ with:
 
 ```
 - [ ] Create the `craft-pos` Vercel project; staff email logins lose front-of-house RPCs at the same time
-      (the switch-over file, after every print agent is paired). After the switch-over, the verifies that run
+      (the switch-over file, last: after every print agent is paired and the new Craft OS build is out). After the switch-over, the verifies that run
       the till as a staff login pass only before it and are not re-run: menu, ordering, catalogs, checkout,
       menu-editor, shifts, slots-photos, hardening, frontend, outlets, menu-picks, device-till's "C1
       transition" block, qr-table-cart L2 / L3. Re-running `migration-2026-10-29-pos-device-till.sql` puts the
       transition back: re-run the switch-over file after it.
 ```
 
-- [ ] **Step 8: Commit and push**
+- [ ] **Step 10: Commit and push**
 
 ```bash
 git add docs/pos/2026-10-29-feedme-replacement-readiness.md .claude/launch.json
@@ -2026,7 +2049,7 @@ EOF
 git push origin feature/pos-demo
 ```
 
-- [ ] **Step 9: Redeploy craft-os-dev and craft-pos-dev (prebuilt static, Craftale login)**
+- [ ] **Step 11: Redeploy craft-os-dev and craft-pos-dev (prebuilt static, Craftale login)**
 
 For each project, from the pushed commit: `git archive <commit> | tar -x -C <scratch>`; copy `.env.local` (dev; for craft-os-dev it must hold `VITE_POS_APP_URL=https://craft-pos-dev.vercel.app`) and symlink `node_modules`; build (`npm run build` → `dist` for craft-os-dev, `npm run build:pos` → `dist-pos` for craft-pos-dev); grep the bundle: `egznnbjmicebbhwasloy` present, `yfsoesxzurzjdwstszru` absent, and for craft-os-dev `craft-pos-dev.vercel.app` present; copy the project's `vercel.json` in as before (root `vercel.json` into `dist`; the POS one with the SPA rewrite and SW headers into `dist-pos`); then from the output folder `VERCEL_ORG_ID=team_9HUelE6yit458kQ3PvBU6lpi VERCEL_PROJECT_ID=<project> vercel deploy --prod --yes --global-config ~/.config/vercel-craftale`. Check https://craft-os-dev.vercel.app/pos shows the notice with the link, and https://craft-pos-dev.vercel.app still opens the activation / lock screen.
 
@@ -2050,10 +2073,10 @@ Report: the test count, both builds, `pos agent pairing applied` / `pos switchov
 | §3 back office keeps working; list what changes | Spec notes 2–3; Task 4 verify X4 |
 | §3 Craft OS `/pos` notice, address from `VITE_POS_APP_URL` with fallback, activation line; nav keeps Reports, Menu, POS Settings, Devices; till entry → notice | Task 5 (Spec conflict 3: My PIN kept; Spec note 6) |
 | §3 open must-dos listed, done or left with a reason | Spec conflict 4 (older verifies), Spec notes 7–8 (agent read scope, `pos_approvers`); the Plan B "for Part C" list was done in C1 / C2 (ghost device mapped by the app, `pos_unpair_this_device`, printing whitelist, STABLE lookups, coded errors, scoped reads, audit `on delete set null`; the Auth session settings stay a prod rollout check in progress.md's ROLLOUT CHECKLIST); C2 Task 2's "p_staff_id needs the device-till migration before this ships" is the §4 chain order |
-| §3 rollout order D → C3 SQL → Craft OS build; in the readiness doc | Task 4 STOP guard (needs the D file), Task 6 Steps 2–5 order, Step 7 §4 text |
+| §3 rollout order D → Craft OS build → C3 SQL; in the readiness doc | Task 4 STOP guard (needs the D file), Task 6 Steps 2–7 order (build before C3, pre-C3 check), Step 9 §4 text |
 | §4 unit tests: pair command cases, file 0600, agent start with / without file, unpaired, `/pos` notice | Tasks 2, 3, 5 |
 | §4 SQL verify: staff login refused for `open_table`, `checkout_bill`, `claim_print_job`; POS device with a session allowed; print agent own outlet only; back office OK (settings, test print, reports) | Task 4 verify X1–X4 (plus Task 1's P1–P3) |
-| §4 dev: pair this Mac, run it, claims; POS app on 5179 still sells; `/pos` notice | Task 6 Steps 3–6 |
+| §4 dev: pair this Mac, run it, claims; POS app on 5179 still sells; `/pos` notice | Task 6 Steps 3–8 |
 
 **Placeholder scan:** every code step carries its full code; the copied SQL functions are written out in full with the source line ranges to check against; the only run-time values are the dev ids (the dev owner login, as in the W7 verify), the pairing code the command prints, and the Vercel ids from the deploy recipe.
 

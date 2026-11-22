@@ -1,8 +1,14 @@
 -- ============================================================================
 -- Craft OS — POS switch-over, C3 (2026-11-22). Run on craft-os-dev LAST in the POS chain: after
--- migration-2026-11-22-pos-feedme-habits.sql and migration-2026-11-22-pos-agent-pairing.sql, and only once
--- every print agent of the database is paired as a device (D) and printing — the server cannot tell
--- whether a staff-login agent still runs somewhere, and from here such an agent stops printing.
+-- migration-2026-11-22-pos-feedme-habits.sql and migration-2026-11-22-pos-agent-pairing.sql. Rollout order:
+-- D SQL -> pair every print agent (and give every outlet's browser-printed routes a POS-app tablet set to
+-- print) -> deploy the new Craft OS build with the /pos notice -> this file, last. Pre-check (every row must be
+-- covered = true): select r.branch_id, r.name, r.kind, case when r.kind = 'agent' then exists(select 1 from
+-- pos_devices d where d.branch_id = r.branch_id and d.kind = 'print_agent' and d.revoked_at is null) else
+-- exists(select 1 from pos_devices d where d.branch_id = r.branch_id and d.kind = 'pos' and d.prints and
+-- d.revoked_at is null) end as covered from print_routes r order by 1, 2;
+-- The server cannot tell whether a staff-login agent still runs somewhere, and from here such an agent stops
+-- printing.
 -- Idempotent — safe to re-run.
 -- Plan: docs/superpowers/plans/2026-11-22-pos-agent-pairing-switchover.md
 -- Design: docs/superpowers/specs/2026-11-22-pos-agent-pairing-switchover-design.md (§3);

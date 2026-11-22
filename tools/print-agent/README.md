@@ -24,6 +24,8 @@ kind `agent`. It needs no staff login.
    `tools/print-agent/.device.json` (git-ignored, readable only by you) and says
    `Paired. Start the agent with: …`. A rejected or expired request says so; run the command
    again for a new code.
+
+   An agent started with a staff email login stops printing once the switch-over SQL runs — pair it before that.
 3. Run:
 
    ```bash

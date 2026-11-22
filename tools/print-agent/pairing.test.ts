@@ -114,7 +114,7 @@ describe('runPair', () => {
   it('keeps polling after a network failure', async () => {
     const { deps, lines, saved } = pairDeps([new TypeError('fetch failed'), approved('print_agent')])
     expect(await runPair(null, deps)).toBe(0)
-    expect(lines).toContain('fetch failed Trying again.')
+    expect(lines).toContain('fetch failed. Trying again.')
     expect(saved).toEqual([file])
   })
   it('says how to recover when the file cannot be saved, never printing the password', async () => {
@@ -161,9 +161,22 @@ describe('startAgent', () => {
   it('a broken .device.json says what is wrong', async () => {
     expect(await start({ readDevice: () => { throw new Error('broken') } })).toEqual({ ok: false, message: 'broken' })
   })
-  it('a refused sign-in (banned, wrong password) means unpaired', async () => {
-    const banned = Object.assign(new Error('User is banned'), { name: 'AuthApiError' })
-    expect(await start({ signIn: async () => banned })).toEqual({ ok: false, message: UNPAIRED })
+  it('a refused sign-in (status 400 / 401 / 403, or a refusing code) means unpaired', async () => {
+    const refused = (message: string, status?: number, code?: string) => Object.assign(new Error(message), { name: 'AuthApiError', status, code })
+    expect(await start({ signIn: async () => refused('Invalid login credentials', 400) })).toEqual({ ok: false, message: UNPAIRED })
+    expect(await start({ signIn: async () => refused('x', 401) })).toEqual({ ok: false, message: UNPAIRED })
+    expect(await start({ signIn: async () => refused('x', 403) })).toEqual({ ok: false, message: UNPAIRED })
+    expect(await start({ signIn: async () => refused('User is banned', undefined, 'user_banned') })).toEqual({ ok: false, message: UNPAIRED })
+    expect(await start({ signIn: async () => refused('x', undefined, 'invalid_credentials') })).toEqual({ ok: false, message: UNPAIRED })
+    expect(await start({ signIn: async () => refused('x', undefined, 'invalid_grant') })).toEqual({ ok: false, message: UNPAIRED })
+  })
+  it('a sign-in that failed for another reason (429, 5xx, unknown) is not an unpairing, and never logs the password', async () => {
+    const failed = (message: string, status?: number) => Object.assign(new Error(message), { name: 'AuthApiError', status })
+    for (const e of [failed('Too many requests', 429), failed('Internal error', 500), failed('Something odd')]) {
+      const r = await start({ signIn: async () => e })
+      expect(r).toEqual({ ok: false, message: `Could not sign in: ${e.message}. Check the internet connection and start the agent again.` })
+      expect(JSON.stringify(r)).not.toContain('pw-secret')
+    }
   })
   it('a sign-in with no reply is not an unpairing', async () => {
     const offline = Object.assign(new Error('fetch failed'), { name: 'AuthRetryableFetchError' })
