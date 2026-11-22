@@ -91,11 +91,12 @@ supabase secrets set --project-ref egznnbjmicebbhwasloy SMS_PROVIDER=whatsapp
 egznnbjmicebbhwasloy SMS_PROVIDER=log`.
 
 **Prod comes later**, after the members feature goes live there. Run the same two commands with prod's
-project ref. Never set `MEMBER_AUTH_ALLOW_LOG` on prod.
+project ref, and set `MEMBER_AUTH_ORIGINS` there to the address guests' QR pages are served from (the
+function refuses requests from any other site). Never set `MEMBER_AUTH_ALLOW_LOG` on prod.
 
 ## Test it
 
-1. On the dev QR page (`https://craft-os-dev.vercel.app/qr/<table token>`), tap **Join & earn points**,
+1. On the dev QR page (scan a Demo table's QR code, or open `https://craft-os-dev.vercel.app/t/<table token>`), tap **Join & earn points**,
    type **your own** mobile number and tap **Send code**.
 2. WhatsApp should show the code from `Craft Cafe` within a few seconds. Tap **Copy code**, go back to
    the page and paste it. The sheet signs you in.
