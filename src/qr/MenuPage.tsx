@@ -19,7 +19,7 @@ const readView = (): MenuView => {
 export interface MenuSection { name: string; products: PosProduct[]; /** the Popular section: no Popular pill inside it */ popular?: boolean }
 
 export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, sections, popularIds, units, onOpen,
-  cartLines, subtotalSen, status, ordered, onCart, onOrders }: {
+  cartLines, subtotalSen, status, ordered, onCart, onOrders, member = 'off', memberPoints = 0, onMember }: {
   tableLabel: string
   guest: Guest
   onGuest: () => void
@@ -39,6 +39,10 @@ export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, s
   ordered: boolean
   onCart: () => void
   onOrders: () => void
+  /** members: `Join & earn points` (out), `★ 120 pts` (in), nothing (off) */
+  member?: 'off' | 'out' | 'in'
+  memberPoints?: number
+  onMember?: () => void
 }) {
   const [view, setView] = useState<MenuView>(readView)
   const bar = useRef<HTMLElement>(null)
@@ -53,11 +57,18 @@ export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, s
 
   return (
     <div className={showBar ? 'pb-28' : 'pb-8'}>
-      <div className="flex min-h-12 items-center justify-end px-4 pt-2">
+      <div className="flex min-h-12 items-center justify-end gap-2 px-4 pt-2">
+        {member !== 'off' && onMember && (
+          <button type="button" onClick={onMember}
+            aria-label={member === 'in' ? `Your points: ${memberPoints}` : undefined}
+            className="flex min-h-10 shrink-0 items-center whitespace-nowrap rounded-full border border-brown-btn px-3 text-sm font-semibold text-brown-btn">
+            {member === 'in' ? `★ ${memberPoints.toLocaleString('en-MY')} pts` : 'Join & earn points'}
+          </button>
+        )}
         <button type="button" onClick={onGuest} aria-label={`You are ${guest.name}. Change name or avatar`}
-          className="flex min-h-10 items-center gap-2 rounded-full bg-brown-track py-1 pl-1 pr-3 text-[15px] font-medium text-brown-dark">
-          <span aria-hidden="true" className="flex h-8 w-8 items-center justify-center rounded-full bg-card text-base">{avatarEmoji(guest.avatar)}</span>
-          {guest.name}
+          className="flex min-h-10 min-w-0 items-center gap-2 rounded-full bg-brown-track py-1 pl-1 pr-3 text-[15px] font-medium text-brown-dark">
+          <span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-card text-base">{avatarEmoji(guest.avatar)}</span>
+          <span className="truncate">{guest.name}</span>
         </button>
       </div>
       {closed && <div role="status" className="mx-4 mt-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{closed}</div>}

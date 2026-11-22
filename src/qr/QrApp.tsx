@@ -22,6 +22,9 @@ import { Notice, Shell } from './qrParts'
 import { aiPick, kindsOf } from './aiPick'
 import { useMinuteClock } from '../features/pos/order/useMinuteClock'
 import { qrClosedMessage } from '../features/pos/order/orderWindow'
+import { memberApi } from './member/memberApi'
+import { useQrMember } from './member/useQrMember'
+import MemberSheet from './member/MemberSheet'
 
 /** The page's views. Cart / sent / orders push one history entry, so the phone's Back returns to the menu;
  *  the item page pushes its own on top (from the menu or the cart), so Back returns to where it was opened. */
@@ -47,6 +50,8 @@ export default function QrApp() {
   const [sendMessage, setSendMessage] = useState<string | null>(null)
   const [placed, setPlaced] = useState(false)
   const { toast, say } = useToast()
+  // members (spec 2026-11-22-members-phone-points-design.md §3): the sheet, and linking the bill after a send
+  const qm = useQrMember({ api: memberApi, tableToken: token, guestId: guest?.id ?? null, state, say })
   const sendingRef = useRef(false)
   const itemBusyRef = useRef(false)
   useEffect(() => { itemBusyRef.current = itemBusy }, [itemBusy])
@@ -292,6 +297,7 @@ export default function QrApp() {
       pending.current = null
       setSendOpen(false); setError(null)                               // no menu banner for the sender: they see the Order placed view
       setSentGroups(sendable); openView('sent')                         // the groups the sheet showed are exactly what was sent
+      qm.afterSend()                                                    // members: link the bill to this phone's number (never blocks the order)
       await loadState()
     } catch (e) {
       const msg = errorText(e)
@@ -327,7 +333,8 @@ export default function QrApp() {
         <MenuPage tableLabel={info.tableLabel} guest={guest} onGuest={() => setGuestEdit(true)} closed={closedMsg} placed={placed}
           sections={sections} popularIds={popularIds} units={unitsByProduct(menu, cartLines)} onOpen={(p) => openItem(p, null)}
           cartLines={cartLines.length} subtotalSen={subtotal} status={table.status} ordered={!!state && state.items.length > 0}
-          onCart={() => openView('cart')} onOrders={() => openView('orders')} />
+          onCart={() => openView('cart')} onOrders={() => openView('orders')}
+          member={qm.member.status} memberPoints={qm.member.me?.points ?? 0} onMember={qm.openSheet} />
       )}
       {shown === 'item' && item && (
         <ItemPage key={`${item.product.id}|${item.lineId ?? ''}`} product={item.product} from={item.from}
@@ -348,7 +355,7 @@ export default function QrApp() {
       )}
       {shown === 'sent' && (
         <SentPage menu={menu} groups={sentGroups} tableLabel={info.tableLabel} billNo={state?.billNo ?? null}
-          onAddMore={goMenu} onViewOrders={() => openView('orders')} />
+          onAddMore={goMenu} onViewOrders={() => openView('orders')} earns={qm.linked} />
       )}
       {shown === 'orders' && <OrdersPage items={state?.items ?? []} subtotalSen={state?.subtotalSen ?? 0} onBack={goMenu} />}
 
@@ -357,6 +364,7 @@ export default function QrApp() {
           sending={sending} message={sendMessage} error={sendError}
           onSend={() => void send()} onCancel={() => setSendOpen(false)} />
       )}
+      {qm.sheetOpen && <MemberSheet member={qm.member} api={memberApi} onClose={qm.closeSheet} />}
       {guestEdit && <GuestModal guest={guest} onDone={renameGuest} onCancel={() => setGuestEdit(false)} />}
       </div>
     </div>

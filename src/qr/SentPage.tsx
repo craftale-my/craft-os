@@ -6,13 +6,15 @@ import Mascot from './Mascot'
 
 /** Order details (reference frames 13, 14), shown to the guest who sent the table's order: what was sent
  *  (the groups the send sheet showed). */
-export default function SentPage({ menu, groups, tableLabel, billNo, onAddMore, onViewOrders }: {
+export default function SentPage({ menu, groups, tableLabel, billNo, onAddMore, onViewOrders, earns = false }: {
   menu: PosMenu
   groups: GuestGroup[]
   tableLabel: string
   billNo: string | null
   onAddMore: () => void
   onViewOrders: () => void
+  /** members: signed in and this bill is linked to this phone's number */
+  earns?: boolean
 }) {
   return (
     <div className="pb-28">
@@ -25,6 +27,7 @@ export default function SentPage({ menu, groups, tableLabel, billNo, onAddMore, 
           <Mascot pose="cheer" size={72} className="-mb-1" />
         </div>
         <h2 className="mt-4 text-[24px] font-bold text-brown-dark">Order sent</h2>
+        {earns && <p className="mt-2 text-sm text-brown-muted">You'll earn points when this bill is paid at the counter.</p>}
       </div>
       {/* the reference's progress strip: four steps, the first (sent) done — the page tracks no later step */}
       <div aria-hidden="true" className="grid grid-cols-4 gap-1">

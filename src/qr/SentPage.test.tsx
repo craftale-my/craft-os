@@ -64,4 +64,12 @@ describe('SentPage', () => {
     render(<SentPage {...base} />)
     expect(screen.getByTestId('mascot-cheer')).toBeTruthy()
   })
+
+  it('the members line shows only when signed in and linked', () => {
+    const text = "You'll earn points when this bill is paid at the counter."
+    const { rerender } = render(<SentPage {...base} />)
+    expect(screen.queryByText(text)).toBeNull()
+    rerender(<SentPage {...base} earns />)
+    expect(screen.getByText(text)).toBeTruthy()
+  })
 })
