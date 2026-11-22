@@ -14,6 +14,11 @@ declare
   v_a uuid; v_cat uuid; v_prod uuid; v_var uuid; v_var_norecipe uuid; v_grp uuid; v_opt_add uuid; v_opt_swap uuid;
   v_bill uuid; v_bill2 uuid; v_bill3 uuid; v_order uuid; v_n int; v_q numeric; v_row record;
   v_c1 uuid; v_c2 uuid; v_sum jsonb;
+  v_tbl uuid; v_part uuid;                                  -- A8 split simulation
+  c_owner constant uuid := '76cbcf9f-905e-450d-9f5e-1c9e72a9373d';  -- dev test login (owner), PART C
+  c_cash  constant uuid := 'eeeeeeee-0000-0000-0000-0000000005d1';  -- PART C cashier (rolled back)
+  c_dev   constant uuid := 'eeeeeeee-0000-0000-0000-0000000005d3';  -- PART C tablet (rolled back)
+  v_rb uuid; v_rt uuid; v_card uuid; v_rcat uuid; v_rbill uuid; v_rline uuid; v_rpart uuid; v_res jsonb; v_sel jsonb; v_total int;
 begin
   -- Fixture (as postgres) -------------------------------------------------------
   insert into branches (name) values ('[TEST] SD Branch') returning id into c_cheras;
@@ -117,6 +122,31 @@ begin
   v_ok := v_ok and not has_table_privilege('authenticated', 'public.bill_depletions', 'insert')
                 and not has_table_privilege('anon', 'public.bill_depletions', 'select');
   v_out := v_out || format(E'%s  internal depletion functions and table writes closed to clients\n', case when v_ok is true then 'PASS' else 'FAIL' end);
+  v_fail := v_fail or v_ok is not true;
+
+  -- A8. Split-by-item path: the part is INSERTed already 'paid' with no lines, the lines are
+  --     moved onto it, then it is UPDATEd to 'paid' again -> deducted once; a further update -> still once
+  insert into bills (branch_id, bill_no, order_type) values (v_br2, '[TEST]SD-T', 'dine_in') returning id into v_tbl;
+  insert into orders (bill_id, branch_id, order_no, source, client_order_id)
+  values (v_tbl, v_br2, 1, 'counter', gen_random_uuid()) returning id into v_order;
+  insert into order_items (order_id, bill_id, product_id, variant_id, name_snapshot, unit_price_sen, sst_rate_bp, qty, order_type)
+  values (v_order, v_tbl, v_prod, v_var, 'SD Latte', 1000, 600, 2, 'dine_in');
+  insert into bills (branch_id, bill_no, order_type, status, split_from, closed_at)
+  values (v_br2, '[TEST]SD-P', 'dine_in', 'paid', v_tbl, now()) returning id into v_part;
+  update order_items set bill_id = v_part where order_id = v_order;                  -- pos_move_units
+  select count(*) into v_n from inventory_transactions where reference_id = v_part;
+  v_ok := v_n = 0;                                                                    -- nothing at insert
+  update bills set status = 'paid', closed_at = now() where id = v_part;            -- pos_pay_and_close
+  select coalesce(sum(quantity), 0), count(*) into v_q, v_n
+    from inventory_transactions where reference_id = v_part and transaction_type = 'sale';
+  v_ok := v_ok and v_q = -200 and v_n = 1;
+  update bills set status = 'paid' where id = v_part;
+  select count(*) into v_n from inventory_transactions where reference_id = v_part and transaction_type = 'sale';
+  v_ok := v_ok and v_n = 1 and (select count(*) from bill_depletions where bill_id = v_part) = 1
+               and (select status from bill_depletions where bill_id = v_part) = 'done'
+               and round((select unit_cost from inventory_transactions where reference_id = v_part), 6) = 0.05;
+  v_out := v_out || format(E'%s  split part inserted paid, lines moved on, paid again: deducted once (-200 g at the fallback cost), a further update still once (got %s rows)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_n);
   v_fail := v_fail or v_ok is not true;
 
   -- PART B: usage report ---------------------------------------------------------------
@@ -307,6 +337,79 @@ begin
    where n.nspname = 'public' and p.proname in ('stock_count_usage', 'stock_count_usage_summary', 'stock_count_unrecipe_sales');
   v_out := v_out || format(E'%s  usage functions closed to anon; period helper internal\n', case when v_ok is true then 'PASS' else 'FAIL' end);
   v_fail := v_fail or v_ok is not true;
+
+  -- B5. Partial period: sales deduction started after the window opened (or never) -------
+  perform set_config('request.jwt.claims', json_build_object('sub', c_manager, 'role', 'authenticated')::text, true);
+  execute 'set local role authenticated';
+  v_sum := stock_count_usage_summary(v_c2);
+  v_ok := (v_sum->>'depletion_started_at')::timestamptz = v_ts and (v_sum->>'partial_period')::boolean = true;
+  v_sum := stock_count_usage_summary(v_c5);
+  v_ok := v_ok and v_sum ? 'depletion_started_at' and jsonb_typeof(v_sum->'depletion_started_at') = 'null'
+               and (v_sum->>'partial_period')::boolean = true;
+  execute 'reset role';
+  insert into bills (branch_id, bill_no, order_type, status, closed_at)
+  values (v_br3, '[TEST]SD-OLD', 'dine_in', 'paid', v_ts - interval '300 days') returning id into v_bill3;
+  insert into bill_depletions (bill_id, branch_id, depleted_at, status) values (v_bill3, v_br3, v_ts - interval '300 days', 'done');
+  execute 'set local role authenticated';
+  v_sum := stock_count_usage_summary(v_c5);
+  v_ok := v_ok and (v_sum->>'partial_period')::boolean = false
+               and (v_sum->>'depletion_started_at')::timestamptz = v_ts - interval '300 days';
+  execute 'reset role';
+  v_out := v_out || format(E'%s  partial_period: true when deduction started inside the window or never, false when before (%s)\n',
+                           case when v_ok is true then 'PASS' else 'FAIL' end, v_sum->>'depletion_started_at');
+  v_fail := v_fail or v_ok is not true;
+
+  -- PART C: the real checkout_items RPC (pay 1 of 2 lattes as a split part, as a POS tablet) ----
+  begin
+    update system_role_permissions set permissions = permissions - 'pos_login' - 'all_branches' - 'access_settings' - 'pos_supervise'
+     where true;                                                                       -- code defaults
+    insert into branches (name, address) values ('[TEST] SD POS', 's') returning id into v_rb;
+    insert into dining_tables (branch_id, label, sort_order) values (v_rb, 'SD1', 1) returning id into v_rt;
+    insert into print_routes (branch_id, name, kind, address) values (v_rb, 'Bar', 'agent', '127.0.0.1:9100');
+    insert into branch_pos_settings (branch_id, receipt_route) values (v_rb, 'Bar');
+    insert into menu_catalogs (name, sort_order) values ('[TEST] SD MENU', 900) returning id into v_rcat;
+    insert into catalog_products (catalog_id, product_id, availability) values (v_rcat, v_prod, 'all');
+    insert into catalog_variant_prices (catalog_id, variant_id, price_sen) values (v_rcat, v_var, 1000);
+    insert into branch_catalogs (branch_id, role, catalog_id) values (v_rb, 'dine_in', v_rcat), (v_rb, 'takeaway', v_rcat), (v_rb, 'qr', v_rcat);
+    insert into payment_methods (branch_id, name, kind, sort_order) values (v_rb, 'SD Card', 'card', 1) returning id into v_card;
+    update staff set branch_id = v_rb where id = c_owner;
+    perform set_config('request.jwt.claims', json_build_object('sub', c_owner, 'role', 'authenticated')::text, true);
+    insert into auth.users (id) values (c_cash), (c_dev);
+    insert into staff (id, name, rank, onboarding_completed, joined_at, system_role, branch_id)
+    values (c_cash, '[TEST] SD Cashier', 'trainee', true, current_date, 'staff', v_rb);
+    perform set_config('request.jwt.claims', json_build_object('sub', c_cash, 'role', 'authenticated')::text, true);
+    if not coalesce((set_my_pos_pin('1111', null)->>'ok')::boolean, false) then raise exception 'fixture: cashier PIN'; end if;
+    insert into pos_devices (id, branch_id, kind, name, platform, prints, approved_by)
+    values (c_dev, v_rb, 'pos', 'SD Counter', 'ipad', true, c_owner);
+    perform set_config('request.jwt.claims', json_build_object('sub', c_dev, 'role', 'authenticated')::text, true);
+    v_res := pos_start_session(c_cash, '1111');
+    if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'fixture: cashier sign-in: %', v_res; end if;
+    perform open_shift(10000);
+    v_order := place_counter_order(v_rt, 'dine_in', 2,
+      jsonb_build_array(jsonb_build_object('productId', v_prod, 'variantId', v_var, 'qty', 2)), gen_random_uuid());
+    select bill_id, id into v_rbill, v_rline from order_items where order_id = v_order;
+    v_sel := jsonb_build_array(jsonb_build_object('itemId', v_rline, 'qty', 1));
+    v_total := (pos_split_totals(v_rbill, v_sel)->>'totalSen')::int;
+    v_res := checkout_items(v_rbill, v_sel,
+      jsonb_build_array(jsonb_build_object('methodId', v_card, 'amountSen', v_total)), gen_random_uuid());
+    v_rpart := (v_res->>'billId')::uuid;
+    perform set_config('request.jwt.claims', '', true);
+    select coalesce(sum(quantity), 0), count(*) into v_q, v_n
+      from inventory_transactions where reference_id = v_rpart and transaction_type = 'sale';
+    v_ok := v_rpart is not null and v_rpart <> v_rbill
+        and (select status from bills where id = v_rpart) = 'paid'
+        and (select status from bills where id = v_rbill) = 'open'
+        and v_q = -100 and v_n = 1
+        and (select status from bill_depletions where bill_id = v_rpart) = 'done'
+        and not exists (select 1 from inventory_transactions where reference_id = v_rbill)
+        and not exists (select 1 from bill_depletions where bill_id = v_rbill);
+    v_out := v_out || format(E'%s  real checkout_items: the paid part deducts its 1 latte once (-100 g), the open table bill nothing (got %s in %s rows)\n',
+                             case when v_ok is true then 'PASS' else 'FAIL' end, v_q, v_n);
+    v_fail := v_fail or v_ok is not true;
+  exception when others then
+    v_out := v_out || format(E'FAIL  real checkout_items section raised: %s\n', sqlerrm);
+    v_fail := true;
+  end;
 
   v_out := v_out || case when v_fail then 'VERIFY FAILED' else 'VERIFY OK' end;
   raise exception E'\n%', v_out;

@@ -3,8 +3,12 @@
 -- For a submitted count: what sales should have used (sale rows), what was
 -- logged as waste, and what the count found missing on top, per ingredient,
 -- between the previous submitted count at the branch and this one.
--- Additive and idempotent. Requires migration-2026-11-23-sales-depletion.sql.
+-- Additive and idempotent. The report functions read bill_depletions at call time
+-- (migration-2026-11-23-sales-depletion.sql); creating them does not need it.
 -- ============================================================================
+
+-- Never queue long behind live checkouts for a lock: fail fast, retry in a quiet window.
+set lock_timeout = '5s';
 
 -- OUT signature gained `capped`, so drop first (idempotent).
 drop function if exists stock_count_usage_period(uuid);
@@ -171,14 +175,20 @@ as $$
 declare
   p record;
   v_sold numeric; v_waste numeric; v_unexp numeric; v_nocost bigint;
+  v_first_start timestamptz; v_dep_start timestamptz;
 begin
   perform stock_count_usage_guard(p_count_id);
   select * into p from stock_count_usage_period(p_count_id);
   -- Totals are the sum of the per-item rows (each over its own window).
   select coalesce(sum(u.sold_value), 0), coalesce(sum(u.wasted_value), 0),
-         coalesce(sum(u.unexplained_value), 0), coalesce(sum(u.rows_without_cost), 0)
-    into v_sold, v_waste, v_unexp, v_nocost
+         coalesce(sum(u.unexplained_value), 0), coalesce(sum(u.rows_without_cost), 0),
+         min(u.period_start) filter (where u.counted)
+    into v_sold, v_waste, v_unexp, v_nocost, v_first_start
     from stock_count_usage_calc(p_count_id) u;
+  -- When sales deduction began at the branch. A count whose window (the earliest counted
+  -- item's start, which is never later than the summary start) opens before that is a
+  -- partial period: sales before it were never deducted, so they show as unexplained loss.
+  select min(d.depleted_at) into v_dep_start from bill_depletions d where d.branch_id = p.branch_id;
   return jsonb_build_object(
     'period_start', p.period_start,
     'period_end', p.period_end,
@@ -194,7 +204,9 @@ begin
     'sold_value', v_sold,
     'wasted_value', v_waste,
     'unexplained_value', v_unexp,
-    'rows_without_cost', v_nocost);
+    'rows_without_cost', v_nocost,
+    'depletion_started_at', v_dep_start,
+    'partial_period', v_dep_start is null or v_dep_start > least(p.period_start, coalesce(v_first_start, p.period_start)));
 end;
 $$;
 
