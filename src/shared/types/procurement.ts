@@ -275,10 +275,9 @@ export interface ShipLineInput {
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 
-/** Sales depletion comes with the POS. */
 export type InventoryTransactionType =
   | 'stock_in' | 'adjustment' | 'wastage' | 'transfer_out' | 'transfer_in'
-  | 'production_out' | 'production_in' | 'stocktake'
+  | 'production_out' | 'production_in' | 'stocktake' | 'sale'
 
 export const TRANSACTION_TYPE_LABELS: Record<InventoryTransactionType, string> = {
   stock_in:       'Stock In',
@@ -289,6 +288,7 @@ export const TRANSACTION_TYPE_LABELS: Record<InventoryTransactionType, string> =
   production_out: 'Used in production',
   production_in:  'Produced',
   stocktake:      'Stock Count',
+  sale:           'Sale',
 }
 
 export interface InventoryTransaction {
@@ -570,4 +570,48 @@ export interface StockCountItem {
   unit_cost: number | null
   variance_value: number
   transaction_id: string | null
+}
+
+
+// ── Stock usage since last count ─────────────────────────────────────────────
+
+export interface StockUsageRow {
+  item_id: string
+  item_name: string
+  base_unit: string
+  sold_base: number
+  sold_value: number
+  wasted_base: number
+  wasted_value: number
+  /** Count variance: negative = loss beyond sales and waste. */
+  unexplained_base: number
+  unexplained_value: number
+  /** Unexplained loss as % of what sales used; null when nothing was sold or the item was not counted. */
+  unexplained_pct: number | null
+  /** Start of this item's own window (may be earlier than the summary start). */
+  period_start: string
+  /** False when the item was not part of this count. */
+  counted: boolean
+}
+
+export interface StockUsageSummary {
+  period_start: string
+  period_end: string
+  from_previous: boolean
+  bills_paid: number
+  lines_without_recipe: number
+  depletion_errors: number
+  sold_value: number
+  wasted_value: number
+  unexplained_value: number
+  /** Movements with no cost: RM totals are understated by these. */
+  rows_without_cost: number
+  /** True when the summary window was cut at 180 days. */
+  capped: boolean
+}
+
+export interface UnrecipeSale {
+  product_name: string
+  variant_name: string
+  qty_sold: number
 }
