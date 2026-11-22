@@ -156,15 +156,15 @@ describe('Inventory module', () => {
     expect(childIds(visibleNav(canWith('view_team', 'manage_hr')))).toBeNull()
   })
 
-  it('shows supervisors (use_procurement only) orders, receiving, transfers, wastage, recipes and inventory, not master data', () => {
+  it('shows supervisors (use_procurement only) orders, receiving, transfers, wastage, stock count, recipes and inventory, not master data', () => {
     expect(childIds(visibleNav(canWith('use_procurement')))).toEqual([
-      'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-inventory', 'proc-recipes',
+      'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-stockcount', 'proc-inventory', 'proc-recipes',
     ])
   })
 
   it('shows managers (both capabilities) every procurement page', () => {
     expect(childIds(visibleNav(canWith('manage_procurement', 'use_procurement')))).toEqual([
-      'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-inventory', 'proc-recipes',
+      'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-stockcount', 'proc-inventory', 'proc-recipes',
       'proc-menu-costing', 'proc-items', 'proc-suppliers',
     ])
   })
@@ -176,6 +176,7 @@ describe('Inventory module', () => {
     expect(activeEntry(full, '/procurement/items/item-1')).toEqual({ leafId: 'proc-items', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/inventory/item-1')).toEqual({ leafId: 'proc-inventory', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/wastage')).toEqual({ leafId: 'proc-wastage', groupId: 'inventory' })
+    expect(activeEntry(full, '/procurement/stock-counts/count-1')).toEqual({ leafId: 'proc-stockcount', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/transfers/po-1/ship')).toEqual({ leafId: 'proc-transfers', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/recipes/item-1/produce')).toEqual({ leafId: 'proc-recipes', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/menu-costing/v-1')).toEqual({ leafId: 'proc-menu-costing', groupId: 'inventory' })
