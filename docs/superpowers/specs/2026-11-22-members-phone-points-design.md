@@ -97,17 +97,26 @@ guest must never hold such a session. Members get their own small token scheme, 
 
 ## 6. Server
 
-`supabase/migration-2026-11-22-members.sql` (+ `-verify.sql`), dev first:
+`supabase/migration-2026-11-23-members.sql` (+ `-verify.sql`), dev first (built 2026-11-23; the function
+signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`):
 
-- Tables: `members` (id, phone unique, points, joined_at, last_visit_at, deleted_at),
-  `member_points` (member_id, kind, points, bill_id, reason, staff_id, created_at; unique earn per bill),
-  `member_otps` (phone, code_hash, expires_at, attempts, ip, created_at, dev_code),
-  `member_tokens` (member_id, token_hash, expires_at, last_used_at),
-  `member_settings` (single row: rate, qr_enabled, sms_daily_cap).
-  RLS on all; no policy for `anon`; staff read through functions; owner manages.
+- Tables: `members` (id, phone unique among non-deleted, points ≥ 0, joined_at, last_visit_at, deleted_at),
+  `member_points` (member_id, kind, points, bill_id, refund_id, rate, reason, staff_id, created_at; unique
+  earn per bill, unique row per refund; an earn row keeps the rate it used and a refund of that bill reuses it),
+  `member_otps` (phone, code_hash, expires_at, attempts, ip, created_at, used_at, dev_code),
+  `member_tokens` (member_id, token_hash, device, expires_at, last_used_at),
+  `member_settings` (single row: rate, qr_enabled, sms_daily_cap),
+  `member_bill_events` (who attached / removed / linked a member on a bill: staff and device ids).
+  RLS on all; no policy for `anon` or `authenticated`; all access through functions.
 - `bills.member_id uuid references members`.
-- Functions: `member_me`, `member_sign_out` (anon, token); `pos_bill_set_member(p_bill_id, p_phone)` /
-  `pos_bill_clear_member` (staff, own branch, open bill); `member_adjust` (owner); `member_search`.
+- Functions: `member_public_settings`, `member_me`, `member_sign_out`, `member_link_table` (anon);
+  `pos_bill_set_member(p_bill_id, p_phone)` / `pos_bill_clear_member` (a till's staff session, own outlet,
+  open bill); `member_search`, `member_ledger`, `member_settings_get` (back office: `access_settings`);
+  `member_adjust`, `member_delete`, `member_settings_set` (owner); `member_otp_request`, `member_otp_verify`
+  (service role, for the Edge Function).
+- Staff Meal is read from each item's own record of its catalog's discount (`order_items.catalog_discount_bp`,
+  written when the item is ordered), not from the catalog as it is now.
+- A refund never takes the bill's net points nor the member's balance below zero.
 - **Points are written by triggers, not by editing the checkout functions** (they are large, and other
   work re-creates them): `after update of status on bills` — a bill that becomes `paid` with a member gets
   its one `earn` row; `after insert on refunds` — the negative row; a bill that becomes `merged` hands its
