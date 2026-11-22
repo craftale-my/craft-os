@@ -35,7 +35,8 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
 - The phone stays signed in on this device for 180 days (a token in `localStorage`, usable at any table
   of ours).
 - **Which bill earns:** when a signed-in guest's phone sends the table's order, or opens the page at a
-  table that already has an open bill, the bill is linked to that member if it has none yet. One member per
+  table whose open bill already has an order from that guest, the bill is linked to that member if it has
+  none yet. One member per
   bill — the first to be linked. A later guest who signs in at a table whose bill already has a member
   sees `This table's points are going to +60 ••• ••1234.` The counter can change it.
 - Points arrive when the bill is paid at the counter; the page then shows the new balance on its next read.
@@ -59,8 +60,9 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
 
 - **Earning:** `floor(net paid in RM × rate)`, where net paid = the bill's total actually paid (after
   discounts, including service charge and tax, after rounding), computed when the bill closes as paid.
-  Voided bills earn nothing. A refund writes a negative entry for `floor(refunded RM × rate)`, never
-  taking that bill's earned points below zero.
+  Voided bills earn nothing. A refund writes a negative entry that brings the bill down to
+  `floor((total − all refunds so far) in RM × rate)` (running total, see §6), never taking that bill's
+  earned points or the member's balance below zero.
 - **Ledger, not a counter:** `member_points` rows (`earn`, `refund`, `adjust`), each with the bill or the
   reason; the balance is their sum (kept in `members.points` by the same transaction for fast reads).
   One `earn` row per bill (unique), so a retried close cannot pay twice.
@@ -83,15 +85,22 @@ guest must never hold such a session. Members get their own small token scheme, 
   (32 random bytes; only its SHA-256 is stored, with device label and expiry 180 days).
 - **Using it** — the QR page passes the token to `member_me(p_token)` (balance and last entries) and to
   `member_link_table` so the server can link the bill. `member_sign_out(p_token)`.
-- **Limits:** per number 3 codes per 15 minutes and 10 per day; per IP 10 requests per hour; a global
-  daily cap on SMS sent (default 300, a setting) that turns sign-in off with
+- **Limits:** per number 3 codes per 15 minutes and 10 per day; per IP 10 codes per hour and 30 per
+  24 hours; a global daily cap on SMS sent (default 300, a setting) that turns sign-in off with
   `Sign-in is busy right now. Please ask our staff to add your number.` — protects the SMS bill.
+  The IP is the one the platform sets (`cf-connecting-ip`, else `sb-forwarded-for`), never a
+  client-written `X-Forwarded-For`; with neither the function answers `Sign-in is not available yet.`
+  `member_otp_request` refuses a call without an IP.
+- **Only the newest code counts:** asking for a new code makes an older one fail even inside its 5 minutes.
 - **No enumeration:** `/request` answers the same for a member and a non-member.
 - **SMS provider:** behind one small interface (`sendSms(to, text)`) in the function, chosen by the
   secret `SMS_PROVIDER`. Adapters in this version: `log` (dev: no SMS; the code is written to the
   `member_otps.dev_code` column, readable only by SQL — used for testing on dev) and one real provider.
   **The owner chooses and signs up for the provider**; until its secrets are set on a project the
   function runs in `log` mode on dev and answers `Sign-in is not available yet.` on prod.
+  Plain dev codes are stored only where `member_settings.dev_codes_allowed` is on (default off; set by
+  hand on dev, never in a migration, never on prod); with it off `member_otp_request` refuses any dev code.
+  A successful sign-in clears every dev code of that number.
 - **Privacy (PDPA):** the join sheet links a short notice (what we store: number, points, visits; why;
   how to ask for deletion). `member_delete` (owner) removes the number and keeps anonymous ledger rows.
 
@@ -105,31 +114,51 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
   earn per bill, unique row per refund; an earn row keeps the rate it used and a refund of that bill reuses it),
   `member_otps` (phone, code_hash, expires_at, attempts, ip, created_at, used_at, dev_code),
   `member_tokens` (member_id, token_hash, device, expires_at, last_used_at),
-  `member_settings` (single row: rate, qr_enabled, sms_daily_cap),
-  `member_bill_events` (who attached / removed / linked a member on a bill: staff and device ids).
+  `member_settings` (single row: rate, qr_enabled, sms_daily_cap, dev_codes_allowed),
+  `member_bill_events` (who attached / removed / linked a member on a bill: staff and device ids),
+  `member_earn_failures` (bill_id, error, at: an earn the trigger could not write).
   RLS on all; no policy for `anon` or `authenticated`; all access through functions.
-- `bills.member_id uuid references members`.
-- Functions: `member_public_settings`, `member_me`, `member_sign_out`, `member_link_table` (anon);
+- `bills.member_id uuid references members` (the key added `not valid`, then validated); index
+  `member_points(bill_id)`.
+- Phone numbers: separators dropped, then a leading `+60` / `60` / `0060`, then one leading `0`; the rest
+  must be `1` + `1` + 8 digits (011) or `1` + `[02-9]` + 7 digits. `+60 012-345 6789` and `0060123456789`
+  are accepted, `01234567890` is refused. The Edge Function's port is the same rule.
+- Functions (every one `security definer` with its own `search_path`): `member_public_settings`,
+  `member_me`, `member_sign_out`, `member_link_table` (anon);
   `pos_bill_set_member(p_bill_id, p_phone)` / `pos_bill_clear_member` (a till's staff session, own outlet,
   open bill); `member_search`, `member_ledger`, `member_settings_get` (back office: `access_settings`);
-  `member_adjust`, `member_delete`, `member_settings_set` (owner); `member_otp_request`, `member_otp_verify`, `member_otp_void` (the SMS never left: the code is made unusable)
-  (service role, for the Edge Function).
+  `member_adjust`, `member_delete`, `member_settings_set`, `member_earn_failures_list` (an owner who is
+  also active: `is_active` and `status = 'active'`); `member_otp_request`, `member_otp_verify`,
+  `member_otp_void` (the SMS never left: the code is made unusable) (service role, for the Edge Function).
 - Staff Meal is read from each item's own record of its catalog's discount (`order_items.catalog_discount_bp`,
   written when the item is ordered), not from the catalog as it is now.
-- A refund never takes the bill's net points nor the member's balance below zero.
+- **Refunds by running total:** the bill should still hold `floor((total − all its refunds so far) in RM ×
+  the earn's rate)`, at least 0; a refund takes what the bill holds above that, capped by the member's
+  balance. Ten RM 0.99 refunds and one of RM 0.60 on a RM 10.50 bill end at 0.
 - **Points are written by triggers, not by editing the checkout functions** (they are large, and other
-  work re-creates them): `after update of status on bills` — a bill that becomes `paid` with a member gets
-  its one `earn` row; `after insert on refunds` — the negative row; a bill that becomes `merged` hands its
-  member to the bill it merged into when that one has none. A split-off part bill is created with its
-  parent's member by a `before insert on bills` trigger when the insert names a parent (follow how the
-  split migration links a part to its parent).
-- **Linking from the QR page is its own call**, `member_link_table(p_table_token, p_member_token)` (anon):
-  links the table's open bill to the member when the bill has none and returns the masked number the
-  bill's points go to. The page calls it after a successful send and when a signed-in guest opens a table
-  that has an open bill. `qr_cart_send` and `qr_table_state` are not changed.
+  work re-creates them): `after update of status on bills` — a bill that **becomes** `paid` with a member
+  gets its one `earn` row (only on the transition, or when the total was still null: a split part is
+  inserted paid without a total and closed afterwards); `after insert on refunds` — the negative row; a
+  bill that becomes `merged` hands its member to the bill it merged into when that one has none. A
+  split-off part bill is created with its parent's member by a `before insert on bills` trigger.
+- **The earn never fails a payment:** an error in the earn trigger's writes is rolled back to its own
+  block, written to `member_earn_failures`, raised as a WARNING, and the bill closes without its points
+  (the owner adjusts by hand). The refund trigger stays strict.
+- `member_delete` locks the member's open bills first (by id), then the member — the order checkout uses.
+- **Linking from the QR page is its own call**, `member_link_table(p_table_token, p_guest_id,
+  p_member_token)` (anon): links the table's open bill to the member when the bill has none, **only for a
+  guest who has ordered on that bill** (an `order_items` row of the bill carries the guest id; a cart line
+  is not enough). A QR-paused table is refused as `qr_cart_table` refuses it. Another member's masked
+  number is shown only to a guest who passes the same check. The page calls it after a successful send
+  and when a signed-in guest opens a table where they have ordered. `qr_cart_send` and `qr_table_state`
+  are not changed.
 - Edge Function `member-auth` (service role inside; never returns the code).
-- Verify script: award once per bill, refund floors at zero, staff-meal bill earns nothing, token of a
-  deleted member refused, anon cannot read any member table; `rollback; select 'VERIFY OK'`.
+- Verify script: award once per bill and only on the transition, voided bill earns nothing, refunds by
+  running total, a failed earn still closes the bill, staff-meal bill earns nothing, token of a deleted
+  member refused, every member function security definer with a search_path, the guest RPCs run as the
+  real `anon` role and staff RPCs as `authenticated`, neither can touch a member table or call the
+  service-only and helper functions; a final block raises unless every section ran, then
+  `rollback; select 'VERIFY OK'`.
 
 ## 7. Client
 
@@ -147,7 +176,13 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
 | Wrong code 5 times | The code is dead; `Send again`. |
 | Token expired / member deleted | The page quietly returns to `Join & earn points`. |
 | Bill paid while the guest was not linked | No points; staff can attach the member before paying. After payment: owner `Adjust points`. |
-| Two members at one table | First linked wins; the second sees whose number the points go to. |
+| Two members at one table | First linked wins; the second sees whose number the points go to (once they have ordered on the bill). |
+| Guest signed in but has not ordered on the bill | Nothing is linked and no number is shown; the link happens after their first send. |
+| Table paused for QR ordering | Nothing is linked (`{linked: false}`). |
+| Earn could not be written when the bill closed | The payment still closes; the failure is listed for the owner (`member_earn_failures_list`), who adjusts by hand. |
+| Many small refunds | Counted by running total: they take what one refund of the same sum would. |
+| Equal / by-amount part payments | Accepted for this version: the bill's one member earns on the whole total, whoever paid each part. |
+| No platform client IP on a code request | `Sign-in is not available yet.` (the SQL refuses a request without an IP). |
 | Bill moved or merged | The surviving bill keeps its own member; if it has none it takes the moved bill's. |
 | Front end before SQL | The member button is hidden when `member_me`/settings are missing or `qr_enabled` is off. |
 

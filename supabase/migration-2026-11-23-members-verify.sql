@@ -1,8 +1,10 @@
 -- Self-check for members (phone sign-in and points). Run on craft-os-dev after
 -- migration-2026-11-23-members.sql. Everything is rolled back. Success = a result row "VERIFY OK".
--- Sections (one DO block each, ids in the temp table fixture): FIXTURE; M1 schema and grants;
+-- Sections (one DO block each, ids in the temp table fixture): FIXTURE; M1 schema, grants, security definer;
 -- M2 phone normalise / mask; M3 counter attach and earn; M4 refunds; M5 merge and split; M6 sign-in codes
--- (limits); M7 tokens and linking a table; M8 owner and back office.
+-- (limits); M7 tokens and linking a table; M8 owner and back office; M9 real anon / authenticated callers.
+-- Each section ends by ticking pg_temp.sections; the last DO block raises unless all 10 ticked, so an
+-- error that a client skips over can never reach the final "VERIFY OK".
 -- Outlet VERIFY MEM: no service charge, not SST registered, 5 sen rounding. Latte 10.50, Sugar 0.50,
 -- Cake 8.00, no print route. A card and a cash method, a cashier and a supervisor with PINs, one tablet
 -- signed in, a shift open. The earn rate is set to 1 for the run.
@@ -28,6 +30,9 @@ begin
   if p_cond is not true then raise exception 'FAIL %', p_label; end if;
 end $$;
 create temp table fixture (k text primary key, v uuid);
+create temp table sections (name text primary key);
+create function pg_temp.done(p_name text) returns void
+language sql as $$ insert into pg_temp.sections(name) values (p_name) $$;
 create function pg_temp.put(p_k text, p_v uuid) returns void
 language sql as $$ insert into pg_temp.fixture(k, v) values (p_k, p_v) on conflict (k) do update set v = excluded.v $$;
 create function pg_temp.id(p_k text) returns uuid
@@ -77,7 +82,7 @@ begin
   -- the role defaults decide (owner: every outlet and access_settings; staff: neither)
   update system_role_permissions set permissions = permissions - 'pos_login' - 'all_branches' - 'access_settings' - 'pos_supervise'
    where true;
-  update member_settings set rate = 1, qr_enabled = true, sms_daily_cap = 300 where id;
+  update member_settings set rate = 1, qr_enabled = true, sms_daily_cap = 300, dev_codes_allowed = true where id;
   delete from member_otps where created_at > now() - interval '2 days';   -- the limits start from nothing
   insert into branches(name, address) values ('VERIFY MEM', 'm') returning id into v_a;
   perform pg_temp.put('branch', v_a);
@@ -120,26 +125,39 @@ begin
   if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL fixture: cashier sign-in: %', v_res; end if;
   v_res := open_shift(10000);
   if v_res->'shift'->>'id' is null then raise exception 'FAIL fixture: no shift: %', v_res; end if;
+  perform pg_temp.done('FIXTURE');
 end $$;
 
--- ── M1. Schema and grants: RLS on, no table readable by anon or staff; who may call what ──
+-- ── M1. Schema and grants: RLS on, no table open to anon or staff; who may call what; security definer ──
 do $$
 declare
-  t text;
+  t    text;
+  role text;
+  priv text;
+  r    record;
+  v_n  integer := 0;
 begin
-  foreach t in array array['members', 'member_points', 'member_tokens', 'member_otps', 'member_settings', 'member_bill_events'] loop
+  foreach t in array array['members', 'member_points', 'member_tokens', 'member_otps', 'member_settings', 'member_bill_events',
+                           'member_earn_failures'] loop
     perform pg_temp.check((select relrowsecurity from pg_class where oid = t::regclass), 'M1 RLS on ' || t);
     perform pg_temp.check(not exists (select 1 from pg_policies where tablename = t), 'M1 no policy on ' || t);
-    perform pg_temp.check(not has_table_privilege('anon', t, 'select'), 'M1 anon cannot read ' || t);
-    perform pg_temp.check(not has_table_privilege('authenticated', t, 'select'), 'M1 staff cannot read ' || t);
+    foreach role in array array['anon', 'authenticated'] loop
+      foreach priv in array array['select', 'insert', 'update', 'delete'] loop
+        perform pg_temp.check(not has_table_privilege(role, t, priv), format('M1 %s has no %s on %s', role, priv, t));
+      end loop;
+    end loop;
   end loop;
   perform pg_temp.check(exists (select 1 from information_schema.columns where table_name = 'bills' and column_name = 'member_id'), 'M1 bills.member_id');
-  foreach t in array array['member_me(text)', 'member_sign_out(text)', 'member_link_table(text,text)', 'member_public_settings()'] loop
+  perform pg_temp.check((select convalidated from pg_constraint where conname = 'bills_member_id_fkey' and conrelid = 'bills'::regclass),
+                        'M1 bills.member_id foreign key, validated');
+  perform pg_temp.check(to_regclass('member_points_bill') is not null, 'M1 index member_points(bill_id)');
+  perform pg_temp.check(to_regprocedure('member_link_table(text,text)') is null, 'M1 the 2-argument member_link_table is gone');
+  foreach t in array array['member_me(text)', 'member_sign_out(text)', 'member_link_table(text,uuid,text)', 'member_public_settings()'] loop
     perform pg_temp.check(has_function_privilege('anon', t, 'execute'), 'M1 anon runs ' || t);
   end loop;
   foreach t in array array['pos_bill_set_member(uuid,text)', 'pos_bill_clear_member(uuid)', 'member_search(text,integer,integer)',
                            'member_ledger(uuid)', 'member_adjust(uuid,integer,text)', 'member_delete(uuid)',
-                           'member_settings_get()', 'member_settings_set(numeric,boolean,integer)'] loop
+                           'member_settings_get()', 'member_settings_set(numeric,boolean,integer)', 'member_earn_failures_list()'] loop
     perform pg_temp.check(not has_function_privilege('anon', t, 'execute'), 'M1 anon cannot run ' || t);
     perform pg_temp.check(has_function_privilege('authenticated', t, 'execute'), 'M1 staff run ' || t);
   end loop;
@@ -150,11 +168,26 @@ begin
     perform pg_temp.check(has_function_privilege('service_role', t, 'execute'), 'M1 service_role runs ' || t);
   end loop;
   foreach t in array array['member_phone_normalise(text)', 'member_phone_mask(text)', 'member_by_token(text)',
-                           'member_points_add(uuid,text,integer,uuid,uuid,numeric,text,uuid)', 'member_settings_json()'] loop
+                           'member_points_add(uuid,text,integer,uuid,uuid,numeric,text,uuid)', 'member_settings_json()',
+                           'member_require_back_office()', 'member_require_owner()',
+                           'bills_member_on_status()', 'bills_member_inherit()', 'refunds_member_points()'] loop
     perform pg_temp.check(not has_function_privilege('anon', t, 'execute') and not has_function_privilege('authenticated', t, 'execute'),
                           'M1 helper closed ' || t);
   end loop;
+  -- every member function and trigger function: security definer with its own search_path
+  for r in select p.oid::regprocedure::text as f, p.prosecdef,
+                  exists (select 1 from unnest(coalesce(p.proconfig, '{}')) c where c like 'search_path=%') as has_path
+             from pg_proc p
+            where p.pronamespace = 'public'::regnamespace
+              and (p.proname like 'member\_%' or p.proname in ('pos_bill_set_member', 'pos_bill_clear_member',
+                                                               'bills_member_on_status', 'bills_member_inherit', 'refunds_member_points')) loop
+    v_n := v_n + 1;
+    perform pg_temp.check(r.prosecdef, 'M1 security definer: ' || r.f);
+    perform pg_temp.check(r.has_path, 'M1 search_path set: ' || r.f);
+  end loop;
+  perform pg_temp.check(v_n = 26, 'M1 the member functions counted: ' || v_n);
   perform pg_temp.check((select count(*) from member_settings) = 1, 'M1 one settings row');
+  perform pg_temp.done('M1');
 end $$;
 
 -- ── M2. Phone numbers ──
@@ -167,7 +200,12 @@ begin
       ('012-345 6789', '+60123456789'), ('+60 12-345 6789', '+60123456789'), ('123456789', '+60123456789'),
       ('011-2345 6789', '+601123456789'), ('+601123456789', '+601123456789'),
       ('0312345678', null), ('+6531234567', null), ('01234567', null), ('012345678901', null),
-      ('abc', null), ('', null), ('+600123456789', null)) as x(i, want) loop
+      ('abc', null), ('', null),
+      -- the review rules: +60 / 60 / 0060 then one optional 0; 011 has 8 more digits, other 01x 7
+      ('+60 012-345 6789', '+60123456789'), ('+600123456789', '+60123456789'), ('0060123456789', '+60123456789'),
+      ('00600123456789', '+60123456789'), ('01234567890', null), ('0112345678', null), ('011234567890', null),
+      ('1123456789', '+601123456789'), ('+60 11-2345 6789', '+601123456789'), ('0060 11 2345 6789', '+601123456789'),
+      ('+6000123456789', null), ('0123456789 ', '+60123456789'), ('+60', null), ('0', null)) as x(i, want) loop
     perform pg_temp.check(member_phone_normalise(r.i) is not distinct from r.want,
                           format('M2 normalise %s → %s (got %s)', r.i, r.want, member_phone_normalise(r.i)));
   end loop;
@@ -175,6 +213,7 @@ begin
   perform pg_temp.check(member_phone_mask('+60123456789') = '+60 ••• ••6789', 'M2 mask');
   perform pg_temp.check(member_phone_mask('+601123456789') = '+60 ••• ••6789', 'M2 mask 011');
   perform pg_temp.check(member_phone_mask(null) is null, 'M2 mask null');
+  perform pg_temp.done('M2');
 end $$;
 
 -- ── M3. The counter attaches a member; points on paid, once; 0 points; Staff Meal ──
@@ -247,6 +286,30 @@ begin
   v_b := pg_temp.bill(null, array['latte']);
   perform pg_temp.pay_bill(v_b);
   perform pg_temp.check(not exists (select 1 from member_points where bill_id = v_b), 'M3 no member, no row');
+  -- earn only on the transition: a member put on an already paid bill and the status written again → nothing
+  update bills set member_id = pg_temp.id('A') where id = v_b;
+  update bills set status = 'paid', updated_at = now() where id = v_b;
+  perform pg_temp.check(not exists (select 1 from member_points where bill_id = v_b), 'M3 no earn without the transition to paid');
+  update bills set member_id = null where id = v_b;
+  v_b := pg_temp.bill(null, array['latte']);
+  perform pos_bill_set_member(v_b, '0123456789');
+  v_res := void_bill(v_b, 'verify', pg_temp.id('sup'), '2222');
+  perform pg_temp.check(coalesce((v_res->>'ok')::boolean, false) and (select status from bills where id = v_b) = 'voided', 'M3 voided: ' || v_res::text);
+  perform pg_temp.check(not exists (select 1 from member_points where bill_id = v_b), 'M3 a voided bill earns nothing');
+  perform pg_temp.check(pg_temp.bal('+60123456789') = 20, 'M3 balance still 20 after the void');
+  -- the earn can fail without failing the payment: the bill closes, the failure is recorded, no points
+  alter table member_points add constraint verify_mem_force_fail check (kind <> 'earn') not valid;
+  v_b := pg_temp.bill(null, array['latte']);
+  perform pos_bill_set_member(v_b, '0123456789');
+  v_res := pg_temp.pay_bill(v_b);
+  perform pg_temp.check((select status from bills where id = v_b) = 'paid', 'M3 a failed earn still closes the bill: ' || v_res::text);
+  perform pg_temp.check(not exists (select 1 from member_points where bill_id = v_b), 'M3 the failed earn wrote no row');
+  perform pg_temp.check(pg_temp.bal('+60123456789') = 20 and pg_temp.sum_ok('+60123456789'), 'M3 the failed earn left the balance');
+  perform pg_temp.check(exists (select 1 from member_earn_failures where bill_id = v_b and error like '%verify_mem_force_fail%'),
+                        'M3 the failure is recorded');
+  perform pg_temp.put('FAILED', v_b);
+  alter table member_points drop constraint verify_mem_force_fail;
+  perform pg_temp.done('M3');
 end $$;
 
 -- ── M4. Refunds: floor(refunded RM × rate), the bill's net and the balance never below zero ──
@@ -254,6 +317,7 @@ do $$
 declare
   v_t1  uuid := pg_temp.id('T1');
   v_b   uuid;
+  i     integer;
 begin
   perform pg_temp.act(pg_temp.id('dev'));
   -- T1 earned 10; refund 5.50 → -5
@@ -282,6 +346,24 @@ begin
   v_b := (select id from bills where branch_id = pg_temp.id('branch') and member_id is null and status = 'paid' limit 1);
   perform pg_temp.check(coalesce((refund_bill(gen_random_uuid(), v_b, 100, pg_temp.id('card'), 'x', pg_temp.id('sup'), '2222')->>'ok')::boolean, false), 'M4 refund a member-less bill');
   perform pg_temp.check(not exists (select 1 from member_points where bill_id = v_b), 'M4 no row for a bill that did not earn');
+  -- by running total: RM 10.50 earns 10; ten refunds of RM 0.99 and one of RM 0.60 (RM 10.50 in all) end at 0,
+  -- where each refund alone (floor 0.99 = 0) would have taken nothing
+  v_b := pg_temp.bill(null, array['latte']);
+  perform pos_bill_set_member(v_b, '0166666666');
+  perform pg_temp.pay_bill(v_b);
+  perform pg_temp.check(pg_temp.bal('+60166666666') = 10, 'M4 running total: earned 10');
+  for i in 1..10 loop
+    perform pg_temp.check(coalesce((refund_bill(gen_random_uuid(), v_b, 99, pg_temp.id('card'), 'bit', pg_temp.id('sup'), '2222')->>'ok')::boolean, false),
+                          'M4 small refund ' || i);
+    -- what the bill holds = floor((1050 − 99·i) / 100)
+    perform pg_temp.check((select sum(points) from member_points where bill_id = v_b) = floor((1050 - 99 * i) / 100.0)::integer,
+                          'M4 after small refund ' || i || ': ' || (select sum(points) from member_points where bill_id = v_b));
+  end loop;
+  perform pg_temp.check(coalesce((refund_bill(gen_random_uuid(), v_b, 60, pg_temp.id('card'), 'bit', pg_temp.id('sup'), '2222')->>'ok')::boolean, false),
+                        'M4 the last 0.60');
+  perform pg_temp.check((select sum(points) from member_points where bill_id = v_b) = 0
+                        and pg_temp.bal('+60166666666') = 0 and pg_temp.sum_ok('+60166666666'), 'M4 running total ends at 0');
+  perform pg_temp.done('M4');
 end $$;
 
 -- ── M5. Merge hands the member over; a split part inherits and earns its own share ──
@@ -322,6 +404,7 @@ begin
   perform pg_temp.pay_bill(v_b);
   perform pg_temp.check((select points from member_points where bill_id = v_b and kind = 'earn') = 10, 'M5 the rest earns 10');
   perform pg_temp.check(pg_temp.sum_ok('+60123456789'), 'M5 A''s balance = the ledger');
+  perform pg_temp.done('M5');
 end $$;
 
 -- ── M6. Sign-in codes: limits, tries, expiry (the Edge Function's two calls) ──
@@ -372,6 +455,29 @@ begin
   perform pg_temp.check((select dev_code from member_otps where phone = '+60129876543' and code_hash = pg_temp.hash('555555')) is null, 'M6 void clears the dev code');
   perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('555555'), pg_temp.hash('verify-token-C-0003'), null) = 'expired', 'M6 a voided code is dead');
   delete from member_otps where phone = '+60129876543';
+  -- an older code still inside its 5 minutes fails once a newer one was asked for; the newer one works,
+  -- and a successful sign-in clears every dev code of that number
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('666661'), '666661') = 'ok', 'M6 older code');
+  -- (one transaction has one now(): the older code is moved a minute back, still inside its 5 minutes)
+  update member_otps set created_at = now() - interval '1 minute' where phone = '+60129876543';
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('666662'), '666662') = 'ok', 'M6 newer code');
+  perform pg_temp.check((select count(*) from member_otps where phone = '+60129876543' and dev_code is not null) = 2, 'M6 two dev codes stored');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('666661'), pg_temp.hash('verify-token-C-0004'), null) = 'wrong', 'M6 the older code fails');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('666662'), pg_temp.hash('verify-token-C-0005'), null) = 'ok', 'M6 the newer code works');
+  perform pg_temp.check(not exists (select 1 from member_otps where phone = '+60129876543' and dev_code is not null), 'M6 sign-in clears all the number''s dev codes');
+  delete from member_otps where phone = '+60129876543';
+  -- no IP → an error; a dev code while dev codes are off → an error (nothing stored)
+  perform pg_temp.expect_error(format('select member_otp_request(%L, null, %L, null)', '0129876543', pg_temp.hash('5')),
+    'Client IP required', 'M6 no IP');
+  perform pg_temp.expect_error(format('select member_otp_request(%L, %L, %L, null)', '0129876543', '  ', pg_temp.hash('5')),
+    'Client IP required', 'M6 a blank IP');
+  update member_settings set dev_codes_allowed = false where id;
+  perform pg_temp.expect_error(format('select member_otp_request(%L, %L, %L, %L)', '0129876543', '10.0.0.1', pg_temp.hash('777777'), '777777'),
+    'Dev codes are not allowed on this project', 'M6 a dev code while off');
+  perform pg_temp.check(not exists (select 1 from member_otps where phone = '+60129876543'), 'M6 the refused dev code is not stored');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('777777'), '') = 'ok', 'M6 no dev code while off: ok');
+  update member_settings set dev_codes_allowed = true where id;
+  delete from member_otps where phone = '+60129876543';
   -- the same answers for a member and a non-member
   perform pg_temp.check(member_otp_request('0123456789', '10.0.0.9', pg_temp.hash('444444'), null) = 'ok', 'M6 a member asks: ok');
   -- per IP: 10 per hour
@@ -380,6 +486,13 @@ begin
     perform pg_temp.check(v = 'ok', 'M6 ip request ' || i || ': ' || v);
   end loop;
   perform pg_temp.check(member_otp_request('0130000099', '10.9.9.9', pg_temp.hash('5'), null) = 'rate_ip', 'M6 the 11th from one IP → rate_ip');
+  -- per IP per day: 30 in 24 hours (none of them in the last hour)
+  insert into member_otps(phone, code_hash, expires_at, ip, created_at)
+  select '+6014000' || lpad(g::text, 4, '0'), pg_temp.hash('x'), now(), '10.7.7.7', now() - interval '3 hours'
+    from generate_series(1, 29) g;
+  perform pg_temp.check(member_otp_request('0140009999', '10.7.7.7', pg_temp.hash('5'), null) = 'ok', 'M6 the 30th from one IP in a day');
+  update member_otps set created_at = now() - interval '2 hours' where ip = '10.7.7.7';
+  perform pg_temp.check(member_otp_request('0140009998', '10.7.7.7', pg_temp.hash('5'), null) = 'rate_ip', 'M6 the 31st from one IP in a day → rate_ip');
   -- the daily SMS cap and the QR switch
   update member_settings set sms_daily_cap = (select count(*) from member_otps) where id;
   perform pg_temp.check(member_otp_request('0130000098', '10.8.8.8', pg_temp.hash('5'), null) = 'cap', 'M6 the daily cap → cap');
@@ -388,6 +501,7 @@ begin
   update member_settings set qr_enabled = true where id;
   perform pg_temp.expect_error(format('select member_otp_request(%L, null, %L, null)', '0312345678', pg_temp.hash('5')),
     'Invalid phone number', 'M6 a landline');
+  perform pg_temp.done('M6');
 end $$;
 
 -- ── M7. Tokens: member_me, linking a table, expired and deleted tokens ──
@@ -398,6 +512,12 @@ declare
   v_res jsonb;
   v_b   uuid;
   v_c   uuid := (select id from members where phone = '+60129876543' and deleted_at is null);
+  c_none constant jsonb := jsonb_build_object('linked', false, 'phoneMasked', null);
+  v_g1  uuid := gen_random_uuid();
+  v_g2  uuid := gen_random_uuid();
+  v_t3  text := (select qr_token from dining_tables where id = pg_temp.id('m3'));
+  v_t4  text := (select qr_token from dining_tables where id = pg_temp.id('m4'));
+  v_b3  uuid;
 begin
   perform set_config('request.jwt.claims', '', true);   -- the QR page: no session
   v_me := member_me(c_tok);
@@ -407,32 +527,50 @@ begin
   perform pg_temp.check(member_me('no-such-token-0000') is null, 'M7 an unknown token');
   perform pg_temp.check(member_me(null) is null, 'M7 no token');
   perform pg_temp.check((member_public_settings()->>'qrEnabled')::boolean, 'M7 public settings');
-  -- link: table M3 has an open bill with member A → C is told whose number earns, nothing changes
+  -- link: only a guest who has ordered on the table's open bill may link it (order_items.guest_id)
   perform pg_temp.act(pg_temp.id('dev'));
   v_b := pg_temp.bill('m3', array['latte']);
   perform pos_bill_set_member(v_b, '0123456789');
+  v_b3 := v_b;
   v_b := pg_temp.bill('m4', array['latte']);
   perform set_config('request.jwt.claims', '', true);
-  v_res := member_link_table((select qr_token from dining_tables where id = pg_temp.id('m3')), c_tok);
+  -- M3 has member A. A guest who has not ordered there learns nothing, not even whose number it is
+  v_res := member_link_table(v_t3, v_g2, c_tok);
+  perform pg_temp.check(v_res = c_none, 'M7 a guest with no order on the bill: ' || v_res::text);
+  -- once that guest has ordered: told whose number earns, nothing changes
+  update order_items set guest_id = v_g2, guest_label = 'Ann' where bill_id = v_b3;
+  v_res := member_link_table(v_t3, v_g2, c_tok);
   perform pg_temp.check(v_res = jsonb_build_object('linked', false, 'phoneMasked', '+60 ••• ••6789'), 'M7 an existing member is not overwritten: ' || v_res::text);
-  perform pg_temp.check((select member_id from bills where table_id = pg_temp.id('m3') and status = 'open') = pg_temp.id('A'), 'M7 M3 keeps A');
-  -- M4's bill has none → C, and again → still linked
-  v_res := member_link_table((select qr_token from dining_tables where id = pg_temp.id('m4')), c_tok);
+  perform pg_temp.check((select member_id from bills where id = v_b3) = pg_temp.id('A'), 'M7 M3 keeps A');
+  -- M4's bill has none. A cart line alone does not count
+  insert into qr_cart_lines(table_id, guest_id, guest_name, guest_avatar, product_id, variant_id, qty)
+  values (pg_temp.id('m4'), v_g1, 'Mei', 'a1', pg_temp.id('cake'), pg_temp.id('cake_v'), 1);
+  v_res := member_link_table(v_t4, v_g1, c_tok);
+  perform pg_temp.check(v_res = c_none and (select member_id from bills where id = v_b) is null, 'M7 a cart line alone links nothing: ' || v_res::text);
+  perform pg_temp.check(member_link_table(v_t4, null, c_tok) = c_none, 'M7 no guest id');
+  -- the guest ordered on it → C, and again → still linked
+  update order_items set guest_id = v_g1, guest_label = 'Mei' where bill_id = v_b;
+  -- a QR-paused table links nothing (as qr_cart_table refuses it)
+  update dining_tables set qr_paused = true where id = pg_temp.id('m4');
+  perform pg_temp.check(member_link_table(v_t4, v_g1, c_tok) = c_none and (select member_id from bills where id = v_b) is null, 'M7 a paused table links nothing');
+  update dining_tables set qr_paused = false where id = pg_temp.id('m4');
+  v_res := member_link_table(v_t4, v_g1, c_tok);
   perform pg_temp.check(v_res = jsonb_build_object('linked', true, 'phoneMasked', '+60 ••• ••6543'), 'M7 linked: ' || v_res::text);
   perform pg_temp.check((select member_id from bills where id = v_b) = v_c, 'M7 M4''s bill names C');
-  perform pg_temp.check(member_link_table((select qr_token from dining_tables where id = pg_temp.id('m4')), c_tok)->>'linked' = 'true', 'M7 linking twice');
+  perform pg_temp.check(exists (select 1 from member_bill_events where bill_id = v_b and action = 'link' and member_id = v_c), 'M7 the link is logged');
+  perform pg_temp.check(member_link_table(v_t4, v_g1, c_tok)->>'linked' = 'true', 'M7 linking twice');
   -- a table with no open bill, an unknown table, an unknown token
-  perform pg_temp.check(member_link_table((select qr_token from dining_tables where id = pg_temp.id('m5')), c_tok)
-                        = jsonb_build_object('linked', false, 'phoneMasked', null), 'M7 no open bill');
-  perform pg_temp.check(member_link_table('nosuchtable', c_tok) = jsonb_build_object('linked', false, 'phoneMasked', null), 'M7 unknown table');
-  perform pg_temp.check(member_link_table((select qr_token from dining_tables where id = pg_temp.id('m4')), 'no-such-token-0000') is null, 'M7 unknown token');
+  perform pg_temp.check(member_link_table((select qr_token from dining_tables where id = pg_temp.id('m5')), v_g1, c_tok) = c_none, 'M7 no open bill');
+  perform pg_temp.check(member_link_table('nosuchtable', v_g1, c_tok) = c_none, 'M7 unknown table');
+  perform pg_temp.check(member_link_table(v_t4, v_g1, 'no-such-token-0000') is null, 'M7 unknown token');
   -- the QR switch off: nothing is linked
   perform pg_temp.act(pg_temp.id('dev'));
   v_b := pg_temp.bill('m6', array['latte']);
+  update order_items set guest_id = v_g1 where bill_id = v_b;
   perform set_config('request.jwt.claims', '', true);
   update member_settings set qr_enabled = false where id;
-  perform pg_temp.check(member_link_table((select qr_token from dining_tables where id = pg_temp.id('m6')), c_tok)
-                        = jsonb_build_object('linked', false, 'phoneMasked', null), 'M7 switched off links nothing');
+  perform pg_temp.check(member_link_table((select qr_token from dining_tables where id = pg_temp.id('m6')), v_g1, c_tok) = c_none,
+                        'M7 switched off links nothing');
   perform pg_temp.check((select member_id from bills where id = v_b) is null, 'M7 M6''s bill has no member');
   update member_settings set qr_enabled = true where id;
   -- C earns at the counter and sees the entry with the outlet's name
@@ -449,7 +587,7 @@ begin
   -- expired token
   update member_tokens set expires_at = now() - interval '1 second' where token_hash = pg_temp.hash(c_tok);
   perform pg_temp.check(member_me(c_tok) is null, 'M7 an expired token is refused');
-  perform pg_temp.check(member_link_table((select qr_token from dining_tables where id = pg_temp.id('m4')), c_tok) is null, 'M7 an expired token cannot link');
+  perform pg_temp.check(member_link_table(v_t4, v_g1, c_tok) is null, 'M7 an expired token cannot link');
   update member_tokens set expires_at = now() + interval '1 day' where token_hash = pg_temp.hash(c_tok);
   perform pg_temp.check(member_me(c_tok) is not null, 'M7 valid again');
   -- deleted member (owner, PDPA): the token is refused, the number gone, the ledger kept, open bills cleared
@@ -468,6 +606,7 @@ begin
   perform pg_temp.act(pg_temp.id('dev'));
   v_res := pos_bill_set_member(v_b, '0129876543');
   perform pg_temp.check((v_res->>'isNew')::boolean and (v_res->>'memberId')::uuid <> v_c, 'M7 the number joins again as new');
+  perform pg_temp.done('M7');
 end $$;
 
 -- ── M8. Owner and back office: adjust, search, ledger, settings ──
@@ -522,7 +661,7 @@ begin
   perform pg_temp.check(member_settings_get() = v_res, 'M8 settings get');
   perform pg_temp.expect_error('select member_settings_set(101, null, null)', 'The earn rate must be between 0 and 100 points per RM 1.', 'M8 rate 101');
   perform pg_temp.expect_error('select member_settings_set(null, null, -1)', 'The daily SMS cap must be between 0 and 100000.', 'M8 cap -1');
-  -- rate 2: Latte 10.50 earns 21; a refund of 5.25 takes floor(5.25 × 2) = 10
+  -- rate 2: Latte 10.50 earns 21; after a refund of 5.25 the bill keeps floor(5.25 × 2) = 10, so it takes 11
   perform pg_temp.act(pg_temp.id('dev'));
   v_res := pos_bill_set_member(pg_temp.bill(null, array['latte']), '0123456789');
   perform pg_temp.pay_bill((select id from bills where member_id = v_a and status = 'open' and order_type = 'takeaway'));
@@ -530,7 +669,7 @@ begin
   perform pg_temp.check(coalesce((refund_bill(gen_random_uuid(),
                           (select bill_id from member_points where member_id = v_a and kind = 'earn' and rate = 2),
                           525, pg_temp.id('card'), 'x', pg_temp.id('sup'), '2222')->>'ok')::boolean, false), 'M8 refund at rate 2');
-  perform pg_temp.check(pg_temp.bal('+60123456789') = 11 and pg_temp.sum_ok('+60123456789'), 'M8 refund at rate 2 takes 10');
+  perform pg_temp.check(pg_temp.bal('+60123456789') = 10 and pg_temp.sum_ok('+60123456789'), 'M8 refund at rate 2 takes 11');
   -- the staff back office (a manager has access_settings) can search but not adjust
   perform pg_temp.act(pg_temp.id('owner'));
   update staff set system_role = 'manager' where id = pg_temp.id('sup');
@@ -538,6 +677,117 @@ begin
   perform pg_temp.check((member_search('6789', 10, 0)->>'total')::integer >= 1, 'M8 a manager searches');
   perform pg_temp.check(member_settings_get() ? 'rate', 'M8 a manager reads settings');
   perform pg_temp.expect_error(format('select member_adjust(%L, 5, %L)', v_a, 'gift'), 'Only the owner can do this.', 'M8 a manager adjusts');
+  perform pg_temp.expect_error('select member_earn_failures_list()', 'Only the owner can do this.', 'M8 a manager reads earn failures');
+  -- the owner reads the earn that failed in M3
+  perform pg_temp.act(pg_temp.id('owner'));
+  v_res := member_earn_failures_list();
+  perform pg_temp.check(exists (select 1 from jsonb_array_elements(v_res) e where (e->>'billId')::uuid = pg_temp.id('FAILED')
+                                  and e->>'billNo' is not null and e->>'branchName' = 'VERIFY MEM' and e->>'error' <> ''),
+                        'M8 the owner lists earn failures: ' || left(v_res::text, 300));
+  -- an owner who is no longer active is not the owner
+  update staff set is_active = false where id = pg_temp.id('owner');
+  perform pg_temp.expect_error(format('select member_adjust(%L, 5, %L)', v_a, 'gift'), 'Only the owner can do this.', 'M8 an inactive owner');
+  update staff set is_active = true, status = 'resigned' where id = pg_temp.id('owner');
+  perform pg_temp.expect_error('select member_settings_set(1, null, null)', 'Only the owner can do this.', 'M8 a resigned owner');
+  update staff set status = 'active' where id = pg_temp.id('owner');
+  perform pg_temp.check((member_adjust(v_a, 1, 'active again')->>'points')::integer = 11, 'M8 an active owner again');
+  perform pg_temp.done('M8');
+end $$;
+
+-- ── M9. Real callers: the guest RPCs as the anon role, staff RPCs as authenticated; the tables stay shut ──
+-- (the other sections run as the migration owner with claims set; here the role itself is switched)
+do $$
+declare
+  c_tok   constant text := 'verify-token-D-0001';
+  v_d     uuid;
+  v_g     uuid := gen_random_uuid();
+  v_b     uuid;
+  v_t8    text := (select qr_token from dining_tables where id = pg_temp.id('m8'));
+  v_dev   uuid := pg_temp.id('dev');
+  v_owner uuid := pg_temp.id('owner');
+  v_hash  text := pg_temp.hash('5');
+  v_pub   jsonb; v_me jsonb; v_link jsonb; v_set jsonb; v_search jsonb;
+  v_errs  text[] := '{}';
+  v_state text;
+  t       text;
+begin
+  -- setup as the owner of the tables: member D with a token, table M8's open bill with an order by guest G
+  insert into members(phone) values ('+60155555555') returning id into v_d;
+  insert into member_tokens(member_id, token_hash, expires_at) values (v_d, pg_temp.hash(c_tok), now() + interval '1 day');
+  perform pg_temp.act(v_dev);
+  v_b := pg_temp.bill('m8', array['latte']);
+  update order_items set guest_id = v_g where bill_id = v_b;
+
+  -- the QR page: role anon, no session
+  set local role anon;
+  perform set_config('request.jwt.claims', '', true);
+  v_pub  := member_public_settings();
+  v_me   := member_me(c_tok);
+  v_link := member_link_table(v_t8, v_g, c_tok);
+  foreach t in array array['select 1 from members', 'select 1 from member_points', 'select 1 from member_tokens',
+                           'select 1 from member_otps', 'select 1 from member_settings', 'select 1 from member_bill_events',
+                           'select 1 from member_earn_failures', 'update member_settings set rate = 50 where id',
+                           'insert into member_points(member_id, kind, points, reason, staff_id) values (gen_random_uuid(), ''adjust'', 1, ''x'', gen_random_uuid())',
+                           format('select member_otp_request(%L, %L, %L, null)', '0155555555', '10.1.1.1', v_hash),
+                           format('select member_otp_verify(%L, %L, %L, null)', '0155555555', v_hash, v_hash),
+                           format('select member_otp_void(%L, %L)', '0155555555', v_hash),
+                           format('select member_points_add(%L, ''adjust'', 5, null, null, null, ''x'', %L)', v_d, v_d),
+                           format('select member_by_token(%L)', c_tok), 'select member_settings_json()',
+                           format('select pos_bill_set_member(%L, %L)', v_b, '0155555555'),
+                           'select member_search('''', 10, 0)', 'select member_earn_failures_list()'] loop
+    begin
+      execute t;
+      v_errs := v_errs || ('anon ran: ' || t);
+    exception when insufficient_privilege then
+      null;
+    end;
+  end loop;
+  reset role;
+  perform pg_temp.check(v_pub ? 'qrEnabled' and v_pub ? 'rate', 'M9 anon: member_public_settings ' || coalesce(v_pub::text, 'null'));
+  perform pg_temp.check(v_me->>'phoneMasked' = '+60 ••• ••5555', 'M9 anon: member_me ' || coalesce(v_me::text, 'null'));
+  perform pg_temp.check(v_link = jsonb_build_object('linked', true, 'phoneMasked', '+60 ••• ••5555')
+                        and (select member_id from bills where id = v_b) = v_d, 'M9 anon: member_link_table ' || coalesce(v_link::text, 'null'));
+  perform pg_temp.check(cardinality(v_errs) = 0, 'M9 ' || array_to_string(v_errs, '; '));
+
+  -- the till: role authenticated with the tablet's claims (the staff session of the FIXTURE)
+  set local role authenticated;
+  perform set_config('request.jwt.claims', json_build_object('sub', v_dev, 'role', 'authenticated')::text, true);
+  v_set := pos_bill_set_member(v_b, '011-5555 5555');
+  -- the back office: the owner's claims
+  perform set_config('request.jwt.claims', json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
+  v_search := member_search('5555', 10, 0);
+  foreach t in array array['select 1 from members', 'select 1 from member_otps', 'select 1 from member_earn_failures',
+                           'delete from member_tokens where true',
+                           format('select member_otp_request(%L, %L, %L, null)', '0155555555', '10.1.1.1', v_hash),
+                           format('select member_otp_verify(%L, %L, %L, null)', '0155555555', v_hash, v_hash),
+                           format('select member_otp_void(%L, %L)', '0155555555', v_hash),
+                           format('select member_points_add(%L, ''adjust'', 5, null, null, null, ''x'', %L)', v_d, v_d),
+                           'select member_require_owner()', 'select member_settings_json()', 'select member_phone_normalise(''0123456789'')'] loop
+    begin
+      execute t;
+      v_errs := v_errs || ('authenticated ran: ' || t);
+    exception when insufficient_privilege then
+      null;
+    end;
+  end loop;
+  reset role;
+  perform pg_temp.check((v_set->>'isNew')::boolean and v_set->>'phone' = '+601155555555'
+                        and (select member_id from bills where id = v_b) = (v_set->>'memberId')::uuid,
+                        'M9 authenticated: pos_bill_set_member ' || coalesce(v_set::text, 'null'));
+  perform pg_temp.check((v_search->>'total')::integer >= 2, 'M9 authenticated: member_search ' || coalesce(v_search::text, 'null'));
+  perform pg_temp.check(cardinality(v_errs) = 0, 'M9 ' || array_to_string(v_errs, '; '));
+  perform pg_temp.check(current_user not in ('anon', 'authenticated'), 'M9 the role is back');
+  perform pg_temp.done('M9');
+end $$;
+
+-- every section ran (an error a client skipped over would leave one out)
+do $$
+declare
+  v_n integer := (select count(*) from pg_temp.sections);
+begin
+  if v_n <> 10 then
+    raise exception 'FAIL: % of 10 sections ran (%)', v_n, (select string_agg(name, ', ' order by name) from pg_temp.sections);
+  end if;
 end $$;
 
 rollback;

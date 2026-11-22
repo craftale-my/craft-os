@@ -23,7 +23,7 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { resolveSecretKey } from '../_shared/secretKey.ts'
 import {
   type RequestReply, type VerifyReply,
-  cleanCode, clientIp, codeHash, deviceLabel, makeCode, makeToken, maskForLog, normalisePhone,
+  cleanCode, codeHash, deviceLabel, makeCode, makeToken, maskForLog, memberClientIp, normalisePhone,
   parseBody, requestRefusal, selectProvider, sha256Hex, smsText, verifyReply,
 } from './logic.ts'
 
@@ -95,11 +95,17 @@ async function requestCode(admin: any, phone: string, req: Request): Promise<Req
     console.error('member-auth: no SMS provider (SMS_PROVIDER unset or unknown, or log mode not allowed)')
     return { ok: false, reason: 'unavailable' }
   }
+  // the platform-set client address (never a client-written X-Forwarded-For); the SQL requires one
+  const ip = memberClientIp(req.headers)
+  if (!ip) {
+    console.error('member-auth: no platform client IP header')
+    return { ok: false, reason: 'unavailable' }
+  }
   const code = makeCode()
   const hash = await codeHash(phone, code)
   const { data, error } = await admin.rpc('member_otp_request', {
     p_phone: phone,
-    p_ip: clientIp(req.headers.get('cf-connecting-ip'), req.headers.get('x-forwarded-for')),
+    p_ip: ip,
     p_code_hash: hash,
     p_dev_code: provider.kind === 'log' ? code : null,
   })

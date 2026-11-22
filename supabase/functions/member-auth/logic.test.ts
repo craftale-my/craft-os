@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
-  cleanCode, clientIp, codeHash, deviceLabel, makeCode, makeToken, maskForLog, normalisePhone, parseBody,
+  cleanCode, codeHash, deviceLabel, makeCode, makeToken, maskForLog, memberClientIp, normalisePhone, parseBody,
   requestRefusal, selectProvider, sha256Hex, smsText, verifyReply, type RealProviderFactory,
 } from './logic'
 
@@ -13,7 +13,12 @@ describe('normalisePhone (mirrors the M2 cases of migration-2026-11-23-members-v
     ['012-345 6789', '+60123456789'], ['+60 12-345 6789', '+60123456789'], ['123456789', '+60123456789'],
     ['011-2345 6789', '+601123456789'], ['+601123456789', '+601123456789'],
     ['0312345678', null], ['+6531234567', null], ['01234567', null], ['012345678901', null],
-    ['abc', null], ['', null], ['+600123456789', null],
+    ['abc', null], ['', null],
+    // the review rules: +60 / 60 / 0060 then one optional 0; 011 has 8 more digits, other 01x 7
+    ['+60 012-345 6789', '+60123456789'], ['+600123456789', '+60123456789'], ['0060123456789', '+60123456789'],
+    ['00600123456789', '+60123456789'], ['01234567890', null], ['0112345678', null], ['011234567890', null],
+    ['1123456789', '+601123456789'], ['+60 11-2345 6789', '+601123456789'], ['0060 11 2345 6789', '+601123456789'],
+    ['+6000123456789', null], ['0123456789 ', '+60123456789'], ['+60', null], ['0', null],
   ]
   it.each(cases)('%s → %s', (input, want) => expect(normalisePhone(input)).toBe(want))
   it('null, brackets and dots, and no Unicode spaces (the SQL would refuse those)', () => {
@@ -165,9 +170,18 @@ describe('deviceLabel', () => {
   })
 })
 
-describe('clientIp (shared with pos-device-activation)', () => {
-  it('first hop', () => {
-    expect(clientIp(null, '203.0.113.7, 10.0.0.1')).toBe('203.0.113.7')
-    expect(clientIp(null, null)).toBe('unknown')
+describe('memberClientIp', () => {
+  const h = (vars: Record<string, string>) => new Headers(vars)
+  it('the platform-set headers: cf-connecting-ip, else sb-forwarded-for', () => {
+    expect(memberClientIp(h({ 'cf-connecting-ip': ' 203.0.113.7 ', 'sb-forwarded-for': '198.51.100.1' }))).toBe('203.0.113.7')
+    expect(memberClientIp(h({ 'sb-forwarded-for': '198.51.100.1' }))).toBe('198.51.100.1')
+  })
+  it('never a client-written X-Forwarded-For; null when no platform header', () => {
+    expect(memberClientIp(h({ 'x-forwarded-for': '6.6.6.6, 203.0.113.7' }))).toBeNull()
+    expect(memberClientIp(h({ 'true-client-ip': '6.6.6.6', 'x-real-ip': '6.6.6.6' }))).toBeNull()
+    expect(memberClientIp(h({ 'cf-connecting-ip': '  ' }))).toBeNull()
+  })
+  it('at most 64 characters', () => {
+    expect(memberClientIp(h({ 'cf-connecting-ip': 'a'.repeat(100) }))).toHaveLength(64)
   })
 })

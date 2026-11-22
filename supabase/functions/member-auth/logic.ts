@@ -24,15 +24,12 @@ export function parseBody(body: unknown): AuthBody | null {
 // ── Phone ─────────────────────────────────────────────────────────────────────
 
 /** A port of SQL member_phone_normalise (migration-2026-11-23-members.sql): a Malaysian mobile number in
- *  any shape people type → E.164, or null. Separators are the ASCII whitespace of Postgres' \s plus
- *  ( ) . - — no Unicode spaces, so this never accepts a number the SQL refuses. */
+ *  any shape people type → E.164, or null. Separators are dropped, then a leading +60 / 60 / 0060, then one
+ *  leading 0; what is left must be 1 then 11 + 8 digits or 1[02-9] + 7 digits. Separators are the ASCII
+ *  whitespace of Postgres' \s plus ( ) . - — no Unicode spaces, so this never accepts a number the SQL refuses. */
 export function normalisePhone(phone: string | null | undefined): string | null {
-  const d = (phone ?? '').replace(/[ \t\n\r\f\v().-]/g, '')
-  if (/^\+601[0-9]{8,9}$/.test(d)) return d
-  if (/^601[0-9]{8,9}$/.test(d)) return '+' + d
-  if (/^01[0-9]{8,9}$/.test(d)) return '+6' + d
-  if (/^1[0-9]{8,9}$/.test(d)) return '+60' + d
-  return null
+  const n = (phone ?? '').replace(/[ \t\n\r\f\v().-]/g, '').replace(/^(\+?60|0060)/, '').replace(/^0/, '')
+  return /^1(1[0-9]{8}|[02-9][0-9]{7})$/.test(n) ? '+60' + n : null
 }
 
 /** For logs only: the last 4 digits. */
@@ -182,6 +179,15 @@ export function deviceLabel(ua: string | null | undefined): string | null {
   return label ? label.slice(0, 60) : null
 }
 
-// The caller's IP: the very helper pos-device-activation uses (cf-connecting-ip, else the first
-// x-forwarded-for hop, else 'unknown').
-export { clientIp } from '../pos-device-activation/logic.ts'
+/** The caller's IP for the per-IP limits, from headers the platform sets — never X-Forwarded-For, whose
+ *  left-most entry a client can write. Checked on dev 2026-11-23: Supabase's edge (Cloudflare) sets
+ *  cf-connecting-ip and refuses a request that sends its own (error 1000), and sets sb-forwarded-for;
+ *  a client's X-Forwarded-For is replaced, but that is not relied on. Null when neither header is there:
+ *  the function then answers `unavailable` (member_otp_request requires an IP). */
+export function memberClientIp(headers: { get(name: string): string | null }): string | null {
+  for (const name of ['cf-connecting-ip', 'sb-forwarded-for']) {
+    const ip = headers.get(name)?.split(',')[0]?.trim()
+    if (ip) return ip.slice(0, 64)
+  }
+  return null
+}
