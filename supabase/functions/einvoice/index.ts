@@ -11,7 +11,9 @@
 //   refresh       — (user) { documentId }  read LHDN's verdict (or resend a draft that never reached LHDN)
 //   resend        — (user) { documentId }  send a draft whose answer was unknown (needs_check), after checking the MyInvois portal
 //   credit_notes  — (user) issue every credit note due now, past the 3-attempt stop (the screen's Retry)
-//   run           — (job)  the daily run: refresh, consolidate on days 1–7, credit notes; one einvoice_job_runs row
+//   run           — (job)  the daily run: refresh, consolidate every closed month still unreported (at most 6 per
+//                    run, oldest first), credit notes; one einvoice_job_runs row, written 'running' at the start
+//                    and completed at the end
 //   reconcile     — (job)  { from?, to? }  build (never submit) every paid bill's document and each outlet-month's
 //                    consolidated invoice; compare with the bills and Reports → Overview
 // (user) = a Craft OS login with access_settings, checked here (the function is deployed with --no-verify-jwt).
@@ -32,8 +34,8 @@ import {
   type BillSource, type MonthBill, type PendingRefund, type PlanCtx, type Planned,
 } from './documents.ts'
 import {
-  STALE_SEND_MS, businessDay, conRef, emptyReport, jobSecretMatches, monthEnd, monthOf, previousMonth, runCreditNotes,
-  runJob, runOutcome, sendDraft,
+  STALE_SEND_MS, businessDay, conRef, emptyReport, isRealDay, jobSecretMatches, monthEnd, monthOf, previousMonth,
+  refreshVerdict, runCreditNotes, runJob, runOutcome, sendDraft,
   type AttemptRef, type JobReport, type JobSteps, type PendingDoc, type StepResult,
 } from './job.ts'
 import { reconcile, type ReconcileSource } from './reconcile.ts'
@@ -135,9 +137,13 @@ function plan(make: () => Planned): Planned {
   }
 }
 
+/** Give a dead document's bills and refunds back. A failed delete throws: bills left linked to a rejected
+ *  document would never be reported, so the error must reach the caller (and the run's report). */
 const releaseLinks = async (admin: SupabaseClient, documentId: string) => {
-  await admin.from('einvoice_bill_links').delete().eq('document_id', documentId)
-  await admin.from('einvoice_refund_links').delete().eq('document_id', documentId)
+  const bills = await admin.from('einvoice_bill_links').delete().eq('document_id', documentId)
+  if (bills.error) throw new Error(`Giving back the bills of document ${documentId} failed: ${bills.error.message}`)
+  const refunds = await admin.from('einvoice_refund_links').delete().eq('document_id', documentId)
+  if (refunds.error) throw new Error(`Giving back the refunds of document ${documentId} failed: ${refunds.error.message}`)
 }
 
 async function updateDoc(admin: SupabaseClient, id: string, patch: Record<string, unknown>) {
@@ -190,9 +196,17 @@ async function send(admin: SupabaseClient, client: MyInvoisClient, row: Record<s
   if (row.status !== 'draft') return row
   const markRejected = (errors: unknown) => updateDoc(admin, row.id, { status: 'rejected', errors })
   if (!row.payload) {
-    const out = await markRejected({ message: 'The document was never built, so it was not sent' })
+    // Never built, so never sent. The row in hand may be stale: only a row still unbuilt and unclaimed is rejected.
+    const { data, error } = await admin.from('einvoice_documents')
+      .update({
+        status: 'rejected', errors: { message: 'The document was never built, so it was not sent' },
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', row.id).eq('status', 'draft').is('payload', null).is('send_started_at', null).select('*')
+    if (error) throw error
+    if (!data?.length) return loadDocument(admin, row.id)
     await releaseLinks(admin, row.id)
-    return out
+    return data[0]
   }
   return sendDraft<Record<string, any>>(row.code_number, {
     async claim() {
@@ -217,14 +231,24 @@ async function refreshDocument(admin: SupabaseClient, client: MyInvoisClient, ro
   if (row.status === 'draft') return send(admin, client, row)
   if (row.status !== 'submitted') return row
   const summary = (await client.getSubmission(row.submission_uid)).find((d) => d.uuid === row.lhdn_uuid)
-  if (!summary || summary.status === 'Submitted') return row
-  if (summary.status === 'Valid') {
-    return updateDoc(admin, row.id, { status: 'valid', long_id: summary.longId, validated_at: new Date().toISOString(), errors: null })
+  if (!summary) return row
+  const verdict = refreshVerdict(summary.status)
+  if (verdict === 'waiting') return row
+  if (verdict === 'valid') {
+    return updateDoc(admin, row.id, {
+      status: 'valid', long_id: summary.longId, validated_at: new Date().toISOString(), errors: null, needs_check: false,
+    })
   }
-  const errors = summary.status === 'Invalid'
+  if (verdict === 'unexpected') {
+    // Not a status we know: the bills stay with the document and the owner checks the MyInvois portal.
+    return updateDoc(admin, row.id, {
+      needs_check: true, errors: { message: `LHDN reports an unexpected status: ${String(summary.status)}`, summary },
+    })
+  }
+  const errors = verdict === 'invalid'
     ? await client.getDocumentDetails(row.lhdn_uuid).catch((e) => ({ message: message(e) }))
     : null
-  const out = await updateDoc(admin, row.id, { status: summary.status === 'Invalid' ? 'invalid' : 'cancelled', errors })
+  const out = await updateDoc(admin, row.id, { status: verdict, errors, needs_check: false })
   await releaseLinks(admin, row.id)       // after the status is saved, never before
   return out
 }
@@ -337,18 +361,28 @@ function jobSteps(admin: SupabaseClient, s: Settings): JobSteps {
         .select('id, code_number, kind, branch_id, period_start, status')
         .in('status', ['draft', 'submitted']).eq('environment', s.environment).order('created_at')
       if (error) throw error
+      // A single credit note's refund, read now: a refresh that finds it invalid releases the link.
+      const creditNotes = (data ?? []).filter((d: any) => d.kind === 'credit_note').map((d: any) => d.id)
+      const refundOf = new Map<string, string>()
+      if (creditNotes.length) {
+        const { data: links, error: linkErr } = await admin.from('einvoice_refund_links')
+          .select('refund_id, document_id').in('document_id', creditNotes)
+        if (linkErr) throw linkErr
+        for (const l of links ?? []) refundOf.set(l.document_id, l.refund_id)
+      }
       return (data ?? []).map((d: any) => ({
         id: d.id, codeNumber: d.code_number, kind: d.kind, branchId: d.branch_id, periodStart: d.period_start, status: d.status,
+        refundId: refundOf.get(d.id) ?? null,
       }))
     },
     async refresh(doc) {
       const after = await refreshDocument(admin, ready(), await loadDocument(admin, doc.id))
       return { status: after.status }
     },
-    async outlets() {
-      const { data, error } = await admin.from('branches').select('id, einvoice_from').not('einvoice_from', 'is', null)
+    async unreportedMonths() {
+      const { data, error } = await admin.rpc('einvoice_unreported_months')
       if (error) throw error
-      return (data ?? []).map((b: any) => ({ id: b.id, einvoiceFrom: b.einvoice_from }))
+      return (data ?? []).map((m: any) => ({ branchId: m.branch_id, month: String(m.month).slice(0, 7) }))
     },
     async failures(key) {
       const { data, error } = await admin.from('einvoice_job_attempts').select('failures').eq('key', key).maybeSingle()
@@ -461,8 +495,14 @@ async function actionCreditNotes(admin: SupabaseClient, s: Settings): Promise<Jo
   return report
 }
 
+/** The row is written first ('running', no finish), so a run killed half-way still shows on the screen. */
 async function actionRun(admin: SupabaseClient, s: Settings) {
   const startedAt = new Date()
+  const { data: run, error: startErr } = await admin.from('einvoice_job_runs').insert({
+    started_at: startedAt.toISOString(), finished_at: null, environment: s.environment, outcome: 'running',
+    report: emptyReport(businessDay(startedAt)),
+  }).select('id').single()
+  if (startErr) throw startErr
   let report: JobReport
   try {
     report = await runJob(jobSteps(admin, s), startedAt)
@@ -470,9 +510,8 @@ async function actionRun(admin: SupabaseClient, s: Settings) {
     report = { ...emptyReport(businessDay(startedAt)), errors: [`Run: ${message(e)}`] }
   }
   const outcome = runOutcome(report)
-  const { error } = await admin.from('einvoice_job_runs').insert({
-    started_at: startedAt.toISOString(), finished_at: new Date().toISOString(), environment: s.environment, outcome, report,
-  })
+  const { error } = await admin.from('einvoice_job_runs')
+    .update({ finished_at: new Date().toISOString(), outcome, report }).eq('id', run.id)
   if (error) throw error
   return { outcome, report }
 }
@@ -484,9 +523,8 @@ async function actionRun(admin: SupabaseClient, s: Settings) {
 async function actionReconcile(admin: SupabaseClient, body: any) {
   const day = (v: unknown, name: string): string | null => {
     if (v == null) return null
-    const real = typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v
-    if (!real) throw new Refusal(`${name} must be a real date, YYYY-MM-DD`)
-    return v as string
+    if (!isRealDay(v)) throw new Refusal(`${name} must be a real date, YYYY-MM-DD`)
+    return v
   }
   const given = { from: day(body.from, 'from'), to: day(body.to, 'to') }
   const today = monthOf(businessDay(new Date()))

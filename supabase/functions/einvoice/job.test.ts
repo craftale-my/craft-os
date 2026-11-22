@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  businessDay, ccnRef, cnRef, conRef, emptyReport, inConsolidationWindow, jobSecretMatches, MAX_ATTEMPTS, monthEnd,
-  previousMonth, refOfDocument, runCreditNotes, runJob, runOutcome, sendDraft, submitFailureVerdict, type JobSteps, type SendPorts, type SubmitReply, type PendingDoc, type StepResult,
+  businessDay, ccnRef, cnRef, conRef, emptyReport, isLhdnErrorBody, isRealDay, jobSecretMatches, MAX_ATTEMPTS,
+  MAX_CONSOLIDATIONS_PER_RUN, monthEnd, previousMonth, refOfDocument, refreshVerdict, runCreditNotes, runJob, runOutcome,
+  sendDraft, submitFailureVerdict, type JobSteps, type SendPorts, type SubmitReply, type PendingDoc, type StepResult,
 } from './job.ts'
 import type { PendingRefund } from './documents.ts'
 
@@ -18,7 +19,7 @@ function steps(over: Partial<JobSteps> = {}) {
     setUp: vi.fn(async () => ({ ok: true as const })),
     pendingDocuments: vi.fn(async (): Promise<PendingDoc[]> => []),
     refresh: vi.fn(async () => ({ status: 'valid' })),
-    outlets: vi.fn(async () => [] as { id: string; einvoiceFrom: string | null }[]),
+    unreportedMonths: vi.fn(async () => [] as { branchId: string; month: string }[]),
     failures: vi.fn(async (key: string) => failures.get(key) ?? 0),
     record: vi.fn(async (ref: { key: string }, ok: boolean) => {
       failures.set(ref.key, ok ? 0 : (failures.get(ref.key) ?? 0) + 1)
@@ -45,14 +46,17 @@ describe('the business-day calendar', () => {
     expect(businessDay(new Date('2026-10-31T22:00:00Z'))).toBe('2026-11-01')   // 1 Nov 06:00
     expect(businessDay(DAY1)).toBe('2026-11-01')
   })
-  it('knows months and the consolidation window', () => {
+  it('knows months and real days', () => {
     expect(previousMonth('2026-11')).toBe('2026-10')
     expect(previousMonth('2026-01')).toBe('2025-12')
     expect(monthEnd('2026-02')).toBe('2026-02-28')
     expect(monthEnd('2028-02')).toBe('2028-02-29')
-    expect(inConsolidationWindow('2026-11-01')).toBe(true)
-    expect(inConsolidationWindow('2026-11-07')).toBe(true)
-    expect(inConsolidationWindow('2026-11-08')).toBe(false)
+    expect(isRealDay('2026-02-28')).toBe(true)
+    expect(isRealDay('2026-02-30')).toBe(false)
+    expect(isRealDay('2026-13-01')).toBe(false)     // was a RangeError (500) in reconcile
+    expect(isRealDay('2026-00-10')).toBe(false)
+    expect(isRealDay('2026-1-01')).toBe(false)
+    expect(isRealDay(20261101)).toBe(false)
   })
 })
 
@@ -75,10 +79,13 @@ describe('attempt keys', () => {
     expect(cnRef('o1', 'r1')).toEqual({ key: 'CN|r1', kind: 'credit_note', branchId: 'o1', periodStart: null, refundId: 'r1' })
   })
   it('counts LHDN turning down a consolidated document against its month', () => {
-    const d = (kind: string, periodStart: string | null): PendingDoc => ({ id: 'd', codeNumber: 'X', kind, branchId: 'o1', periodStart, status: 'submitted' })
+    const d = (kind: string, periodStart: string | null, refundId: string | null = null): PendingDoc =>
+      ({ id: 'd', codeNumber: 'X', kind, branchId: 'o1', periodStart, status: 'submitted', refundId })
     expect(refOfDocument(d('consolidated_invoice', '2026-10-01'))?.key).toBe('CON|o1|2026-10')
     expect(refOfDocument(d('consolidated_credit_note', '2026-10-15'))?.key).toBe('CCN|o1|2026-10')
     expect(refOfDocument(d('invoice', null))).toBeNull()
+    expect(refOfDocument(d('credit_note', null, 'r1'))).toEqual(cnRef('o1', 'r1'))   // counts against its refund
+    expect(refOfDocument(d('credit_note', null))).toBeNull()
   })
 })
 
@@ -88,13 +95,13 @@ describe('runJob', () => {
     const r = await runJob(s, DAY1)
     expect(r).toMatchObject({ businessDay: '2026-11-01', setUp: false, notSetUp: 'MyInvois credentials are not set' })
     expect(runOutcome(r)).toBe('not_set_up')
-    for (const f of [s.pendingDocuments, s.outlets, s.consolidate, s.singleRefunds, s.refundMonths]) expect(f).not.toHaveBeenCalled()
+    for (const f of [s.pendingDocuments, s.unreportedMonths, s.consolidate, s.singleRefunds, s.refundMonths]) expect(f).not.toHaveBeenCalled()
   })
 
   it('refreshes waiting documents first and counts an invalid consolidated invoice as a failed attempt', async () => {
     const docs: PendingDoc[] = [
-      { id: 'd1', codeNumber: 'CON-1', kind: 'consolidated_invoice', branchId: 'o1', periodStart: '2026-10-01', status: 'submitted' },
-      { id: 'd2', codeNumber: 'INV-1', kind: 'invoice', branchId: 'o1', periodStart: null, status: 'submitted' },
+      { id: 'd1', codeNumber: 'CON-1', kind: 'consolidated_invoice', branchId: 'o1', periodStart: '2026-10-01', status: 'submitted', refundId: null },
+      { id: 'd2', codeNumber: 'INV-1', kind: 'invoice', branchId: 'o1', periodStart: null, status: 'submitted', refundId: null },
     ]
     const s = steps({
       pendingDocuments: vi.fn(async () => docs),
@@ -106,28 +113,56 @@ describe('runJob', () => {
     expect(s.record).toHaveBeenCalledWith(conRef('o1', '2026-10'), false, 'LHDN: CON-1 is invalid')
   })
 
-  it('on days 1–7 consolidates last month for every outlet whose start date falls in or before it', async () => {
+  it('consolidates every unreported closed month, oldest first', async () => {
     const s = steps({
-      outlets: vi.fn(async () => [
-        { id: 'o1', einvoiceFrom: '2026-10-01' }, { id: 'o2', einvoiceFrom: null },
-        { id: 'o3', einvoiceFrom: '2026-11-15' }, { id: 'o4', einvoiceFrom: '2026-10-31' },
+      unreportedMonths: vi.fn(async () => [
+        { branchId: 'o4', month: '2026-10' }, { branchId: 'o1', month: '2026-10' }, { branchId: 'o1', month: '2026-08' },
       ]),
     })
     const r = await runJob(s, DAY1)
-    expect(s.consolidate.mock.calls).toEqual([['o1', '2026-10'], ['o4', '2026-10']])
-    expect(r.consolidated.map((l) => [l.key, l.outcome])).toEqual([['CON|o1|2026-10', 'issued'], ['CON|o4|2026-10', 'issued']])
+    expect(s.consolidate.mock.calls).toEqual([['o1', '2026-08'], ['o1', '2026-10'], ['o4', '2026-10']])
+    expect(r.consolidated.map((l) => [l.key, l.outcome]))
+      .toEqual([['CON|o1|2026-08', 'issued'], ['CON|o1|2026-10', 'issued'], ['CON|o4|2026-10', 'issued']])
     expect(runOutcome(r)).toBe('ok')
   })
 
-  it('does not consolidate after the 7th', async () => {
-    const s = steps({ outlets: vi.fn(async () => [{ id: 'o1', einvoiceFrom: '2026-10-01' }]) })
+  it('catches up a missed month after the 7th too', async () => {
+    const s = steps({ unreportedMonths: vi.fn(async () => [{ branchId: 'o1', month: '2026-10' }]) })
     await runJob(s, DAY8)
-    expect(s.outlets).not.toHaveBeenCalled()
-    expect(s.consolidate).not.toHaveBeenCalled()
+    expect(s.consolidate.mock.calls).toEqual([['o1', '2026-10']])
+  })
+
+  it(`tries at most ${MAX_CONSOLIDATIONS_PER_RUN} outlet-months per run and reports the rest as later; a stopped one costs no try`, async () => {
+    const months = Array.from({ length: 9 }, (_, i) => ({ branchId: 'o1', month: `2026-0${i + 1}` }))
+    const s = steps({ unreportedMonths: vi.fn(async () => months) })
+    s.failuresMap.set('CON|o1|2026-02', MAX_ATTEMPTS)
+    const r = await runJob(s, DAY8)
+    expect(s.consolidate).toHaveBeenCalledTimes(MAX_CONSOLIDATIONS_PER_RUN)
+    expect(r.consolidated.map((l) => l.outcome))
+      .toEqual(['issued', 'stopped', 'issued', 'issued', 'issued', 'issued', 'issued', 'later', 'later'])
+    expect(r.consolidated.slice(-2).map((l) => l.key)).toEqual(['CON|o1|2026-08', 'CON|o1|2026-09'])
+  })
+
+  it('a database error on one outlet-month is reported and the rest still run', async () => {
+    const s = steps({
+      unreportedMonths: vi.fn(async () => [{ branchId: 'o1', month: '2026-09' }, { branchId: 'o2', month: '2026-10' }]),
+      failures: vi.fn(async (key: string) => { if (key === 'CON|o1|2026-09') throw new Error('db hiccup'); return 0 }),
+      singleRefunds: vi.fn(async () => [refund({ refundId: 'r1' }), refund({ refundId: 'r2' })]),
+      record: vi.fn(async () => { throw new Error('record failed') }),
+      creditNote: vi.fn(async (x: PendingRefund): Promise<StepResult> =>
+        x.refundId === 'r1' ? { outcome: 'refused', error: 'no' } : issued('CN-2')),
+    })
+    const r = await runJob(s, DAY8)
+    expect(s.consolidate.mock.calls).toEqual([['o2', '2026-10']])
+    expect(s.creditNote).toHaveBeenCalledTimes(2)
+    expect(r.errors).toEqual(['CON|o1|2026-09: db hiccup', 'CN|r1: record failed'])
+    expect(r.consolidated.map((l) => l.key)).toEqual(['CON|o2|2026-10'])
+    expect(r.creditNotes.map((l) => l.key)).toEqual(['CN|r2'])
+    expect(runOutcome(r)).toBe('errors')
   })
 
   it('stops after 3 failed attempts and says so', async () => {
-    const s = steps({ outlets: vi.fn(async () => [{ id: 'o1', einvoiceFrom: '2026-10-01' }]) })
+    const s = steps({ unreportedMonths: vi.fn(async () => [{ branchId: 'o1', month: '2026-10' }]) })
     s.failuresMap.set('CON|o1|2026-10', MAX_ATTEMPTS)
     const r = await runJob(s, DAY1)
     expect(s.consolidate).not.toHaveBeenCalled()
@@ -135,15 +170,15 @@ describe('runJob', () => {
     expect(runOutcome(r)).toBe('errors')
   })
 
-  it('counts a refusal, a rejection or a throw; a later success resets the count', async () => {
+  it('counts a refusal, a rejection or a throw; a document found valid resets the count', async () => {
     const results: (StepResult | Error)[] = [
       { outcome: 'refused', error: 'The document adds up to 1 sen, the bills are 2 sen' },
       { outcome: 'rejected', codeNumber: 'CON-2', status: 'rejected', error: 'TIN' },
       new Error('network down'),
-      issued('CON-3'),
+      { outcome: 'issued', codeNumber: 'CON-3', status: 'valid' },
     ]
     const s = steps({
-      outlets: vi.fn(async () => [{ id: 'o1', einvoiceFrom: '2026-10-01' }]),
+      unreportedMonths: vi.fn(async () => [{ branchId: 'o1', month: '2026-10' }]),
       consolidate: vi.fn(async () => {
         const next = results.shift()!
         if (next instanceof Error) throw next
@@ -160,9 +195,46 @@ describe('runJob', () => {
     expect(s.record).toHaveBeenLastCalledWith(conRef('o1', '2026-10'), true, null)
   })
 
+  it('a submitted document does not reset the count (it may still turn invalid); a refresh finding it valid does', async () => {
+    const s = steps({ unreportedMonths: vi.fn(async () => [{ branchId: 'o1', month: '2026-10' }]) })
+    s.failuresMap.set('CON|o1|2026-10', 2)
+    await runJob(s, DAY8)
+    expect(s.failuresMap.get('CON|o1|2026-10')).toBe(2)
+    const doc: PendingDoc = { id: 'd1', codeNumber: 'CON-1', kind: 'consolidated_invoice', branchId: 'o1', periodStart: '2026-10-01', status: 'submitted', refundId: null }
+    const t = steps({ pendingDocuments: vi.fn(async () => [doc]), refresh: vi.fn(async () => ({ status: 'valid' })) })
+    t.failuresMap.set('CON|o1|2026-10', 2)
+    await runJob(t, DAY8)
+    expect(t.record).toHaveBeenCalledWith(conRef('o1', '2026-10'), true, null)
+    expect(t.failuresMap.get('CON|o1|2026-10')).toBe(0)
+  })
+
+  it('a single credit note LHDN keeps finding invalid is re-issued at most until its refund has 3 failures', async () => {
+    // each day: the refresh finds yesterday's credit note invalid (its refund link released), then the refund is due again
+    let live: PendingDoc | null = null
+    let n = 0
+    const s = steps({
+      pendingDocuments: vi.fn(async () => (live ? [live] : [])),
+      refresh: vi.fn(async () => { live = null; return { status: 'invalid' } }),
+      singleRefunds: vi.fn(async () => (live ? [] : [refund()])),
+      creditNote: vi.fn(async (): Promise<StepResult> => {
+        n++
+        live = { id: `cn${n}`, codeNumber: `CN-${n}`, kind: 'credit_note', branchId: 'o1', periodStart: null, status: 'submitted', refundId: 'r1' }
+        return issued(`CN-${n}`)
+      }),
+    })
+    const outcomes: string[] = []
+    for (let day = 0; day < 6; day++) {
+      const r = await runJob(s, new Date(DAY8.getTime() + day * 86_400_000))
+      outcomes.push(r.creditNotes.map((l) => l.outcome).join(','))
+    }
+    expect(s.creditNote).toHaveBeenCalledTimes(3)
+    expect(s.failuresMap.get('CN|r1')).toBe(3)
+    expect(outcomes).toEqual(['issued', 'issued', 'issued', 'stopped', 'stopped', 'stopped'])
+  })
+
   it('leaves a document that is still on its way (waiting) or a month with nothing left uncounted', async () => {
     const s = steps({
-      outlets: vi.fn(async () => [{ id: 'o1', einvoiceFrom: '2026-10-01' }, { id: 'o2', einvoiceFrom: '2026-10-01' }]),
+      unreportedMonths: vi.fn(async () => [{ branchId: 'o1', month: '2026-10' }, { branchId: 'o2', month: '2026-10' }]),
       consolidate: vi.fn(async (id: string): Promise<StepResult> =>
         id === 'o1' ? { outcome: 'waiting', codeNumber: 'CON-1', status: 'draft' } : { outcome: 'nothing' }),
     })
@@ -201,7 +273,25 @@ describe('runCreditNotes with force (the screen’s Retry)', () => {
     const r = emptyReport('2026-11-08')
     await runCreditNotes(s, r, r.businessDay, true)
     expect(s.creditNote).toHaveBeenCalledTimes(1)
-    expect(s.record).toHaveBeenCalledWith(cnRef('o1', 'r1'), true, null)
+    expect(r.creditNotes).toEqual([{ key: 'CN|r1', outcome: 'issued', codeNumber: 'CN-1', status: 'submitted' }])
+    expect(s.record).toHaveBeenCalledWith(cnRef('o1', 'r1'), true, null)   // the owner's Retry clears the stop
+  })
+  it('the daily run (no force) leaves the count of a submitted credit note for LHDN\'s verdict', async () => {
+    const s = steps({ singleRefunds: vi.fn(async () => [refund()]) })
+    s.failuresMap.set('CN|r1', 2)
+    const r = emptyReport('2026-11-08')
+    await runCreditNotes(s, r, r.businessDay)
+    expect(s.record).not.toHaveBeenCalled()
+  })
+})
+
+describe('reading LHDN\'s verdict', () => {
+  it('cancels only on Cancelled; any status we do not know is a check, never a release', () => {
+    expect(refreshVerdict('Submitted')).toBe('waiting')
+    expect(refreshVerdict('Valid')).toBe('valid')
+    expect(refreshVerdict('Invalid')).toBe('invalid')
+    expect(refreshVerdict('Cancelled')).toBe('cancelled')
+    for (const odd of ['Rejected', 'cancelled', 'Processing', '', null, undefined, 3]) expect(refreshVerdict(odd)).toBe('unexpected')
   })
 })
 
@@ -216,6 +306,12 @@ describe('sending a draft once', () => {
     expect(submitFailureVerdict(err(400))).toBe('rejected')
     expect(submitFailureVerdict(err(400, null))).toBe('needs_check')     // a bodiless 4xx: proxy, firewall, 408
     expect(submitFailureVerdict(err(408, null))).toBe('needs_check')
+    expect(submitFailureVerdict(err(400, { error: { code: 'BadStructure', message: 'x' } }))).toBe('rejected')
+    expect(submitFailureVerdict(err(403, { code: 'IncorrectSubmitter' }))).toBe('rejected')
+    expect(submitFailureVerdict(err(403, '<html>Forbidden</html>'))).toBe('needs_check')   // a gateway's page, not LHDN
+    expect(submitFailureVerdict(err(404, { message: 'no Route matched' }))).toBe('needs_check')
+    expect(submitFailureVerdict(err(400, [{ error: 'x' }]))).toBe('needs_check')
+    expect(submitFailureVerdict(err(400, { code: 'SomethingElse' }))).toBe('needs_check')
     expect(submitFailureVerdict(err(500))).toBe('needs_check')
     expect(submitFailureVerdict(new TypeError('network'))).toBe('needs_check')
     expect(submitFailureVerdict(null)).toBe('needs_check')
@@ -288,6 +384,21 @@ describe('sending a draft once', () => {
       expect(await sendDraft('CON-1', t.p)).toBe('clearClaim')
       expect(t.calls).toEqual(['claim', 'submit', 'clearClaim'])
     }
+  })
+
+  it('LHDN\'s error envelope: an object with an error field, or a known LHDN code', () => {
+    expect(isLhdnErrorBody({ error: 'x' })).toBe(true)
+    expect(isLhdnErrorBody({ error: { details: [] } })).toBe(true)
+    expect(isLhdnErrorBody({ code: 'MaximumSizeExceeded' })).toBe(true)
+    expect(isLhdnErrorBody({ error: null, message: 'x' })).toBe(false)
+    expect(isLhdnErrorBody('error')).toBe(false)
+    expect(isLhdnErrorBody(null)).toBe(false)
+  })
+
+  it('accepted without a submission id: needs a check, never submitted', async () => {
+    const t = ports({ submit: () => Promise.resolve(reply({ submissionUid: null })) })
+    expect(await sendDraft('CON-1', t.p)).toBe('markNeedsCheck')
+    expect(t.calls).toEqual(['claim', 'submit', 'markNeedsCheck'])
   })
 
   it('accepted but the save fails: retried once, then an error carrying LHDN identifiers, no release, no clear', async () => {

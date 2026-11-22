@@ -6,6 +6,8 @@
 import type { PendingRefund } from './documents.ts'
 
 export const MAX_ATTEMPTS = 3
+/** At most this many outlet-months are consolidated in one run; the rest are reported as 'later' for the next run. */
+export const MAX_CONSOLIDATIONS_PER_RUN = 6
 
 /** The business day (06:00–05:59 Malaysia time, as Reports) of a moment, YYYY-MM-DD: UTC + 8 h − 6 h. */
 export const businessDay = (at: Date): string => new Date(at.getTime() + 2 * 3600_000).toISOString().slice(0, 10)
@@ -21,8 +23,12 @@ export function monthEnd(month: string): string {
   return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10)
 }
 
-/** Days 1–7 of a business month: last month is consolidated (LHDN allows 7 days). */
-export const inConsolidationWindow = (day: string) => Number(day.slice(8, 10)) <= 7
+/** A real calendar day written YYYY-MM-DD (2026-02-30 and 2026-13-01 are not). */
+export function isRealDay(v: unknown): v is string {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
+  const d = new Date(`${v}T00:00:00Z`)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v
+}
 
 /** The pg_cron caller's header against the function secret, in constant time; a short or missing secret never matches. */
 export function jobSecretMatches(given: string | null, expected: string | undefined): boolean {
@@ -45,7 +51,8 @@ export const cnRef = (branchId: string, refundId: string): AttemptRef =>
 
 // ── Steps and their report ──────────────────────────────────────────────────
 /** issued: sent (submitted / valid); waiting: a draft to resend; nothing: no work; rejected: LHDN said no;
- *  refused: we did not send (a check failed, or an error). */
+ *  refused: we did not send (a check failed, or an error). A line can also be stopped (3 failures) or
+ *  later (over this run's bound, left for the next run). */
 export interface StepResult {
   outcome: 'issued' | 'waiting' | 'nothing' | 'rejected' | 'refused'
   codeNumber?: string
@@ -54,13 +61,17 @@ export interface StepResult {
 }
 export interface StepLine {
   key: string
-  outcome: StepResult['outcome'] | 'stopped'
+  outcome: StepResult['outcome'] | 'stopped' | 'later'
   codeNumber?: string
   status?: string
   error?: string
 }
 
-export interface PendingDoc { id: string; codeNumber: string; kind: string; branchId: string; periodStart: string | null; status: string }
+/** refundId: a single credit note's refund, read before a refresh can release the link. */
+export interface PendingDoc {
+  id: string; codeNumber: string; kind: string; branchId: string; periodStart: string | null; status: string
+  refundId: string | null
+}
 
 export interface JobSteps {
   /** ok, or why nothing may be sent (no credentials, company details missing, production unsigned). */
@@ -68,8 +79,8 @@ export interface JobSteps {
   /** Drafts and submitted documents of the current environment. */
   pendingDocuments(): Promise<PendingDoc[]>
   refresh(doc: PendingDoc): Promise<{ status: string }>
-  /** Outlets with a start date. */
-  outlets(): Promise<{ id: string; einvoiceFrom: string | null }[]>
+  /** Closed business months (YYYY-MM) of outlets with a start date that still have unreported bills, oldest first. */
+  unreportedMonths(): Promise<{ branchId: string; month: string }[]>
   failures(key: string): Promise<number>
   record(ref: AttemptRef, ok: boolean, error: string | null): Promise<void>
   consolidate(branchId: string, month: string): Promise<StepResult>
@@ -103,15 +114,20 @@ export const emptyReport = (day: string): JobReport =>
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
-/** LHDN turning down a consolidated document counts against its outlet-month. */
+/** LHDN turning down a document the run issued counts against its outlet-month, or its refund. */
 export function refOfDocument(d: PendingDoc): AttemptRef | null {
+  if (d.kind === 'credit_note') return d.refundId ? cnRef(d.branchId, d.refundId) : null
   if (!d.periodStart) return null
   if (d.kind === 'consolidated_invoice') return conRef(d.branchId, monthOf(d.periodStart))
   if (d.kind === 'consolidated_credit_note') return ccnRef(d.branchId, monthOf(d.periodStart))
   return null
 }
 
-/** One counted try: skipped at MAX_ATTEMPTS (unless forced); a refusal or rejection adds one; a success resets. */
+/**
+ * One counted try: skipped at MAX_ATTEMPTS (unless forced); a refusal or rejection adds one. Only a document
+ * LHDN found valid (here or when refreshed), nothing left to do, or the owner's forced Retry resets the count:
+ * a submitted document may still turn invalid, and resetting the daily run's count then would re-issue it forever.
+ */
 async function attempt(s: JobSteps, ref: AttemptRef, run: () => Promise<StepResult>, force: boolean): Promise<StepLine> {
   const failures = await s.failures(ref.key)
   if (!force && failures >= MAX_ATTEMPTS) return { key: ref.key, outcome: 'stopped' }
@@ -121,9 +137,25 @@ async function attempt(s: JobSteps, ref: AttemptRef, run: () => Promise<StepResu
   } catch (e) {
     r = { outcome: 'refused', error: message(e) }
   }
+  // the owner's Retry (force) is their call: a document sent clears the stop, as the manual consolidate does
+  const settled = r.outcome === 'nothing' || (r.outcome === 'issued' && (force || r.status === 'valid'))
   if (r.outcome === 'rejected' || r.outcome === 'refused') await s.record(ref, false, r.error ?? r.outcome)
-  else if ((r.outcome === 'issued' || r.outcome === 'nothing') && failures > 0) await s.record(ref, true, null)
+  else if (settled && failures > 0) await s.record(ref, true, null)
   return { key: ref.key, ...r }
+}
+
+/** One attempt whose own bookkeeping can fail: the error goes to the report and the loop goes on. */
+async function attemptInto(
+  lines: StepLine[], report: JobReport, s: JobSteps, ref: AttemptRef, run: () => Promise<StepResult>, force: boolean,
+): Promise<StepLine | null> {
+  try {
+    const line = await attempt(s, ref, run, force)
+    lines.push(line)
+    return line
+  } catch (e) {
+    report.errors.push(`${ref.key}: ${message(e)}`)
+    return null
+  }
 }
 
 /** Step 1: every draft is resent and every submitted document asked about. */
@@ -142,6 +174,8 @@ export async function runRefresh(s: JobSteps, report: JobReport): Promise<void> 
       const ref = refOfDocument(d)
       if (ref && (after.status === 'invalid' || after.status === 'rejected')) {
         await s.record(ref, false, `LHDN: ${d.codeNumber} is ${after.status}`)
+      } else if (ref && after.status === 'valid' && (await s.failures(ref.key)) > 0) {
+        await s.record(ref, true, null)
       }
     } catch (e) {
       report.errors.push(`${d.codeNumber}: ${message(e)}`)
@@ -149,16 +183,29 @@ export async function runRefresh(s: JobSteps, report: JobReport): Promise<void> 
   }
 }
 
-/** Step 2 (days 1–7): last month for every outlet whose start date is in or before it. */
-export async function runConsolidation(s: JobSteps, report: JobReport, day: string): Promise<void> {
-  const month = previousMonth(monthOf(day))
+/**
+ * Step 2, every day: each closed business month that still has unreported bills, oldest first (last month's
+ * goes out on the 1st; a missed run, a killed run or a start date set into a past month is caught up). At most
+ * MAX_CONSOLIDATIONS_PER_RUN tries per run — a stopped key costs no try — and the rest are reported as later.
+ */
+export async function runConsolidation(s: JobSteps, report: JobReport): Promise<void> {
+  let months: { branchId: string; month: string }[]
   try {
-    for (const o of await s.outlets()) {
-      if (!o.einvoiceFrom || o.einvoiceFrom > monthEnd(month)) continue
-      report.consolidated.push(await attempt(s, conRef(o.id, month), () => s.consolidate(o.id, month), false))
-    }
+    months = await s.unreportedMonths()
   } catch (e) {
     report.errors.push(`Consolidation: ${message(e)}`)
+    return
+  }
+  const oldestFirst = [...months].sort((a, b) => a.month.localeCompare(b.month) || a.branchId.localeCompare(b.branchId))
+  let tried = 0
+  for (const m of oldestFirst) {
+    const ref = conRef(m.branchId, m.month)
+    if (tried >= MAX_CONSOLIDATIONS_PER_RUN) {
+      report.consolidated.push({ key: ref.key, outcome: 'later' })
+      continue
+    }
+    const line = await attemptInto(report.consolidated, report, s, ref, () => s.consolidate(m.branchId, m.month), false)
+    if (line?.outcome !== 'stopped') tried++
   }
 }
 
@@ -166,10 +213,11 @@ export async function runConsolidation(s: JobSteps, report: JobReport, day: stri
 export async function runCreditNotes(s: JobSteps, report: JobReport, day: string, force = false): Promise<void> {
   try {
     for (const r of await s.singleRefunds()) {
-      report.creditNotes.push(await attempt(s, cnRef(r.branchId, r.refundId), () => s.creditNote(r), force))
+      await attemptInto(report.creditNotes, report, s, cnRef(r.branchId, r.refundId), () => s.creditNote(r), force)
     }
     for (const m of await s.refundMonths(`${monthOf(day)}-01`)) {
-      report.creditNotes.push(await attempt(s, ccnRef(m.branchId, m.month), () => s.consolidatedCreditNote(m.branchId, m.month), force))
+      await attemptInto(report.creditNotes, report, s, ccnRef(m.branchId, m.month),
+        () => s.consolidatedCreditNote(m.branchId, m.month), force)
     }
   } catch (e) {
     report.errors.push(`Credit notes: ${message(e)}`)
@@ -183,16 +231,42 @@ export async function runJob(s: JobSteps, now: Date): Promise<JobReport> {
   const ready = await s.setUp()
   if (!ready.ok) return { ...report, setUp: false, notSetUp: ready.reason }
   await runRefresh(s, report)
-  if (inConsolidationWindow(day)) await runConsolidation(s, report, day)
+  await runConsolidation(s, report)
   await runCreditNotes(s, report, day)
   return report
 }
 
+// ── Reading LHDN's verdict ──────────────────────────────────────────────────
+/** LHDN's document status as our action: only Cancelled cancels (and frees the bills); anything we do not
+ *  know keeps the document submitted and flags it for a check in the MyInvois portal. */
+export type RefreshVerdict = 'waiting' | 'valid' | 'invalid' | 'cancelled' | 'unexpected'
+
+export function refreshVerdict(status: unknown): RefreshVerdict {
+  switch (status) {
+    case 'Submitted': return 'waiting'
+    case 'Valid': return 'valid'
+    case 'Invalid': return 'invalid'
+    case 'Cancelled': return 'cancelled'
+    default: return 'unexpected'
+  }
+}
+
 // ── Sending a draft exactly once ────────────────────────────────────────────
 /** What a failed submit means: release = LHDN did not take it (send again next run); rejected = a clear no
- *  (a 4xx whose body names the rejection); needs_check = we cannot know whether LHDN has it (422 duplicate,
- *  other 5xx, network after sending, a 4xx with no body from a proxy or firewall). */
+ *  (a 4xx whose body is LHDN's error envelope); needs_check = we cannot know whether LHDN has it (422
+ *  duplicate, other 5xx, network after sending, a 4xx from a proxy or firewall: no body, or not LHDN's). */
 export type FailureVerdict = 'release' | 'rejected' | 'needs_check'
+
+/** Error codes LHDN's submit endpoint answers with (MyInvois SDK, Submit Documents). */
+const LHDN_ERROR_CODES = new Set(['BadStructure', 'MaximumSizeExceeded', 'IncorrectSubmitter', 'BadArgument', 'DuplicateSubmission'])
+
+/** LHDN's error envelope: a JSON object with an `error` field, or one carrying a known LHDN error code. */
+export function isLhdnErrorBody(body: unknown): boolean {
+  if (body == null || typeof body !== 'object' || Array.isArray(body)) return false
+  const b = body as Record<string, unknown>
+  if (b.error != null && b.error !== '') return true
+  return typeof b.code === 'string' && LHDN_ERROR_CODES.has(b.code)
+}
 
 export function submitFailureVerdict(e: unknown): FailureVerdict {
   const x = (e ?? {}) as { status?: unknown; notSent?: unknown; body?: unknown }
@@ -200,7 +274,7 @@ export function submitFailureVerdict(e: unknown): FailureVerdict {
   const s = typeof x.status === 'number' ? x.status : null
   if (s === 429 || s === 503 || s === 401) return 'release'
   if (s === 422) return 'needs_check'
-  if (s !== null && s >= 400 && s < 500 && x.body != null) return 'rejected'
+  if (s !== null && s >= 400 && s < 500 && isLhdnErrorBody(x.body)) return 'rejected'
   return 'needs_check'
 }
 
@@ -251,6 +325,10 @@ export async function sendDraft<R>(codeNumber: string, p: SendPorts<R>): Promise
     return verdict === 'release' ? p.clearClaim(detailOf(e)) : p.markNeedsCheck(detailOf(e))
   }
   const ok = r.accepted.find((a) => a.codeNumber === codeNumber)
+  if (ok && !r.submissionUid) {
+    // Without the submission id its status can never be read: never "submitted", someone has to look.
+    return p.markNeedsCheck({ message: `LHDN accepted ${codeNumber} (uuid ${ok.uuid}) but gave no submission id`, uuid: ok.uuid })
+  }
   if (ok) {
     try {
       return await p.markSubmitted(ok.uuid, r.submissionUid)
