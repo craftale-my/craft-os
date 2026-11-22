@@ -215,5 +215,274 @@ begin
   end if;
 end $$;
 
+-- ── V2. The start date: no start date, nothing reported; HQ only; later freely, earlier never once sent ──
+do $$
+declare
+  v_a   uuid := pg_temp.id('a');
+  v_b   uuid := pg_temp.id('b');
+  v_got text;
+  v_doc einvoice_documents;
+  v_msg text := 'A bill in this document is not reported by us (another outlet, not paid, or before the outlet''s e-invoice start date)';
+  v_locked text := 'E-invoices were already sent for this outlet: the start date can only move later.';
+begin
+  if exists (select 1 from einvoice_unlinked_paid_bills(v_a, '2026-10-01')) then
+    raise exception 'FAIL V2 bills offered before the outlet has a start date';
+  end if;
+  perform pg_temp.act(pg_temp.id('cashier'));
+  perform pg_temp.expect_error(format('select einvoice_set_outlet_start(%L, %L)', v_a, '2026-10-01'),
+                               'Only HQ can change when an outlet''s e-invoices start.', 'V2 a cashier sets it');
+  perform pg_temp.expect_error(format('update branches set einvoice_from = %L where id = %L', '2026-10-01', v_a),
+                               'Only HQ can change when an outlet''s e-invoices start.', 'V2 a cashier writes it');
+  perform pg_temp.act(pg_temp.id('owner'));
+  if not (einvoice_set_outlet_start(v_a, '2026-10-01')->>'ok')::boolean then raise exception 'FAIL V2 set'; end if;
+  perform set_config('request.jwt.claims', '', true);
+
+  -- October by business day: EA1, EA2, EA3 (1 Nov 05:30); not EA6 (over RM 10,000), EA5 (September), EA4 (1 Nov 06:30)
+  select string_agg(u.bill_no || '@' || to_char(u.day, 'YYYY-MM-DD'), ',' order by u.day, u.bill_no) into v_got
+    from einvoice_unlinked_paid_bills(v_a, '2026-10-15') u;
+  if v_got is distinct from 'EA1@2026-10-05,EA2@2026-10-31,EA3@2026-10-31' then raise exception 'FAIL V2 October: %', v_got; end if;
+  if exists (select 1 from einvoice_unlinked_paid_bills(v_a, '2026-09-01')) then raise exception 'FAIL V2 September offered'; end if;
+  select string_agg(u.bill_no, ',') into v_got from einvoice_unlinked_paid_bills(v_a, '2026-11-01') u;
+  if v_got is distinct from 'EA4' then raise exception 'FAIL V2 November: %', v_got; end if;
+  if exists (select 1 from einvoice_unlinked_paid_bills(v_b, '2026-10-01')) then raise exception 'FAIL V2 outlet B offered'; end if;
+
+  -- consolidate October: its bills leave the list; claimed twice is refused
+  v_doc := einvoice_create_document(
+    jsonb_build_object('kind', 'consolidated_invoice', 'environment', 'sandbox', 'branchId', v_a,
+                       'periodStart', '2026-10-01', 'periodEnd', '2026-10-31', 'totalSen', 2310 + 920 + 2130),
+    array[pg_temp.id('A1'), pg_temp.id('A2'), pg_temp.id('A3')], '{}');
+  perform pg_temp.put('con_oct', v_doc.id);
+  if exists (select 1 from einvoice_unlinked_paid_bills(v_a, '2026-10-01')) then raise exception 'FAIL V2 linked bills offered'; end if;
+  perform pg_temp.expect_error(
+    format('select einvoice_create_document(%L::jsonb, array[%L]::uuid[], %L::uuid[])',
+           jsonb_build_object('kind', 'invoice', 'environment', 'sandbox', 'branchId', v_a, 'billId', pg_temp.id('A1'), 'totalSen', 2310),
+           pg_temp.id('A1'), '{}'),
+    'A bill or refund in this document already has a live e-invoice', 'V2 a bill twice');
+
+  -- a bill before the start date, a bill of an outlet without one, a bill of another outlet, a refund of a bill
+  -- before the start date: refused
+  perform pg_temp.expect_error(
+    format('select einvoice_create_document(%L::jsonb, array[%L]::uuid[], %L::uuid[])',
+           jsonb_build_object('kind', 'invoice', 'environment', 'sandbox', 'branchId', v_a, 'totalSen', 1160), pg_temp.id('A5'), '{}'),
+    v_msg, 'V2 before the start date');
+  perform pg_temp.expect_error(
+    format('select einvoice_create_document(%L::jsonb, array[%L]::uuid[], %L::uuid[])',
+           jsonb_build_object('kind', 'invoice', 'environment', 'sandbox', 'branchId', v_b, 'totalSen', 1060), pg_temp.id('B1'), '{}'),
+    v_msg, 'V2 an outlet without a start date');
+  perform pg_temp.expect_error(
+    format('select einvoice_create_document(%L::jsonb, array[%L]::uuid[], %L::uuid[])',
+           jsonb_build_object('kind', 'invoice', 'environment', 'sandbox', 'branchId', v_b, 'totalSen', 220), pg_temp.id('A4'), '{}'),
+    v_msg, 'V2 another outlet''s bill');
+  perform pg_temp.expect_error(
+    format('select einvoice_create_document(%L::jsonb, %L::uuid[], array[%L]::uuid[])',
+           jsonb_build_object('kind', 'credit_note', 'environment', 'sandbox', 'branchId', v_a, 'totalSen', 100), '{}', pg_temp.id('RA5')),
+    v_msg, 'V2 a refund of a bill before the start date');
+
+  -- with a live document: earlier or cleared is refused, later is fine
+  perform pg_temp.act(pg_temp.id('owner'));
+  perform pg_temp.expect_error(format('select einvoice_set_outlet_start(%L, %L)', v_a, '2026-09-01'), v_locked, 'V2 earlier');
+  perform pg_temp.expect_error(format('select einvoice_set_outlet_start(%L, null)', v_a), v_locked, 'V2 cleared');
+  perform einvoice_set_outlet_start(v_a, '2026-10-02');
+  perform pg_temp.expect_error(format('select einvoice_set_outlet_start(%L, %L)', v_a, '2026-10-01'), v_locked, 'V2 back again');
+  perform pg_temp.expect_error(format('select einvoice_set_outlet_start(%L, %L)', gen_random_uuid(), '2026-10-01'),
+                               'Outlet not found', 'V2 unknown outlet');
+  -- without a live document anything goes (outlet B has none)
+  perform einvoice_set_outlet_start(v_b, '2026-12-01');
+  perform einvoice_set_outlet_start(v_b, null);
+  perform set_config('request.jwt.claims', '', true);
+  if (select einvoice_from from branches where id = v_a) <> date '2026-10-02' then raise exception 'FAIL V2 A start date'; end if;
+  if (select einvoice_from from branches where id = v_b) is not null then raise exception 'FAIL V2 B start date'; end if;
+end $$;
+
+-- ── V3. Bills over RM 10,000: never consolidated (V2), listed for access_settings until issued individually ──
+do $$
+declare
+  v_a   uuid := pg_temp.id('a');
+  v_got text;
+begin
+  perform pg_temp.act(pg_temp.id('owner'));
+  select string_agg(l.bill_no, ',') into v_got from einvoice_large_bills() l where l.branch_id in (v_a, pg_temp.id('b'));
+  if v_got is distinct from 'EA6' then raise exception 'FAIL V3 large bills: %', v_got; end if;
+  if (select l.day from einvoice_large_bills() l where l.id = pg_temp.id('A6')) <> date '2026-10-10' then
+    raise exception 'FAIL V3 business day';
+  end if;
+  perform pg_temp.act(pg_temp.id('cashier'));
+  if exists (select 1 from einvoice_large_bills()) then raise exception 'FAIL V3 a cashier sees large bills'; end if;
+  perform set_config('request.jwt.claims', '', true);
+  perform einvoice_create_document(
+    jsonb_build_object('kind', 'invoice', 'environment', 'sandbox', 'branchId', v_a, 'billId', pg_temp.id('A6'),
+                       'totalSen', 1100000, 'buyer', jsonb_build_object('name', 'Verify Caterer Sdn Bhd')),
+    array[pg_temp.id('A6')], '{}');
+  perform pg_temp.act(pg_temp.id('owner'));
+  if exists (select 1 from einvoice_large_bills() l where l.branch_id = v_a) then raise exception 'FAIL V3 issued bill still listed'; end if;
+  perform set_config('request.jwt.claims', '', true);
+  if has_function_privilege('anon', 'einvoice_large_bills()', 'execute') then raise exception 'FAIL V3 anon may call it'; end if;
+end $$;
+
+-- ── V4. Refunds due a credit note: only once the original is valid; by the refund's business month; once ──
+do $$
+declare
+  v_a   uuid := pg_temp.id('a');
+  v_got text;
+  v_doc einvoice_documents;
+  r     record;
+begin
+  -- the October consolidated invoice (V2) is still a draft: nothing is due
+  if exists (select 1 from einvoice_consolidated_refund_months('2027-01-01') m where m.branch_id = v_a) then
+    raise exception 'FAIL V4 refunds due before the invoice is valid';
+  end if;
+  update einvoice_documents set status = 'valid', lhdn_uuid = 'VERIFY-E-CON-OCT' where id = pg_temp.id('con_oct');
+
+  -- RA1 (6 Oct, of EA1) → October; RA2 (2 Nov, of EA2) → November; RA5 (of EA5, never reported) never
+  select string_agg(to_char(m.month, 'YYYY-MM'), ',' order by m.month) into v_got
+    from einvoice_consolidated_refund_months('2027-01-01') m where m.branch_id = v_a;
+  if v_got is distinct from '2026-10,2026-11' then raise exception 'FAIL V4 months: %', v_got; end if;
+  select string_agg(to_char(m.month, 'YYYY-MM'), ',') into v_got
+    from einvoice_consolidated_refund_months('2026-11-01') m where m.branch_id = v_a;
+  if v_got is distinct from '2026-10' then raise exception 'FAIL V4 months before November: %', v_got; end if;
+
+  select * into r from einvoice_pending_consolidated_refunds(v_a, '2026-10-20');
+  if r.refund_id is distinct from pg_temp.id('RA1') or r.amount_sen <> 300 or r.refund_day <> date '2026-10-06'
+     or r.invoice_uuid is distinct from 'VERIFY-E-CON-OCT' or r.bill_no <> 'EA1' or r.branch_id <> v_a
+     or (r.totals->>'totalSen')::integer <> 2310
+     or r.invoice_code is distinct from (select code_number from einvoice_documents where id = pg_temp.id('con_oct')) then
+    raise exception 'FAIL V4 October refund: %', row_to_json(r);
+  end if;
+  select string_agg(p.refund_id::text, ',') into v_got from einvoice_pending_consolidated_refunds(v_a, '2026-11-01') p;
+  if v_got is distinct from pg_temp.id('RA2')::text then raise exception 'FAIL V4 November refunds: %', v_got; end if;
+  if (select amount_sen from einvoice_pending_consolidated_refunds(v_a, '2026-11-01')) <> 920 then
+    raise exception 'FAIL V4 RA2 is the whole bill';
+  end if;
+
+  -- single: EA4 individually invoiced and valid; its refund is due once, with the invoice's buyer
+  v_doc := einvoice_create_document(
+    jsonb_build_object('kind', 'invoice', 'environment', 'sandbox', 'branchId', v_a, 'billId', pg_temp.id('A4'),
+                       'totalSen', 220, 'buyer', jsonb_build_object('name', 'Verify Buyer')),
+    array[pg_temp.id('A4')], '{}');
+  update einvoice_documents set status = 'valid', lhdn_uuid = 'VERIFY-E-INV-A4' where id = v_doc.id;
+  perform pg_temp.refund('RA4', 'A4', 100, '2026-11-02 13:00');
+  select string_agg(p.refund_id::text || '/' || p.invoice_uuid || '/' || (p.invoice_buyer->>'name'), ',') into v_got
+    from einvoice_pending_single_refunds() p where p.branch_id = v_a;
+  if v_got is distinct from pg_temp.id('RA4')::text || '/VERIFY-E-INV-A4/Verify Buyer' then
+    raise exception 'FAIL V4 single refunds: %', v_got;
+  end if;
+  perform einvoice_create_document(
+    jsonb_build_object('kind', 'credit_note', 'environment', 'sandbox', 'branchId', v_a, 'billId', pg_temp.id('A4'), 'totalSen', 100),
+    '{}', array[pg_temp.id('RA4')]);
+  if exists (select 1 from einvoice_pending_single_refunds() p where p.branch_id = v_a) then
+    raise exception 'FAIL V4 a credited refund is still due';
+  end if;
+  perform pg_temp.expect_error(
+    format('select einvoice_create_document(%L::jsonb, %L::uuid[], array[%L]::uuid[])',
+           jsonb_build_object('kind', 'credit_note', 'environment', 'sandbox', 'branchId', v_a, 'totalSen', 100), '{}', pg_temp.id('RA4')),
+    'A bill or refund in this document already has a live e-invoice', 'V4 a refund twice');
+
+  -- October's consolidated credit note takes RA1: only November is left
+  perform einvoice_create_document(
+    jsonb_build_object('kind', 'consolidated_credit_note', 'environment', 'sandbox', 'branchId', v_a,
+                       'periodStart', '2026-10-01', 'periodEnd', '2026-10-31', 'totalSen', 300),
+    '{}', array[pg_temp.id('RA1')]);
+  select string_agg(to_char(m.month, 'YYYY-MM'), ',') into v_got
+    from einvoice_consolidated_refund_months('2027-01-01') m where m.branch_id = v_a;
+  if v_got is distinct from '2026-11' then raise exception 'FAIL V4 months after the credit note: %', v_got; end if;
+end $$;
+
+-- ── V5. Job bookkeeping, the tables' access, the service-role functions closed ──
+do $$
+declare
+  v_a  uuid := pg_temp.id('a');
+  n    integer;
+  m    integer;
+  fn   text;
+begin
+  for n in 1..3 loop
+    if einvoice_record_attempt('CON|verify|2026-10', 'consolidated_invoice', v_a, '2026-10-01', null, false, 'LHDN said no') <> n then
+      raise exception 'FAIL V5 failure %', n;
+    end if;
+  end loop;
+  -- (each read of the table is its own statement: a statement does not see the writes of a function it calls)
+  if einvoice_record_attempt('CON|verify|2026-10', 'consolidated_invoice', v_a, '2026-10-01', null, true, null) <> 0 then
+    raise exception 'FAIL V5 a success does not reset';
+  end if;
+  if (select last_error from einvoice_job_attempts where key = 'CON|verify|2026-10') is not null then
+    raise exception 'FAIL V5 a success keeps the error';
+  end if;
+  if einvoice_record_attempt('CN|' || pg_temp.id('RA1'), 'credit_note', v_a, null, pg_temp.id('RA1'), false, repeat('x', 2000)) <> 1 then
+    raise exception 'FAIL V5 a credit note attempt';
+  end if;
+  if length((select last_error from einvoice_job_attempts where key = 'CN|' || pg_temp.id('RA1'))) is distinct from 1000 then
+    raise exception 'FAIL V5 the error is not cut at 1000 characters';
+  end if;
+  insert into einvoice_job_runs(environment, outcome, report) values ('sandbox', 'not_set_up', '{"notSetUp": "verify"}');
+  begin
+    insert into einvoice_job_runs(environment, outcome) values ('sandbox', 'maybe');
+    raise exception 'FAIL V5 an unknown outcome was accepted';
+  exception when check_violation then null;
+  end;
+
+  -- access_settings reads the bookkeeping; a cashier reads nothing
+  perform pg_temp.act(pg_temp.id('owner'));
+  set local role authenticated;
+  select count(*) into n from einvoice_job_attempts where branch_id = v_a;
+  select count(*) into m from einvoice_job_runs where report->>'notSetUp' = 'verify';
+  reset role;
+  if n <> 2 or m <> 1 then raise exception 'FAIL V5 the owner reads % attempts, % runs (expected 2, 1)', n, m; end if;
+  perform pg_temp.act(pg_temp.id('cashier'));
+  set local role authenticated;
+  select count(*) into n from einvoice_job_attempts;
+  select count(*) into m from einvoice_job_runs;
+  reset role;
+  if n <> 0 or m <> 0 then raise exception 'FAIL V5 a cashier reads % attempts, % runs', n, m; end if;
+  perform set_config('request.jwt.claims', '', true);
+
+  foreach fn in array array[
+    'einvoice_bill_lines(uuid[])', 'einvoice_bill_source(uuid)', 'einvoice_unlinked_paid_bills(uuid, date)',
+    'einvoice_create_document(jsonb, uuid[], uuid[])', 'einvoice_pending_single_refunds()',
+    'einvoice_pending_consolidated_refunds(uuid, date)', 'einvoice_consolidated_refund_months(date)',
+    'einvoice_record_attempt(text, text, uuid, date, uuid, boolean, text)', 'einvoice_reconcile_source(date, date)',
+    'branches_einvoice_from_guard()'] loop
+    if has_function_privilege('authenticated', fn, 'execute') or has_function_privilege('anon', fn, 'execute') then
+      raise exception 'FAIL V5 % is callable by a client', fn;
+    end if;
+  end loop;
+  if not has_function_privilege('authenticated', 'einvoice_set_outlet_start(uuid, date)', 'execute')
+     or has_function_privilege('anon', 'einvoice_set_outlet_start(uuid, date)', 'execute') then
+    raise exception 'FAIL V5 einvoice_set_outlet_start grants';
+  end if;
+end $$;
+
+-- ── V6. The bill source and the reconciliation source ──
+do $$
+declare
+  v    jsonb;
+  v_a  text := pg_temp.id('a')::text;
+  r    record;
+begin
+  v := einvoice_bill_source(pg_temp.id('A3'));
+  if v->'bill'->>'businessDay' <> '2026-10-31' or v->'bill'->>'einvoiceFrom' <> '2026-10-02'
+     or (v->'bill'->>'totalSen')::integer <> 2130 or v->'bill'->>'status' <> 'paid'
+     or jsonb_array_length(v->'lines') <> 2 or (v->'totals'->>'sstSen')::integer <> 132
+     or (select sum((l->>'sstSen')::integer) from jsonb_array_elements(v->'lines') l) <> 132
+     or (select (l->>'takeawayFeeSen')::integer from jsonb_array_elements(v->'lines') l where l->>'name' = 'Verify E Cake') <> 100
+     or (select (l->>'taxRateBp')::integer from jsonb_array_elements(v->'lines') l where l->>'name' = 'Verify E Cake') <> 800 then
+    raise exception 'FAIL V6 EA3 source: %', v;
+  end if;
+  if einvoice_bill_source(gen_random_uuid()) is not null then raise exception 'FAIL V6 an unknown bill has a source'; end if;
+
+  v := einvoice_reconcile_source('2026-09-01', '2026-11-30');
+  if (select count(*) from jsonb_array_elements(v->'bills') b where b->>'branchId' in (v_a, pg_temp.id('b')::text)) <> 7 then
+    raise exception 'FAIL V6 reconcile bills';
+  end if;
+  if (select jsonb_array_length(b->'lines') from jsonb_array_elements(v->'bills') b where b->>'billNo' = 'EA1' and b->>'branchId' = v_a) <> 2 then
+    raise exception 'FAIL V6 reconcile lines';
+  end if;
+  for r in select * from (values ('2026-09', 1160), ('2026-10', 2310 + 920 + 2130 + 1100000), ('2026-11', 220)) as x(month, nett) loop
+    if (select (m->>'overviewSen')::integer from jsonb_array_elements(v->'months') m
+         where m->>'branchId' = v_a and m->>'month' = r.month) is distinct from r.nett then
+      raise exception 'FAIL V6 overview % for %', (select m from jsonb_array_elements(v->'months') m where m->>'branchId' = v_a and m->>'month' = r.month), r.month;
+    end if;
+  end loop;
+end $$;
+
 select 'VERIFY OK' as result;
 rollback;

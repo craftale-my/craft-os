@@ -133,6 +133,7 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-29-pos-device-till.sql',
       'migration-2026-10-26-einvoice.sql',
       'migration-2026-11-23-einvoice-w5.sql',
+      'migration-2026-11-23-einvoice-w5-cron.sql',
     ]))
   })
 
@@ -446,23 +447,60 @@ describe('pg-safeupdate guard: POS migrations', () => {
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
   })
-  it('scans the W5 e-invoice migration: the shared ledger lines, internal; pos_report_ledger reads them; a STOP guard', () => {
+  it('scans the W5 e-invoice migration: internal and service-role functions closed, two screen RPCs, the guards, a STOP guard', () => {
     const sql = readFileSync(new URL('migration-2026-11-23-einvoice-w5.sql', SUPABASE), 'utf8')
     const bodies = functionBodies(sql)
     const body = (n: string) => bodies.find((b) => b.name === n)?.body ?? ''
-    expect(bodies.map((b) => b.name).slice(0, 2)).toEqual(['pos_ledger_lines', 'pos_report_ledger'])
+    expect(bodies.map((b) => b.name)).toEqual([
+      'pos_ledger_lines', 'pos_report_ledger',
+      'branches_einvoice_from_guard', 'einvoice_set_outlet_start',
+      'einvoice_bill_lines', 'einvoice_bill_source', 'einvoice_unlinked_paid_bills', 'einvoice_large_bills',
+      'einvoice_create_document',
+      'einvoice_pending_single_refunds', 'einvoice_pending_consolidated_refunds', 'einvoice_consolidated_refund_months',
+      'einvoice_record_attempt', 'einvoice_reconcile_source',
+    ])
     expect(body('pos_report_ledger')).toContain('from pos_ledger_lines(array(select pb.id from pb)) x')
-    expect(body('pos_report_ledger')).not.toContain('floor_sst')                  // the split lives in one place
-    expect(body('pos_ledger_lines')).toContain('row_number() over (partition by fl.bill_id, fl.sst_rate_bp order by fl.rem desc, fl.item_id)')
-    expect(sql).toContain('revoke all on function pos_ledger_lines(uuid[]) from public, anon, authenticated;')
-    expect(sql).not.toContain('grant execute on function pos_ledger_lines(')
-    expect(sql).toContain('revoke all on function pos_report_ledger(uuid[], date, date) from public, anon;')
-    expect(sql).toContain('grant execute on function pos_report_ledger(uuid[], date, date) to authenticated;')
+    expect(body('pos_report_ledger')).not.toContain('floor_sst')
+    for (const f of ['pos_ledger_lines(uuid[])', 'branches_einvoice_from_guard()', 'einvoice_bill_lines(uuid[])']) {
+      expect(sql).toContain(`revoke all on function ${f} from public, anon, authenticated;`)
+    }
+    const service = [
+      'einvoice_bill_source(uuid)', 'einvoice_unlinked_paid_bills(uuid, date)', 'einvoice_create_document(jsonb, uuid[], uuid[])',
+      'einvoice_pending_single_refunds()', 'einvoice_pending_consolidated_refunds(uuid, date)',
+      'einvoice_consolidated_refund_months(date)', 'einvoice_record_attempt(text, text, uuid, date, uuid, boolean, text)',
+      'einvoice_reconcile_source(date, date)',
+    ]
+    for (const f of service) {
+      expect(sql).toContain(`revoke all on function ${f} from public, anon, authenticated;`)
+      expect(sql).toContain(`grant execute on function ${f} to service_role;`)
+    }
+    expect([...sql.matchAll(/grant execute on function (\w+)\([^)]*\) to authenticated;/g)].map((m) => m[1]).sort())
+      .toEqual(['einvoice_large_bills', 'einvoice_set_outlet_start', 'pos_report_ledger'])
+    expect(body('branches_einvoice_from_guard')).toContain("d.status in ('', '', '')")       // strings emptied: draft, submitted, valid
+    expect(body('branches_einvoice_from_guard')).toContain('new.einvoice_from < old.einvoice_from')
+    expect(body('einvoice_unlinked_paid_bills')).toContain('b.total_sen <= 1000000')
+    expect(body('einvoice_large_bills')).toContain('b.total_sen > 1000000')
+    expect(body('einvoice_create_document')).toContain('pos_business_day(b.closed_at) < br.einvoice_from')
+    expect(sql).toContain('create trigger branches_einvoice_from_guard before update of einvoice_from on branches')
     expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-18-pos-reports\.sql and migration-2026-10-26-einvoice\.sql first/)
     expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'einvoice w5 applied' as result;\s*$/)
     const verify = readFileSync(new URL('migration-2026-11-23-einvoice-w5-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)
+    for (const v of ['V1', 'V2', 'V3', 'V4', 'V5', 'V6']) expect(verify).toContain(`-- ── ${v}. `)
     expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+  it('scans the W5 cron file: einvoice_call_job internal, secrets only from Vault, 07:00 Malaysia time, a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-23-einvoice-w5-cron.sql', SUPABASE), 'utf8')
+    expect(functionBodies(sql).map((b) => b.name)).toEqual(['einvoice_call_job'])
+    expect(sql).toContain('revoke all on function einvoice_call_job(text) from public, anon, authenticated;')
+    expect(sql).not.toContain('grant execute on function einvoice_call_job(')
+    expect(sql).toContain("from vault.decrypted_secrets where name = 'einvoice_job_secret'")
+    expect(sql).toContain("from vault.decrypted_secrets where name = 'einvoice_function_url'")
+    expect(sql).toContain("select cron.schedule('einvoice-daily', '0 23 * * *', 'select public.einvoice_call_job(''run'')');")
+    expect(sql).not.toMatch(/[0-9a-f]{32}/)                                     // no secret in the file
+    expect(sql).not.toMatch(/https:\/\//)                                       // the URL lives in Vault
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-23-einvoice-w5\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'einvoice w5 cron applied' as result;\s*$/)
   })
 })
 
