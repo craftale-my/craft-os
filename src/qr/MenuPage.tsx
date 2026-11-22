@@ -41,7 +41,8 @@ export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, s
   onOrders: () => void
   /** members: `Join & earn points` (out), `★ 120 pts` (in), nothing (off) */
   member?: 'off' | 'out' | 'in'
-  memberPoints?: number
+  /** null: signed in, the balance not back yet (shows ★ …) */
+  memberPoints?: number | null
   onMember?: () => void
 }) {
   const [view, setView] = useState<MenuView>(readView)
@@ -59,10 +60,10 @@ export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, s
     <div className={showBar ? 'pb-28' : 'pb-8'}>
       <div className="flex min-h-12 items-center justify-end gap-2 px-4 pt-2">
         {member !== 'off' && onMember && (
-          <button type="button" onClick={onMember}
-            aria-label={member === 'in' ? `Your points: ${memberPoints}` : undefined}
+          <button type="button" onClick={onMember} data-member-button=""
+            aria-label={member === 'in' ? (memberPoints === null ? 'Your points: loading' : `Your points: ${memberPoints}`) : undefined}
             className="flex min-h-10 shrink-0 items-center whitespace-nowrap rounded-full border border-brown-btn px-3 text-sm font-semibold text-brown-btn">
-            {member === 'in' ? `★ ${memberPoints.toLocaleString('en-MY')} pts` : 'Join & earn points'}
+            {member === 'in' ? (memberPoints === null ? '★ …' : `★ ${memberPoints.toLocaleString('en-MY')} pts`) : 'Join & earn points'}
           </button>
         )}
         <button type="button" onClick={onGuest} aria-label={`You are ${guest.name}. Change name or avatar`}

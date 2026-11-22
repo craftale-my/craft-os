@@ -17,7 +17,8 @@ export interface LinkReply { linked: boolean; phoneMasked: string | null }
 export interface MemberSettings { qrEnabled: boolean; rate: number }
 
 export interface MemberApi {
-  requestCode(phone: string): Promise<RequestReply>
+  /** `tableToken`: the QR table the guest is at (a code is asked from a live table) */
+  requestCode(phone: string, tableToken: string): Promise<RequestReply>
   verifyCode(phone: string, code: string): Promise<VerifyReply>
   /** null: the token names no live member (unknown, expired, deleted) */
   memberMe(token: string): Promise<MemberMe | null>
@@ -52,8 +53,8 @@ export function makeMemberApi(client: SupabaseClient, url: string, anonKey: stri
     return data
   }
   return {
-    async requestCode(phone) {
-      const j = await post({ action: 'request', phone })
+    async requestCode(phone, tableToken) {
+      const j = await post({ action: 'request', phone, table: tableToken })
       if (j === 'network') return { ok: false, reason: 'network' }
       if (j?.ok === true) return { ok: true }
       const r = j?.reason

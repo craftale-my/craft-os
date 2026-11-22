@@ -1,30 +1,20 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
-  cleanCode, codeHash, deviceLabel, makeCode, makeToken, maskForLog, memberClientIp, normalisePhone, parseBody,
+  cleanCode, codeHash, deviceLabel, ipv6Prefix64, makeCode, makeToken, maskForLog, memberClientIp, normalisePhone, parseBody,
   requestRefusal, selectProvider, sha256Hex, smsText, verifyReply, type RealProviderFactory,
 } from './logic'
 
+import { MEMBER_PHONE_CASES } from '../../../src/shared/lib/memberPhoneCases'
+import { normalisePhone as clientNormalise } from '../../../src/shared/lib/memberPhone'
 const envOf = (vars: Record<string, string>) => (n: string) => vars[n]
 
-describe('normalisePhone (mirrors the M2 cases of migration-2026-11-23-members-verify.sql)', () => {
-  const cases: [string, string | null][] = [
-    ['0123456789', '+60123456789'], ['60123456789', '+60123456789'], ['+60123456789', '+60123456789'],
-    ['012-345 6789', '+60123456789'], ['+60 12-345 6789', '+60123456789'], ['123456789', '+60123456789'],
-    ['011-2345 6789', '+601123456789'], ['+601123456789', '+601123456789'],
-    ['0312345678', null], ['+6531234567', null], ['01234567', null], ['012345678901', null],
-    ['abc', null], ['', null],
-    // the review rules: +60 / 60 / 0060 then one optional 0; 011 has 8 more digits, other 01x 7
-    ['+60 012-345 6789', '+60123456789'], ['+600123456789', '+60123456789'], ['0060123456789', '+60123456789'],
-    ['00600123456789', '+60123456789'], ['01234567890', null], ['0112345678', null], ['011234567890', null],
-    ['1123456789', '+601123456789'], ['+60 11-2345 6789', '+601123456789'], ['0060 11 2345 6789', '+601123456789'],
-    ['+6000123456789', null], ['0123456789 ', '+60123456789'], ['+60', null], ['0', null],
-  ]
-  it.each(cases)('%s → %s', (input, want) => expect(normalisePhone(input)).toBe(want))
-  it('null, brackets and dots, and no Unicode spaces (the SQL would refuse those)', () => {
+describe('normalisePhone (the shared case table of src/shared/lib/memberPhoneCases.ts)', () => {
+  it.each(MEMBER_PHONE_CASES.map(([i, w]) => [i, w] as [string, string | null]))('%j → %s', (input, want) =>
+    expect(normalisePhone(input)).toBe(want))
+  it('the client copy gives the same answer for every case (the two rules cannot drift)', () => {
+    for (const [input] of MEMBER_PHONE_CASES) expect(normalisePhone(input)).toBe(clientNormalise(input))
     expect(normalisePhone(null)).toBeNull()
-    expect(normalisePhone('(012) 345.6789')).toBe('+60123456789')
-    expect(normalisePhone('012 3456789')).toBeNull()
   })
 })
 
@@ -118,6 +108,7 @@ describe('reason mapping', () => {
     expect(requestRefusal('rate_number')).toEqual({ ok: false, reason: 'rate' })
     expect(requestRefusal('rate_ip')).toEqual({ ok: false, reason: 'rate' })
     expect(requestRefusal('cap')).toEqual({ ok: false, reason: 'busy' })
+    expect(requestRefusal('rate_table')).toEqual({ ok: false, reason: 'busy' })
     expect(requestRefusal('disabled')).toEqual({ ok: false, reason: 'unavailable' })
     expect(requestRefusal('weird')).toEqual({ ok: false, reason: 'unavailable' })
   })
@@ -132,14 +123,18 @@ describe('reason mapping', () => {
 
 describe('parseBody', () => {
   it('request and verify', () => {
-    expect(parseBody({ action: 'request', phone: '0123456789' })).toEqual({ action: 'request', phone: '0123456789' })
+    expect(parseBody({ action: 'request', phone: '0123456789', table: 'tok' })).toEqual({ action: 'request', phone: '0123456789', table: 'tok' })
     expect(parseBody({ action: 'verify', phone: 'p', code: '123456' })).toEqual({ action: 'verify', phone: 'p', code: '123456', device: null })
     expect(parseBody({ action: 'verify', phone: 'p', code: '1', device: 'UA' })).toMatchObject({ device: 'UA' })
   })
   it('anything else', () => {
     expect(parseBody(null)).toBeNull()
     expect(parseBody({ action: 'request' })).toBeNull()
-    expect(parseBody({ action: 'request', phone: 'x'.repeat(41) })).toBeNull()
+    expect(parseBody({ action: 'request', phone: '0123456789' })).toBeNull()
+    expect(parseBody({ action: 'request', phone: '0123456789', table: '' })).toBeNull()
+    expect(parseBody({ action: 'request', phone: '0123456789', table: 5 })).toBeNull()
+    expect(parseBody({ action: 'request', phone: '0123456789', table: 't'.repeat(101) })).toBeNull()
+    expect(parseBody({ action: 'request', phone: 'x'.repeat(41), table: 't' })).toBeNull()
     expect(parseBody({ action: 'verify', phone: 'p' })).toBeNull()
     expect(parseBody({ action: 'delete', phone: 'p' })).toBeNull()
   })
@@ -172,16 +167,41 @@ describe('deviceLabel', () => {
 
 describe('memberClientIp', () => {
   const h = (vars: Record<string, string>) => new Headers(vars)
-  it('the platform-set headers: cf-connecting-ip, else sb-forwarded-for', () => {
+  it('cf-connecting-ip only', () => {
     expect(memberClientIp(h({ 'cf-connecting-ip': ' 203.0.113.7 ', 'sb-forwarded-for': '198.51.100.1' }))).toBe('203.0.113.7')
-    expect(memberClientIp(h({ 'sb-forwarded-for': '198.51.100.1' }))).toBe('198.51.100.1')
+    expect(memberClientIp(h({ 'sb-forwarded-for': '198.51.100.1' }))).toBeNull()
   })
-  it('never a client-written X-Forwarded-For; null when no platform header', () => {
+  it('never a client-written X-Forwarded-For; null when the header is missing or not an address', () => {
     expect(memberClientIp(h({ 'x-forwarded-for': '6.6.6.6, 203.0.113.7' }))).toBeNull()
     expect(memberClientIp(h({ 'true-client-ip': '6.6.6.6', 'x-real-ip': '6.6.6.6' }))).toBeNull()
     expect(memberClientIp(h({ 'cf-connecting-ip': '  ' }))).toBeNull()
+    expect(memberClientIp(h({ 'cf-connecting-ip': 'a'.repeat(100) }))).toBeNull()
+    expect(memberClientIp(h({ 'cf-connecting-ip': 'unknown' }))).toBeNull()
   })
-  it('at most 64 characters', () => {
-    expect(memberClientIp(h({ 'cf-connecting-ip': 'a'.repeat(100) }))).toHaveLength(64)
+  it('an IPv6 address becomes its /64', () => {
+    expect(memberClientIp(h({ 'cf-connecting-ip': '2001:db8:aaaa:bbbb:1:2:3:4' }))).toBe('2001:db8:aaaa:bbbb::/64')
+    expect(memberClientIp(h({ 'cf-connecting-ip': '2001:db8:aaaa:bbbb:ffff:ffff:ffff:ffff' }))).toBe('2001:db8:aaaa:bbbb::/64')
+  })
+})
+
+describe('ipv6Prefix64', () => {
+  it('expands :: and keeps the first four groups, leading zeros dropped', () => {
+    expect(ipv6Prefix64('2001:0db8:0001:0002:0003:0004:0005:0006')).toBe('2001:db8:1:2::/64')
+    expect(ipv6Prefix64('2001:db8::1')).toBe('2001:db8:0:0::/64')
+    expect(ipv6Prefix64('2001:DB8:1:2::')).toBe('2001:db8:1:2::/64')
+    expect(ipv6Prefix64('::1')).toBe('0:0:0:0::/64')
+    expect(ipv6Prefix64('[2001:db8:1:2::9]')).toBe('2001:db8:1:2::/64')
+    expect(ipv6Prefix64('fe80::1%en0')).toBe('fe80:0:0:0::/64')
+  })
+  it('an IPv4-mapped address is its IPv4 address', () => {
+    expect(ipv6Prefix64('::ffff:203.0.113.7')).toBe('203.0.113.7')
+    expect(ipv6Prefix64('0:0:0:0:0:ffff:203.0.113.7')).toBe('203.0.113.7')
+  })
+  it('not an address → null', () => {
+    expect(ipv6Prefix64('2001:db8::1::2')).toBeNull()
+    expect(ipv6Prefix64('2001:db8:1:2:3:4:5')).toBeNull()
+    expect(ipv6Prefix64('2001:db8:1:2:3:4:5:6:7')).toBeNull()
+    expect(ipv6Prefix64('2001:db8:12345::1')).toBeNull()
+    expect(ipv6Prefix64('g::1')).toBeNull()
   })
 })

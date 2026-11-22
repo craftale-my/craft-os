@@ -1,10 +1,14 @@
 // src/shared/lib/memberPhone.ts
-/** Malaysian mobile numbers (the QR page, the till and the back office) (spec 2026-11-22-members-phone-points-design.md §4). The rule is
- *  exactly the server's (`member_phone_normalise` and member-auth's `normalisePhone`): drop spaces, tabs,
- *  brackets, dots and dashes; drop `+60` / `60` / `0060`, then one `0`; accept `1(1\d{8}|[02-9]\d{7})`. */
+/** Malaysian mobile numbers (the QR page, the till and the back office) (spec 2026-11-22-members-phone-points-design.md §4).
+ *  The same rule as member-auth's `normalisePhone` (both tests run memberPhoneCases.ts): NFKC first, so
+ *  full-width digits and signs become ASCII; then every space, dash, invisible format mark (the bidi marks
+ *  a contacts app wraps a pasted number in), bracket and dot is dropped; then `+60` / `60` / `0060`, then
+ *  one `0`; accept `1(1\d{8}|[02-9]\d{7})`. Callers send the E.164 result, never the raw input, so the
+ *  narrower SQL `member_phone_normalise` (ASCII separators only) always accepts it. */
 
 export function normalisePhone(input: string | null | undefined): string | null {
-  const n = (input ?? '').replace(/[ \t\n\r\f\v().-]/g, '').replace(/^(\+?60|0060)/, '').replace(/^0/, '')
+  const n = (input ?? '').normalize('NFKC').replace(/[\s\p{Pd}\p{Cf}\u2212().]/gu, '')
+    .replace(/^(\+?60|0060)/, '').replace(/^0/, '')
   return /^1(1[0-9]{8}|[02-9][0-9]{7})$/.test(n) ? '+60' + n : null
 }
 

@@ -2,7 +2,8 @@
 -- Run on craft-os-dev after migration-2026-11-22-qr-table-cart.sql. Safe to re-run.
 -- No existing function is re-created: points are written by triggers on bills and refunds.
 --   1 tables: members, member_points (the ledger), member_tokens, member_otps, member_settings,
---     member_bill_events (who put a member on a bill), member_earn_failures; bills.member_id
+--     member_bill_events (who put a member on a bill), member_earn_failures, member_verify_fails
+--     (wrong codes by IP); bills.member_id
 --   2 helpers (not callable by clients): phone normalise / mask, token → member, balance writer
 --   3 triggers: earn on paid (never fails a payment), refund (by running total), merge hand-over,
 --     split part inherits
@@ -116,8 +117,26 @@ create table if not exists member_otps (
 create index if not exists member_otps_phone on member_otps(phone, created_at desc);
 create index if not exists member_otps_ip on member_otps(ip, created_at);
 create index if not exists member_otps_created on member_otps(created_at);
+-- the QR table the code was asked from (a code needs a live table: spec §5); null on rows from before that
+alter table member_otps add column if not exists table_id uuid references dining_tables(id) on delete set null;
+create index if not exists member_otps_table on member_otps(table_id, created_at) where table_id is not null;
 alter table member_otps enable row level security;
 revoke all on member_otps from public, anon, authenticated;
+
+-- Each wrong code from an IP (kept two days, like the codes): the per-IP wrong-code limit and the
+-- per-code tries of that IP are counted here, so tries from one address never lock another guest out.
+-- otp_id has no foreign key: codes are deleted after two days and by member_delete.
+create table if not exists member_verify_fails (
+  id     uuid primary key default gen_random_uuid(),
+  ip     text not null,
+  otp_id uuid not null,
+  at     timestamptz not null default now()
+);
+create index if not exists member_verify_fails_ip on member_verify_fails(ip, at);
+create index if not exists member_verify_fails_otp on member_verify_fails(otp_id, ip);
+create index if not exists member_verify_fails_at on member_verify_fails(at);
+alter table member_verify_fails enable row level security;
+revoke all on member_verify_fails from public, anon, authenticated;
 
 create table if not exists member_settings (
   id            boolean primary key default true check (id),   -- one row
@@ -575,6 +594,7 @@ begin
   select * into v_m from members where id = p_member_id and deleted_at is null for update;
   if not found then raise exception 'Member not found'; end if;
   delete from member_tokens where member_id = v_m.id;
+  delete from member_verify_fails where otp_id in (select id from member_otps where phone = v_m.phone);
   delete from member_otps where phone = v_m.phone;
   update bills set member_id = null, updated_at = now() where member_id = v_m.id and status = 'open';
   update members set phone = null, deleted_at = now() where id = v_m.id;
@@ -642,20 +662,26 @@ revoke all on function member_earn_failures_list() from public, anon;
 grant execute on function member_earn_failures_list() to authenticated;
 
 -- ── 7 Edge Function only (service_role) ───────────────────────────────────────
--- A code was made by the function (6 digits, hashed there). Limits (spec §5), checked and recorded
--- under one lock so two requests cannot both slip under a limit: per number 3 codes per 15 minutes and
--- 10 per 24 hours → 'rate_number'; per IP 10 per hour and 30 per 24 hours → 'rate_ip'; codes today
--- (Malaysia day) at the daily cap → 'cap'; members off on the QR page → 'disabled'. 'ok' = the code is
--- stored (5 minutes, 5 tries) and the function may send it. Only issued codes count toward the limits.
+-- A code was made by the function (6 digits, hashed there), asked from a QR table (p_table_token).
+-- Members off on the QR page, or a table that is unknown, inactive or QR-paused → 'disabled'. Limits
+-- (spec §5), checked and recorded under one lock so two requests cannot both slip under a limit: per
+-- number 3 codes per 15 minutes and 10 per 24 hours → 'rate_number'; per IP 30 per hour and 100 per 24
+-- hours (a whole café shares one Wi-Fi address) → 'rate_ip'; per table 20 per 24 hours → 'rate_table';
+-- codes today (Malaysia day) at the daily cap → 'cap'. 'ok' = the code is stored with its table (5
+-- minutes, 5 tries per IP) and the function may send it. Only issued codes count toward the limits.
 -- The answer does not depend on whether the number is a member. The IP is required (the function passes
--- the platform-set client address). A plain dev code is refused unless member_settings.dev_codes_allowed.
-create or replace function member_otp_request(p_phone text, p_ip text, p_code_hash text, p_dev_code text) returns text
+-- the platform-set client address, an IPv6 one cut to its /64). A plain dev code is refused unless
+-- member_settings.dev_codes_allowed.
+drop function if exists member_otp_request(text, text, text, text);
+create or replace function member_otp_request(p_phone text, p_ip text, p_code_hash text, p_dev_code text,
+                                              p_table_token text) returns text
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_phone text := member_phone_normalise(p_phone);
   v_set   member_settings;
   v_ip    text := nullif(left(btrim(coalesce(p_ip, '')), 64), '');
   v_dev   text := nullif(p_dev_code, '');
+  v_table uuid;
 begin
   if v_phone is null then raise exception 'Invalid phone number'; end if;
   if v_ip is null then raise exception 'Client IP required'; end if;
@@ -665,47 +691,69 @@ begin
     raise exception 'Dev codes are not allowed on this project';
   end if;
   if not coalesce(v_set.qr_enabled, false) then return 'disabled'; end if;
+  -- as qr_cart_table and member_link_table refuse: the code is asked from a live QR table
+  select id into v_table from dining_tables
+   where qr_token = p_table_token and p_table_token is not null and is_active and not qr_paused;
+  if v_table is null then return 'disabled'; end if;
   perform pg_advisory_xact_lock(hashtextextended('member_otp_request', 0));
   delete from member_otps where created_at < now() - interval '2 days';
+  delete from member_verify_fails where at < now() - interval '2 days';
   if (select count(*) from member_otps where phone = v_phone and created_at > now() - interval '15 minutes') >= 3
      or (select count(*) from member_otps where phone = v_phone and created_at > now() - interval '24 hours') >= 10 then
     return 'rate_number';
   end if;
-  if (select count(*) from member_otps where ip = v_ip and created_at > now() - interval '1 hour') >= 10
-     or (select count(*) from member_otps where ip = v_ip and created_at > now() - interval '24 hours') >= 30 then
+  if (select count(*) from member_otps where ip = v_ip and created_at > now() - interval '1 hour') >= 30
+     or (select count(*) from member_otps where ip = v_ip and created_at > now() - interval '24 hours') >= 100 then
     return 'rate_ip';
+  end if;
+  if (select count(*) from member_otps where table_id = v_table and created_at > now() - interval '24 hours') >= 20 then
+    return 'rate_table';
   end if;
   if (select count(*) from member_otps
        where created_at >= date_trunc('day', now() at time zone 'Asia/Kuala_Lumpur') at time zone 'Asia/Kuala_Lumpur')
      >= v_set.sms_daily_cap then
     return 'cap';
   end if;
-  insert into member_otps(phone, code_hash, expires_at, ip, dev_code)
-  values (v_phone, p_code_hash, now() + interval '5 minutes', v_ip, v_dev);
+  insert into member_otps(phone, code_hash, expires_at, ip, dev_code, table_id)
+  values (v_phone, p_code_hash, now() + interval '5 minutes', v_ip, v_dev, v_table);
   return 'ok';
 end $$;
-revoke all on function member_otp_request(text, text, text, text) from public, anon, authenticated;
-grant execute on function member_otp_request(text, text, text, text) to service_role;
+revoke all on function member_otp_request(text, text, text, text, text) from public, anon, authenticated;
+grant execute on function member_otp_request(text, text, text, text, text) to service_role;
 
--- The number's newest code is checked: none or already used → 'expired'; 5 wrong tries already →
--- 'locked' (so the 6th try answers 'locked', a right code included); past 5 minutes → 'expired'; wrong →
--- the try is counted, 'wrong'. Right → the code is used, every dev code of that number is cleared, the
--- member is created when new, the token's hash is stored for 180 days, 'ok'. An older code that is still
--- within its 5 minutes answers 'wrong' once a newer one was asked for (only the newest is checked).
-create or replace function member_otp_verify(p_phone text, p_code_hash text, p_token_hash text, p_device text) returns text
+-- The number's newest code is checked, by the caller's IP (p_ip, required). More than 20 wrong codes from
+-- that IP in the last hour → 'locked' at once, before any code is read (nothing of the guest's code
+-- changes). Then: none or already used → 'expired'; 5 wrong tries from this IP on this code already →
+-- 'locked' (so the 6th try answers 'locked', a right code included; another address keeps its own 5);
+-- past 5 minutes → 'expired'; wrong → the try is recorded for this IP (member_verify_fails) and counted
+-- on the code (attempts, a total for the record), 'wrong'. Right → the code is used, every dev code of
+-- that number is cleared, the member is created when new, the token's hash is stored for 180 days, 'ok'.
+-- An older code that is still within its 5 minutes answers 'wrong' once a newer one was asked for (only
+-- the newest is checked).
+drop function if exists member_otp_verify(text, text, text, text);
+create or replace function member_otp_verify(p_phone text, p_code_hash text, p_token_hash text, p_device text,
+                                             p_ip text) returns text
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_phone text := member_phone_normalise(p_phone);
+  v_ip    text := nullif(left(btrim(coalesce(p_ip, '')), 64), '');
   v_otp   member_otps;
   v_m     uuid;
 begin
   if v_phone is null then raise exception 'Invalid phone number'; end if;
+  if v_ip is null then raise exception 'Client IP required'; end if;
   if p_token_hash is null or p_token_hash !~ '^[0-9a-f]{64}$' then raise exception 'Invalid token hash'; end if;
+  -- one address at a time, so parallel tries cannot all slip under its limit
+  perform pg_advisory_xact_lock(hashtextextended('member_otp_verify:' || v_ip, 0));
+  if (select count(*) from member_verify_fails where ip = v_ip and at > now() - interval '1 hour') >= 20 then
+    return 'locked';
+  end if;
   select * into v_otp from member_otps where phone = v_phone order by created_at desc, id limit 1 for update;
   if not found or v_otp.used_at is not null then return 'expired'; end if;
-  if v_otp.attempts >= 5 then return 'locked'; end if;
+  if (select count(*) from member_verify_fails where otp_id = v_otp.id and ip = v_ip) >= 5 then return 'locked'; end if;
   if v_otp.expires_at <= now() then return 'expired'; end if;
   if p_code_hash is distinct from v_otp.code_hash then
+    insert into member_verify_fails(ip, otp_id) values (v_ip, v_otp.id);
     update member_otps set attempts = attempts + 1 where id = v_otp.id;
     return 'wrong';
   end if;
@@ -720,8 +768,8 @@ begin
   values (v_m, p_token_hash, nullif(left(btrim(coalesce(p_device, '')), 120), ''), now() + interval '180 days');
   return 'ok';
 end $$;
-revoke all on function member_otp_verify(text, text, text, text) from public, anon, authenticated;
-grant execute on function member_otp_verify(text, text, text, text) to service_role;
+revoke all on function member_otp_verify(text, text, text, text, text) from public, anon, authenticated;
+grant execute on function member_otp_verify(text, text, text, text, text) to service_role;
 
 -- The SMS for a stored code never left (the provider failed): the code is marked used so it can never be
 -- confirmed (verify then answers 'expired'). The row still counts toward the limits. Matches by number

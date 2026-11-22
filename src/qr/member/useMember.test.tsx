@@ -2,11 +2,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import type { MemberApi, MemberMe } from './memberApi'
-import { MEMBER_TOKEN_KEY, loadToken, resetMemberMemory, saveToken, useMember } from './useMember'
+import { MEMBER_TOKEN_KEY, RETRY_MS, clearTokenIf, loadToken, resetMemberMemory, saveToken, useMember } from './useMember'
 import { useQrMember } from './useQrMember'
 import type { TableState } from '../useQrMenu'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.useRealTimers() })
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); resetMemberMemory() })
 
 const me = (points = 0): MemberMe => ({ phoneMasked: '+60 ••• ••6789', points, rate: 1, entries: [] })
@@ -91,6 +91,83 @@ describe('useMember', () => {
   })
 })
 
+describe('useMember — weak connection, two tabs', () => {
+  it('clearTokenIf removes the stored token only while it is still the dead one', () => {
+    saveToken('dead'); clearTokenIf('dead')
+    expect(localStorage.getItem(MEMBER_TOKEN_KEY)).toBeNull()
+    saveToken('new'); clearTokenIf('dead')
+    expect(localStorage.getItem(MEMBER_TOKEN_KEY)).toBe('new')
+  })
+  it('a stored token with no reply yet is in with me null; retries after 1 s, 3 s, 8 s; never signs out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false })
+    expect(RETRY_MS).toEqual([1000, 3000, 8000])
+    localStorage.setItem(MEMBER_TOKEN_KEY, 'tok')
+    const memberMe = vi.fn(async (): Promise<MemberMe | null> => { throw new TypeError('Load failed') })
+    const api = fakeApi({ memberMe })
+    const { result } = renderHook(() => useMember(api))
+    await act(async () => {})
+    expect(result.current.status).toBe('in')
+    expect(result.current.me).toBeNull()
+    expect(memberMe).toHaveBeenCalledTimes(1)
+    await act(async () => { vi.advanceTimersByTime(999) })
+    expect(memberMe).toHaveBeenCalledTimes(1)
+    await act(async () => { vi.advanceTimersByTime(1) })
+    expect(memberMe).toHaveBeenCalledTimes(2)
+    await act(async () => { vi.advanceTimersByTime(3000) })
+    expect(memberMe).toHaveBeenCalledTimes(3)
+    await act(async () => { vi.advanceTimersByTime(8000) })
+    expect(memberMe).toHaveBeenCalledTimes(4)
+    await act(async () => { vi.advanceTimersByTime(60_000) })
+    expect(memberMe).toHaveBeenCalledTimes(4)                       // three retries, then the next visibility change
+    expect(result.current.status).toBe('in')
+    expect(localStorage.getItem(MEMBER_TOKEN_KEY)).toBe('tok')
+  })
+  it('a retry that gets through shows the balance', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false })
+    localStorage.setItem(MEMBER_TOKEN_KEY, 'tok')
+    const memberMe = vi.fn(async (): Promise<MemberMe | null> => me(42))
+    memberMe.mockRejectedValueOnce(new TypeError('Load failed'))
+    const api = fakeApi({ memberMe })
+    const { result } = renderHook(() => useMember(api))
+    await act(async () => {})
+    expect(result.current.me).toBeNull()
+    await act(async () => { vi.advanceTimersByTime(1000) })
+    await act(async () => {})
+    expect(result.current.me?.points).toBe(42)
+  })
+  it('a dead reply does not remove a token another tab stored meanwhile; this tab takes it', async () => {
+    localStorage.setItem(MEMBER_TOKEN_KEY, 'dead')
+    let answer: (v: MemberMe | null) => void = () => {}
+    const memberMe = vi.fn((t: string) => t === 'dead' ? new Promise<MemberMe | null>((r) => { answer = r }) : Promise.resolve(me(7)))
+    const api = fakeApi({ memberMe })
+    const { result } = renderHook(() => useMember(api))
+    await waitFor(() => expect(memberMe).toHaveBeenCalledWith('dead'))
+    localStorage.setItem(MEMBER_TOKEN_KEY, 'fresh')                 // the other tab signed in (no event yet)
+    await act(async () => { answer(null) })
+    expect(localStorage.getItem(MEMBER_TOKEN_KEY)).toBe('fresh')
+    await waitFor(() => expect(result.current.token).toBe('fresh'))
+    await waitFor(() => expect(result.current.me?.points).toBe(7))
+  })
+  it('picks up a sign-in and a sign-out from another tab (storage event), without a server call', async () => {
+    const api = fakeApi()
+    const { result } = renderHook(() => useMember(api))
+    await waitFor(() => expect(result.current.status).toBe('out'))
+    localStorage.setItem(MEMBER_TOKEN_KEY, 'other')
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: MEMBER_TOKEN_KEY, newValue: 'other' })) })
+    await waitFor(() => expect(result.current.me?.points).toBe(120))
+    expect(result.current.status).toBe('in')
+    expect(api.memberMe).toHaveBeenCalledWith('other')
+    localStorage.removeItem(MEMBER_TOKEN_KEY)
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: MEMBER_TOKEN_KEY, newValue: null })) })
+    expect(result.current.status).toBe('out')
+    expect(result.current.me).toBeNull()
+    expect(api.memberSignOut).not.toHaveBeenCalled()
+    // another key changing does nothing
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: 'something-else' })) })
+    expect(result.current.status).toBe('out')
+  })
+})
+
 const state = (billNo: string | null, items: number): TableState => ({
   tableLabel: 'T1', billNo, pax: null, subtotalSen: 0,
   items: Array.from({ length: items }, () => ({ name: 'Latte', qty: 1, unitPriceSen: 900, mods: [], note: null, voided: false })),
@@ -159,5 +236,19 @@ describe('useQrMember (linking)', () => {
     const before = (api.memberMe as ReturnType<typeof vi.fn>).mock.calls.length
     rerender({ s: state(null, 0) })
     await waitFor(() => expect((api.memberMe as ReturnType<typeof vi.fn>).mock.calls.length).toBe(before + 1))
+  })
+  it('a link reply that lands after sign-out shows nothing', async () => {
+    localStorage.setItem(MEMBER_TOKEN_KEY, 'tok')
+    let answer: (v: { linked: boolean; phoneMasked: string | null }) => void = () => {}
+    const link = vi.fn(() => new Promise<{ linked: boolean; phoneMasked: string | null }>((r) => { answer = r }))
+    const say = vi.fn()
+    const s1 = state('B1', 1)
+    const api = fakeApi({ memberLinkTable: link })
+    const { result } = renderHook(() => useQrMember({ api, tableToken: 'TT', guestId: 'G', state: s1, say }))
+    await waitFor(() => expect(link).toHaveBeenCalled())
+    await act(async () => { await result.current.member.signOut() })
+    await act(async () => { answer({ linked: true, phoneMasked: '+60 ••• ••6789' }) })
+    expect(say).not.toHaveBeenCalled()
+    expect(result.current.linked).toBe(false)
   })
 })

@@ -1,11 +1,13 @@
 // src/qr/member/MemberSheet.tsx
 /** Join / sign in and the balance (spec 2026-11-22-members-phone-points-design.md §3 "Guest (QR page)"):
- *  1. the number, 2. the six-digit code, 3. "You're in!"; signed in: the balance, the last entries, Sign out. */
-import { useEffect, useRef, useState } from 'react'
+ *  1. the number, 2. the six-digit code, 3. "You're in!"; signed in: the balance, the last entries, Sign out.
+ *  A modal dialog: labelled by its title, Escape and ✕ close it, focus moves in on open, Tab stays inside,
+ *  and focus goes back to the strip button (`data-member-button`) on close. */
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import Mascot from '../Mascot'
 import type { MemberApi, MemberEntry, RequestReason, VerifyReason } from './memberApi'
 import type { Member } from './useMember'
-import { formatPhone, maskPhone, normalisePhone } from '../../shared/lib/memberPhone'
+import { formatPhone, normalisePhone } from '../../shared/lib/memberPhone'
 
 export const RESEND_SECONDS = 60
 const CODE_LENGTH = 6
@@ -35,10 +37,13 @@ export function entryText(e: MemberEntry): string {
 type Step = { kind: 'phone' } | { kind: 'code'; phone: string } | { kind: 'done'; phone: string }
 
 const systemNow = () => Date.now()
+const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
 
-export default function MemberSheet({ member, api, onClose, now = systemNow }: {
+export default function MemberSheet({ member, api, tableToken, onClose, now = systemNow }: {
   member: Member
   api: Pick<MemberApi, 'requestCode' | 'verifyCode'>
+  /** the QR table token: a code is asked from a table */
+  tableToken: string | null
   onClose: () => void
   /** injectable clock for the countdown */
   now?: () => number
@@ -46,12 +51,37 @@ export default function MemberSheet({ member, api, onClose, now = systemNow }: {
   const [step, setStep] = useState<Step>({ kind: 'phone' })
   const [number, setNumber] = useState('')
   const [code, setCode] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busyWhat, setBusyWhat] = useState<'send' | 'check' | null>(null)
+  const busy = busyWhat !== null
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState(false)
   const [sentAt, setSentAt] = useState(0)
   const [tick, setTick] = useState(() => now())
   const busyRef = useRef(false)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const codeRef = useRef<HTMLInputElement>(null)
+  const titleId = useId()
+
+  // focus in on open (the step's input, else the panel); back to the strip button on close
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const panel = panelRef.current
+    ;(panel?.querySelector<HTMLElement>('input') ?? panel)?.focus()
+    return () => {
+      const strip = document.querySelector<HTMLElement>('[data-member-button]')
+      ;(strip ?? opener)?.focus()
+    }
+  }, [])
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') { e.stopPropagation(); onClose(); return }
+    if (e.key !== 'Tab' || !panelRef.current) return
+    const items = Array.from(panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE))
+    if (items.length === 0) { e.preventDefault(); return }
+    const first = items[0], last = items[items.length - 1]
+    const at = document.activeElement
+    if (e.shiftKey && (at === first || at === panelRef.current)) { e.preventDefault(); last.focus() }
+    else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus() }
+  }
 
   // the countdown for Send again
   useEffect(() => {
@@ -63,13 +93,13 @@ export default function MemberSheet({ member, api, onClose, now = systemNow }: {
 
   const request = async (phone: string) => {
     if (busyRef.current) return
-    busyRef.current = true; setBusy(true); setError(null)
+    busyRef.current = true; setBusyWhat('send'); setError(null)
     try {
-      const r = await api.requestCode(phone)
+      const r = tableToken ? await api.requestCode(phone, tableToken) : { ok: false as const, reason: 'unavailable' as const }
       if (!r.ok) { setError(reasonText(r.reason)); return }
       const t = now()
       setSentAt(t); setTick(t); setCode(''); setStep({ kind: 'code', phone })
-    } finally { busyRef.current = false; setBusy(false) }
+    } finally { busyRef.current = false; setBusyWhat(null) }
   }
   const sendCode = () => {
     const phone = normalisePhone(number)
@@ -78,29 +108,45 @@ export default function MemberSheet({ member, api, onClose, now = systemNow }: {
   }
   const confirm = async (value: string) => {
     if (step.kind !== 'code' || busyRef.current || value.length !== CODE_LENGTH) return
-    busyRef.current = true; setBusy(true); setError(null)
+    busyRef.current = true; setBusyWhat('check'); setError(null)
     try {
       const r = await api.verifyCode(step.phone, value)
-      if (!r.ok) { setError(reasonText(r.reason)); if (r.reason === 'wrong') setCode(''); return }
+      if (!r.ok) {
+        setError(reasonText(r.reason)); if (r.reason === 'wrong') setCode('')
+        codeRef.current?.focus()                                     // ready for the next try or a paste
+        return
+      }
       setStep({ kind: 'done', phone: step.phone })
       await member.signIn(r.token)
-    } finally { busyRef.current = false; setBusy(false) }
+    } finally { busyRef.current = false; setBusyWhat(null) }
   }
+  // no maxLength on the input: a pasted "123 456" or a whole SMS arrives whole, and its first six digits
+  // count (NFKC: full-width digits too)
   const typeCode = (raw: string) => {
-    const v = raw.replace(/\D/g, '').slice(0, CODE_LENGTH)
+    const v = raw.normalize('NFKC').replace(/\D/g, '').slice(0, CODE_LENGTH)
     setCode(v)
     if (v.length === CODE_LENGTH) void confirm(v)                 // fills itself from the SMS or a paste: no tap needed
   }
 
-  const signedIn = member.status === 'in' && member.me && step.kind !== 'done'
-  const title = signedIn ? 'Your points' : step.kind === 'code' ? 'Enter the code' : step.kind === 'done' ? "You're in!" : 'Collect points with your phone number'
+  // signed in (a stored token counts before its balance is back: "Loading your points…")
+  const signedIn = member.status === 'in' && step.kind !== 'done'
+  const busyText = busyWhat === 'check' ? 'Checking…' : busyWhat === 'send' ? 'Sending…' : ''
   return (
     <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/40 sm:items-center" onClick={busy ? undefined : onClose}>
-      <div role="dialog" aria-label={title}
-        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-card p-4 sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
-        {signedIn && member.me ? (
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onKeyDown={onKeyDown}
+        className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-card p-4 outline-none sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
+        <button type="button" onClick={onClose} aria-label="Close"
+          className="absolute right-2 top-2 flex h-10 w-10 items-center justify-center rounded-full text-xl text-brown-muted hover:bg-brown-track">✕</button>
+        <p aria-live="polite" className="sr-only">{busyText}</p>
+        {signedIn && !member.me ? (
           <>
-            <h2 className="text-lg font-semibold text-brown-dark">Your points</h2>
+            <h2 id={titleId} className="pr-10 text-lg font-semibold text-brown-dark">Your points</h2>
+            <p aria-live="polite" className="mt-3 text-sm text-brown-muted">Loading your points…</p>
+            <button type="button" onClick={onClose} className="mt-4 w-full rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover">Done</button>
+          </>
+        ) : signedIn && member.me ? (
+          <>
+            <h2 id={titleId} className="pr-10 text-lg font-semibold text-brown-dark">Your points</h2>
             <p className="mt-1 text-sm text-brown-muted">{member.me.phoneMasked}</p>
             <p className="mt-3 text-[28px] font-bold text-brown-dark">{pointsText(member.me.points)}</p>
             {member.me.entries.length > 0 && (
@@ -117,16 +163,17 @@ export default function MemberSheet({ member, api, onClose, now = systemNow }: {
         ) : step.kind === 'done' ? (
           <div className="text-center">
             <Mascot pose="cheer" size={72} className="mx-auto" />
-            <p className="mt-2 text-[17px] font-semibold text-brown-dark">You're in! Points from this table's bill go to <span className="whitespace-nowrap">{maskPhone(step.phone)}</span>.</p>
-            <p className="mt-2 text-[22px] font-bold text-brown-dark">{member.me ? pointsText(member.me.points) : ' '}</p>
+            <h2 id={titleId} className="mt-2 text-[17px] font-semibold text-brown-dark">You're in!</h2>
+            <p aria-live="polite" className="mt-2 text-[22px] font-bold text-brown-dark">{member.me ? pointsText(member.me.points) : 'Loading your points…'}</p>
+            <p className="mt-2 text-sm text-brown-muted">Order from this table and your points are added when the bill is paid.</p>
             <button type="button" onClick={onClose} className="mt-4 w-full rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover">Done</button>
           </div>
         ) : step.kind === 'code' ? (
           <>
-            <h2 className="text-lg font-semibold text-brown-dark">Enter the code we sent to <span className="whitespace-nowrap">{formatPhone(step.phone)}</span></h2>
+            <h2 id={titleId} className="pr-10 text-lg font-semibold text-brown-dark">Enter the code we sent to <span className="whitespace-nowrap">{formatPhone(step.phone)}</span></h2>
             <label className="relative mt-4 block">
-              <input value={code} onChange={(e) => typeCode(e.target.value)} readOnly={busy}
-                inputMode="numeric" autoComplete="one-time-code" maxLength={CODE_LENGTH} autoFocus pattern="[0-9]*"
+              <input ref={codeRef} value={code} onChange={(e) => typeCode(e.target.value)} readOnly={busy}
+                inputMode="numeric" autoComplete="one-time-code" autoFocus pattern="[0-9]*"
                 aria-label="6-digit code"
                 className="absolute inset-0 h-full w-full bg-transparent text-transparent caret-transparent outline-none selection:bg-transparent" />
               <span aria-hidden="true" className="pointer-events-none grid grid-cols-6 gap-2">
@@ -141,7 +188,7 @@ export default function MemberSheet({ member, api, onClose, now = systemNow }: {
             {error && <p role="alert" className="mt-2 text-sm text-red-700">{error}</p>}
             <button type="button" onClick={() => void confirm(code)} disabled={busy || code.length !== CODE_LENGTH}
               className="mt-4 w-full rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover disabled:opacity-40">
-              {busy ? 'Checking…' : 'Confirm'}
+              {busyWhat === 'check' ? 'Checking…' : 'Confirm'}
             </button>
             <div className="mt-3 flex justify-between text-sm">
               <button type="button" onClick={() => { setError(null); setStep({ kind: 'phone' }) }} disabled={busy}
@@ -154,7 +201,7 @@ export default function MemberSheet({ member, api, onClose, now = systemNow }: {
           </>
         ) : (
           <>
-            <h2 className="text-lg font-semibold text-brown-dark">Collect points with your phone number</h2>
+            <h2 id={titleId} className="pr-10 text-lg font-semibold text-brown-dark">Collect points with your phone number</h2>
             <label className="mt-3 block text-sm">
               <span className="sr-only">Phone number</span>
               <span className="flex items-stretch overflow-hidden rounded-lg border border-border">
@@ -175,9 +222,8 @@ export default function MemberSheet({ member, api, onClose, now = systemNow }: {
               className="mt-2 min-h-10 text-sm font-medium text-brown-btn underline">How we use your number</button>
             {notice && (
               <div role="note" className="mt-1 rounded-xl bg-cream p-3 text-sm text-brown-dark">
-                <p>We store your phone number, your points and your visits to our cafes.</p>
-                <p className="mt-1">We use them only to add points for what you pay and to show you your balance.</p>
-                <p className="mt-1">To delete your details, ask our staff or email us.</p>
+                <p>We keep your phone number, your points and the visits they came from, the type of device you sign in on, and — for two days — the network address used to ask for a code. We use them only to run your points.</p>
+                <p className="mt-1">To delete your details, ask our staff.</p>
               </div>
             )}
           </>

@@ -5,127 +5,43 @@
 // runs without a JWT check and reaches the database only through the service-role functions of
 // supabase/migration-2026-11-23-members.sql, which carry the limits and the storage.
 //
-//   request — { action: 'request', phone }
+//   Every call: an allowed Origin (secret MEMBER_AUTH_ORIGINS) else 403; POST else 405 (OPTIONS answers the
+//   preflight); Content-Type application/json else 415; a body of at most 2 KB else 413.
+//   request — { action: 'request', phone, table }   (table = the QR table token)
 //             → 200 { ok: true } | { ok: false, reason: 'rate' | 'busy' | 'unavailable' | 'invalid_phone' }
 //   verify  — { action: 'verify', phone, code, device? }
 //             → 200 { ok: true, token }
 //             | { ok: false, reason: 'wrong' | 'expired' | 'locked' | 'invalid_phone' | 'unavailable' }
-//   A body that is neither → 400 { error }; another method → 405 { error }.
+//   A body that is neither → 400 { error }.
 //
-// Secrets: SMS_PROVIDER ('log' on dev; a real provider later, Task 20). 'log' sends nothing and stores the
-// plain code in member_otps.dev_code, and runs only with MEMBER_AUTH_ALLOW_LOG=1 (never set on prod).
+// Secrets: MEMBER_AUTH_ORIGINS (the QR sites, comma-separated). SMS_PROVIDER ('log' on dev; a real provider
+// later, Task 20). 'log' sends nothing and stores the plain code in member_otps.dev_code, and runs only
+// with MEMBER_AUTH_ALLOW_LOG=1 (never set on prod).
 // Never logged: the code, the token, a full phone number.
+//
+// The handler is handler.ts (tested with a fake rpc in handler.test.ts); this file wires the real client.
 //
 // Deploy (no JWT check; SUPABASE_URL and the secret keys are injected by the platform):
 //   supabase functions deploy member-auth --no-verify-jwt
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { resolveSecretKey } from '../_shared/secretKey.ts'
-import {
-  type RequestReply, type VerifyReply,
-  cleanCode, codeHash, deviceLabel, makeCode, makeToken, maskForLog, memberClientIp, normalisePhone,
-  parseBody, requestRefusal, selectProvider, sha256Hex, smsText, verifyReply,
-} from './logic.ts'
-
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-}
-
-// no-store: the verify reply carries the member token
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status, headers: { ...CORS, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-  })
+import { handle } from './handler.ts'
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
-  if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
-  try {
-    return await handle(req)
-  } catch (e) {
-    console.error('member-auth', e instanceof Error ? e.message : String(e))
-    return json({ error: 'Something went wrong. Try again.' }, 500)
-  }
-})
-
-async function handle(req: Request): Promise<Response> {
   const serviceKey = resolveSecretKey()
   const url = Deno.env.get('SUPABASE_URL')
-  if (!serviceKey || !url) return json({ error: 'Function is not configured: no secret key available' }, 500)
+  if (!serviceKey || !url) {
+    return new Response(JSON.stringify({ error: 'Function is not configured: no secret key available' }), {
+      status: 500, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    })
+  }
   const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
-
-  let body: unknown
-  try { body = await req.json() } catch { return json({ error: 'Invalid request' }, 400) }
-  const input = parseBody(body)
-  if (!input) return json({ error: 'Invalid request' }, 400)
-
-  const phone = normalisePhone(input.phone)
-  if (!phone) return json({ ok: false, reason: 'invalid_phone' })
-
-  if (input.action === 'request') {
-    const reply: RequestReply = await requestCode(admin, phone, req)
-    return json(reply)
-  }
-
-  const code = cleanCode(input.code)
-  // a string that cannot be a code can never match: answered without spending one of the 5 tries
-  if (!code) return json({ ok: false, reason: 'wrong' } satisfies VerifyReply)
-  const token = makeToken()
-  const { data, error } = await admin.rpc('member_otp_verify', {
-    p_phone: phone,
-    p_code_hash: await codeHash(phone, code),
-    p_token_hash: await sha256Hex(token),
-    p_device: deviceLabel(input.device ?? req.headers.get('user-agent')),
+  return await handle(req, {
+    rpc: async (fn, args) => {
+      const { data, error } = await admin.rpc(fn, args)
+      return { data, error: error ? { message: error.message } : null }
+    },
+    env: (n) => Deno.env.get(n),
   })
-  if (error) {
-    console.error('member_otp_verify', maskForLog(phone), error.message)
-    return json({ ok: false, reason: 'unavailable' } satisfies VerifyReply)
-  }
-  const reply = verifyReply(String(data), token)
-  if (!reply.ok) console.log('verify', maskForLog(phone), reply.reason)
-  return json(reply)
-}
-
-// deno-lint-ignore no-explicit-any
-async function requestCode(admin: any, phone: string, req: Request): Promise<RequestReply> {
-  const provider = selectProvider((n) => Deno.env.get(n))
-  if (!provider) {
-    console.error('member-auth: no SMS provider (SMS_PROVIDER unset or unknown, or log mode not allowed)')
-    return { ok: false, reason: 'unavailable' }
-  }
-  // the platform-set client address (never a client-written X-Forwarded-For); the SQL requires one
-  const ip = memberClientIp(req.headers)
-  if (!ip) {
-    console.error('member-auth: no platform client IP header')
-    return { ok: false, reason: 'unavailable' }
-  }
-  const code = makeCode()
-  const hash = await codeHash(phone, code)
-  const { data, error } = await admin.rpc('member_otp_request', {
-    p_phone: phone,
-    p_ip: ip,
-    p_code_hash: hash,
-    p_dev_code: provider.kind === 'log' ? code : null,
-  })
-  if (error) {
-    console.error('member_otp_request', maskForLog(phone), error.message)
-    return { ok: false, reason: 'unavailable' }
-  }
-  if (data !== 'ok') {
-    console.log('request', maskForLog(phone), data)
-    return requestRefusal(String(data))
-  }
-  try {
-    await provider.sendSms(phone, smsText(code))
-  } catch (e) {
-    // a vendor's message may echo the number or the text: digit runs are cut out
-    console.error('sendSms', provider.name, maskForLog(phone), (e instanceof Error ? e.message : String(e)).replace(/\d{4,}/g, '…'))
-    // the SMS never left: the stored code must not be confirmable
-    const { error: voidErr } = await admin.rpc('member_otp_void', { p_phone: phone, p_code_hash: hash })
-    if (voidErr) console.error('member_otp_void', maskForLog(phone), voidErr.message)
-    return { ok: false, reason: 'unavailable' }
-  }
-  return { ok: true }
-}
+})

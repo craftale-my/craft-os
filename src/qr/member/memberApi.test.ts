@@ -11,26 +11,26 @@ function rpcClient(r: { data?: unknown; error?: { message: string } }) {
 const noRpc = { rpc: vi.fn() } as unknown as SupabaseClient
 
 describe('member-auth calls', () => {
-  it('request posts the action and phone with the anon key, and maps ok', async () => {
+  it('request posts the action, phone and table token with the anon key, and maps ok', async () => {
     const f = reply({ ok: true })
     const api = makeMemberApi(noRpc, URL, 'anon', f as unknown as typeof fetch)
-    expect(await api.requestCode('+60123456789')).toEqual({ ok: true })
+    expect(await api.requestCode('+60123456789', 'TABLETOK')).toEqual({ ok: true })
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe(URL)
-    expect(JSON.parse(String(init.body))).toEqual({ action: 'request', phone: '+60123456789' })
+    expect(JSON.parse(String(init.body))).toEqual({ action: 'request', phone: '+60123456789', table: 'TABLETOK' })
     expect((init.headers as Record<string, string>).apikey).toBe('anon')
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer anon')
   })
   it.each(['invalid_phone', 'rate', 'busy', 'unavailable'])('request reason %s comes through', async (reason) => {
     const api = makeMemberApi(noRpc, URL, 'anon', reply({ ok: false, reason }) as unknown as typeof fetch)
-    expect(await api.requestCode('x')).toEqual({ ok: false, reason })
+    expect(await api.requestCode('x', 't')).toEqual({ ok: false, reason })
   })
   it('no reply is network; a 500 or an unknown reason is unavailable', async () => {
     const down = vi.fn(async () => { throw new TypeError('Load failed') })
-    expect(await makeMemberApi(noRpc, URL, 'a', down as unknown as typeof fetch).requestCode('x')).toEqual({ ok: false, reason: 'network' })
+    expect(await makeMemberApi(noRpc, URL, 'a', down as unknown as typeof fetch).requestCode('x', 't')).toEqual({ ok: false, reason: 'network' })
     expect(await makeMemberApi(noRpc, URL, 'a', down as unknown as typeof fetch).verifyCode('x', '1')).toEqual({ ok: false, reason: 'network' })
     const bad = vi.fn(async () => new Response('oops', { status: 500 }))
-    expect(await makeMemberApi(noRpc, URL, 'a', bad as unknown as typeof fetch).requestCode('x')).toEqual({ ok: false, reason: 'unavailable' })
+    expect(await makeMemberApi(noRpc, URL, 'a', bad as unknown as typeof fetch).requestCode('x', 't')).toEqual({ ok: false, reason: 'unavailable' })
     expect(await makeMemberApi(noRpc, URL, 'a', reply({ ok: false, reason: 'weird' }) as unknown as typeof fetch).verifyCode('x', '1'))
       .toEqual({ ok: false, reason: 'unavailable' })
   })

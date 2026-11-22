@@ -2,7 +2,7 @@
 -- migration-2026-11-23-members.sql. Everything is rolled back. Success = a result row "VERIFY OK".
 -- Sections (one DO block each, ids in the temp table fixture): FIXTURE; M1 schema, grants, security definer;
 -- M2 phone normalise / mask; M3 counter attach and earn; M4 refunds; M5 merge and split; M6 sign-in codes
--- (limits); M7 tokens and linking a table; M8 owner and back office; M9 real anon / authenticated callers.
+-- (a live table, limits, tries by IP); M7 tokens and linking a table; M8 owner and back office; M9 real anon / authenticated callers.
 -- Each section ends by ticking pg_temp.sections; the last DO block raises unless all 10 ticked, so an
 -- error that a client skips over can never reach the final "VERIFY OK".
 -- Outlet VERIFY MEM: no service charge, not SST registered, 5 sen rounding. Latte 10.50, Sugar 0.50,
@@ -84,6 +84,7 @@ begin
    where true;
   update member_settings set rate = 1, qr_enabled = true, sms_daily_cap = 300, dev_codes_allowed = true where id;
   delete from member_otps where created_at > now() - interval '2 days';   -- the limits start from nothing
+  delete from member_verify_fails where at > now() - interval '2 days';
   insert into branches(name, address) values ('VERIFY MEM', 'm') returning id into v_a;
   perform pg_temp.put('branch', v_a);
   for i in 1..9 loop
@@ -138,7 +139,7 @@ declare
   v_n  integer := 0;
 begin
   foreach t in array array['members', 'member_points', 'member_tokens', 'member_otps', 'member_settings', 'member_bill_events',
-                           'member_earn_failures'] loop
+                           'member_earn_failures', 'member_verify_fails'] loop
     perform pg_temp.check((select relrowsecurity from pg_class where oid = t::regclass), 'M1 RLS on ' || t);
     perform pg_temp.check(not exists (select 1 from pg_policies where tablename = t), 'M1 no policy on ' || t);
     foreach role in array array['anon', 'authenticated'] loop
@@ -161,7 +162,11 @@ begin
     perform pg_temp.check(not has_function_privilege('anon', t, 'execute'), 'M1 anon cannot run ' || t);
     perform pg_temp.check(has_function_privilege('authenticated', t, 'execute'), 'M1 staff run ' || t);
   end loop;
-  foreach t in array array['member_otp_request(text,text,text,text)', 'member_otp_verify(text,text,text,text)',
+  perform pg_temp.check(to_regprocedure('member_otp_request(text,text,text,text)') is null
+                        and to_regprocedure('member_otp_verify(text,text,text,text)') is null, 'M1 the 4-argument code functions are gone');
+  perform pg_temp.check(exists (select 1 from information_schema.columns where table_name = 'member_otps' and column_name = 'table_id'),
+                        'M1 member_otps.table_id');
+  foreach t in array array['member_otp_request(text,text,text,text,text)', 'member_otp_verify(text,text,text,text,text)',
                            'member_otp_void(text,text)'] loop
     perform pg_temp.check(not has_function_privilege('anon', t, 'execute'), 'M1 anon cannot run ' || t);
     perform pg_temp.check(not has_function_privilege('authenticated', t, 'execute'), 'M1 staff cannot run ' || t);
@@ -407,99 +412,147 @@ begin
   perform pg_temp.done('M5');
 end $$;
 
--- ── M6. Sign-in codes: limits, tries, expiry (the Edge Function's two calls) ──
+-- ── M6. Sign-in codes: a live table, limits, tries by IP, expiry (the Edge Function's calls) ──
 do $$
 declare
-  i integer;
-  v text;
+  i      integer;
+  v      text;
+  v_t9   text := (select qr_token from dining_tables where id = pg_temp.id('m9'));
+  v_ida  uuid; v_ta text; v_tb text; v_tc text;
+  v_otp  uuid;
 begin
+  -- spare tables for the per-IP and per-table limits
+  insert into dining_tables(branch_id, label, sort_order) values (pg_temp.id('branch'), 'MA', 21) returning id, qr_token into v_ida, v_ta;
+  insert into dining_tables(branch_id, label, sort_order) values (pg_temp.id('branch'), 'MB', 22) returning qr_token into v_tb;
+  insert into dining_tables(branch_id, label, sort_order) values (pg_temp.id('branch'), 'MC', 23) returning qr_token into v_tc;
+  -- a code is asked from a live QR table: none, unknown, QR-paused or inactive → 'disabled', nothing stored
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('1'), null, null) = 'disabled', 'M6 no table → disabled');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('1'), null, 'nope') = 'disabled', 'M6 unknown table → disabled');
+  update dining_tables set qr_paused = true where id = pg_temp.id('m9');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('1'), null, v_t9) = 'disabled', 'M6 QR-paused table → disabled');
+  perform pg_temp.act(pg_temp.id('owner'));   -- the table's status is a manager's change (dining_tables_guard)
+  update dining_tables set qr_paused = false, is_active = false where id = pg_temp.id('m9');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('1'), null, v_t9) = 'disabled', 'M6 inactive table → disabled');
+  update dining_tables set is_active = true where id = pg_temp.id('m9');
+  perform pg_temp.act(pg_temp.id('dev'));
+  perform pg_temp.check(not exists (select 1 from member_otps where phone = '+60129876543'), 'M6 a refused table stores nothing');
   -- per number: 3 in 15 minutes, the 4th is refused
   for i in 1..3 loop
-    perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('11111' || i), '11111' || i) = 'ok', 'M6 request ' || i);
+    perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('11111' || i), '11111' || i, v_t9) = 'ok', 'M6 request ' || i);
   end loop;
-  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.2', pg_temp.hash('999999'), '999999') = 'rate_number', 'M6 the 4th in 15 min → rate_number');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.2', pg_temp.hash('999999'), '999999', v_t9) = 'rate_number', 'M6 the 4th in 15 min → rate_number');
   perform pg_temp.check((select count(*) from member_otps where phone = '+60129876543') = 3, 'M6 the refused one is not stored');
   perform pg_temp.check((select dev_code from member_otps where phone = '+60129876543' order by created_at desc, id limit 1) is not null, 'M6 dev code stored');
+  perform pg_temp.check((select bool_and(table_id = pg_temp.id('m9')) from member_otps where phone = '+60129876543'), 'M6 the table is stored on the code');
   -- per number per day: 10 in 24 hours (older rows moved back past 15 minutes)
   update member_otps set created_at = now() - interval '1 hour' where phone = '+60129876543';
   insert into member_otps(phone, code_hash, expires_at, created_at)
   select '+60129876543', pg_temp.hash('x'), now(), now() - interval '2 hours' from generate_series(1, 7);
-  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.3', pg_temp.hash('1'), null) = 'rate_number', 'M6 the 11th in a day → rate_number');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.3', pg_temp.hash('1'), null, v_t9) = 'rate_number', 'M6 the 11th in a day → rate_number');
   delete from member_otps where phone = '+60129876543';
-  -- tries: 5 wrong answer 'wrong', the 6th (even the right code) 'locked'
-  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('123456'), '123456') = 'ok', 'M6 a fresh code');
+  -- tries: 5 wrong from one IP answer 'wrong', its 6th (even the right code) 'locked'
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('123456'), '123456', v_t9) = 'ok', 'M6 a fresh code');
   for i in 1..5 loop
-    perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('000000'), pg_temp.hash('tok-x' || i), 'iPhone') = 'wrong', 'M6 wrong try ' || i);
+    perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('000000'), pg_temp.hash('tok-x' || i), 'iPhone', '10.0.0.66') = 'wrong', 'M6 wrong try ' || i);
   end loop;
-  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('123456'), pg_temp.hash('tok-x6'), 'iPhone') = 'locked', 'M6 the 6th try → locked');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('123456'), pg_temp.hash('tok-x6'), 'iPhone', '10.0.0.66') = 'locked', 'M6 the 6th try → locked');
   perform pg_temp.check(not exists (select 1 from members where phone = '+60129876543'), 'M6 no member from a locked code');
+  perform pg_temp.check((select count(*) from member_verify_fails where ip = '10.0.0.66') = 5, 'M6 five wrong tries recorded for the IP');
+  -- ... but another address keeps its own 5: a stranger cannot lock the guest out
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('000001'), pg_temp.hash('tok-x7'), 'iPhone', '10.0.0.1') = 'wrong', 'M6 another IP: its own wrong try');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('123456'), pg_temp.hash('tok-x8'), 'iPhone', '10.0.0.1') = 'ok', 'M6 another IP: the right code still works');
+  delete from member_tokens where token_hash = pg_temp.hash('tok-x8');
+  delete from members where phone = '+60129876543';
+  -- per IP: more than 20 wrong codes in an hour → 'locked' before any code is read
+  delete from member_otps where phone = '+60129876543';
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('121212'), '121212', v_t9) = 'ok', 'M6 a code for the IP limit');
+  insert into member_verify_fails(ip, otp_id) select '10.6.6.6', gen_random_uuid() from generate_series(1, 19);
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('000000'), pg_temp.hash('tok-z1'), null, '10.6.6.6') = 'wrong', 'M6 the 20th wrong code from an IP');
+  v_otp := (select id from member_otps where phone = '+60129876543');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('121212'), pg_temp.hash('tok-z2'), null, '10.6.6.6') = 'locked', 'M6 then that IP is locked, the right code included');
+  perform pg_temp.check((select attempts from member_otps where id = v_otp) = 1
+                        and (select count(*) from member_verify_fails where otp_id = v_otp) = 1, 'M6 the IP lock leaves the code row as it was');
+  perform pg_temp.check(not exists (select 1 from members where phone = '+60129876543'), 'M6 no member from an IP lock');
+  perform pg_temp.expect_error(format('select member_otp_verify(%L, %L, %L, null, null)', '0129876543', pg_temp.hash('121212'), pg_temp.hash('tok-z3')),
+    'Client IP required', 'M6 verify without an IP');
+  update member_verify_fails set at = now() - interval '61 minutes' where ip = '10.6.6.6';
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('000000'), pg_temp.hash('tok-z4'), null, '10.6.6.6') = 'wrong', 'M6 an hour later the IP may try again');
+  delete from member_otps where phone = '+60129876543';
   -- expired: past 5 minutes
-  update member_otps set created_at = now() - interval '20 minutes' where phone = '+60129876543';
-  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('222222'), '222222') = 'ok', 'M6 another code');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('222222'), '222222', v_t9) = 'ok', 'M6 another code');
   update member_otps set expires_at = now() - interval '1 second' where phone = '+60129876543' and code_hash = pg_temp.hash('222222');
-  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('222222'), pg_temp.hash('tok-y'), null) = 'expired', 'M6 an expired code');
-  perform pg_temp.check(member_otp_verify('0199990000', pg_temp.hash('222222'), pg_temp.hash('tok-y'), null) = 'expired', 'M6 a number with no code');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('222222'), pg_temp.hash('tok-y'), null, '10.0.0.1') = 'expired', 'M6 an expired code');
+  perform pg_temp.check(member_otp_verify('0199990000', pg_temp.hash('222222'), pg_temp.hash('tok-y'), null, '10.0.0.1') = 'expired', 'M6 a number with no code');
   -- the right code: a new member and a token; the code cannot be used twice
   delete from member_otps where phone = '+60129876543';
-  perform pg_temp.check(member_otp_request('+60 12-987 6543', '10.0.0.1', pg_temp.hash('333333'), '333333') = 'ok', 'M6 code for sign-in');
-  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('333333'), pg_temp.hash('verify-token-C-0001'), 'iPhone Safari') = 'ok', 'M6 the right code');
+  perform pg_temp.check(member_otp_request('+60 12-987 6543', '10.0.0.1', pg_temp.hash('333333'), '333333', v_t9) = 'ok', 'M6 code for sign-in');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('333333'), pg_temp.hash('verify-token-C-0001'), 'iPhone Safari', '10.0.0.1') = 'ok', 'M6 the right code');
   perform pg_temp.check(exists (select 1 from members where phone = '+60129876543' and deleted_at is null), 'M6 the member exists');
   perform pg_temp.check((select expires_at from member_tokens where token_hash = pg_temp.hash('verify-token-C-0001'))
                         between now() + interval '179 days' and now() + interval '181 days', 'M6 the token lasts 180 days');
-  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('333333'), pg_temp.hash('verify-token-C-0002'), null) = 'expired', 'M6 a used code is dead');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('333333'), pg_temp.hash('verify-token-C-0002'), null, '10.0.0.1') = 'expired', 'M6 a used code is dead');
   -- a voided code (the SMS never left) cannot be confirmed
   delete from member_otps where phone = '+60129876543';
-  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('555555'), '555555') = 'ok', 'M6 code to void');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('555555'), '555555', v_t9) = 'ok', 'M6 code to void');
   perform pg_temp.check(member_otp_void('0129876543', pg_temp.hash('555555')), 'M6 void → true');
   perform pg_temp.check(not member_otp_void('0129876543', pg_temp.hash('555555')), 'M6 void twice → false');
   perform pg_temp.check((select dev_code from member_otps where phone = '+60129876543' and code_hash = pg_temp.hash('555555')) is null, 'M6 void clears the dev code');
-  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('555555'), pg_temp.hash('verify-token-C-0003'), null) = 'expired', 'M6 a voided code is dead');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('555555'), pg_temp.hash('verify-token-C-0003'), null, '10.0.0.1') = 'expired', 'M6 a voided code is dead');
   delete from member_otps where phone = '+60129876543';
   -- an older code still inside its 5 minutes fails once a newer one was asked for; the newer one works,
   -- and a successful sign-in clears every dev code of that number
-  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('666661'), '666661') = 'ok', 'M6 older code');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('666661'), '666661', v_t9) = 'ok', 'M6 older code');
   -- (one transaction has one now(): the older code is moved a minute back, still inside its 5 minutes)
   update member_otps set created_at = now() - interval '1 minute' where phone = '+60129876543';
-  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('666662'), '666662') = 'ok', 'M6 newer code');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('666662'), '666662', v_t9) = 'ok', 'M6 newer code');
   perform pg_temp.check((select count(*) from member_otps where phone = '+60129876543' and dev_code is not null) = 2, 'M6 two dev codes stored');
-  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('666661'), pg_temp.hash('verify-token-C-0004'), null) = 'wrong', 'M6 the older code fails');
-  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('666662'), pg_temp.hash('verify-token-C-0005'), null) = 'ok', 'M6 the newer code works');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('666661'), pg_temp.hash('verify-token-C-0004'), null, '10.0.0.1') = 'wrong', 'M6 the older code fails');
+  perform pg_temp.check(member_otp_verify('0129876543', pg_temp.hash('666662'), pg_temp.hash('verify-token-C-0005'), null, '10.0.0.1') = 'ok', 'M6 the newer code works');
   perform pg_temp.check(not exists (select 1 from member_otps where phone = '+60129876543' and dev_code is not null), 'M6 sign-in clears all the number''s dev codes');
   delete from member_otps where phone = '+60129876543';
   -- no IP → an error; a dev code while dev codes are off → an error (nothing stored)
-  perform pg_temp.expect_error(format('select member_otp_request(%L, null, %L, null)', '0129876543', pg_temp.hash('5')),
+  perform pg_temp.expect_error(format('select member_otp_request(%L, null, %L, null, %L)', '0129876543', pg_temp.hash('5'), v_t9),
     'Client IP required', 'M6 no IP');
-  perform pg_temp.expect_error(format('select member_otp_request(%L, %L, %L, null)', '0129876543', '  ', pg_temp.hash('5')),
+  perform pg_temp.expect_error(format('select member_otp_request(%L, %L, %L, null, %L)', '0129876543', '  ', pg_temp.hash('5'), v_t9),
     'Client IP required', 'M6 a blank IP');
   update member_settings set dev_codes_allowed = false where id;
-  perform pg_temp.expect_error(format('select member_otp_request(%L, %L, %L, %L)', '0129876543', '10.0.0.1', pg_temp.hash('777777'), '777777'),
+  perform pg_temp.expect_error(format('select member_otp_request(%L, %L, %L, %L, %L)', '0129876543', '10.0.0.1', pg_temp.hash('777777'), '777777', v_t9),
     'Dev codes are not allowed on this project', 'M6 a dev code while off');
   perform pg_temp.check(not exists (select 1 from member_otps where phone = '+60129876543'), 'M6 the refused dev code is not stored');
-  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('777777'), '') = 'ok', 'M6 no dev code while off: ok');
+  perform pg_temp.check(member_otp_request('0129876543', '10.0.0.1', pg_temp.hash('777777'), '', v_t9) = 'ok', 'M6 no dev code while off: ok');
   update member_settings set dev_codes_allowed = true where id;
   delete from member_otps where phone = '+60129876543';
   -- the same answers for a member and a non-member
-  perform pg_temp.check(member_otp_request('0123456789', '10.0.0.9', pg_temp.hash('444444'), null) = 'ok', 'M6 a member asks: ok');
-  -- per IP: 10 per hour
-  for i in 1..10 loop
-    v := member_otp_request('01300000' || lpad(i::text, 2, '0'), '10.9.9.9', pg_temp.hash('5'), null);
+  perform pg_temp.check(member_otp_request('0123456789', '10.0.0.9', pg_temp.hash('444444'), null, v_t9) = 'ok', 'M6 a member asks: ok');
+  -- per IP: 30 per hour (spread over two tables, under their own limit)
+  for i in 1..30 loop
+    v := member_otp_request('01300000' || lpad(i::text, 2, '0'), '10.9.9.9', pg_temp.hash('5'), null, case when i <= 15 then v_ta else v_tb end);
     perform pg_temp.check(v = 'ok', 'M6 ip request ' || i || ': ' || v);
   end loop;
-  perform pg_temp.check(member_otp_request('0130000099', '10.9.9.9', pg_temp.hash('5'), null) = 'rate_ip', 'M6 the 11th from one IP → rate_ip');
-  -- per IP per day: 30 in 24 hours (none of them in the last hour)
+  perform pg_temp.check(member_otp_request('0130000099', '10.9.9.9', pg_temp.hash('5'), null, v_tc) = 'rate_ip', 'M6 the 31st from one IP in an hour → rate_ip');
+  -- per IP per day: 100 in 24 hours (none of them in the last hour)
   insert into member_otps(phone, code_hash, expires_at, ip, created_at)
   select '+6014000' || lpad(g::text, 4, '0'), pg_temp.hash('x'), now(), '10.7.7.7', now() - interval '3 hours'
-    from generate_series(1, 29) g;
-  perform pg_temp.check(member_otp_request('0140009999', '10.7.7.7', pg_temp.hash('5'), null) = 'ok', 'M6 the 30th from one IP in a day');
+    from generate_series(1, 99) g;
+  perform pg_temp.check(member_otp_request('0140009999', '10.7.7.7', pg_temp.hash('5'), null, v_tc) = 'ok', 'M6 the 100th from one IP in a day');
   update member_otps set created_at = now() - interval '2 hours' where ip = '10.7.7.7';
-  perform pg_temp.check(member_otp_request('0140009998', '10.7.7.7', pg_temp.hash('5'), null) = 'rate_ip', 'M6 the 31st from one IP in a day → rate_ip');
-  -- the daily SMS cap and the QR switch
-  update member_settings set sms_daily_cap = (select count(*) from member_otps) where id;
-  perform pg_temp.check(member_otp_request('0130000098', '10.8.8.8', pg_temp.hash('5'), null) = 'cap', 'M6 the daily cap → cap');
+  perform pg_temp.check(member_otp_request('0140009998', '10.7.7.7', pg_temp.hash('5'), null, v_tc) = 'rate_ip', 'M6 the 101st from one IP in a day → rate_ip');
+  -- per table: 20 in 24 hours, whatever the IP (table MA holds 15 from above)
+  insert into member_otps(phone, code_hash, expires_at, ip, table_id, created_at)
+  select '+6015000' || lpad(g::text, 4, '0'), pg_temp.hash('x'), now(), '10.4.4.' || g, v_ida, now() - interval '5 hours'
+    from generate_series(1, 4) g;
+  perform pg_temp.check(member_otp_request('0150009999', '10.5.5.5', pg_temp.hash('5'), null, v_ta) = 'ok', 'M6 the 20th from one table');
+  perform pg_temp.check(member_otp_request('0150009998', '10.5.5.6', pg_temp.hash('5'), null, v_ta) = 'rate_table', 'M6 the 21st from one table → rate_table');
+  update member_otps set created_at = now() - interval '25 hours' where table_id = v_ida;
+  perform pg_temp.check(member_otp_request('0150009998', '10.5.5.6', pg_temp.hash('5'), null, v_ta) = 'ok', 'M6 a day later the table may ask again');
+  -- the daily SMS cap (today's codes, Malaysia day) and the QR switch
+  update member_settings set sms_daily_cap = (select count(*) from member_otps
+       where created_at >= date_trunc('day', now() at time zone 'Asia/Kuala_Lumpur') at time zone 'Asia/Kuala_Lumpur') where id;
+  perform pg_temp.check(member_otp_request('0130000098', '10.8.8.8', pg_temp.hash('5'), null, v_tc) = 'cap', 'M6 the daily cap → cap');
   update member_settings set sms_daily_cap = 300, qr_enabled = false where id;
-  perform pg_temp.check(member_otp_request('0130000098', '10.8.8.8', pg_temp.hash('5'), null) = 'disabled', 'M6 switched off → disabled');
+  perform pg_temp.check(member_otp_request('0130000098', '10.8.8.8', pg_temp.hash('5'), null, v_tc) = 'disabled', 'M6 switched off → disabled');
   update member_settings set qr_enabled = true where id;
-  perform pg_temp.expect_error(format('select member_otp_request(%L, null, %L, null)', '0312345678', pg_temp.hash('5')),
+  perform pg_temp.expect_error(format('select member_otp_request(%L, null, %L, null, %L)', '0312345678', pg_temp.hash('5'), v_t9),
     'Invalid phone number', 'M6 a landline');
   perform pg_temp.done('M6');
 end $$;
@@ -726,10 +779,11 @@ begin
   v_link := member_link_table(v_t8, v_g, c_tok);
   foreach t in array array['select 1 from members', 'select 1 from member_points', 'select 1 from member_tokens',
                            'select 1 from member_otps', 'select 1 from member_settings', 'select 1 from member_bill_events',
+                           'select 1 from member_verify_fails',
                            'select 1 from member_earn_failures', 'update member_settings set rate = 50 where id',
                            'insert into member_points(member_id, kind, points, reason, staff_id) values (gen_random_uuid(), ''adjust'', 1, ''x'', gen_random_uuid())',
-                           format('select member_otp_request(%L, %L, %L, null)', '0155555555', '10.1.1.1', v_hash),
-                           format('select member_otp_verify(%L, %L, %L, null)', '0155555555', v_hash, v_hash),
+                           format('select member_otp_request(%L, %L, %L, null, %L)', '0155555555', '10.1.1.1', v_hash, v_t8),
+                           format('select member_otp_verify(%L, %L, %L, null, %L)', '0155555555', v_hash, v_hash, '10.1.1.1'),
                            format('select member_otp_void(%L, %L)', '0155555555', v_hash),
                            format('select member_points_add(%L, ''adjust'', 5, null, null, null, ''x'', %L)', v_d, v_d),
                            format('select member_by_token(%L)', c_tok), 'select member_settings_json()',
@@ -758,8 +812,8 @@ begin
   v_search := member_search('5555', 10, 0);
   foreach t in array array['select 1 from members', 'select 1 from member_otps', 'select 1 from member_earn_failures',
                            'delete from member_tokens where true',
-                           format('select member_otp_request(%L, %L, %L, null)', '0155555555', '10.1.1.1', v_hash),
-                           format('select member_otp_verify(%L, %L, %L, null)', '0155555555', v_hash, v_hash),
+                           format('select member_otp_request(%L, %L, %L, null, %L)', '0155555555', '10.1.1.1', v_hash, v_t8),
+                           format('select member_otp_verify(%L, %L, %L, null, %L)', '0155555555', v_hash, v_hash, '10.1.1.1'),
                            format('select member_otp_void(%L, %L)', '0155555555', v_hash),
                            format('select member_points_add(%L, ''adjust'', 5, null, null, null, ''x'', %L)', v_d, v_d),
                            'select member_require_owner()', 'select member_settings_json()', 'select member_phone_normalise(''0123456789'')'] loop

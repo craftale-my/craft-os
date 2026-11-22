@@ -40,9 +40,10 @@ export function useQrMember({ api, tableToken, guestId, state, say, storage }: {
   useEffect(() => {
     if (status !== 'in' || !token || !tableToken || !guestId || !ordered) return
     const mine = ++seq.current
+    let live = true                                                  // a reply after sign-out or a newer run shows nothing
     api.memberLinkTable(tableToken, token, guestId).then((r) => {
-      if (mine !== seq.current) return
-      if (r === null) { forget(); return }                           // the server no longer knows this phone's token
+      if (!live || mine !== seq.current) return
+      if (r === null) { forget(token); return }                      // the server no longer knows this phone's token
       if (r.linked) setLinkedBill(billNo)
       const text = r.linked ? LINKED_TEXT : r.phoneMasked ? otherMemberText(r.phoneMasked) : null
       if (!text) return                                              // this guest has not ordered on the bill: nothing to say
@@ -52,6 +53,7 @@ export function useQrMember({ api, tableToken, guestId, state, say, storage }: {
       try { sessionStorage.setItem(toastKey(tableToken), key) } catch { /* this visit only */ }
       sayRef.current(text)
     }, () => { /* offline for a moment: the next send or entry tries again */ })
+    return () => { live = false }
   }, [api, status, token, tableToken, guestId, ordered, billNo, sends, forget])
 
   // the bill was paid or a new one started: the balance may have moved

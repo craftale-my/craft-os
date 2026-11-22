@@ -334,7 +334,7 @@ export default function QrApp() {
           sections={sections} popularIds={popularIds} units={unitsByProduct(menu, cartLines)} onOpen={(p) => openItem(p, null)}
           cartLines={cartLines.length} subtotalSen={subtotal} status={table.status} ordered={!!state && state.items.length > 0}
           onCart={() => openView('cart')} onOrders={() => openView('orders')}
-          member={qm.member.status} memberPoints={qm.member.me?.points ?? 0} onMember={qm.openSheet} />
+          member={qm.member.status} memberPoints={qm.member.me?.points ?? null} onMember={qm.openSheet} />
       )}
       {shown === 'item' && item && (
         <ItemPage key={`${item.product.id}|${item.lineId ?? ''}`} product={item.product} from={item.from}
@@ -364,7 +364,7 @@ export default function QrApp() {
           sending={sending} message={sendMessage} error={sendError}
           onSend={() => void send()} onCancel={() => setSendOpen(false)} />
       )}
-      {qm.sheetOpen && <MemberSheet member={qm.member} api={memberApi} onClose={qm.closeSheet} />}
+      {qm.sheetOpen && <MemberSheet member={qm.member} api={memberApi} tableToken={token} onClose={qm.closeSheet} />}
       {guestEdit && <GuestModal guest={guest} onDone={renameGuest} onCancel={() => setGuestEdit(false)} />}
       </div>
     </div>
