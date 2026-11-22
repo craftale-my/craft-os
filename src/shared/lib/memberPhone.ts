@@ -1,5 +1,5 @@
-// src/qr/member/phone.ts
-/** Malaysian mobile numbers on the QR page (spec 2026-11-22-members-phone-points-design.md §4). The rule is
+// src/shared/lib/memberPhone.ts
+/** Malaysian mobile numbers (the QR page, the till and the back office) (spec 2026-11-22-members-phone-points-design.md §4). The rule is
  *  exactly the server's (`member_phone_normalise` and member-auth's `normalisePhone`): drop spaces, tabs,
  *  brackets, dots and dashes; drop `+60` / `60` / `0060`, then one `0`; accept `1(1\d{8}|[02-9]\d{7})`. */
 
@@ -18,4 +18,9 @@ export function maskPhone(e164: string): string {
 export function formatPhone(e164: string): string {
   const m = /^\+60(1\d)(\d{3,4})(\d{4})$/.exec(e164)
   return m ? `+60 ${m[1]}-${m[2]} ${m[3]}` : e164
+}
+
+/** `+60123456789` → `••6789`: the till's short form (bill column, receipt). */
+export function shortMask(e164: string): string {
+  return `••${e164.replace(/\D/g, '').slice(-4)}`
 }

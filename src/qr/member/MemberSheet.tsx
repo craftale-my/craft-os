@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import Mascot from '../Mascot'
 import type { MemberApi, MemberEntry, RequestReason, VerifyReason } from './memberApi'
 import type { Member } from './useMember'
-import { formatPhone, maskPhone, normalisePhone } from './phone'
+import { formatPhone, maskPhone, normalisePhone } from '../../shared/lib/memberPhone'
 
 export const RESEND_SECONDS = 60
 const CODE_LENGTH = 6

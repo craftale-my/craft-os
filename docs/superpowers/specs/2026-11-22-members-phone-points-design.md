@@ -43,11 +43,13 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
 
 ### Staff (POS)
 
-- Bill actions: `Member` → enter a phone number → `Attach`. No code — staff are trusted, and the action
-  is logged with the staff id. A number not yet a member is created on the spot (`New member`).
-  `Remove member` takes it off an open bill.
-- The bill column shows `Member ••6789` under the bill number; the receipt prints
-  `Member ••6789   Points earned 42`.
+- Bill actions: `Member` (on any open bill, right after `Clear QR cart`) → enter a phone number → `Attach`.
+  No code — staff are trusted, and the action is logged with the staff id. A number not yet a member is
+  created on the spot (`New member`). A bill that has a member opens on it (`Member +60 12-345 6789 · 120
+  points`) with `Change` and `Remove member`; `Remove member` takes it off an open bill. Off while offline.
+- The bill column shows `Member ••6789` under the bill number; the receipt of a paid bill whose member
+  earned at least 1 point prints `Member` and `Points earned 42` after the totals (the printer is
+  ASCII-only, so the number prints as `**6789`).
 - Splitting: each part bill carries the member of its parent; points follow what each part pays.
 
 ### Owner (back office)
@@ -153,6 +155,11 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
   and when a signed-in guest opens a table where they have ordered. `qr_cart_send` and `qr_table_state`
   are not changed.
 - Edge Function `member-auth` (service role inside; never returns the code).
+- Counter (`migration-2026-11-23-members-pos.sql`, built 2026-11-23): `pos_bill_member(p_bill_id)` →
+  `{memberId, phone, phoneMasked, points, earned} | null` (a till's staff session, the bill at its outlet, any
+  status) for the bill column and the dialog; and a `before insert` trigger on `print_jobs` that adds
+  `member: {last4, pointsEarned}` to a paid bill's customer receipt (reprints too), so `pos_receipt_payload`
+  is not re-created. The trigger never stops a print job (an error leaves the payload as it was).
 - Verify script: award once per bill and only on the transition, voided bill earns nothing, refunds by
   running total, a failed earn still closes the bill, staff-meal bill earns nothing, token of a deleted
   member refused, every member function security definer with a search_path, the guest RPCs run as the
@@ -165,7 +172,9 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
 - QR: `src/qr/member/` — `memberApi.ts`, `useMember.ts` (token in `localStorage`, balance),
   `MemberSheet.tsx` (the three steps + signed-in view), `phone.ts` (pure: normalise, validate, mask; tests);
   the top-strip button; `QrApp` calls `member_link_table` after a send and on entry.
-- POS: `Member` bill action + small dialog; bill column line; receipt lines in `ticket.ts`.
+- POS: `Member` bill action + small dialog (`MemberDialog.tsx`, `billMember.ts`); bill column line; receipt
+  lines in `receipt.ts` (`memberLines`). The phone rule lives in `src/shared/lib/memberPhone.ts` for the QR
+  page, the till and the back office.
 - Back office: `Members` page and the two settings.
 
 ## 8. Failure cases

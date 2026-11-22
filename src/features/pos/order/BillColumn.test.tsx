@@ -85,3 +85,15 @@ describe('BillColumn served lines (W7 spec §6)', () => {
     expect(open.className).not.toContain('text-brown-muted')
   })
 })
+
+describe('BillColumn member (members spec §3)', () => {
+  it('"Member ••6789" under the bill number', () => {
+    render(<BillColumn {...props} billNo="261123-001" catalogName={null} onCatalog={null} member="Member ••6789" />)
+    const line = screen.getByText('Member ••6789')
+    expect(line.previousElementSibling?.textContent).toContain('Bill 261123-001')
+  })
+  it('nothing without a member', () => {
+    render(<BillColumn {...props} billNo="261123-001" catalogName={null} onCatalog={null} member={null} />)
+    expect(screen.queryByText(/Member/)).toBeNull()
+  })
+})

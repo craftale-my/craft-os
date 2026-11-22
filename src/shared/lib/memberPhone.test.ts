@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatPhone, maskPhone, normalisePhone } from './phone'
+import { formatPhone, maskPhone, normalisePhone, shortMask } from './memberPhone'
 
 describe('normalisePhone (the server rule: migration-2026-11-23-members-verify.sql M2, member-auth logic.test.ts)', () => {
   const cases: [string, string | null][] = [
@@ -33,5 +33,12 @@ describe('maskPhone / formatPhone', () => {
     expect(formatPhone('+60123456789')).toBe('+60 12-345 6789')
     expect(formatPhone('+601123456789')).toBe('+60 11-2345 6789')
     expect(formatPhone('nope')).toBe('nope')
+  })
+})
+
+describe('shortMask', () => {
+  it('the last four digits after two dots (the till)', () => {
+    expect(shortMask('+60123456789')).toBe('••6789')
+    expect(shortMask('+601100000291')).toBe('••0291')
   })
 })

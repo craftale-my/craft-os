@@ -39,6 +39,8 @@ import { payLabelFor } from '../checkout/partSplit'
 import PickerSheet from '../checkout/BillPickers'
 import ConfirmDialog, { type ConfirmRequest } from '../shell/ConfirmDialog'
 import PaxDialog from '../shell/PaxDialog'
+import MemberDialog from './MemberDialog'
+import { clearBillMember, fetchBillMember, memberLine, setBillMember, type BillMember } from './billMember'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const BILL_GONE = 'This bill is no longer open.'
@@ -55,6 +57,7 @@ type Dialog =
   | { kind: 'move' }
   | { kind: 'pax'; purpose: 'set' | 'open_qr' }
   | { kind: 'catalog' }
+  | { kind: 'member' }
   | null
 
 /** The order screen (spec §2): categories | product tiles | bill, replacing the old BillPanel and
@@ -237,6 +240,15 @@ export default function OrderScreen({
     return () => { alive = false }
   }, [bill?.id, refreshKey, localKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const loaded = !bill || (items !== null && !itemsError)            // only then is it known whether the bill is empty
+  // members spec §3: the bill's member for the column line and the Member dialog; a failed read shows no line
+  const [member, setMember] = useState<BillMember | null>(null)
+  useEffect(() => { setMember(null) }, [bill?.id])
+  useEffect(() => {
+    if (!bill) return
+    let alive = true
+    fetchBillMember(bill.id).then((m) => { if (alive) setMember(m) }, () => undefined)
+    return () => { alive = false }
+  }, [bill?.id, refreshKey, localKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const billDisc = bill ? storedDiscount(bill) : null
   const view = billView({
@@ -370,6 +382,7 @@ export default function OrderScreen({
     } else if (a === 'pax') setDialog({ kind: 'pax', purpose: 'set' })
     else if (a === 'open_qr') setDialog({ kind: 'pax', purpose: 'open_qr' })
     else if (a === 'pause_qr' || a === 'resume_qr') void togglePause()
+    else if (a === 'member' && bill) setDialog({ kind: 'member' })
     else if (a === 'clear_qr_cart' && table) {
       setConfirm({ title: 'Clear QR cart', message: `Remove everything guests have added on their phones for Table ${table.label} but not sent yet? Orders already sent are not affected.`,
         confirmLabel: 'Clear', danger: true, onConfirm: () => {
@@ -501,6 +514,7 @@ export default function OrderScreen({
         onPax={target.kind === 'table' ? () => setDialog({ kind: 'pax', purpose: 'set' }) : null}
         catalogName={current?.name ?? null}
         partPaidSen={partPaid}
+        member={member ? memberLine(member.phone) : null}
         catalogIsExtra={!!current && !current.isDefault}
         onCatalog={catalogs && (catalogs.length > 1 || (catalogId === null && catalogs.length > 0)) && !sending && takesNewItems(target) ? () => setDialog({ kind: 'catalog' }) : null}
         view={view}
@@ -545,6 +559,12 @@ export default function OrderScreen({
       )}
       {dialog?.kind === 'pax' && (
         <PaxDialog title={title} current={shownPax(target, bill)} currentChildren={shownChildren(target, bill)} onPick={pickPax} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'member' && (
+        <MemberDialog billNo={bill.bill_no} current={member}
+          onAttach={async (phone) => { const m = await setBillMember(bill.id, phone); setMember(m); setLocalKey((k) => k + 1); return m }}
+          onRemove={async () => { await clearBillMember(bill.id); setMember(null); setLocalKey((k) => k + 1) }}
+          onClose={() => setDialog(null)} />
       )}
       {dialog?.kind === 'catalog' && (
         <PickerSheet title="Catalog" hint="This order is priced from the catalog you choose."

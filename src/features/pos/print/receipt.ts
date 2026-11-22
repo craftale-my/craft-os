@@ -73,6 +73,14 @@ export interface ReceiptPayload {
   payments: ReceiptPayment[]
   changeSen: number
   footer: string
+  /** members spec §3: added by the print_jobs_member_line trigger (migration-2026-11-23-members-pos.sql) to a paid
+   *  bill's receipt when its member earned at least 1 point; absent otherwise and on receipts queued before it */
+  member?: ReceiptMember | null
+}
+
+export interface ReceiptMember {
+  last4: string        // the member's number, last four digits
+  pointsEarned: number // this bill's earn row
 }
 
 /** A short slip printed on the receipt printer when a paid bill is refunded. */
@@ -221,6 +229,13 @@ function bodyLines(r: BodyInput, cols: number): string[] {
   ]
 }
 
+/** "Member ••6789" and "Points earned 42" after the totals. The printer is ASCII-only, so the dots print as
+ *  "**". Nothing without a member or under 1 point. */
+export function memberLines(m: ReceiptMember | null | undefined, cols: number): string[] {
+  if (!m || !(m.pointsEarned >= 1)) return []
+  return [...lr('Member', `**${m.last4}`, cols), ...lr('Points earned', String(m.pointsEarned), cols)]
+}
+
 /** Each payment (a part's labelled "Part 1 - Cash"; cash shows what was handed over), then Change. */
 function paymentLines(payments: ReceiptPayment[], changeSen: number, cols: number): string[] {
   return [
@@ -247,6 +262,7 @@ export function renderReceiptLines(input: ReceiptPayload, cols: number): string[
   return [
     ...headLines(r, cols),
     ...bodyLines(r, cols),
+    ...memberLines(r.member, cols),
     ...paymentLines(r.payments, r.changeSen, cols),
     rule,
     ...charges,

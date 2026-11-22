@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { paxChildrenNote, money, toAscii, renderReceiptLines, renderRefundSlipLines, splitFromLine, lr, center, partLabel, renderPartReceiptLines, type PartReceiptPayload, type ReceiptPayload, type RefundSlipPayload } from './receipt'
+import { memberLines, paxChildrenNote, money, toAscii, renderReceiptLines, renderRefundSlipLines, splitFromLine, lr, center, partLabel, renderPartReceiptLines, type PartReceiptPayload, type ReceiptPayload, type RefundSlipPayload } from './receipt'
 
 // Receipt #87846 (Craft Cafe Cheras, 22/10/2026): the four prices, the totals and the
 // payment are the real ones; item names, header numbers and the time are placeholders
@@ -258,5 +258,29 @@ describe('children in the pax (W7 spec §5)', () => {
     expect(renderReceiptLines({ ...r87846, paxChildren: 2 }, 48)).toContain(lr('Table pax', '4 (2 children)', 48)[0])
     expect(renderReceiptLines({ ...r87846, paxChildren: null }, 48)).toEqual(renderReceiptLines(r87846, 48))
     expect(renderReceiptLines(r87846, 48)).toContain('Table pax                                      4')
+  })
+})
+
+describe('member lines (members spec §3)', () => {
+  it('"Member" and "Points earned" right after the Total band, before the payments', () => {
+    const lines = renderReceiptLines({ ...r87846, member: { last4: '6789', pointsEarned: 92 } }, 48)
+    const total = lines.findIndex((l) => l.startsWith('Total (MYR)'))
+    expect(total).toBeGreaterThan(0)
+    expect(lines[total + 1]).toBe('='.repeat(48))
+    expect(lines[total + 2]).toBe('Member' + ' '.repeat(48 - 6 - 6) + '**6789')
+    expect(lines[total + 3]).toBe('Points earned' + ' '.repeat(48 - 13 - 2) + '92')
+    expect(lines[total + 4].startsWith("Touch 'n Go")).toBe(true)
+  })
+  it('nothing without a member, under 1 point, or on a receipt queued before members', () => {
+    const plain = renderReceiptLines(r87846, 48)
+    expect(renderReceiptLines({ ...r87846, member: null }, 48)).toEqual(plain)
+    expect(renderReceiptLines({ ...r87846, member: { last4: '6789', pointsEarned: 0 } }, 48)).toEqual(plain)
+    expect(plain.some((l) => l.startsWith('Member') || l.startsWith('Points earned'))).toBe(false)
+  })
+  it('fits a 32-column printer', () => {
+    expect(memberLines({ last4: '0291', pointsEarned: 1 }, 32)).toEqual([
+      'Member                    **0291',
+      'Points earned                  1',
+    ])
   })
 })

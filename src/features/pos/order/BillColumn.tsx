@@ -20,6 +20,7 @@ export default function BillColumn(p: {
   onPax: (() => void) | null          // null = no pax here (takeaway)
   catalogName: string | null
   partPaidSen?: number                 // what the bill's parts paid (split spec §3.5)
+  member?: string | null              // "Member ••6789" (members spec §3); null = no member
   catalogIsExtra: boolean             // an additional catalog: amber
   onCatalog: (() => void) | null      // null = cannot switch now
   view: BillView
@@ -69,6 +70,7 @@ export default function BillColumn(p: {
               className="min-h-11 rounded-lg border border-amber-500 bg-amber-50 px-3 text-sm text-amber-800">Choose catalog</button>
           )}
         </div>
+        {p.member && <div className="mt-0.5 text-xs font-medium text-brown-dark">{p.member}</div>}
       </header>
       {p.notice && <p role="status" className="mx-3 mt-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{p.notice}</p>}
       <div className="flex-1 overflow-y-auto p-3 text-sm">
