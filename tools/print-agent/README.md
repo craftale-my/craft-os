@@ -1,24 +1,39 @@
 # Craft POS print agent
 
-Prints the kitchen tickets, receipts and Z reports of **one branch** on LAN printers
-(raw ESC/POS on TCP 9100). It replaces the iPad's print host when a branch has an
+Prints the kitchen tickets, receipts and Z reports of **one outlet** on LAN printers
+(raw ESC/POS on TCP 9100). It replaces the iPad's print host when an outlet has an
 always-on computer next to its printers.
+
+The agent is a **device**, like a POS tablet: it pairs once, HQ approves it in Craft OS
+for one outlet, and from then on it prints that outlet's jobs on that outlet's routes of
+kind `agent`. It needs no staff login.
 
 ## Setup
 
-1. Copy `.env.example` to `.env` (git-ignored) and fill it in. **Dev project only.**
-2. `BRANCH_ID` is the branch this agent prints for (`branches.id`). The agent refuses to
-   start without it, and prints only that branch's jobs on that branch's routes of kind
-   `agent`.
-3. `AGENT_EMAIL` / `AGENT_PASSWORD` must be a login of **staff of that same branch**.
-   The print functions (`claim_print_job`, `finish_print_job`, `requeue_print_job`) act
-   only on jobs of the caller's own branch, so a login of another branch would skip every
-   job — the agent checks this at start and stops with a message.
-4. Run from the repo root:
+1. Copy `.env.example` to `.env` (git-ignored) and fill in `SUPABASE_URL` and
+   `SUPABASE_ANON_KEY`. **Dev project only.** `TICKET_COLS` and `MAX_AGE_MIN` are optional.
+2. Pair, from the repo root (the name is optional; the default is this computer's name):
+
+   ```bash
+   node --env-file=tools/print-agent/.env tools/print-agent/pair.ts "Cheras bar computer"
+   ```
+
+   It prints `Pairing code: ABC-123 — approve it in Craft OS → Devices (kind: Print agent).`
+   HQ opens Craft OS → POS → Devices → Pending requests, checks the code, picks the outlet,
+   keeps the kind **Print agent** and approves. The command then writes
+   `tools/print-agent/.device.json` (git-ignored, readable only by you) and says
+   `Paired. Start the agent with: …`. A rejected or expired request says so; run the command
+   again for a new code.
+3. Run:
 
    ```bash
    node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
    ```
+
+To pair again (another outlet, a new computer): unpair the old agent in Devices, delete
+`tools/print-agent/.device.json`, run the pair command. When HQ unpairs the agent it stops
+with `This print agent was unpaired — run the pair command again.` (within a minute).
+Never copy `.device.json` to another computer or into chat: it is the agent's password.
 
 Routes are read at start: restart the agent after changing a route in POS settings.
 

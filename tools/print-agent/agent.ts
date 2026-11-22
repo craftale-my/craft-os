@@ -1,6 +1,7 @@
-// Craft POS print agent — prints print_jobs for routes of kind 'agent' of ONE branch (BRANCH_ID)
-// Sends raw ESC/POS bytes to the printer on TCP 9100.
-// Run:  node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
+// Craft POS print agent — prints print_jobs for routes of kind 'agent' of the outlet its device was
+// approved for. Sends raw ESC/POS bytes to the printer on TCP 9100.
+// Pair once:  node --env-file=tools/print-agent/.env tools/print-agent/pair.ts
+// Run:        node --env-file=tools/print-agent/.env tools/print-agent/agent.ts
 import { createClient } from '@supabase/supabase-js'
 import { renderJobDoc } from '../../src/features/pos/print/printJob.ts'
 import { encodeEscPosDoc } from '../../src/features/pos/print/escpos.ts'
@@ -8,7 +9,9 @@ import { processJob, type PrintHostDeps, type PrintJob } from '../../src/feature
 import { assertDevDatabase } from '../../src/features/pos/guard.ts'
 import { sendRaw } from './sendRaw.ts'
 import { checkPrinter, interpretStatus, PAPER_STATUS, queryStatus } from './printerStatus.ts'
-import { branchFilter, branchIdFrom, isAgentJob, loginBranchProblem, staleMinutes } from './branch.ts'
+import { branchFilter, isAgentJob, staleMinutes } from './branch.ts'
+import { readDeviceFile } from './deviceFile.ts'
+import { isUnpairedError, messageOf, parseWhoami, startAgent, UNPAIRED } from './pairing.ts'
 
 function env(key: string): string {
   const value = process.env[key]
@@ -20,10 +23,15 @@ const errMessage = (e: unknown): string => (e instanceof Error ? e.message : Str
 
 type AgentJob = PrintJob & { branch_id?: string; created_at?: string; attempts?: number }
 
+/** The device was unpaired in Craft OS (or its sign-in no longer works): stop, so nobody thinks it prints. */
+function stopUnpaired(): never {
+  console.error(UNPAIRED)
+  process.exit(1)
+}
+
 async function main(): Promise<void> {
   const url = env('SUPABASE_URL')
   assertDevDatabase(url)
-  const branchId = branchIdFrom(process.env)   // refuses to start without it
   const supabase = createClient(url, env('SUPABASE_ANON_KEY'), { auth: { persistSession: false } })
   let maxAgeMin = 30
   if (process.env.MAX_AGE_MIN !== undefined) {
@@ -38,18 +46,32 @@ async function main(): Promise<void> {
     else console.warn(`Invalid TICKET_COLS "${process.env.TICKET_COLS}"; using 42.`)
   }
 
-  const { data: signIn, error: authError } = await supabase.auth.signInWithPassword({
-    email: env('AGENT_EMAIL'),
-    password: env('AGENT_PASSWORD'),
+  // the device account from the pair command, and the outlet it was approved for
+  const whoami = async () => {
+    const { data, error } = await supabase.rpc('pos_agent_whoami')
+    if (error) throw error
+    return parseWhoami(data)
+  }
+  const start = await startAgent({
+    readDevice: () => readDeviceFile(),
+    signIn: async (email, password) => (await supabase.auth.signInWithPassword({ email, password })).error,
+    whoami,
   })
-  if (authError) throw authError
-  // the print RPCs act only on jobs of the login's own branch: it must be BRANCH_ID
-  const userId = signIn.user?.id
-  if (!userId) throw new Error('Sign-in returned no user')
-  const { data: me, error: meError } = await supabase.from('staff').select('branch_id').eq('id', userId).maybeSingle()
-  if (meError) throw meError
-  const loginProblem = loginBranchProblem((me as { branch_id: string | null } | null)?.branch_id ?? null, branchId)
-  if (loginProblem) throw new Error(loginProblem)
+  if (!start.ok) {
+    console.error(start.message)
+    process.exit(1)
+  }
+  const branchId = start.who.outletId
+  console.log(`Paired as "${start.who.deviceName}" — printing for ${start.who.outletName}.`)
+  // a banned device's refresh token fails: Supabase signs it out
+  supabase.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') stopUnpaired() })
+  // every minute: Devices shows the agent as seen, and an unpairing stops it within a minute
+  setInterval(() => {
+    whoami().catch((e) => {
+      if (isUnpairedError(e)) stopUnpaired()
+      console.warn(`Could not check the pairing: ${messageOf(e)}`)
+    })
+  }, 60_000)
 
   const { data: routes, error: routeError } = await supabase
     .from('print_routes')
@@ -58,7 +80,7 @@ async function main(): Promise<void> {
     .eq('branch_id', branchId)
   if (routeError) throw routeError
   const addressOf = new Map<string, string>((routes ?? []).map((r: { name: string; address: string }) => [r.name, r.address]))
-  console.log('branch:', branchId, 'agent routes:', Object.fromEntries(addressOf))
+  console.log('agent routes:', Object.fromEntries(addressOf))
   console.log('Routes are read at startup; restart the agent after changing print_routes.')
   if (addressOf.size === 0) {
     console.warn("No route has kind 'agent', so there is nothing to print. Waiting; point a route at the agent and restart.")
@@ -102,12 +124,12 @@ async function main(): Promise<void> {
     const deps: PrintHostDeps = {
       claim: async (id) => {
         const { data, error } = await supabase.rpc('claim_print_job', { p_id: id })
-        if (error) throw error
+        if (error) { if (isUnpairedError(error)) stopUnpaired(); throw error }
         return data === true
       },
       finish: async (id, ok, err) => {
         const { error } = await supabase.rpc('finish_print_job', { p_id: id, p_ok: ok, p_error: err })
-        if (error) throw error
+        if (error) { if (isUnpairedError(error)) stopUnpaired(); throw error }
       },
       print: async (j) => {
         await sendInTurn(addressOf.get(j.route)!, encodeEscPosDoc(renderJobDoc(j.payload, cols)))
