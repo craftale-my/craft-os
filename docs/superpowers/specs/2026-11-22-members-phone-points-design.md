@@ -1,0 +1,153 @@
+# Members: phone sign-in and points — design
+
+Date: 2026-11-22 · Status: approved by the owner in conversation, awaiting review of this text
+Builds on: QR shared table cart (guests, `qr_cart_send`), POS checkout (`pos_pay_and_close`, refunds).
+
+## 1. Goal
+
+A guest signs in on the QR page with their phone number, confirmed once by an SMS code, and from then
+on collects points for what their table pays. Staff can also put a member on a bill at the counter.
+The guest sees their points on the QR page.
+
+**This version:** join / sign in, earn, see the balance, staff attach at the counter, a member list for
+the owner. **Not in this version** (each its own later spec): redeeming points, tiers, vouchers, birthday
+rewards, importing Feedme's members, marketing messages, a member page outside the QR page.
+
+## 2. Owner decisions (2026-11-22)
+
+- Sign-in is by phone number **with an SMS code**.
+- Earn only in this version; redeeming comes later (it has to work with the discount rules).
+- Earn rate: **1 point per RM 1 paid** (my proposal, accepted with the design).
+
+## 3. What people see
+
+### Guest (QR page)
+
+- In the top strip, beside the guest chip: `Join & earn points` (not signed in) or `★ 120 pts` (signed in).
+- Tap → a sheet:
+  1. `Collect points with your phone number` — a field with `+60` fixed in front, numeric keypad;
+     button `Send code`. Under it: `We text you a 6-digit code. We only use your number for your points.`
+  2. `Enter the code we sent to +60 12-345 6789` — six boxes (`autocomplete="one-time-code"`), `Confirm`;
+     `Send again` becomes available after 60 s; `Change number`.
+  3. Signed in: `You're in! Points from this table's bill go to +60 ••• ••6789.` and the balance.
+- Signed in, the sheet shows: the masked number, `120 points`, the last five entries
+  (`22 Nov · Craft Cafe Cheras · +42`), `How points work: 1 point for every RM 1 you pay.` and `Sign out`.
+- The phone stays signed in on this device for 180 days (a token in `localStorage`, usable at any table
+  of ours).
+- **Which bill earns:** when a signed-in guest's phone sends the table's order (or is at the table when
+  it is sent and has lines in it), the bill is linked to that member if it has none yet. One member per
+  bill — the first to be linked. A later guest who signs in at a table whose bill already has a member
+  sees `This table's points are going to +60 ••• ••1234.` The counter can change it.
+- Points arrive when the bill is paid at the counter; the page then shows the new balance on its next read.
+
+### Staff (POS)
+
+- Bill actions: `Member` → enter a phone number → `Attach`. No code — staff are trusted, and the action
+  is logged with the staff id. A number not yet a member is created on the spot (`New member`).
+  `Remove member` takes it off an open bill.
+- The bill column shows `Member ••6789` under the bill number; the receipt prints
+  `Member ••6789   Points earned 42`.
+- Splitting: each part bill carries the member of its parent; points follow what each part pays.
+
+### Owner (back office)
+
+- `Members` page: search by number; list with joined date, balance, last visit; a member's ledger;
+  `Adjust points` (± with a required reason) for the owner role only.
+- Settings: earn rate (points per RM 1, default 1), on/off switch `Members on QR page`.
+
+## 4. Rules
+
+- **Earning:** `floor(net paid in RM × rate)`, where net paid = the bill's total actually paid (after
+  discounts, including service charge and tax, after rounding), computed when the bill closes as paid.
+  Voided bills earn nothing. A refund writes a negative entry for `floor(refunded RM × rate)`, never
+  taking that bill's earned points below zero.
+- **Ledger, not a counter:** `member_points` rows (`earn`, `refund`, `adjust`), each with the bill or the
+  reason; the balance is their sum (kept in `members.points` by the same transaction for fast reads).
+  One `earn` row per bill (unique), so a retried close cannot pay twice.
+- **Phone numbers:** stored in E.164 (`+60123456789`). Malaysian mobile numbers only in this version
+  (`+60 1x`, 9–10 digits after `+60`); the leading `0` a guest types is dropped. Shown masked
+  (`+60 ••• ••6789`) everywhere on the guest side and on receipts; staff and owner see it in full.
+- **Staff Meal and staff discounts:** a bill on the Staff Meal catalog earns nothing.
+
+## 5. Sign-in and security
+
+Members are **not** Supabase Auth users: every existing policy treats `authenticated` as staff, and a
+guest must never hold such a session. Members get their own small token scheme, all behind
+`security definer` functions callable by `anon`.
+
+- **Request a code** — Edge Function `member-auth` (`POST /request`): validates the number, rate-limits,
+  creates a 6-digit code (stored hashed, expires in 5 minutes, 5 attempts), asks the SMS provider to send
+  `Craft Cafe: your code is 123456. It expires in 5 minutes.`
+- **Confirm** — `POST /verify`: checks the code; creates the member if new; returns a member token
+  (32 random bytes; only its SHA-256 is stored, with device label and expiry 180 days).
+- **Using it** — the QR page passes the token to `member_me(p_token)` (balance and last entries) and to
+  `qr_cart_send` (new optional parameter) so the server can link the bill. `member_sign_out(p_token)`.
+- **Limits:** per number 3 codes per 15 minutes and 10 per day; per IP 10 requests per hour; a global
+  daily cap on SMS sent (default 300, a setting) that turns sign-in off with
+  `Sign-in is busy right now. Please ask our staff to add your number.` — protects the SMS bill.
+- **No enumeration:** `/request` answers the same for a member and a non-member.
+- **SMS provider:** behind one small interface (`sendSms(to, text)`) in the function, chosen by the
+  secret `SMS_PROVIDER`. Adapters in this version: `log` (dev: no SMS; the code is written to the
+  `member_otps.dev_code` column, readable only by SQL — used for testing on dev) and one real provider.
+  **The owner chooses and signs up for the provider**; until its secrets are set on a project the
+  function runs in `log` mode on dev and answers `Sign-in is not available yet.` on prod.
+- **Privacy (PDPA):** the join sheet links a short notice (what we store: number, points, visits; why;
+  how to ask for deletion). `member_delete` (owner) removes the number and keeps anonymous ledger rows.
+
+## 6. Server
+
+`supabase/migration-2026-11-22-members.sql` (+ `-verify.sql`), dev first:
+
+- Tables: `members` (id, phone unique, points, joined_at, last_visit_at, deleted_at),
+  `member_points` (member_id, kind, points, bill_id, reason, staff_id, created_at; unique earn per bill),
+  `member_otps` (phone, code_hash, expires_at, attempts, ip, created_at, dev_code),
+  `member_tokens` (member_id, token_hash, expires_at, last_used_at),
+  `member_settings` (single row: rate, qr_enabled, sms_daily_cap).
+  RLS on all; no policy for `anon`; staff read through functions; owner manages.
+- `bills.member_id uuid references members`.
+- Functions: `member_me`, `member_sign_out` (anon, token); `pos_bill_set_member(p_bill_id, p_phone)` /
+  `pos_bill_clear_member` (staff, own branch, open bill); `member_adjust` (owner); `member_search`;
+  internal `member_award(p_bill_id)` called from `pos_pay_and_close` and `member_refund(p_bill_id, p_sen)`
+  from the refund function — both re-created from their current text with the one added call.
+- `qr_cart_send` gains `p_member_token text default null`; `qr_table_state` returns the bill's masked
+  member number.
+- Edge Function `member-auth` (service role inside; never returns the code).
+- Verify script: award once per bill, refund floors at zero, staff-meal bill earns nothing, token of a
+  deleted member refused, anon cannot read any member table; `rollback; select 'VERIFY OK'`.
+
+## 7. Client
+
+- QR: `src/qr/member/` — `memberApi.ts`, `useMember.ts` (token in `localStorage`, balance),
+  `MemberSheet.tsx` (the three steps + signed-in view), `phone.ts` (pure: normalise, validate, mask; tests);
+  the top-strip button; `QrApp` passes the token to `table.send`.
+- POS: `Member` bill action + small dialog; bill column line; receipt lines in `ticket.ts`.
+- Back office: `Members` page and the two settings.
+
+## 8. Failure cases
+
+| Case | What happens |
+|---|---|
+| SMS does not arrive | `Send again` after 60 s; after the per-number limit: `Too many tries. Please ask our staff to add your number.` |
+| Wrong code 5 times | The code is dead; `Send again`. |
+| Token expired / member deleted | The page quietly returns to `Join & earn points`. |
+| Bill paid while the guest was not linked | No points; staff can attach the member before paying. After payment: owner `Adjust points`. |
+| Two members at one table | First linked wins; the second sees whose number the points go to. |
+| Bill moved or merged | The surviving bill keeps its own member; if it has none it takes the moved bill's. |
+| Front end before SQL | The member button is hidden when `member_me`/settings are missing or `qr_enabled` is off. |
+
+## 9. Testing
+
+Unit: `phone.ts`; sheet steps; POS dialog. SQL verify as §6. Edge function: limits and no-enumeration,
+in `log` mode. Dev browser walk: join with a dev code, order, staff pays, balance rises; refund lowers
+it; staff attach at the counter; second guest sees the notice.
+
+## 10. Rollout and what waits for the owner
+
+SQL → Edge Function (+ secrets) → back office → POS → QR. Dev can run end to end in `log` mode now.
+**Prod needs the owner's SMS provider account** (sender name registration in Malaysia can take days).
+
+## 11. Build order
+
+1. SQL: tables, ledger, award/refund, verify. 2. Edge Function with `log` adapter. 3. QR sheet + token.
+4. Link on send + table state. 5. POS attach + receipt. 6. Back office page + settings. 7. Real SMS adapter
+once the provider is chosen.
