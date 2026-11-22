@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext'
 import {
-  checkSettings, cleanSettings, emptySettings, errorText, KIND_LABEL, openProblems, retryFor, STATE_CODES, toForm,
-  type EinvoiceDoc, type SettingsField, type SettingsForm,
+  checkSettings, cleanSettings, emptySettings, errorText, KIND_LABEL, openProblems, retryFor, retryForAttempt, STATE_CODES, toForm,
+  isNeedsCheck, NEEDS_CHECK_COPY,
+  type Attempt, type EinvoiceDoc, type JobRun, type LargeBill, type Retry, type SettingsField, type SettingsForm,
 } from './einvoice'
 import {
-  callEinvoice, fetchBranchNames, fetchDocuments, fetchReceiptDetails, fetchSettings, saveSettings, validationLink,
-  type EinvoiceStatus,
+  callEinvoice, fetchBranchNames, fetchDocuments, fetchJobRuns, fetchLargeBills, fetchReceiptDetails, fetchSettings,
+  fetchStoppedAttempts, saveSettings, validationLink, type EinvoiceStatus,
 } from './einvoiceApi'
+import { EinvoiceJobRuns } from './EinvoiceJobRuns'
+import { EinvoiceLargeBills } from './EinvoiceLargeBills'
+import { EinvoiceOutlets } from './EinvoiceOutlets'
 
 const rm = (sen: number) => `RM ${(sen / 100).toFixed(2)}`
 const day = (iso: string) => new Date(iso).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -47,6 +51,9 @@ export default function EinvoicePage() {
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<SettingsField, string>>>({})
   const [saved, setSaved] = useState(false)
   const [docs, setDocs] = useState<EinvoiceDoc[]>([])
+  const [stopped, setStopped] = useState<Attempt[]>([])
+  const [largeBills, setLargeBills] = useState<LargeBill[]>([])
+  const [runs, setRuns] = useState<JobRun[]>([])
   const [branches, setBranches] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<EinvoiceStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
@@ -62,8 +69,10 @@ export default function EinvoicePage() {
   }
 
   const loadDocs = async () => {
-    const [d, b] = await Promise.all([fetchDocuments(), fetchBranchNames()])
-    setDocs(d); setBranches(b)
+    const [d, b, st, lb, jr] = await Promise.all([
+      fetchDocuments(), fetchBranchNames(), fetchStoppedAttempts(), fetchLargeBills(), fetchJobRuns(),
+    ])
+    setDocs(d); setBranches(b); setStopped(st); setLargeBills(lb); setRuns(jr)
   }
 
   useEffect(() => {
@@ -101,17 +110,25 @@ export default function EinvoicePage() {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
-  const retry = async (d: EinvoiceDoc) => {
-    const r = retryFor(d)
-    if (!r) return
-    setBusy(d.id); setError(null); setNotice(null)
+  const runRetry = async (key: string, name: string, r: Retry) => {
+    setBusy(key); setError(null); setNotice(null)
     const res = await callEinvoice<{ status?: string; nothingToDo?: boolean }>(r.body)
     setBusy(null)
-    if (!res.ok) { setError(`${d.code_number}: ${res.error}`); return }
+    if (!res.ok) { setError(`${name}: ${res.error}`); return }
     setNotice(res.data.nothingToDo
-      ? `${d.code_number}: every bill in that month is already covered.`
-      : `${d.code_number}: ${r.label === 'Check with LHDN' ? 'status refreshed' : 'sent again'}${res.data.status ? ` — now ${res.data.status}` : ''}.`)
+      ? `${name}: every bill in that month is already covered.`
+      : `${name}: ${r.label === 'Check with LHDN' ? 'status refreshed' : 'sent again'}${res.data.status ? ` — now ${res.data.status}` : ''}.`)
     try { await loadDocs() } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+  }
+  const retry = (d: EinvoiceDoc) => {
+    const r = retryFor(d)
+    if (r) void runRetry(d.id, d.code_number, r)
+  }
+  const attemptName = (a: Attempt) =>
+    `${KIND_LABEL[a.kind]} · ${branches[a.branch_id] ?? 'Outlet'}${a.period_start ? ` · ${monthName(a.period_start)}` : ''}`
+  const issuedLarge = (message: string) => {
+    setError(null); setNotice(message)
+    void loadDocs().catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }
 
   const problems = openProblems(docs)
@@ -132,9 +149,9 @@ export default function EinvoicePage() {
       {error && <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       {notice && <p className="rounded bg-green-50 p-3 text-sm text-green-800">{notice}</p>}
 
-      {problems.length > 0 && (
+      {problems.length + stopped.length > 0 && (
         <section className="rounded-xl border border-red-200 bg-red-50 p-4">
-          <h2 className="font-semibold text-red-800">Needs attention ({problems.length})</h2>
+          <h2 className="font-semibold text-red-800">Needs attention ({problems.length + stopped.length})</h2>
           <p className="text-xs text-red-700">LHDN did not accept these. Fix the cause (usually the company details below), then press Retry.</p>
           <ul className="mt-2 space-y-2 text-sm">
             {problems.map((d) => {
@@ -154,6 +171,18 @@ export default function EinvoicePage() {
                 </li>
               )
             })}
+            {stopped.map((a) => (
+              <li key={a.key} className="flex items-start justify-between gap-3 rounded bg-white p-2">
+                <div>
+                  <div className="font-medium">{attemptName(a)}</div>
+                  <div className="text-xs text-red-700">Stopped after {a.failures} failed attempts{a.last_error ? `: ${a.last_error}` : ''}</div>
+                </div>
+                <button disabled={busy === a.key} onClick={() => void runRetry(a.key, attemptName(a), retryForAttempt(a))}
+                  className="shrink-0 rounded bg-brown-btn px-3 py-1 text-xs text-white hover:bg-brown-btn-hover disabled:opacity-50">
+                  {busy === a.key ? 'Sending…' : 'Retry'}
+                </button>
+              </li>
+            ))}
           </ul>
         </section>
       )}
@@ -185,6 +214,10 @@ export default function EinvoicePage() {
           </div>
         )}
       </section>
+
+      <EinvoiceOutlets docs={docs} />
+
+      <EinvoiceLargeBills bills={largeBills} branches={branches} onIssued={issuedLarge} />
 
       <section className="rounded-xl border border-border bg-card p-4">
         <h2 className="font-semibold">Company details</h2>
@@ -220,10 +253,12 @@ export default function EinvoicePage() {
         </div>
       </section>
 
+      <EinvoiceJobRuns runs={runs} />
+
       <section className="rounded-xl border border-border bg-card p-4">
         <h2 className="font-semibold">Sent to LHDN</h2>
         {docs.length === 0 ? (
-          <p className="mt-2 text-sm text-brown-muted">Nothing sent yet. The first monthly consolidated e-invoice goes out on the 1st after a branch starts using this POS.</p>
+          <p className="mt-2 text-sm text-brown-muted">Nothing sent yet. An outlet's first monthly consolidated e-invoice goes out on the 1st after its "Report e-invoices from" date.</p>
         ) : (
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-sm">
@@ -239,7 +274,14 @@ export default function EinvoicePage() {
                   return (
                     <tr key={d.id} className="border-t border-border align-top">
                       <td className="py-2 whitespace-nowrap">{day(d.created_at)}</td>
-                      <td>{KIND_LABEL[d.kind]}<div className="text-xs text-brown-muted">{d.code_number}</div></td>
+                      <td>{KIND_LABEL[d.kind]}<div className="text-xs text-brown-muted">{d.code_number}</div>
+                        {isNeedsCheck(d) && (
+                          <div className="mt-1 max-w-xs rounded bg-amber-50 p-1 text-xs text-amber-900">
+                            <div>{NEEDS_CHECK_COPY}</div>
+                            {errorText(d.errors) && <div className="text-red-700">{errorText(d.errors)}</div>}
+                          </div>
+                        )}
+                      </td>
                       <td>{branches[d.branch_id] ?? '—'}</td>
                       <td>{covers(d)}</td>
                       <td className="text-right whitespace-nowrap">{rm(d.total_sen)}</td>
