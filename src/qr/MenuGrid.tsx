@@ -1,6 +1,6 @@
 import type { PosProduct } from '../features/pos/order/cart'
 import PickPill from '../features/pos/order/PickPill'
-import { priceText, productLabel, QtyBadge } from './qrParts'
+import { priceText, ProductPhoto, productLabel, QtyBadge } from './qrParts'
 
 /** The menu as a grid of two columns: a soft square photo with the name and price under it, no card box.
  *  A tile opens the item page; the badge counts the units of that product in the whole table's cart. */
@@ -21,7 +21,7 @@ export default function MenuGrid({ products, popularIds, units, onOpen }: {
             className="flex flex-col text-left disabled:opacity-50">
             <div className="relative w-full">
               {p.imageUrl
-                ? <img src={p.imageUrl} alt="" loading="lazy" className="aspect-square w-full rounded-xl object-cover" />
+                ? <ProductPhoto src={p.imageUrl} className="aspect-square w-full rounded-xl" />
                 : <div className="aspect-square w-full rounded-xl bg-border" />}
               {n > 0 && <QtyBadge n={n} className="absolute right-2 top-2" />}
             </div>

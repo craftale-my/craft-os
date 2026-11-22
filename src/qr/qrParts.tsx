@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { ChevronLeft, X } from 'lucide-react'
 import { formatSen, type PosProduct } from '../features/pos/order/cart'
+import { isAnimatedPhoto } from '../features/pos/menu/photo'
 import { avatarEmoji } from './qrGuest'
 
 /** "RM 9.00", or "from RM 9.00" when the product has several sizes. */
@@ -22,12 +23,43 @@ export function QtyBadge({ n, className = '' }: { n: number; className?: string 
   )
 }
 
+const REDUCE = '(prefers-reduced-motion: reduce)'
+const reduceNow = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(REDUCE).matches
+
+/** True while the phone asks for reduced motion; follows a change of the setting. */
+function useReducedMotion(): boolean {
+  const [on, setOn] = useState(reduceNow)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia(REDUCE)
+    const sync = () => setOn(mq.matches)
+    sync()
+    mq.addEventListener?.('change', sync)
+    return () => mq.removeEventListener?.('change', sync)
+  }, [])
+  return on
+}
+
+/** A product photo in a menu list (grid tile, list row, pairing card or row), loaded lazily. An animation
+ *  (.gif, .anim.webp) plays, except for a guest whose phone asks for reduced motion: they see the quiet
+ *  placeholder instead (a first frame would need a second file). The item page's photo always plays. */
+export function ProductPhoto({ src, className, placeholderClassName = 'bg-border' }: {
+  src: string
+  /** size and shape, shared by the photo and the placeholder */
+  className: string
+  placeholderClassName?: string
+}) {
+  const reduce = useReducedMotion()
+  if (reduce && isAnimatedPhoto(src)) return <div aria-hidden="true" className={`${className} ${placeholderClassName}`} />
+  return <img src={src} alt="" loading="lazy" className={`${className} object-cover`} />
+}
+
 /** A card of Goes well with your order: square photo, name, price; a tap opens the item page. */
 export function PickCard({ product, onOpen }: { product: PosProduct; onOpen: () => void }) {
   return (
     <button type="button" onClick={onOpen} className="flex w-36 shrink-0 flex-col text-left">
       {product.imageUrl
-        ? <img src={product.imageUrl} alt="" loading="lazy" className="aspect-square w-full rounded-xl object-cover" />
+        ? <ProductPhoto src={product.imageUrl} className="aspect-square w-full rounded-xl" placeholderClassName="bg-brown-track" />
         : <div className="aspect-square w-full rounded-xl bg-brown-track" />}
       <div className="mt-1.5 line-clamp-2 text-[15px] font-semibold leading-snug text-brown-dark">{product.name}</div>
       <div className="mt-0.5 text-[15px] text-brown-dark">{priceText(product)}</div>

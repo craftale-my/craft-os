@@ -1,6 +1,6 @@
 import type { PosProduct } from '../features/pos/order/cart'
 import PickPill from '../features/pos/order/PickPill'
-import { priceText, productLabel, QtyBadge } from './qrParts'
+import { priceText, ProductPhoto, productLabel, QtyBadge } from './qrParts'
 
 /** The menu as flat rows (reference frames 03–05): name, description and price on the left, a square
  *  photo on the right when there is one, a hairline between rows. A row opens the item page; the badge
@@ -29,7 +29,7 @@ export default function MenuList({ products, popularIds, units, onOpen }: {
               </div>
               {p.imageUrl ? (
                 <div className="relative shrink-0">
-                  <img src={p.imageUrl} alt="" loading="lazy" className="h-24 w-24 rounded-lg object-cover" />
+                  <ProductPhoto src={p.imageUrl} className="h-24 w-24 rounded-lg" />
                   {n > 0 && <QtyBadge n={n} className="absolute -right-1.5 -top-1.5" />}
                 </div>
               ) : n > 0 && <QtyBadge n={n} className="mt-0.5 shrink-0" />}

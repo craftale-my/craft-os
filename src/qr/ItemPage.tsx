@@ -6,6 +6,7 @@ import { useState, type ReactNode } from 'react'
 import { ChevronLeft, Minus, Plus } from 'lucide-react'
 import { defaultLine, formatSen, linePriceSen, toggleOption, validateLine, type OrderLine, type PosProduct } from '../features/pos/order/cart'
 import PickPill from '../features/pos/order/PickPill'
+import { ProductPhoto } from './qrParts'
 
 const ruleText = (min: number, max: number) =>
   min > 0 ? `Required · choose ${min === max ? min : `${min}–${max}`}` : `Optional · up to ${max}`
@@ -53,6 +54,7 @@ export default function ItemPage({ product, initial, from, mostPicked, pairs, bu
     <div className="pb-44">
       {product.imageUrl ? (
         <div className="relative">
+          {/* the hero always plays an animation, reduced motion or not (spec: animated photos §2) */}
           <img src={product.imageUrl} alt="" className="aspect-[4/3] max-h-[40vh] w-full object-cover" />
           {backButton(true)}
         </div>
@@ -95,7 +97,7 @@ export default function ItemPage({ product, initial, from, mostPicked, pairs, bu
               <Row key={p.id} type="checkbox" name="pairs" checked={ticked.includes(p.id)} label={p.name}
                 right={<span className="flex items-center gap-3">
                   <span>+{formatSen(sen)}</span>
-                  {p.imageUrl ? <img src={p.imageUrl} alt="" loading="lazy" className="h-12 w-12 rounded-lg object-cover" /> : <span className="h-12 w-12" />}
+                  {p.imageUrl ? <ProductPhoto src={p.imageUrl} className="h-12 w-12 rounded-lg" /> : <span className="h-12 w-12" />}
                 </span>}
                 onToggle={() => setTicked((t) => (t.includes(p.id) ? t.filter((x) => x !== p.id) : [...t, p.id]))} />
             )

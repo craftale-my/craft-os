@@ -117,7 +117,7 @@ export default function PhotoImportSection() {
       <h2 className="text-lg font-semibold">Photos from Feedme</h2>
       <p className="text-sm text-gray-500">
         Choose a zip of product photos named by Feedme product ID (e.g. <code>6512ab….jpg</code>). Each photo is matched to the
-        product imported with that ID, resized to 800 px wide and uploaded. Photos can also be added one by one in a product’s editor.
+        product imported with that ID, resized to 800 px wide and uploaded; a GIF or animated WebP (at most 4 MB and 1200 px) is uploaded as it is. Photos can also be added one by one in a product’s editor.
       </p>
       {error && <OutcomeLine outcome={{ kind: 'error', text: error }} />}
 

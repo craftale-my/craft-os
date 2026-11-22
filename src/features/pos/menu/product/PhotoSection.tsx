@@ -3,9 +3,26 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchProductExtras } from '../slotsApi'
 import { publicPhotoUrl, removeProductPhoto, uploadProductPhoto } from '../photoUpload'
 import { OutcomeLine, Section, errorText, linkBtnCls, type Outcome } from '../editorUi'
+import { animatedLabel, isAnimatedPhoto } from '../photo'
 
-/** The product's photo, shown on the QR menu (the counter keeps text tiles). A new photo is
- *  resized in the browser, uploaded, and then replaces the old one, whose file is deleted.
+/** "Animated · 2.3 MB" under an animation's preview; the size is read from the stored file's
+ *  Content-Length (just "Animated" when it cannot be). */
+function AnimatedLine({ path }: { path: string }) {
+  const [bytes, setBytes] = useState<number | null>(null)
+  useEffect(() => {
+    let live = true
+    setBytes(null)
+    fetch(publicPhotoUrl(path), { method: 'HEAD' })
+      .then((r) => { const n = Number(r.headers.get('content-length')); if (live && r.ok && n > 0) setBytes(n) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [path])
+  return <div className="text-xs text-brown-muted">{animatedLabel(bytes)}</div>
+}
+
+/** The product's photo, shown on the QR menu and the counter's tiles. A new photo is resized in
+ *  the browser (an animation is not: it is uploaded as it is), uploaded, and then replaces the old
+ *  one, whose file is deleted.
  *  Saved on its own, with its outcome here. */
 export default function PhotoSection({ productId, productName }: { productId: string; productName: string }) {
   const [path, setPath] = useState<string | null | undefined>(undefined)       // undefined = not loaded
@@ -73,7 +90,7 @@ export default function PhotoSection({ productId, productName }: { productId: st
 
   const locked = busy !== null || !!loadError || path === undefined
   return (
-    <Section title="Photo" hint="Shown on the QR menu. Any image under 10 MB; it is resized to 800 px wide before it is uploaded.">
+    <Section title="Photo" hint="Shown on the QR menu. Any image under 10 MB; it is resized to 800 px wide before it is uploaded. A GIF or animated WebP (at most 4 MB and 1200 px) is uploaded as it is and plays.">
       {loadError && (
         <div className="flex items-center gap-3">
           <OutcomeLine outcome={{ kind: 'error', text: loadError }} />
@@ -82,7 +99,10 @@ export default function PhotoSection({ productId, productName }: { productId: st
       )}
       <div className="flex flex-wrap items-start gap-4">
         {path
-          ? <img src={publicPhotoUrl(path)} alt={productName} className="h-40 w-40 rounded-lg border border-border object-cover" />
+          ? <div className="space-y-1">
+              <img src={publicPhotoUrl(path)} alt={productName} className="h-40 w-40 rounded-lg border border-border object-cover" />
+              {isAnimatedPhoto(path) && <AnimatedLine path={path} />}
+            </div>
           : <div className="flex h-40 w-40 items-center justify-center rounded-lg border border-dashed border-border text-sm text-brown-muted">
               {path === undefined && !loadError ? 'Loading…' : 'No photo'}
             </div>}
