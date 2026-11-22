@@ -228,6 +228,15 @@ export default function InventoryDetailPage() {
                         )
                       ) : t.reference_type === 'production' ? (
                         <ProductionRef t={t} itemId={item.id} batchOutputs={batchOutputs} />
+                      ) : t.reference_type === 'stock_count' ? (
+                        t.reference_id && (
+                          <Link
+                            to={`/procurement/stock-counts/${t.reference_id}`}
+                            className="text-xs text-[#2E6E9E] font-normal ml-2 hover:underline"
+                          >
+                            Open count
+                          </Link>
+                        )
                       ) : t.reference_type && t.reference_type !== t.transaction_type && (
                         <span className="text-xs text-brown-faint font-normal ml-2">
                           from {t.reference_type}
