@@ -12,6 +12,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
 import { visibleNav, activeEntry, navShell } from '../lib/nav'
+import { posAppUrl } from '../../features/pos/order/posAppUrl'
 import type { NavLeaf, NavGroup } from '../lib/nav'
 import { AddToHomeScreenLogo } from './AddToHomeScreen'
 import { RankBadge } from './RankBadge'
@@ -204,7 +205,7 @@ export function SidebarContent({ onNavigate, onClose }: {
   const { can } = useCan()
   const newFeedback = useNewFeedbackCount(staff?.system_role === 'owner', pathname + search)
 
-  const nav = visibleNav(can)
+  const nav = visibleNav(can, posAppUrl(import.meta.env.VITE_POS_APP_URL as string | undefined) !== null)
   const { modules, pinned, flat } = navShell(nav)
   const active = activeEntry(nav, pathname)
 

@@ -139,6 +139,21 @@ describe('activeEntry', () => {
   })
 })
 
+describe('POS Register before an outlet uses the POS', () => {
+  const posIds = (nav: ReturnType<typeof visibleNav>) => {
+    const g = nav.find(e => e.id === 'pos')
+    return g && isGroup(g) ? g.children.map(c => c.id) : null
+  }
+  it('without a POS app address nobody sees Register; staff with no POS capability see no POS module at all', () => {
+    expect(posIds(visibleNav(canWith(), false))).toBeNull()
+    expect(posIds(visibleNav(canWith('access_settings'), false))).toEqual(['pos-reports', 'pos-members', 'pos-settings', 'pos-devices', 'pos-einvoice'])
+  })
+  it('with the address everyone sees Register (My PIN lives there)', () => {
+    expect(posIds(visibleNav(canWith(), true))).toEqual(['pos-register'])
+    expect(posIds(visibleNav(canWith()))).toEqual(['pos-register'])
+  })
+})
+
 describe('visibleNav 的扁平化结果', () => {
   it('所有 to 值互不相同(即使折叠在同一个大类里)', () => {
     const full = visibleNav(() => true)

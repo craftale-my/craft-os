@@ -80,7 +80,7 @@ rewards, importing Feedme's members, marketing messages, a member page outside t
   handled?`, after which it leaves the list), and the settings. Search drops a leading `60` / `0` only from
   a full number (at least 9 digits, then `1`); a fragment such as `6078` is searched as typed. A page that
   comes back empty steps back one page; the reason of an adjust is at most 200 characters.
-- Settings (owner): `Points per RM 1` (0–100, default 1), switch `Members on QR page`, `Sign-in codes per day`
+- Settings (owner): `Points per RM 1` (0–100, default 1), switch `Members on QR page` (off on a new project until the owner turns it on), `Sign-in codes per day`
   (the daily cap on codes sent, default 300; the column keeps its name `sms_daily_cap`).
 
 ## 4. Rules

@@ -152,7 +152,10 @@ begin
   perform pg_temp.check((v_r->>'earned')::integer = 10 and (v_r->>'points')::integer = 10, 'P2 paid bill earned 10 ' || coalesce(v_r::text, 'null'));
   perform pg_temp.expect_error(format('select pos_bill_member(%L)', gen_random_uuid()), 'Bill not found', 'P2 unknown bill');
   -- another outlet's bill is not found
-  update bills set branch_id = (select id from branches where id <> pg_temp.id('branch') order by name limit 1) where id = v_b;
+  -- (an outlet that has no bill of the same number today: (branch_id, bill_no) is unique)
+  update bills set branch_id = (select br.id from branches br where br.id <> pg_temp.id('branch')
+      and not exists (select 1 from bills x where x.branch_id = br.id and x.bill_no = (select bill_no from bills where id = v_b))
+      order by br.name limit 1) where id = v_b;
   perform pg_temp.expect_error(format('select pos_bill_member(%L)', v_b), 'Bill not found', 'P2 other outlet');
   update bills set branch_id = pg_temp.id('branch') where id = v_b;
   -- a deleted member: null

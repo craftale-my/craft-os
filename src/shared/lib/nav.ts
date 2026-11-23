@@ -15,6 +15,9 @@ export interface NavLeaf {
   activePaths?: string[]
   /** 需要的 capability(数组 ⇒ 全部都要有);省略 ⇒ 所有人可见。 */
   cap?: Cap
+  /** Shown only once the POS app has an address in this build (VITE_POS_APP_URL): before an outlet uses the
+   *  POS, staff have nothing to do on that page, so the entry stays out of everyone's menu. */
+  needsPos?: boolean
 }
 
 /** 一个模块:左上角切换器里的一格,选中后侧栏只列它的 children。 */
@@ -96,7 +99,7 @@ export const NAV: NavEntry[] = [
     label: 'POS',
     desc: 'Register, menu, sales reports and devices',
     children: [
-      { id: 'pos-register', label: 'Register',          to: '/pos', activePaths: ['/pos'] },
+      { id: 'pos-register', label: 'Register',          to: '/pos', activePaths: ['/pos'], needsPos: true },
       { id: 'pos-reports',  label: 'Reports',           to: '/pos/reports', cap: 'access_settings' },
       { id: 'pos-members',  label: 'Members',           to: '/pos/members', cap: 'access_settings' },
       { id: 'menu',         label: 'Menu',              to: '/menu', activePaths: ['/menu'], cap: 'manage_menu' },
@@ -116,12 +119,12 @@ function allowed(cap: Cap | undefined, can: (cap: Capability) => boolean): boole
 }
 
 /** 按 capability 过滤。子项全被滤掉的大类整体消失。 */
-export function visibleNav(can: (cap: Capability) => boolean): NavEntry[] {
+export function visibleNav(can: (cap: Capability) => boolean, posLive = true): NavEntry[] {
   const out: NavEntry[] = []
   for (const entry of NAV) {
     if (!allowed(entry.cap, can)) continue
     if (!isGroup(entry)) { out.push(entry); continue }
-    const children = entry.children.filter(c => allowed(c.cap, can))
+    const children = entry.children.filter(c => allowed(c.cap, can) && (posLive || !c.needsPos))
     if (children.length > 0) out.push({ ...entry, children })
   }
   return out

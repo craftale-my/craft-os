@@ -142,11 +142,13 @@ revoke all on member_verify_fails from public, anon, authenticated;
 create table if not exists member_settings (
   id            boolean primary key default true check (id),   -- one row
   rate          numeric(6,2) not null default 1 check (rate >= 0 and rate <= 100),
-  qr_enabled    boolean not null default true,
+  qr_enabled    boolean not null default false,   -- off until the owner switches it on (sign-in needs WhatsApp set up)
   sms_daily_cap integer not null default 300 check (sms_daily_cap >= 0 and sms_daily_cap <= 100000),
   updated_at    timestamptz not null default now(),
   updated_by    uuid
 );
+-- a project that got the column while its default was still true: new rows start off (an existing row keeps its value)
+alter table member_settings alter column qr_enabled set default false;
 insert into member_settings(id) values (true) on conflict (id) do nothing;
 -- plain codes in member_otps.dev_code only where this is on: set by hand on dev (see the top), never on prod
 alter table member_settings add column if not exists dev_codes_allowed boolean not null default false;

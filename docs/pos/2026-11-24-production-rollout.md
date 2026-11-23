@@ -52,10 +52,11 @@ Reasoning:
 3. The Craft OS build on this branch has **no staff-login till**: `/pos` is a notice page
    (`src/features/pos/order/PosPage.tsx`, "The POS has moved to its own app."). So the existing staff app needs
    nothing from the till side.
-4. **The POS cannot be hidden by capability.** The nav entry `POS → Register` has no `cap`
-   (`src/shared/lib/nav.ts`, `{ id: 'pos-register', … to: '/pos' }`), so every staff member sees it and reaches
-   the notice + My PIN. Reports, Members, POS Settings, Devices, E-invoice need `access_settings`; Menu needs
-   `manage_menu`; Menu Costing needs `manage_procurement`. Dark = present and empty, not invisible. Tell staff.
+4. **`POS → Register` stays out of the menu until the POS app has an address.** The entry is shown only when the
+   Craft OS build has `VITE_POS_APP_URL` set (`needsPos` in `src/shared/lib/nav.ts`, read in `Sidebar.tsx`). Leave
+   that variable unset in Stage A: staff with no POS capability see no POS module at all. Set it in Stage B, when
+   staff need the page for My PIN. Reports, Members, POS Settings, Devices, E-invoice need `access_settings`; Menu
+   needs `manage_menu`; Menu Costing needs `manage_procurement` — owners and managers see those from Stage A.
 5. Some Stage A changes are **live for current users** whatever we hide: wastage above on-hand is no longer
    refused (`migration-2026-11-23-wastage-allow-negative.sql`), the stock count result gains "Since last count",
    Settings → System Roles shows three new capabilities. These are wanted (owner decision 2026-11-23) but they
@@ -199,7 +200,7 @@ one transaction" for its route. "Touches live" = changes an object that exists o
 | 31 | `migration-2026-11-22-pos-feedme-habits.sql` | y | n | after #29 and #30 (STOP line 35) |
 | 32 | `migration-2026-11-22-pos-agent-pairing.sql` | y | n | before #42 |
 | 33 | `migration-2026-11-23-einvoice-w5.sql` | y | **y**: `branches.einvoice_from` + trigger `branches_einvoice_from_guard` (lines 153–184) | backfill at line 241 is meant for first apply only (readiness W5) |
-| 34 | `migration-2026-11-23-members.sql` | y | n (triggers on new `bills`, `refunds`) | inserts `member_settings` row with `qr_enabled` default **true** (line 145) |
+| 34 | `migration-2026-11-23-members.sql` | y | n (triggers on new `bills`, `refunds`) | inserts `member_settings` row with `qr_enabled` default **false**: the QR page shows no member button until the owner switches it on |
 | 35 | `migration-2026-11-23-members-pos.sql` | y | n | |
 | 36 | `migration-2026-11-23-menu-animated-photos.sql` | y | **y**: updates bucket `menu-images` (4 MB, GIF) | |
 | 37 | `migration-2026-11-23-menu-category-kind.sql` | y | n | after #31 (STOP line 14); re-creates `qr_menu` from #31, so do not re-run #31 after it |
@@ -298,9 +299,9 @@ repo: that the Git link is still on today. Check Vercel → craft-os → Setting
 
 - [ ] **Order:** 4b (#1–#42) and 4e done and checked → env vars → merge → deploy checks.
 - [ ] `craft-os` (existing, Production; also Preview, which points at prod data): keep `VITE_SUPABASE_URL`,
-      `VITE_SUPABASE_ANON_KEY`, `VITE_CRAFT_API_URL`, `VITE_CRAFT_MARKETING_URL`; **add** `VITE_POS_APP_URL` = the
-      prod POS app address (`.env.example`; unset → "Ask HQ for the POS app address."). Build-time vars: set before
-      the merge build.
+      `VITE_SUPABASE_ANON_KEY`, `VITE_CRAFT_API_URL`, `VITE_CRAFT_MARKETING_URL`; do **not** set `VITE_POS_APP_URL` in
+      Stage A (unset → `POS → Register` is not in anyone's menu). In Stage B set it to the prod POS app address and
+      redeploy: the entry appears for all staff, with the address and My PIN. Build-time var.
 - [ ] `craft-pos` (new prod project; needs the owner's OK, it is a new public URL — pos-app plan line 2855): build
       `npm run build:pos`, output `dist-pos`, env `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` = prod. Keep
       `craft-pos-dev` on dev. Not confirmed in the repo: whether the root `vercel.json` suffices for `dist-pos`
@@ -361,8 +362,9 @@ Start only when G1, G2, G4, G6, G7 are met, and G5 if any Cheras route uses the 
 10. [ ] **Staff.** Every cashier and supervisor sets a PIN (Craft OS → POS → My PIN); supervisors hold
         `pos_supervise`; extra outlets on the staff profile if needed.
 11. [ ] **Test print** from POS Settings and one ticket per route; one drawer kick.
-12. [ ] **Members setting.** Back office → Members → Settings → switch **Members on QR page** off
-        (`member_settings.qr_enabled`, default true) until G8; staff can still add a number at the counter.
+12. [ ] **Members setting.** Back office → Members → Settings → **Members on QR page** is off by default
+        (`member_settings.qr_enabled`); check it is off and leave it off until G8 — staff can still add a number at
+        the counter. Switch it on once WhatsApp sign-in has been tested.
 13. [ ] **E-invoice.** Leave **Report e-invoices from** (`branches.einvoice_from`) empty for every outlet and
         `einvoice_settings.environment` = `sandbox` (default) until G9; do not install the cron file yet.
 14. [ ] **Baseline full stock count** at Cheras, submitted (sales-depletion spec step 5).
