@@ -64,15 +64,15 @@ describe('visibleNav', () => {
     expect(ids(visibleNav(canWith('access_settings')))).toEqual(['people', 'time-pay', 'pos', 'profile', 'settings', 'feedback'])
   })
 
-  it('POS groups the register, reports, menu, POS settings and devices; staff see only the register', () => {
+  it('POS groups the register, reports, menu, POS settings, devices and E-invoice; staff see only the register', () => {
     const pos = (can: (c: Capability) => boolean) => {
       const g = visibleNav(can).find(e => e.id === 'pos')
       return g && isGroup(g) ? g.children.map(c => c.id) : []
     }
     expect(pos(canWith())).toEqual(['pos-register'])
-    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'pos-reports', 'pos-settings', 'pos-devices'])
+    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'pos-reports', 'pos-members', 'pos-settings', 'pos-devices', 'pos-einvoice'])
     expect(pos(canWith('manage_menu'))).toEqual(['pos-register', 'menu'])
-    expect(pos(canWith('access_settings', 'manage_menu'))).toEqual(['pos-register', 'pos-reports', 'menu', 'pos-settings', 'pos-devices'])
+    expect(pos(canWith('access_settings', 'manage_menu'))).toEqual(['pos-register', 'pos-reports', 'pos-members', 'menu', 'pos-settings', 'pos-devices', 'pos-einvoice'])
   })
 
   it('Feedback 对所有人可见,排在最后', () => {
@@ -119,6 +119,7 @@ describe('activeEntry', () => {
 
   it('/pos/reports lights Reports, not the Register (longest prefix wins)', () => {
     expect(activeEntry(full, '/pos/reports')).toEqual({ leafId: 'pos-reports', groupId: 'pos' })
+    expect(activeEntry(full, '/pos/members')).toEqual({ leafId: 'pos-members', groupId: 'pos' })
   })
 
   it('专案详情页 /team/projects/:id 一样归 Projects', () => {

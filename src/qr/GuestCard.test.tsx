@@ -42,4 +42,12 @@ describe('GuestCard', () => {
     render(<GuestCard initial={{ id: 'x', name: 'Guest', avatar: 'a1' }} onDone={() => {}} />)
     expect((screen.getByLabelText('Your name (optional)') as HTMLInputElement).value).toBe('')
   })
+  it('the entry card shows the hello mascot above the title; the edit card does not', () => {
+    render(<GuestCard initial={null} onDone={() => {}} />)
+    const m = screen.getByTestId('mascot-hello')
+    expect(m.compareDocumentPosition(screen.getByRole('heading', { name: "Who's ordering?" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    cleanup()
+    render(<GuestCard initial={{ id: 'x', name: 'Eric', avatar: 'a5' }} onDone={() => {}} />)
+    expect(screen.queryByTestId('mascot-hello')).toBeNull()
+  })
 })

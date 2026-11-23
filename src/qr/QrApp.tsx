@@ -1,159 +1,96 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { qrClient } from './qrClient'
 import { tokenFromLocation } from './qrState'
-import { findProduct, formatSen, posMenuFromQr, type OrderLine, type PosMenu, type PosProduct, type QrMenuJson } from '../features/pos/order/cart'
-import { mostPickedFor, parsePicks, visiblePopular, type MenuPicks } from '../features/pos/order/picks'
-import LineSheet from '../features/pos/order/LineSheet'
-import { avatarEmoji, loadGuest, newGuest, saveGuest, type Guest } from './qrGuest'
+import { defaultLine, findProduct, type OrderLine, type PosProduct } from '../features/pos/order/cart'
+import { mostPickedFor, visiblePopular } from '../features/pos/order/picks'
+import { loadGuest, newGuest, saveGuest, type Guest } from './qrGuest'
 import {
-  additionsToast, cartChannel, cartPairs, cartTotalSen, cartUnits, groupCart, isNetworkError, orderWasSent, sendGroups, sentKey, skipIds,
-  unitsByProduct, type CartLine, type CartState, type GuestGroup, type OrderedItem,
+  additionsToast, cartPairs, cartTotalSen, groupCart, isNetworkError, itemPairs, orderWasSent, sendGroups, sentKey, skipIds,
+  pickersByProduct, unitsByProduct, type CartLine, type CartState, type GuestGroup,
 } from './qrCart'
 import { makeCartApi, makeCartSignal } from './qrCartApi'
-import { useTableCart } from './useTableCart'
-import GuestCard from './GuestCard'
+import { useCartTopic, useTableCart } from './useTableCart'
+import { useQrMenu, useTableState, useToast } from './useQrMenu'
+import GuestCard, { GuestModal } from './GuestCard'
 import SendSheet from './SendSheet'
-import MenuGrid from './MenuGrid'
+import MenuPage from './MenuPage'
+import ItemPage from './ItemPage'
 import CartPage from './CartPage'
 import SentPage from './SentPage'
 import OrdersPage from './OrdersPage'
-import { PickCard, Shell } from './qrParts'
+import { Notice, Shell } from './qrParts'
+import { aiPick, kindsOf } from './aiPick'
 import { useMinuteClock } from '../features/pos/order/useMinuteClock'
 import { qrClosedMessage } from '../features/pos/order/orderWindow'
+import { memberApi } from './member/memberApi'
+import { useQrMember } from './member/useQrMember'
+import MemberSheet from './member/MemberSheet'
 
-interface TableState {
-  tableLabel: string
-  billNo: string | null
-  pax: number | null
-  items: OrderedItem[]
-  subtotalSen: number
-}
-type Screen = { kind: 'loading' } | { kind: 'invalid' } | { kind: 'error' } | { kind: 'ready'; info: QrMenuJson; menu: PosMenu }
-
-/** M3: a photo path in the public menu-images bucket → its URL (no request is made). */
-const photoUrl = (path: string) => qrClient.storage.from('menu-images').getPublicUrl(path).data.publicUrl
-const REFRESH_MS = 60_000
-/** picks: read with the menu, then again with the minute refresh at most this often */
-const PICKS_REFRESH_MS = 10 * 60_000
-const TOAST_MS = 4_000
-
-/** The page's views. Cart / sent / orders push one history entry, so the phone's Back returns to the menu. */
-type View = 'menu' | 'cart' | 'sent' | 'orders'
+/** The page's views. Cart / sent / orders push one history entry, so the phone's Back returns to the menu;
+ *  the item page pushes its own on top (from the menu or the cart), so Back returns to where it was opened. */
+type View = 'menu' | 'item' | 'cart' | 'sent' | 'orders'
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export default function QrApp() {
   const token = tokenFromLocation(window.location.pathname, window.location.search)
-  const [screen, setScreen] = useState<Screen>({ kind: 'loading' })
-  const [state, setState] = useState<TableState | null>(null)
+  const { state, loadState } = useTableState(token)
   // table cart (docs/superpowers/specs/2026-11-22-qr-shared-table-cart-design.md): who this phone is
   const [guest, setGuest] = useState<Guest | null>(() => (token ? loadGuest(token) : null))
   const guestRef = useRef(guest)
   useEffect(() => { guestRef.current = guest }, [guest])
   const [guestEdit, setGuestEdit] = useState(false)                  // the card, reopened from the header
-  const [sheet, setSheet] = useState<{ product: PosProduct; lineId: string | null } | null>(null)
-  const [sheetBusy, setSheetBusy] = useState(false)
-  const [sheetError, setSheetError] = useState<string | null>(null)
+  const [item, setItem] = useState<{ product: PosProduct; lineId: string | null; from: 'menu' | 'cart' } | null>(null)   // the item page
+  const [itemBusy, setItemBusy] = useState(false)
+  const [itemError, setItemError] = useState<string | null>(null)
   const [pax, setPax] = useState('')
-  const [category, setCategory] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)           // the cart panel: a removal that failed
   const [sendOpen, setSendOpen] = useState(false)
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [sendMessage, setSendMessage] = useState<string | null>(null)
   const [placed, setPlaced] = useState(false)
-  const [toast, setToast] = useState<{ text: string; at: number } | null>(null)   // `at` restarts the timer for the same text twice
+  const { toast, say } = useToast()
+  // members (spec 2026-11-22-members-phone-points-design.md §3): the sheet, and linking the bill after a send
+  const qm = useQrMember({ api: memberApi, tableToken: token, guestId: guest?.id ?? null, state, say })
   const sendingRef = useRef(false)
-  const sheetBusyRef = useRef(false)
-  useEffect(() => { sheetBusyRef.current = sheetBusy }, [sheetBusy])
+  const itemBusyRef = useRef(false)
+  useEffect(() => { itemBusyRef.current = itemBusy }, [itemBusy])
+  const viewRef = useRef<View>('menu')              // the view now, for a request that ends after the guest moved on
+  const itemFrom = useRef<'menu' | 'cart'>('menu')  // where the item page was opened from
   const backPending = useRef(false)                                  // a history.back() is on its way: popstate has not arrived yet
   const sentElsewhere = useRef(false)                                // an order was just sent from another phone: the cart view bounces once
   const seen = useRef<string | null>(null)                           // sentKey of the cart the sender last looked at (spec §2)
   const adoptSeen = useRef(false)                                    // after a refused send: take the re-read cart as seen
   const pending = useRef<{ id: string; key: string } | null>(null)   // one client_order_id per distinct cart sent
-  const menuRef = useRef<PosMenu | null>(null)
-  useEffect(() => { menuRef.current = screen.kind === 'ready' ? screen.menu : null }, [screen])
-  const refreshSeq = useRef(0)                                       // a slow reply never lands after a newer one
-  const refreshNow = useRef<(() => void) | null>(null)               // the minute refresh, callable after a refused send
-  // picks (docs/superpowers/specs/2026-11-17-menu-picks-design.md §4): hints only. A failed first read
-  // leaves them hidden, a failed re-read keeps the last ones; ordering never waits on them.
-  const [picks, setPicks] = useState<MenuPicks | null>(null)
-  const picksAt = useRef(0)                                          // when picks last LOADED; 0 until they have
-  const picksSeq = useRef(0)                                         // an older reply never overwrites a newer one
-  const picksLoaded = useRef(false)
   const clock = useMinuteClock()                                     // W7: the last-order banner turns on and off on the minute
   const [view, setView] = useState<View>('menu')
+  const menuY = useRef(0)                                            // the menu's scroll position, restored on return
   const [sentGroups, setSentGroups] = useState<GuestGroup[]>([])         // what the send sheet showed when the order went: the "Order placed" view
+  // AI Pick (spec 2026-11-22-qr-ai-pick-mascot-design.md §5): hidden with ✕ for this visit; the seed keeps
+  // its sentence fixed for the visit; one Add from the card at a time
+  const [aiHidden, setAiHiddenState] = useState(() => { try { return sessionStorage.getItem(`qr-ai-hidden:${token}`) === '1' } catch { return false } })
+  const setAiHidden = (v: boolean) => { setAiHiddenState(v); try { sessionStorage.setItem(`qr-ai-hidden:${token}`, v ? '1' : '0') } catch { /* private mode */ } }
+  const [aiSeed] = useState(() => {
+    try { const k = sessionStorage.getItem('qr-ai-seed'); if (k) return Number(k) } catch { /* private mode */ }
+    const n = Math.floor(Math.random() * 2 ** 31)
+    try { sessionStorage.setItem('qr-ai-seed', String(n)) } catch { /* private mode */ }
+    return n
+  })
+  const [aiBusy, setAiBusy] = useState(false)
+  const aiBusyRef = useRef(false)
+  const [aiAdded, setAiAdded] = useState<string[]>([])               // added from the card: not offered again while the cart catches up
 
-  const loadState = async (): Promise<TableState | null> => {
-    const { data } = await qrClient.rpc('qr_table_state', { p_token: token })
-    if (!data) return null
-    setState(data as TableState)
-    return data as TableState
-  }
-  const loadPicks = () => {
-    if (!token) return
-    const mine = ++picksSeq.current
-    qrClient.rpc('qr_picks', { p_token: token }).then(
-      ({ data, error }) => {
-        if (error || mine !== picksSeq.current) return
-        picksAt.current = Date.now(); picksLoaded.current = true
-        setPicks(parsePicks(data))
-      },
-      () => { /* offline for a moment: the last picks stay */ },
-    )
-  }
-  const loadMenu = () => {
-    if (!token) { setScreen({ kind: 'invalid' }); return }
-    setScreen({ kind: 'loading' })
-    qrClient.rpc('qr_menu', { p_token: token }).then(({ data, error }) => {
-      if (error) { setScreen({ kind: 'error' }); return }
-      if (!data) { setScreen({ kind: 'invalid' }); return }
-      const info = data as QrMenuJson
-      setScreen({ kind: 'ready', info, menu: posMenuFromQr(info, photoUrl) })
-      setCategory(info.categories[0]?.name ?? null)
-      void loadState()
-      loadPicks()
-    }, () => setScreen({ kind: 'error' }))
-  }
-  useEffect(() => { loadMenu() }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // M3: read the menu again every minute while the page is in view, and when it comes back into
-  // view, quietly: products whose time slot ends leave the menu (an open product sheet for one
-  // closes; a cart line for one shows "Not available now" — the cart itself lives on the server),
-  // products whose slot starts appear. A failed read keeps the menu on screen; nothing changes while
-  // an order is being sent; the server refuses anything out of its slot anyway. The picks are read
-  // again with it at most every PICKS_REFRESH_MS.
+  const { screen, loadMenu, picks, menuRef, refreshNow } = useQrMenu(token, sendingRef, {
+    loaded: () => { void loadState() },
+    refreshed: (menu) => {
+      setItem((s) => (s && findProduct(menu, s.product.id) ? s : null))
+      void loadState()                                              // "Ordered so far" picks up what the counter added
+    },
+  })
   const ready = screen.kind === 'ready'
-  useEffect(() => {
-    if (!ready || !token) return
-    const refresh = () => {
-      if (document.visibilityState !== 'visible' || sendingRef.current) return
-      const mine = ++refreshSeq.current
-      qrClient.rpc('qr_menu', { p_token: token }).then(({ data, error }) => {
-        if (mine !== refreshSeq.current || error || !data || !menuRef.current || sendingRef.current) return
-        const info = data as QrMenuJson
-        const menu = posMenuFromQr(info, photoUrl)
-        setScreen({ kind: 'ready', info, menu })
-        setCategory((c) => (c && info.categories.some((x) => x.name === c) ? c : info.categories[0]?.name ?? null))
-        setSheet((s) => (s && findProduct(menu, s.product.id) ? s : null))
-        void loadState()                                            // "Ordered so far" picks up what the counter added
-        if (!picksLoaded.current || Date.now() - picksAt.current >= PICKS_REFRESH_MS) loadPicks()
-      }, () => { /* offline for a moment: try again next minute */ })
-    }
-    refreshNow.current = refresh
-    const timer = setInterval(refresh, REFRESH_MS)
-    document.addEventListener('visibilitychange', refresh)
-    return () => { refreshNow.current = null; clearInterval(timer); document.removeEventListener('visibilitychange', refresh) }
-  }, [ready, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── the table's shared cart ──
-  const [topic, setTopic] = useState<string | null>(null)
-  useEffect(() => {
-    if (!token) return
-    let live = true
-    cartChannel(token).then((t) => { if (live) setTopic(t) }, () => { /* no channel: the 15 s read still runs */ })
-    return () => { live = false }
-  }, [token])
+  const topic = useCartTopic(token)
   const api = useMemo(() => (token ? makeCartApi(qrClient, token) : null), [token])
   const signal = useMemo(() => (topic ? makeCartSignal(qrClient, topic) : null), [topic])
   const table = useTableCart(ready ? api : null, ready ? signal : null, (before: CartState | null, after: CartState) => {
@@ -161,7 +98,7 @@ export default function QrApp() {
     const me = guestRef.current
     if (menu && me) {
       const text = additionsToast(before, after, me.id, menu)
-      if (text) setToast({ text, at: Date.now() })
+      if (text) say(text)
     }
     setError(null)                                                  // a failed removal's message goes when the cart moves on
     // an order was sent from this table's cart (from any phone): the server says so, not a count
@@ -171,11 +108,6 @@ export default function QrApp() {
     }
     else if (after.lines.length === 0) setSendOpen(false)           // the last line went: nothing left to send
   })
-  useEffect(() => {
-    if (!toast) return
-    const timer = setTimeout(() => setToast(null), TOAST_MS)
-    return () => clearTimeout(timer)
-  }, [toast])
   // after a refused send ('changed'): the cart as re-read is what the sender sees now
   useEffect(() => {
     if (!adoptSeen.current || !table.cart || screen.kind !== 'ready') return
@@ -190,15 +122,16 @@ export default function QrApp() {
       setSendOpen(false); setSendMessage(null); setSendError(null)
     }
   }, [sendOpen, screen, guest, table.cart])
-  // the item sheet closes when the line it edits is gone
+  // the item page closes when the line it edits is gone
   useEffect(() => {
-    if (!sheet || sheet.lineId === null || sheetBusy || !table.cart || !guest) return
-    if (!table.cart.lines.some((l) => l.id === sheet.lineId && l.guestId === guest.id)) setSheet(null)
-  }, [sheet, sheetBusy, table.cart, guest])
+    if (!item || item.lineId === null || itemBusy || !table.cart || !guest) return
+    if (!table.cart.lines.some((l) => l.id === item.lineId && l.guestId === guest.id)) setItem(null)
+  }, [item, itemBusy, table.cart, guest])
 
   // views: opening one pushes a history entry (replaces it when already on one), so Back returns to the menu
   const openView = (v: View) => {
     if (v === 'menu') return goMenu()
+    if (view === 'menu') menuY.current = window.scrollY
     if (history.state?.qrView) history.replaceState({ qrView: v }, ''); else history.pushState({ qrView: v }, '')
     if (v === 'orders') void loadState()                               // the page reads the table afresh on entry
     setView(v)
@@ -218,8 +151,9 @@ export default function QrApp() {
       setView(v)
       if (v === 'menu') {                                              // a sheet must not float over the wrong view; never while a request is in flight
         if (!sendingRef.current) { setSendOpen(false); setSendMessage(null); setSendError(null) }
-        if (!sheetBusyRef.current) setSheet(null)
       }
+      if (v !== 'item' && !itemBusyRef.current) setItem(null)          // left the item page (Back); never while its line is being written
+
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
@@ -228,17 +162,26 @@ export default function QrApp() {
   // (its banner says so). Keyed on that send event, never on the banner or an empty cart.
   useEffect(() => {
     if (!sentElsewhere.current || sendingRef.current) return
+    if (view === 'item' && item?.from === 'cart') return               // decided when the guest is back on the cart
     sentElsewhere.current = false
     if (view === 'cart') goMenu()
   }) // eslint-disable-line react-hooks/exhaustive-deps
+  // the item page with nothing to show (it closed, or Forward landed on it): step back to where it was opened
+  useEffect(() => { if (view === 'item' && !item) goMenu() }) // eslint-disable-line react-hooks/exhaustive-deps
+  // the menu comes back where the guest left it; every other view starts at the top
+  useLayoutEffect(() => {
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
+    window.scrollTo(0, view === 'menu' ? menuY.current : 0)
+  }, [view])
   // the sender's banner is for the other phones: leaving the Order placed view clears it
   const prevView = useRef<View>('menu')
   useEffect(() => {
     if (prevView.current === 'sent' && view !== 'sent') setPlaced(false)
     prevView.current = view
+    viewRef.current = view
   }, [view])
 
-  if (screen.kind === 'loading') return <Shell><p className="p-6 text-center text-brown-muted">Loading menu…</p></Shell>
+  if (screen.kind === 'loading') return <Notice muted>Loading menu…</Notice>
   if (screen.kind === 'error') {
     return (
       <Shell>
@@ -249,9 +192,9 @@ export default function QrApp() {
       </Shell>
     )
   }
-  if (screen.kind === 'invalid' || !token) return <Shell><p className="p-6 text-center">This table code is not valid. Please order at the counter.</p></Shell>
+  if (screen.kind === 'invalid' || !token) return <Notice>This table code is not valid. Please order at the counter.</Notice>
   const { info, menu } = screen
-  if (info.paused) return <Shell title={`Table ${info.tableLabel}`}><p className="p-6 text-center">Ordering from this table is paused. Please order at the counter.</p></Shell>
+  if (info.paused) return <Notice title={`Table ${info.tableLabel}`}>Ordering from this table is paused. Please order at the counter.</Notice>
   if (!guest) {
     return (
       <Shell title={`Table ${info.tableLabel}`}>
@@ -271,19 +214,58 @@ export default function QrApp() {
   // W7 spec §3: outside the outlet's window the page says when ordering opens again; Add and Place order are
   // off (the server refuses them anyway — its clock decides)
   const closedMsg = qrClosedMessage(info.ordersOpenAt ?? null, info.lastOrderAt ?? null, new Date(clock))
+  // AI Pick: not past last order, not offline (CartPage checks both too), not once hidden
+  const pick = aiHidden || closedMsg || table.status !== 'ready' ? null : aiPick(menu, picks, mine, cartLines, kindsOf(menu), aiSeed)
+  const pickShown = pick && !aiAdded.includes(pick.product.id) ? pick : null
 
-  /** The sheet's Add: the line goes to the table's cart on the server. */
-  const done = async (line: OrderLine) => {
-    if (!sheet || sheetBusy) return
-    setSheetBusy(true); setSheetError(null)
+  /** The AI Pick card's Add: the product's default line to the table's cart. A failure keeps the card and
+   *  says so in the cart's error line; on success the card moves on to the next suggestion (or goes). */
+  const addPick = async (p: PosProduct) => {
+    if (aiBusyRef.current) return
+    aiBusyRef.current = true; setAiBusy(true); setError(null)
+    let refused = false
+    try { await table.add(guest, defaultLine(p)); setPlaced(false); setAiAdded((a) => [...a, p.id]) } catch (e) {
+      const msg = errorText(e)
+      refused = !isNetworkError(msg)
+      setError(refused ? `Not added: ${msg}` : 'Not added — no connection. Try again.')
+    } finally { aiBusyRef.current = false; setAiBusy(false) }
+    if (refused) refreshNow.current?.()                                // it left the menu or sold out: read the menu now, so the card moves on
+  }
+
+  /** The item page's Add / Save: the line goes to the table's cart on the server, then each ticked pairing
+   *  as its own line, one after another. A pairing that fails leaves the item added; a toast names it. On
+   *  success the page closes, which steps back to where it was opened. */
+  const done = async (line: OrderLine, pairings: PosProduct[]) => {
+    if (!item || itemBusy) return
+    setItemBusy(true); setItemError(null)
     try {
-      if (sheet.lineId === null) await table.add(guest, line)
-      else await table.replace(guest, sheet.lineId, line)
-      setSheet(null); setPlaced(false); setError(null)
+      if (item.lineId === null) await table.add(guest, line)
+      else await table.replace(guest, item.lineId, line)
+      const missed: string[] = []
+      let why = ''
+      for (const p of pairings) {
+        try { await table.add(guest, defaultLine(p)) } catch (e) { missed.push(p.name); why = errorText(e) }
+      }
+      if (missed.length > 0) say(`Not added: ${missed.join(', ')}${isNetworkError(why) ? ' — no connection.' : ` — ${why}`}`)
+      setItem(null); setPlaced(false); setError(null)
     } catch (e) {
       const msg = errorText(e)
-      setSheetError(isNetworkError(msg) ? 'Not added — no connection. Tap Add to try again.' : `Not added: ${msg}`)
-    } finally { setSheetBusy(false) }
+      const text = isNetworkError(msg) ? 'Not added — no connection. Tap Add to try again.' : `Not added: ${msg}`
+      // the guest left the page while the write was in flight: the page is gone, so a toast says it
+      if (viewRef.current !== 'item') { say(isNetworkError(msg) ? `${line.qty} × ${item.product.name} was not added — no connection.` : text); setItem(null) }
+      else setItemError(text)
+    } finally { setItemBusy(false) }
+  }
+
+  /** The cart's quantity select: the same write as an edit, with only the quantity changed. */
+  const changeQty = async (lineId: string, qty: number) => {
+    const l = mine.find((x) => x.id === lineId)
+    if (!l) return
+    setError(null)
+    try { await table.replace(guest, lineId, { productId: l.productId, variantId: l.variantId, qty, note: l.note, optionIds: l.optionIds }) } catch (e) {
+      const msg = errorText(e)
+      setError(isNetworkError(msg) ? 'Not changed — no connection. Try again.' : `Not changed: ${msg}`)
+    }
   }
 
   const remove = async (lineId: string) => {
@@ -315,6 +297,7 @@ export default function QrApp() {
       pending.current = null
       setSendOpen(false); setError(null)                               // no menu banner for the sender: they see the Order placed view
       setSentGroups(sendable); openView('sent')                         // the groups the sheet showed are exactly what was sent
+      qm.afterSend()                                                    // members: link the bill to this phone's number (never blocks the order)
       await loadState()
     } catch (e) {
       const msg = errorText(e)
@@ -332,83 +315,59 @@ export default function QrApp() {
     void table.rename(g).catch(() => { /* the next line this guest adds carries the new name */ })
   }
 
-  const products = menu.categories.find((c) => c.name === category)?.products ?? []
-  const openProduct = (p: PosProduct) => { setSheetError(null); setSheet({ product: p, lineId: null }) }
-  const units = cartUnits(menu, cartLines)
-  const barLabel = table.status === 'offline' ? 'Reconnecting…'
-    : table.status === 'loading' || cartLines.length === 0 ? 'Tap an item to start' : `View cart · ${units} · ${formatSen(subtotal)}`
+  /** The item page: a page of its own, with a history entry on top of the menu or the cart. */
+  const openItem = (product: PosProduct, lineId: string | null) => {
+    if (itemBusyRef.current) return                                    // one write at a time: the earlier item is still being added
+    itemFrom.current = view === 'cart' ? 'cart' : 'menu'
+    if (view === 'menu') menuY.current = window.scrollY
+    setItemError(null); setItem({ product, lineId, from: view === 'cart' ? 'cart' : 'menu' })
+    history.pushState({ qrView: 'item' }, ''); setView('item')
+  }
+  const sections = [...(popular.length > 0 ? [{ name: 'Popular', products: popular, popular: true }] : []), ...menu.categories]
+  const shown: View = view === 'item' && !item ? itemFrom.current : view   // closing: already where Back will land
   return (
-    <Shell title={`Table ${info.tableLabel}`} right={
-      <button type="button" onClick={() => setGuestEdit(true)} aria-label={`You are ${guest.name}. Change name or avatar`}
-        className="min-h-11 rounded-full bg-white/15 px-3 text-sm">{avatarEmoji(guest.avatar)} {guest.name}</button>
-    }>
+    <div className="min-h-screen bg-cream">
+      <div className="mx-auto max-w-lg">
       {toast && <div role="status" className="fixed inset-x-3 top-3 z-30 rounded-xl bg-brown-dark px-4 py-3 text-sm text-white shadow-lg">{toast.text}</div>}
-      {view === 'menu' && (
-        <>
-          {closedMsg && <div role="status" className="m-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{closedMsg}</div>}
-          {placed && (
-            <div className="m-3 rounded-xl bg-green-50 p-3 text-sm text-green-800">
-              Order placed — it is on its way. You can add more below.
-            </div>
-          )}
-          {popular.length > 0 && (
-            <section aria-label="Popular here" className="px-3 pt-2">
-              <h2 className="text-sm font-semibold text-brown-dark">Popular here</h2>
-              <div className="mt-1 flex gap-2 overflow-x-auto pb-1">
-                {popular.map((p) => <PickCard key={p.id} product={p} onOpen={() => openProduct(p)} />)}
-              </div>
-            </section>
-          )}
-          <div className="flex gap-1 overflow-x-auto px-3 py-2">
-            {menu.categories.map((c) => (
-              <button key={c.name} onClick={() => setCategory(c.name)}
-                className={`whitespace-nowrap rounded-full px-3 py-1 text-sm ${category === c.name ? 'bg-brown-btn text-white' : 'border border-border bg-card'}`}>{c.name}</button>
-            ))}
-          </div>
-          <MenuGrid products={products} popularIds={popularIds} units={unitsByProduct(menu, cartLines)} onOpen={openProduct} />
-          <div className="fixed inset-x-0 bottom-0 flex gap-2 border-t border-border bg-card p-3 text-sm shadow-lg">
-            {state && state.items.length > 0 && (
-              <button type="button" onClick={() => openView('orders')} className="min-h-12 rounded-xl border border-border px-4">Orders</button>
-            )}
-            <button type="button" disabled={table.status !== 'ready' || cartLines.length === 0} onClick={() => openView('cart')}
-              className="min-h-12 flex-1 rounded-xl bg-brown-btn py-3 text-white disabled:opacity-40">{barLabel}</button>
-          </div>
-        </>
+      {shown === 'menu' && (
+        <MenuPage tableLabel={info.tableLabel} guest={guest} onGuest={() => setGuestEdit(true)} closed={closedMsg} placed={placed}
+          sections={sections} popularIds={popularIds} units={unitsByProduct(menu, cartLines)} pickers={pickersByProduct(menu, cartLines, guest.id)} onOpen={(p) => openItem(p, null)}
+          cartLines={cartLines.length} subtotalSen={subtotal} status={table.status} ordered={!!state && state.items.length > 0}
+          onCart={() => openView('cart')} onOrders={() => openView('orders')}
+          member={qm.member.status} memberPoints={qm.member.me?.points ?? null} onMember={qm.openSheet} />
       )}
-      {view === 'cart' && (
-        <CartPage menu={menu} mine={mine} others={others} pairs={cartPairs(menu, picks, mine, cartLines)} subtotalSen={subtotal}
+      {shown === 'item' && item && (
+        <ItemPage key={`${item.product.id}|${item.lineId ?? ''}`} product={item.product} from={item.from}
+          initial={item.lineId === null ? undefined : mine.find((l) => l.id === item.lineId)}
+          mostPicked={mostPickedFor(picks, item.product.id)} pairs={itemPairs(menu, picks, item.product.id, cartLines)}
+          inCart={pickersByProduct(menu, cartLines, guest.id).get(item.product.id) ?? []}
+          busy={itemBusy} error={itemError} closed={closedMsg} onBack={goMenu} onAdd={(line, pairings) => void done(line, pairings)} />
+      )}
+      {shown === 'cart' && (
+        <CartPage menu={menu} me={guest} mine={mine} others={others} pairs={cartPairs(menu, picks, mine, cartLines)} subtotalSen={subtotal}
           sendable={sendable.length > 0} status={table.status} error={error} closed={closedMsg} onBack={goMenu}
-          onEdit={(p, lineId) => { setSheetError(null); setSheet({ product: p, lineId }) }} onRemove={(id) => void remove(id)}
-          onOpenProduct={openProduct}
+          onEdit={(p, lineId) => openItem(p, lineId)} onRemove={(id) => void remove(id)} onQty={changeQty}
+          onOpenProduct={(p) => openItem(p, null)}
+          aiPick={pickShown} aiBusy={aiBusy} onAiAdd={(p) => void addPick(p)} onAiHide={() => setAiHidden(true)}
           onPlace={() => {
             seen.current = table.cart ? sentKey(table.cart, skipIds(menu, cartLines)) : null
             setSendError(null); setSendMessage(null); setSendOpen(true)
           }} />
       )}
-      {view === 'sent' && (
+      {shown === 'sent' && (
         <SentPage menu={menu} groups={sentGroups} tableLabel={info.tableLabel} billNo={state?.billNo ?? null}
-          onAddMore={goMenu} onViewOrders={() => openView('orders')} />
+          onAddMore={goMenu} onViewOrders={() => openView('orders')} earns={qm.linked} />
       )}
-      {view === 'orders' && <OrdersPage items={state?.items ?? []} subtotalSen={state?.subtotalSen ?? 0} onBack={goMenu} />}
+      {shown === 'orders' && <OrdersPage items={state?.items ?? []} subtotalSen={state?.subtotalSen ?? 0} onBack={goMenu} />}
 
-      {sheet && (
-        <LineSheet product={sheet.product} initial={sheet.lineId === null ? undefined : mine.find((l) => l.id === sheet.lineId)}
-          mostPicked={mostPickedFor(picks, sheet.product.id)} busy={sheetBusy} error={sheetError} confirmLabel={sheet.lineId === null ? undefined : 'Save'} closed={closedMsg}
-          onCancel={() => { if (!sheetBusy) setSheet(null) }}
-          onDone={(line) => void done(line)} />
-      )}
       {sendOpen && sendable.length > 0 && (
         <SendSheet groups={sendable} menu={menu} totalSen={subtotal} needsPax={needsPax} pax={pax} onPax={setPax}
           sending={sending} message={sendMessage} error={sendError}
           onSend={() => void send()} onCancel={() => setSendOpen(false)} />
       )}
-      {guestEdit && (
-        <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/40 sm:items-center" onClick={() => setGuestEdit(false)}>
-          <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
-            <GuestCard initial={guest} onDone={renameGuest} onCancel={() => setGuestEdit(false)} />
-          </div>
-        </div>
-      )}
-    </Shell>
+      {qm.sheetOpen && <MemberSheet member={qm.member} api={memberApi} tableToken={token} onClose={qm.closeSheet} />}
+      {guestEdit && <GuestModal guest={guest} onDone={renameGuest} onCancel={() => setGuestEdit(false)} />}
+      </div>
+    </div>
   )
 }

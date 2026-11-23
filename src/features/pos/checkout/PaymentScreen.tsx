@@ -22,6 +22,10 @@ import {
   type TenderLine, type TenderMethod,
 } from './tender'
 import { NUMPAD_KEYS, liveChangeSen, numpadPress, payTabs, singleLines, type PayTab } from './payTabs'
+import MemberDialog, { MEMBER_READ_FAILED } from '../order/MemberDialog'
+import { clearBillMember, memberLine, setBillMember } from '../order/billMember'
+import { useBillMember } from '../order/useBillMember'
+import { MEMBER_OFFLINE } from '../order/billActions'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const money = (sen: number) => (Math.max(0, sen) / 100).toFixed(2)
@@ -101,6 +105,10 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
   // The amount the cashier is paying against with Split off (the balance): set by the first load, moved
   // only by a Pay that found the bill changed. Pay never records an amount the cashier has not seen.
   const payingForRef = useRef<number | null>(null)
+  // members spec §3: the Member row — a takeaway (or any Send & pay) gets its member here, before Pay
+  const [memberKey, setMemberKey] = useState(0)
+  const billMember = useBillMember(bill.id, `${refreshKey}:${memberKey}`)
+  const [memberOpen, setMemberOpen] = useState(false)
 
   // ── the Checkout sheet's follow logic ──
   const step = (e: PayEvent): PaySession => {
@@ -544,6 +552,10 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
             <input className="mt-1 h-12 w-full rounded-xl border border-border-mid px-3 text-base" value={reference} onChange={(e) => setReference(e.target.value)} />
           </label>
         )}
+        {!lockNote && totals && (
+          <MemberRow state={billMember.state} readOnly={!!byItem} online={online} disabled={busy || locked}
+            onOpen={() => setMemberOpen(true)} onRetry={billMember.retry} />
+        )}
         <div className="mt-3 grid grid-cols-3 gap-2">
           {shownTab?.methods.map((m) => (
             <button key={m.id} type="button" onClick={() => pick(m)} disabled={busy || locked} aria-pressed={method?.id === m.id}
@@ -632,6 +644,49 @@ export default function PaymentScreen({ branchId, bill, title, refreshKey, earli
           </div>
         )}
       </section>
+      {memberOpen && !byItem && (
+        <MemberDialog billNo={bill.bill_no} status={billMember.state.status} current={billMember.member} onRetry={billMember.retry}
+          onAttach={async (phone) => { const m = await setBillMember(bill.id, phone); billMember.set(m); setMemberKey((k) => k + 1); return m }}
+          onRemove={async () => { await clearBillMember(bill.id); billMember.set(null); setMemberKey((k) => k + 1) }}
+          onClose={() => setMemberOpen(false)} />
+      )}
+    </div>
+  )
+}
+
+/** "Member · Add" or "Member ••6789 · Change" above the payment methods. Off offline (the action is too); read
+ *  only on a part payment (split by item: the part takes the table bill's member). Nothing is claimed while
+ *  the read is unknown. */
+function MemberRow({ state, readOnly, online, disabled, onOpen, onRetry }: {
+  state: ReturnType<typeof useBillMember>['state']
+  readOnly: boolean
+  online: boolean
+  disabled: boolean
+  onOpen: () => void
+  onRetry: () => void
+}) {
+  const btn = 'min-h-11 rounded-xl border border-border-mid px-4 text-sm font-medium text-brown-dark disabled:opacity-40'
+  const label = state.status === 'ok' && state.member ? memberLine(state.member.phone) : 'Member'
+  return (
+    <div role="group" aria-label="Member" className="mt-3 flex min-h-11 items-center justify-between gap-2 rounded-xl bg-card px-3 py-1">
+      <span className="text-sm font-medium text-brown-dark">
+        {state.status === 'loading' ? 'Member …' : label}
+      </span>
+      {state.status === 'error' ? (
+        <span className="flex items-center gap-2 text-sm text-red-700">
+          {MEMBER_READ_FAILED}
+          <button type="button" className={btn} onClick={onRetry}>Retry</button>
+        </span>
+      ) : readOnly ? (
+        state.status === 'ok' && !state.member ? <span className="text-sm text-brown-muted">None</span> : null
+      ) : (
+        <span className="flex items-center gap-2">
+          {!online && <span className="text-xs text-amber-800">{MEMBER_OFFLINE}</span>}
+          <button type="button" className={btn} disabled={state.status !== 'ok' || !online || disabled} onClick={onOpen}>
+            {state.status === 'ok' && state.member ? 'Change' : 'Add'}
+          </button>
+        </span>
+      )}
     </div>
   )
 }

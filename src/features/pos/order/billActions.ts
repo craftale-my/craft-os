@@ -4,19 +4,20 @@
 import { SPLIT_ACTION_LABEL, SPLIT_OFFLINE, canSplit } from './splitSelection'
 
 export type BillAction = 'send' | 'mark_served' | 'move' | 'split' | 'discount_bill' | 'edit_bill_discount' | 'remove_bill_discount'
-  | 'void_bill' | 'close_empty' | 'pax' | 'pause_qr' | 'resume_qr' | 'clear_qr_cart' | 'open_qr'
+  | 'void_bill' | 'close_empty' | 'pax' | 'pause_qr' | 'resume_qr' | 'clear_qr_cart' | 'member' | 'open_qr'
 
 export const BILL_ACTION_LABEL: Record<BillAction, string> = {
   send: 'Send', mark_served: 'Mark all served', move: 'Move', split: SPLIT_ACTION_LABEL, discount_bill: 'Discount bill', edit_bill_discount: 'Edit discount',
   remove_bill_discount: 'Remove discount', void_bill: 'Void bill', close_empty: 'Close empty bill', pax: 'Pax',
-  pause_qr: 'Pause QR', resume_qr: 'Resume QR', clear_qr_cart: 'Clear QR cart', open_qr: 'Open for QR',
+  pause_qr: 'Pause QR', resume_qr: 'Resume QR', clear_qr_cart: 'Clear QR cart', member: 'Member', open_qr: 'Open for QR',
 }
 
 /** Send with drafts; Move with a bill; once its items are loaded: Split / Move items once loaded with
  *  two live units or more (split spec §3.1), Discount bill when it has live items
  *  (Edit and Remove discount when it has one), then Void bill when it has live items, Close empty
  *  bill when it has none; on a table: Pax, Pause or Resume QR, Clear QR cart, and Open for QR while it has no bill
- *  and the branch makes QR wait for an open bill (today's BillPanel). */
+ *  and the branch makes QR wait for an open bill (today's BillPanel). Member on any open bill, dine-in or takeaway,
+ *  right after Clear QR cart (members spec §3 "Staff (POS)"). */
 export function billActions(p: {
   isTable: boolean; hasBill: boolean; loaded: boolean; liveSentCount: number; draftCount: number
   qrPaused: boolean; qrRequiresOpenBill: boolean; billDiscount: boolean
@@ -34,8 +35,9 @@ export function billActions(p: {
   }
   if (p.isTable) {
     out.push('pax', p.qrPaused ? 'resume_qr' : 'pause_qr', 'clear_qr_cart')
-    if (!p.hasBill && p.qrRequiresOpenBill) out.push('open_qr')
   }
+  if (p.hasBill) out.push('member')
+  if (p.isTable && !p.hasBill && p.qrRequiresOpenBill) out.push('open_qr')
   return out
 }
 
@@ -52,9 +54,12 @@ export const PART_PAID_FIRST = 'This bill has a part payment. Pay the rest first
  *  part paid (split spec §3.5) refuses a split, setting or editing its discount and voiding it, so those
  *  are off with the server's words. Move and Remove discount stay (the server allows them). */
 export function billActionNotes(p: { online: boolean; partPaid: boolean }): Partial<Record<BillAction, string>> {
-  if (p.partPaid) return { split: PART_PAID_FIRST, discount_bill: PART_PAID_FIRST, edit_bill_discount: PART_PAID_FIRST, void_bill: PART_PAID_FIRST }
-  return p.online ? {} : { split: SPLIT_OFFLINE }
+  if (p.partPaid) return { split: PART_PAID_FIRST, discount_bill: PART_PAID_FIRST, edit_bill_discount: PART_PAID_FIRST, void_bill: PART_PAID_FIRST, ...(p.online ? {} : { member: MEMBER_OFFLINE }) }
+  return p.online ? {} : { split: SPLIT_OFFLINE, member: MEMBER_OFFLINE }
 }
+
+/** Member is read and written on the server: off while the till is offline. */
+export const MEMBER_OFFLINE = 'Member needs a connection'
 
 export type ItemAction = 'serve' | 'unserve' | 'discount_item' | 'edit_item_discount' | 'remove_item_discount' | 'void_item'
 

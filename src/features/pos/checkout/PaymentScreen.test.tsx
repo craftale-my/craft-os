@@ -2,7 +2,7 @@
 // The full-screen Payment keeps the Checkout sheet's money logic: these drive it the way a cashier
 // does and check what reaches checkout_bill.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 
 const api = vi.hoisted(() => ({
   fetchCheckoutState: vi.fn(),
@@ -24,6 +24,13 @@ vi.mock('./checkoutApi', () => ({
   payBillPart: api.payBillPart,
 }))
 vi.mock('../order/posApi', () => ({ fetchBillItems: api.fetchBillItems }))
+const mem = vi.hoisted(() => ({ fetchBillMember: vi.fn(), setBillMember: vi.fn(), clearBillMember: vi.fn() }))
+vi.mock('../order/billMember', async (orig) => ({
+  ...(await orig<typeof import('../order/billMember')>()),
+  fetchBillMember: (id: string) => mem.fetchBillMember(id),
+  setBillMember: (id: string, p: string) => mem.setBillMember(id, p),
+  clearBillMember: (id: string) => mem.clearBillMember(id),
+}))
 
 import PaymentScreen from './PaymentScreen'
 import { billChangedAtPay } from './follow'
@@ -60,6 +67,8 @@ beforeEach(() => {
   api.fetchBillItems.mockResolvedValue([])
   api.checkoutBill.mockReset(); api.checkoutItems.mockReset(); api.splitTotals.mockReset()
   api.partQuote.mockReset(); api.payBillPart.mockReset()
+  mem.fetchBillMember.mockReset().mockResolvedValue(null)
+  mem.setBillMember.mockReset(); mem.clearBillMember.mockReset().mockResolvedValue(undefined)
 })
 afterEach(cleanup)
 
@@ -998,5 +1007,63 @@ describe('PaymentScreen — split screen fixes from the 2026-11-17 dev run', () 
     expect(screen.getByText('This payment RM 17.40')).toBeTruthy()
     press('C')
     expect(screen.getByText('This payment RM 0.00')).toBeTruthy()
+  })
+
+  describe('the Member row', () => {
+    const memberRow = () => screen.getByRole('group', { name: 'Member' })
+    it('no member: Member · Add opens the dialog; Attach shows the member on the row', async () => {
+      mem.setBillMember.mockResolvedValue({ memberId: 'm', phone: '+601100000301', points: 0, isNew: true })
+      renderScreen()
+      await flush()
+      expect(memberRow().textContent).toBe('MemberAdd')
+      fireEvent.click(within(memberRow()).getByRole('button', { name: 'Add' }))
+      fireEvent.change(screen.getByLabelText('Phone number'), { target: { value: '011-0000 0301' } })
+      mem.fetchBillMember.mockResolvedValue({ memberId: 'm', phone: '+601100000301', points: 0, earned: null })
+      press('Attach')
+      await flush()
+      expect(mem.setBillMember).toHaveBeenCalledWith('b1', '+601100000301')
+      press('Done')
+      expect(memberRow().textContent).toContain('Member ••0301')
+      expect(within(memberRow()).getByRole('button', { name: 'Change' })).toBeTruthy()
+    })
+    it('a member already on the bill: Member ••6789 · Change', async () => {
+      mem.fetchBillMember.mockResolvedValue({ memberId: 'm', phone: '+60123456789', points: 12, earned: null })
+      renderScreen()
+      await flush()
+      expect(memberRow().textContent).toContain('Member ••6789')
+      fireEvent.click(within(memberRow()).getByRole('button', { name: 'Change' }))
+      expect(screen.getByTestId('member-summary').textContent).toContain('Member +60 12-345 6789 · 12 points')
+    })
+    it('while the read is out: no Add; a failed read offers Retry', async () => {
+      mem.fetchBillMember.mockReturnValue(new Promise(() => {}))
+      const { unmount } = render(screenAt(0, vi.fn()))
+      await flush()
+      expect(memberRow().textContent).toContain('Member …')
+      expect((within(memberRow()).getByRole('button', { name: 'Add' }) as HTMLButtonElement).disabled).toBe(true)
+      unmount()
+      mem.fetchBillMember.mockRejectedValueOnce(new Error('No reply from the server.')).mockResolvedValue(null)
+      renderScreen()
+      await flush()
+      expect(memberRow().textContent).toContain("Couldn't read the member.")
+      fireEvent.click(within(memberRow()).getByRole('button', { name: 'Retry' }))
+      await flush()
+      expect(within(memberRow()).getByRole('button', { name: 'Add' })).toBeTruthy()
+    })
+    it('offline: Add is off, with why', async () => {
+      render(<PaymentScreen branchId="br" bill={bill} title="Table T3" refreshKey={0} earlierIds={[]} online={false}
+        onSendIds={() => {}} onClose={() => {}} onPaid={() => {}} />)
+      await flush()
+      expect((within(memberRow()).getByRole('button', { name: 'Add' }) as HTMLButtonElement).disabled).toBe(true)
+      expect(memberRow().textContent).toContain('Member needs a connection')
+    })
+    it('a part payment (split by item) shows the member read only', async () => {
+      mem.fetchBillMember.mockResolvedValue({ memberId: 'm', phone: '+60123456789', points: 12, earned: null })
+      api.splitTotals.mockResolvedValue(totals)
+      render(<PaymentScreen branchId="br" bill={bill} title="Table T3 · Split" refreshKey={0} earlierIds={[]}
+        split={{ items: [{ itemId: 'i1', qty: 1, lineQty: 1 }] }} onSendIds={() => {}} onClose={() => {}} onPaid={() => {}} />)
+      await flush()
+      expect(memberRow().textContent).toBe('Member ••6789')
+      expect(within(memberRow()).queryByRole('button')).toBeNull()
+    })
   })
 })

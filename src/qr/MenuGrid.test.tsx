@@ -18,9 +18,10 @@ const sized = prod('tea', 'Tea', { variants: [
 const base = { products: [latte, cake, sized], popularIds: new Set<string>(), units: new Map<string, number>(), onOpen: () => {} }
 
 describe('MenuGrid', () => {
-  it('is a two-column grid of tiles with name and price, and no description', () => {
+  it('is a two-column grid of flat tiles (no card box) with name and price, and no description', () => {
     const { container } = render(<MenuGrid {...base} />)
     expect(container.firstElementChild?.className).toContain('grid-cols-2')
+    expect(screen.getByRole('button', { name: 'Latte, RM 12.00' }).className).not.toMatch(/\bborder\b|\bshadow/)
     expect(screen.getByRole('button', { name: 'Latte, RM 12.00' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Tea, from RM 8.00' })).toBeTruthy()
     expect(screen.queryByText('about Latte')).toBeNull()
@@ -36,7 +37,7 @@ describe('MenuGrid', () => {
     const tile = screen.getByRole('button', { name: /Cake/ }) as HTMLButtonElement
     expect(tile.disabled).toBe(true)
     expect(tile.className).toContain('opacity-50')
-    expect(tile.textContent).toContain('Sold out')
+    expect(within(tile).getByText('Sold out · RM 12.00')).toBeTruthy()
     expect(tile.getAttribute('aria-label')).toBe('Cake, RM 12.00, sold out')
   })
   it('marks Popular products with the pill', () => {
@@ -62,5 +63,16 @@ describe('MenuGrid', () => {
     const { container } = render(<MenuGrid {...base} />)
     expect(container.querySelectorAll('img').length).toBe(1)
     expect(container.querySelectorAll('.bg-border.aspect-square').length).toBe(2)
+  })
+
+  it('shows who picked a product: avatars on the photo and names in the label', () => {
+    const p = { id: 'x', name: 'Latte', description: null, soldOut: false, variants: [{ id: 'v', name: 'V', priceSen: 1200, isBase: true }], groups: [] }
+    const who = [
+      { guestId: 'me', label: 'Eric', avatar: 'a1', qty: 1, isMe: true },
+      { guestId: 'g', label: 'grace', avatar: 'a3', qty: 2, isMe: false },
+    ]
+    render(<MenuGrid products={[p]} popularIds={new Set()} units={new Map([['x', 3]])} pickers={new Map([['x', who]])} onOpen={() => {}} />)
+    expect(screen.getByTestId('picker-avatars').children).toHaveLength(2)
+    expect(screen.getByRole('button').getAttribute('aria-label')).toContain('3 in the cart (You × 1, grace × 2)')
   })
 })

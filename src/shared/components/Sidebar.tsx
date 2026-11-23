@@ -6,7 +6,7 @@ import {
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network,
   ShoppingBasket, Truck, Package, ShoppingCart, PackageCheck, Boxes, Trash2, ArrowLeftRight,
   ChefHat, Headset, ExternalLink, MessageSquare,
-  UtensilsCrossed, Store, MonitorSmartphone, Printer, ChartColumn,
+  UtensilsCrossed, Store, MonitorSmartphone, Printer, ChartColumn, Star, FileCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
@@ -51,8 +51,10 @@ const ICONS: Record<string, LucideIcon> = {
   pos: Store,
   'pos-register': MonitorSmartphone,
   'pos-reports': ChartColumn,
+  'pos-members': Star,
   menu: UtensilsCrossed,
   'pos-settings': Printer,
+  'pos-einvoice': FileCheck,
   settings: Settings,
   feedback: MessageSquare,
 }

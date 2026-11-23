@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { defaultLine, formatSen, linePriceSen, validateLine, type OrderLine, type PosProduct } from './cart'
+import { defaultLine, formatSen, linePriceSen, toggleOption, validateLine, type OrderLine, type PosProduct } from './cart'
 import PickPill from './PickPill'
 
 export default function LineSheet({ product, initial, mostPicked, busy, error, confirmLabel, closed, onCancel, onDone }: {
@@ -25,12 +25,7 @@ export default function LineSheet({ product, initial, mostPicked, busy, error, c
 
   const toggle = (groupMax: number, groupOptionIds: string[], id: string) => {
     setTouched(true)
-    setLine((l) => {
-      const inGroup = l.optionIds.filter((x) => groupOptionIds.includes(x))
-      const others = l.optionIds.filter((x) => !groupOptionIds.includes(x))
-      if (groupMax === 1) return { ...l, optionIds: inGroup[0] === id ? others : [...others, id] }
-      return { ...l, optionIds: inGroup.includes(id) ? [...others, ...inGroup.filter((x) => x !== id)] : [...others, ...inGroup, id] }
-    })
+    setLine((l) => ({ ...l, optionIds: toggleOption(l.optionIds, groupOptionIds, groupMax, id) }))
   }
 
   return (

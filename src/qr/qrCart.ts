@@ -1,7 +1,7 @@
 // src/qr/qrCart.ts
 /** The table's shared cart, as the QR page reads it (spec 2026-11-22-qr-shared-table-cart-design.md).
  *  Pure: the server holds the lines; this groups them, judges them against the menu and words the toast. */
-import { findProduct, linePriceSen, validateLine, type OrderLine, type PosMenu, type PosProduct } from '../features/pos/order/cart'
+import { defaultLine, findProduct, linePriceSen, validateLine, type OrderLine, type PosMenu, type PosProduct } from '../features/pos/order/cart'
 import { looksOffline } from '../features/pos/checkout/rpcResult'
 import { pairsFor, type MenuPicks } from '../features/pos/order/picks'
 import { avatarEmoji } from './qrGuest'
@@ -102,6 +102,25 @@ export function unitsByProduct(menu: PosMenu, lines: CartLine[]): Map<string, nu
   return out
 }
 
+/** Who has a product in the table's cart: one entry per guest, me first, then in cart order. */
+export interface Picker { guestId: string; label: string; avatar: string; qty: number; isMe: boolean }
+export function pickersByProduct(menu: PosMenu, lines: CartLine[], myGuestId: string): Map<string, Picker[]> {
+  const out = new Map<string, Picker[]>()
+  for (const l of lines) {
+    if (!lineAvailable(menu, l)) continue
+    const list = out.get(l.productId) ?? []
+    const found = list.find((x) => x.guestId === l.guestId)
+    if (found) found.qty += l.qty
+    else list.push({ guestId: l.guestId, label: l.guestLabel, avatar: l.guestAvatar, qty: l.qty, isMe: l.guestId === myGuestId })
+    out.set(l.productId, list)
+  }
+  for (const list of out.values()) list.sort((a, b) => Number(b.isMe) - Number(a.isMe))
+  return out
+}
+/** "You × 2, grace × 1" — for a label read aloud and the item page's line. */
+export const pickersText = (who: readonly Picker[]): string =>
+  who.map((w) => `${w.isMe ? 'You' : w.label} × ${w.qty}`).join(', ')
+
 /** Total units of the available lines (the cart button). */
 export const cartUnits = (menu: PosMenu, lines: CartLine[]): number =>
   lines.reduce((n, l) => n + (lineAvailable(menu, l) ? l.qty : 0), 0)
@@ -115,6 +134,22 @@ export function cartPairs(menu: PosMenu, picks: MenuPicks | null, mine: CartLine
     for (const p of pairsFor(menu, picks, l.productId, all)) if (!out.some((x) => x.id === p.id)) out.push(p)
   }
   return out.slice(0, CART_PAIRS)
+}
+
+/** The item page's "Goes well with": the product's pairs that can be added as they are (no choice to make,
+ *  not sold out — validateLine of the default line passes), not the product itself, nothing already in the
+ *  table's cart; at most ITEM_PAIRS, in the server's order. */
+export const ITEM_PAIRS = 6
+export function itemPairs(menu: PosMenu, picks: MenuPicks | null, productId: string, cart: readonly OrderLine[]): PosProduct[] {
+  if (!picks) return []
+  const inCart = new Set(cart.map((l) => l.productId))
+  const out: PosProduct[] = []
+  for (const id of picks.pairs[productId] ?? []) {
+    if (id === productId || inCart.has(id) || out.some((x) => x.id === id)) continue
+    const p = findProduct(menu, id)
+    if (p && p.variants.length > 0 && validateLine(p, defaultLine(p)) === null) out.push(p)
+  }
+  return out.slice(0, ITEM_PAIRS)
 }
 
 /** What to tell this guest about lines the others added since the last read; null = nothing. */

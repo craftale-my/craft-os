@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { OrderLine } from '../features/pos/order/cart'
 import type { CartApi, CartSignal } from './qrCartApi'
-import type { CartState } from './qrCart'
+import { cartChannel, type CartState } from './qrCart'
 import type { Guest } from './qrGuest'
 
 /** the fallback read: a missed ping costs at most this (Task 1: 15 s with Broadcast, 4 s without) */
@@ -113,4 +113,17 @@ export function useTableCart(
       return result
     },
   }
+}
+
+/** The table's Broadcast topic (cartChannel), once it is worked out; null until then or without one
+ *  (the 15 s read still runs). */
+export function useCartTopic(token: string | null): string | null {
+  const [topic, setTopic] = useState<string | null>(null)
+  useEffect(() => {
+    if (!token) return
+    let live = true
+    cartChannel(token).then((t) => { if (live) setTopic(t) }, () => { /* no channel: the 15 s read still runs */ })
+    return () => { live = false }
+  }, [token])
+  return topic
 }

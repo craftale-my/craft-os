@@ -26,8 +26,7 @@ Everything else below is my choice and marked "(assumed)" where it is a real cho
   the guest who added it.
 
 Out of scope, each its own later piece: order status after sending, a bill page for the guest, the
-"stops being served at 13:31" banner, pairings as tick boxes inside the item sheet, member sign-up,
-paying at the table, languages.
+"stops being served at 13:31" banner, member sign-up, paying at the table, languages.
 
 ## 2. What the guest sees
 
@@ -42,8 +41,8 @@ All customer-facing copy is English.
 - The name and avatar sit in the page header afterwards; a tap reopens the card to change them. A change
   renames the guest's lines still in the cart, not lines already sent.
 
-**Adding** — the item sheet is unchanged. `Add` writes the line to the table's cart. While the write is
-in flight the button shows `Adding…`; on failure the sheet stays open with
+**Adding** — a tap on a product opens the item page (below). Its button writes the line to the table's
+cart. While the write is in flight the button shows `Adding…`; on failure the page stays open with
 `Not added — no connection. Tap Add to try again.` (or the server's reason). Nothing is shown in the
 cart that the server does not hold.
 
@@ -53,29 +52,45 @@ cart that the server does not hold.
 `Others at this table added N items`; N counts units. Removals and edits make no toast. The cart button and `Place order` total follow the
 table's cart.
 
-**Four views** — one page, one `view` state; cart, sent and orders each push one history entry, so the
-phone's Back returns to the menu.
+**Five views** — one page, one `view` state; item, cart, sent and orders each push one history entry, so
+the phone's Back returns to where the guest came from. The structure of each view follows the reference
+recording (`.superpowers/sdd/ref/`), in our own colours.
 
-- **Menu** — header, toast, and a 2-column grid of square tiles (photo, name, price; `Popular` pill; sold
-  out dimmed with `Sold out`). A round badge on a tile counts the units of that product in the whole
-  table's cart. A fixed bottom bar holds `Orders` (only when the table has ordered items) and the primary
-  button: `View cart · 3 · RM 42.00`, `Tap an item to start` (disabled) or `Reconnecting…` (disabled). The
-  `Order placed — it is on its way. You can add more below.` banner sits on top of it for the phones that
-  did not send.
-- **Cart** — `Your items` (each line with `Edit` and `Remove`; the item sheet's button then reads
-  `Save · RM …`), `Others at this table` (one sub-heading per guest, `<avatar> Mei`, lines read-only),
+- **Menu** — one long page. A slim strip with the guest chip; `Craft Cafe` large with `Table T3` under it;
+  the toast and the `Order placed` banner; a `Menu` heading with a `Grid view` / `List view` switch (the
+  choice is kept in `localStorage` `qr-menu-view`, default grid); then the category bar: pills that stick
+  to the top while scrolling, the pill of the section in view filled, a tap jumps to that section, and a
+  chevron (`All categories`) opens the full list. Every category is a section — large heading, its
+  products, a thick band — and `Popular` is the first section when there are popular products. List view:
+  flat rows with a hairline between them — name, description (2 lines), price on the left, a square photo
+  on the right. Grid view: two columns of photo, name, price. A round badge counts the units of that
+  product in the whole table's cart; a sold-out product is muted and reads `Sold out · RM 15.00`. The
+  fixed bottom bar is absent while the cart is empty and nothing was ordered; otherwise `Cart · RM 42.00`
+  (`Reconnecting…` when offline), with a small `Orders` button beside it once the table has ordered.
+- **Item** — a full page, not a sheet: the photo across the top with a round back button on it, name,
+  description; each choice group with its rule in the accent colour (`Required · choose 1`,
+  `Optional · up to 2`), a `Selected n` badge and its options as radio or checkbox rows with the price
+  difference at the right; `Goes well with` as tick rows (pairings that need no choice, not already in the
+  table's cart, at most 6 — ticked ones are added as their own lines after the item; hidden when editing);
+  the remark; a centred quantity stepper (1–20); and one fixed button `Add 1 to cart · RM 15.00`
+  (`Save · RM 15.00` when editing a line). The POS counter keeps its item sheet; both use `toggleOption`
+  in `cart.ts`.
+- **Cart** — `Your items`: each line has a quantity box on the left that changes the quantity directly,
+  the name with options and remark, `Edit` under it, the price on the right with a bin under it.
+  `Others at this table`: one sub-heading per guest (`<avatar> Mei`), the same line shape, read-only.
   `Goes well with your order` (pairings of my lines, not already in the cart, at most 6), `Subtotal` with
-  `Before service charge and tax.`, and a fixed `Place order · RM 42.00` button. A line that the item
-  sheet's own validation would refuse (`validateLine`: left its time slot, switched off, sold out, a variant
-  or add-on gone, a required choice missing, too many choices in a group) is struck through with
-  `Not available now` under it and is left out of the total; its owner can remove it. An empty cart says
-  `Your cart is empty.`; when the table's order goes from another phone the guest is returned to the menu.
-- **Order placed** — shown to the guest who sent: a check mark, `Order placed`, `Table T3 · Bill <no>`,
-  `It is on its way.`, what was sent by guest, and `Add more` / `View orders`.
+  `Before service charge and tax.`, and a fixed `Place order` button. A line that the item page's own
+  validation would refuse (`validateLine`: left its time slot, switched off, sold out, a variant or add-on
+  gone, a required choice missing, too many choices in a group) is struck through with `Not available now`
+  under it and is left out of the total; its owner can remove it. An empty cart says `Your cart is empty.`;
+  when the table's order goes from another phone the guest is returned to the menu.
+- **Order details** — shown to the guest who sent: a check mark and `Order sent`, a four-step strip with
+  the first step done, `Table` and `Bill no.` side by side, the items that were sent by guest, and
+  `Add more` / `Orders`.
 - **Orders** — everything the table has ordered, by guest (the counter last, voided items struck through),
   `Subtotal` and the tax note; the table state is read afresh on entry. Empty: `Nothing ordered yet.`
 
-**Sending** — `Place order · RM 42.00` on the cart page opens a sheet:
+**Sending** — `Place order` on the cart page opens a sheet:
 
 - Title `Has everyone ordered?`
 - The table's lines grouped by guest, with the subtotal. Unavailable lines are not listed.
@@ -86,10 +101,10 @@ phone's Back returns to the menu.
   saw. The first tap after the cart changed (a change this phone has already read) sends nothing and shows
   that notice; the next tap sends.
 
-**After sending** — the sender sees the `Order placed` view. Every phone at the table empties its cart; the
+**After sending** — the sender sees the `Order details` view. Every phone at the table empties its cart; the
 others show the existing `Order placed — it is on its way. You can add more below.` banner on the menu. A
 phone shows it when `qr_cart_state`'s `lastOrder` (the id of the newest QR order from this table) moves.
-The sender never sees it: it is cleared when the sender leaves the `Order placed` view. A guest on the
+The sender never sees it: it is cleared when the sender leaves the `Order details` view. A guest on the
 cart view when another phone sends is returned to the menu once; a cart that merely becomes empty stays
 on the cart view.
 `Orders` groups its lines by guest.
@@ -241,10 +256,11 @@ first line.
   drops a reply that arrives after a newer one (the page's existing sequence-counter pattern). Exposes
   `status` (`loading | ready | offline`).
 - **`GuestCard.tsx`**, **`SendSheet.tsx`** (new components) — §2.
-- **`MenuGrid.tsx`**, **`CartPage.tsx`**, **`SentPage.tsx`**, **`OrdersPage.tsx`**, **`qrParts.tsx`** (new
-  components) — the four views of §2; `qrParts` holds the price text, `PickCard`, the page header and the
+- **`MenuPage.tsx`** (with `MenuGrid.tsx`, `MenuList.tsx`, `CategoryBar.tsx`, `useScrollSpy.ts`),
+  **`ItemPage.tsx`**, **`CartPage.tsx`**, **`SentPage.tsx`**, **`OrdersPage.tsx`**, **`qrParts.tsx`** (new
+  components) — the five views of §2; `qrParts` holds the price text, `PickCard`, the page header and the
   shell. `qrCart.ts` also has `unitsByProduct`, `cartUnits` and `cartPairs`.
-- **`QrApp.tsx`** — state holder and router of the four views (one `popstate` listener, no router library);
+- **`QrApp.tsx`** — state holder and router of the five views (one `popstate` listener, no router library);
   `lines` state and `linesRef` go; the cart comes from `useTableCart`. The minute menu
   refresh no longer prunes the cart (the server marks lines unavailable); it still closes an open sheet
   whose product left the menu. `Popular here` and `Goes well with your order` (cart page) keep working:

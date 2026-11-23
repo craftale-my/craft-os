@@ -4,7 +4,7 @@
  *  import's Photos step. The rules themselves are in photo.ts, the canvas work in photoResize.ts. */
 import { supabase } from '../../../shared/lib/supabase'
 import { fetchProductExtras, setProductImage } from './slotsApi'
-import { PHOTO_BUCKET, photoInputProblem, photoPath, versionedPhotoUrl } from './photo'
+import { PHOTO_BUCKET, animationProblem, mayBeAnimated, photoInputProblem, photoPath, sniffAnimation, versionedPhotoUrl, type PhotoMime } from './photo'
 import { resizePhoto } from './photoResize'
 
 export const publicPhotoUrl = (path: string): string => supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path).data.publicUrl
@@ -12,6 +12,8 @@ export const publicPhotoUrl = (path: string): string => supabase.storage.from(PH
 export const productThumbUrl = (path: string, updatedAt: string | null): string => versionedPhotoUrl(publicPhotoUrl(path), updatedAt)
 
 /** Resizes and uploads a new file, points the product at it, then deletes the file it replaced.
+ *  An animation (a GIF of more than one frame, an animated WebP — told from its bytes) is not
+ *  resized, which would freeze it: it is uploaded as it is, within 4 MB and 1200 px.
  *  Returns a warning when only that last clean-up failed (the photo itself is saved).
  *  If pointing the product at the new file seems to fail, the answer may just have been lost:
  *  the product is read again, and the new file is deleted only when the product certainly does
@@ -19,8 +21,20 @@ export const productThumbUrl = (path: string, updatedAt: string | null): string 
 export async function uploadProductPhoto(productId: string, file: Blob): Promise<{ warning: string | null }> {
   const problem = photoInputProblem(file)
   if (problem) throw new Error(problem)
-  const { blob, mime } = await resizePhoto(file)
-  const path = photoPath(productId, mime, crypto.randomUUID())
+  // only a GIF or a WebP is read whole (to count its frames); every other picture just its first bytes
+  const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+  const anim = mayBeAnimated(head) ? sniffAnimation(new Uint8Array(await file.arrayBuffer())) : null
+  let blob: Blob
+  let mime: PhotoMime
+  if (anim) {
+    const tooBig = animationProblem({ bytes: file.size, width: anim.width, height: anim.height })
+    if (tooBig) throw new Error(tooBig)
+    blob = file
+    mime = anim.mime
+  } else {
+    ({ blob, mime } = await resizePhoto(file))
+  }
+  const path = photoPath(productId, mime, crypto.randomUUID(), anim !== null)
   const bucket = supabase.storage.from(PHOTO_BUCKET)
   const up = await bucket.upload(path, blob, { contentType: mime, cacheControl: '31536000', upsert: false })
   if (up.error) throw new Error(`Upload failed: ${up.error.message}`)

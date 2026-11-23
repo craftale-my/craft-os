@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import Mascot from './Mascot'
 import { AVATARS, DEFAULT_NAME, NAME_MAX, cleanName, randomAvatar, type Guest } from './qrGuest'
 
 /** "Who's ordering?" — an avatar and an optional name. `initial` null = a new guest (Start ordering);
@@ -13,7 +14,8 @@ export default function GuestCard({ initial, onDone, onCancel }: {
   const [name, setName] = useState(initial && initial.name !== DEFAULT_NAME ? initial.name : '')
   return (
     <div className="m-3 rounded-2xl border border-border bg-card p-4">
-      <h2 className="text-lg font-semibold text-brown-dark">Who's ordering?</h2>
+      {!initial && <Mascot pose="hello" size={72} className="mx-auto" />}
+      <h2 className={`text-lg font-semibold text-brown-dark ${initial ? '' : 'mt-1 text-center'}`}>Who's ordering?</h2>
       <div role="radiogroup" aria-label="Avatar" className="mt-3 grid grid-cols-4 gap-2">
         {AVATARS.map((a) => (
           <button key={a.key} type="button" role="radio" aria-checked={avatar === a.key} aria-label={`Avatar ${a.emoji}`}
@@ -34,6 +36,17 @@ export default function GuestCard({ initial, onDone, onCancel }: {
           className="flex-[2] rounded-xl bg-brown-btn py-3 text-white hover:bg-brown-btn-hover">
           {initial ? 'Save' : 'Start ordering'}
         </button>
+      </div>
+    </div>
+  )
+}
+
+/** The card over the page, reopened from the guest chip to change the name or avatar. */
+export function GuestModal({ guest, onDone, onCancel }: { guest: Guest; onDone: (name: string, avatar: string) => void; onCancel: () => void }) {
+  return (
+    <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/40 sm:items-center" onClick={onCancel}>
+      <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+        <GuestCard initial={guest} onDone={onDone} onCancel={onCancel} />
       </div>
     </div>
   )

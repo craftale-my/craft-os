@@ -9,6 +9,8 @@ import { readFileSync, readdirSync } from 'node:fs'
 const SUPABASE = new URL('../../../supabase/', import.meta.url)
 // the menu back-office's own migrations (migration-*-menu-*.sql) are scanned too
 const POS_MIGRATION = /^migration-.*-(pos|menu)-.*\.sql$/
+// the e-invoice migrations (migration-*-einvoice*.sql) hold POS-adjacent functions too
+const EINVOICE_MIGRATION = /^migration-.*-einvoice.*\.sql$/
 
 /** Comments removed and string literals emptied; dollar quotes kept, since a
  *  function body is code. Line breaks are kept so error lines still match. */
@@ -110,7 +112,8 @@ describe('pg-safeupdate guard: the checker itself', () => {
 })
 
 describe('pg-safeupdate guard: POS migrations', () => {
-  const files = readdirSync(SUPABASE).filter((f) => POS_MIGRATION.test(f) && !f.includes('verify')).sort()
+  const files = readdirSync(SUPABASE)
+    .filter((f) => (POS_MIGRATION.test(f) || EINVOICE_MIGRATION.test(f)) && !f.includes('verify')).sort()
 
   it('reads the POS function migrations', () => {
     expect(files).toEqual(expect.arrayContaining([
@@ -128,6 +131,9 @@ describe('pg-safeupdate guard: POS migrations', () => {
       'migration-2026-10-29-pos-outlets.sql',
       'migration-2026-10-29-pos-devices.sql',
       'migration-2026-10-29-pos-device-till.sql',
+      'migration-2026-10-26-einvoice.sql',
+      'migration-2026-11-23-einvoice-w5.sql',
+      'migration-2026-11-23-einvoice-w5-cron.sql',
     ]))
   })
 
@@ -398,6 +404,112 @@ describe('pg-safeupdate guard: POS migrations', () => {
     const verify = readFileSync(new URL('migration-2026-11-22-pos-feedme-habits-verify.sql', SUPABASE), 'utf8')
     expect(verify).toMatch(/^begin;$/m)
     expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+  it('scans the D migration: pos_agent_whoami for print agents only, granted like its neighbours, a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-22-pos-agent-pairing.sql', SUPABASE), 'utf8')
+    const bodies = functionBodies(sql)
+    expect(bodies.map((b) => b.name)).toEqual(['pos_agent_whoami'])
+    const body = bodies[0].body
+    expect(body).toContain("v_dev.kind <> ''")                       // strings are emptied: kind <> 'print_agent'
+    expect(body).toContain('v_dev.revoked_at is not null')
+    expect(body).toContain("current_setting('')::boolean")           // no stamp in a read-only call
+    expect(sql).toContain('revoke all on function pos_agent_whoami() from public, anon;')
+    expect(sql).toContain('grant execute on function pos_agent_whoami() to authenticated;')
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-10-30-pos-app\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'pos agent pairing applied' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-11-22-pos-agent-pairing-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+  it('scans the C3 migration: the transition gone from pos_ctx, pos_print_branch and pos_session_branch; grants kept; a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-22-pos-switchover.sql', SUPABASE), 'utf8')
+    const bodies = functionBodies(sql)
+    expect(bodies.map((b) => b.name).sort()).toEqual(['pos_ctx', 'pos_print_branch', 'pos_session_branch'])
+    const body = (n: string) => bodies.find((b) => b.name === n)?.body ?? ''
+    // no staff-login path left (strings are emptied by the scanner)
+    expect(body('pos_ctx')).not.toMatch(/\bfrom staff\b/)
+    expect(body('pos_ctx')).toContain("if not found then raise exception ''; end if;")
+    expect(body('pos_ctx')).toContain('pos_staff_may_work(v_ses.staff_id, v_dev.branch_id)')      // the device path is the live one
+    expect(body('pos_print_branch')).not.toContain('pos_my_branch(')
+    expect(body('pos_print_branch')).toContain("v_dev.kind = ''")
+    expect(body('pos_session_branch')).not.toMatch(/\bfrom staff\b/)
+    expect(body('pos_session_branch')).toContain('else null end')
+    expect(sql).not.toMatch(/^\s*--.*TRANSITION \(removed/m)                                       // no live TRANSITION line copied over
+    for (const f of ['pos_ctx', 'pos_print_branch']) {
+      expect(sql).toContain(`revoke all on function ${f}() from public, anon, authenticated;`)
+      expect(sql).not.toContain(`grant execute on function ${f}(`)
+    }
+    expect(sql).toContain('revoke all on function pos_session_branch() from public, anon;')
+    expect(sql).toContain('grant execute on function pos_session_branch() to authenticated;')
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-22-pos-agent-pairing\.sql/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'pos switchover applied' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-11-22-pos-switchover-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+  it('scans the W5 e-invoice migration: internal and service-role functions closed, two screen RPCs, the guards, a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-23-einvoice-w5.sql', SUPABASE), 'utf8')
+    const bodies = functionBodies(sql)
+    const body = (n: string) => bodies.find((b) => b.name === n)?.body ?? ''
+    expect(bodies.map((b) => b.name)).toEqual([
+      'pos_ledger_lines', 'pos_report_ledger',
+      'branches_einvoice_from_guard', 'einvoice_set_outlet_start',
+      'einvoice_bill_lines', 'einvoice_bill_source', 'einvoice_unlinked_paid_bills', 'einvoice_large_bills',
+      'einvoice_unreported_months', 'einvoice_create_document',
+      'einvoice_pending_single_refunds', 'einvoice_pending_consolidated_refunds', 'einvoice_consolidated_refund_months',
+      'einvoice_record_attempt', 'einvoice_claim_send', 'einvoice_reconcile_source',
+    ])
+    expect(body('pos_report_ledger')).toContain('from pos_ledger_lines(array(select pb.id from pb)) x')
+    expect(body('pos_report_ledger')).not.toContain('floor_sst')
+    for (const f of ['pos_ledger_lines(uuid[])', 'branches_einvoice_from_guard()', 'einvoice_bill_lines(uuid[])']) {
+      expect(sql).toContain(`revoke all on function ${f} from public, anon, authenticated;`)
+    }
+    const service = [
+      'einvoice_bill_source(uuid)', 'einvoice_unlinked_paid_bills(uuid, date)', 'einvoice_create_document(jsonb, uuid[], uuid[])',
+      'einvoice_pending_single_refunds()', 'einvoice_pending_consolidated_refunds(uuid, date)',
+      'einvoice_consolidated_refund_months(date)', 'einvoice_record_attempt(text, text, uuid, date, uuid, boolean, text)',
+      'einvoice_claim_send(uuid)', 'einvoice_reconcile_source(date, date)',
+    ]
+    for (const f of service) {
+      expect(sql).toContain(`revoke all on function ${f} from public, anon, authenticated;`)
+      expect(sql).toContain(`grant execute on function ${f} to service_role;`)
+    }
+    expect([...sql.matchAll(/grant execute on function (\w+)\([^)]*\) to authenticated;/g)].map((m) => m[1]).sort())
+      .toEqual(['einvoice_large_bills', 'einvoice_set_outlet_start', 'einvoice_unreported_months', 'pos_report_ledger'])
+    // the closed months still to report: the screen (access_settings) and the daily run (service role)
+    expect(sql).toContain('revoke all on function einvoice_unreported_months() from public, anon;')
+    expect(sql).toContain('grant execute on function einvoice_unreported_months() to service_role;')
+    expect(body('einvoice_unreported_months')).toContain("(auth.uid() is null or has_menu_cap(''))")
+    expect(body('einvoice_unreported_months')).toContain('b.total_sen <= 1000000')
+    expect(body('einvoice_unreported_months')).toContain('not exists (select 1 from einvoice_bill_links l where l.bill_id = b.id)')
+    // a run is written 'running' first; the check is re-created so it re-applies over the table already on dev
+    expect(sql).toContain('alter table einvoice_job_runs drop constraint if exists einvoice_job_runs_outcome_check;')
+    expect(sql).toContain("check (outcome in ('running', 'not_set_up', 'ok', 'errors'));")
+    expect(body('branches_einvoice_from_guard')).toContain("d.status in ('', '', '')")       // strings emptied: draft, submitted, valid
+    expect(body('branches_einvoice_from_guard')).toContain('new.einvoice_from < old.einvoice_from')
+    expect(body('einvoice_unlinked_paid_bills')).toContain('b.total_sen <= 1000000')
+    expect(body('einvoice_large_bills')).toContain('b.total_sen > 1000000')
+    expect(body('einvoice_create_document')).toContain('pos_business_day(b.closed_at) < br.einvoice_from')
+    expect(sql).toContain('create trigger branches_einvoice_from_guard before update of einvoice_from on branches')
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-18-pos-reports\.sql and migration-2026-10-26-einvoice\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'einvoice w5 applied' as result;\s*$/)
+    const verify = readFileSync(new URL('migration-2026-11-23-einvoice-w5-verify.sql', SUPABASE), 'utf8')
+    expect(verify).toMatch(/^begin;$/m)
+    for (const v of ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8']) expect(verify).toContain(`-- ── ${v}. `)
+    expect(verify).toMatch(/select 'VERIFY OK' as result;\s*rollback;\s*$/)
+  })
+  it('scans the W5 cron file: einvoice_call_job internal, secrets only from Vault, 07:00 Malaysia time, a STOP guard', () => {
+    const sql = readFileSync(new URL('migration-2026-11-23-einvoice-w5-cron.sql', SUPABASE), 'utf8')
+    expect(functionBodies(sql).map((b) => b.name)).toEqual(['einvoice_call_job'])
+    expect(sql).toContain('revoke all on function einvoice_call_job(text) from public, anon, authenticated;')
+    expect(sql).not.toContain('grant execute on function einvoice_call_job(')
+    expect(sql).toContain("from vault.decrypted_secrets where name = 'einvoice_job_secret'")
+    expect(sql).toContain("from vault.decrypted_secrets where name = 'einvoice_function_url'")
+    expect(sql).toContain("select cron.schedule('einvoice-daily', '0 23 * * *', 'select public.einvoice_call_job(''run'')');")
+    expect(sql).not.toMatch(/[0-9a-f]{32}/)                                     // no secret in the file
+    expect(sql).not.toMatch(/https:\/\//)                                       // the URL lives in Vault
+    expect(sql).toMatch(/raise exception 'STOP: run migration-2026-11-23-einvoice-w5\.sql first/)
+    expect(sql).toMatch(/notify pgrst, 'reload schema';\s*select 'einvoice w5 cron applied' as result;\s*$/)
   })
 })
 

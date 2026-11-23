@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  buildPosMenu, posMenuFromQr, defaultLine, linePriceSen, validateLine, lineLabel, cartSubtotalSen, cartKey, formatSen,
+  buildPosMenu, posMenuFromQr, defaultLine, linePriceSen, validateLine, lineLabel, cartSubtotalSen, cartKey, formatSen, toggleOption,
   type CatalogRows, type ProductRow, type GroupRow, type LinkRow,
 } from './cart'
 
@@ -171,5 +171,20 @@ describe('posMenuFromQr', () => {
     const m = posMenuFromQr(json, (path) => `https://cdn.test/${path}`)
     expect(m.categories[0].products.map((p) => p.imageUrl)).toEqual(['https://cdn.test/products/p/abc12345.webp', null])
     expect(posMenuFromQr(json).categories[0].products[0].imageUrl).toBeNull()
+  })
+})
+
+describe('toggleOption', () => {
+  const group = ['a', 'b', 'c']
+  it('one-of group: a tap picks the option, replacing the group\'s other one, keeping other groups', () => {
+    expect(toggleOption(['x'], group, 1, 'a')).toEqual(['x', 'a'])
+    expect(toggleOption(['x', 'a'], group, 1, 'b')).toEqual(['x', 'b'])
+  })
+  it('one-of group: a tap on the chosen option clears it', () => {
+    expect(toggleOption(['x', 'a'], group, 1, 'a')).toEqual(['x'])
+  })
+  it('several-of group: a tap adds or removes, in tap order', () => {
+    expect(toggleOption(['a'], group, 2, 'c')).toEqual(['a', 'c'])
+    expect(toggleOption(['a', 'c', 'x'], group, 2, 'a')).toEqual(['x', 'c'])
   })
 })

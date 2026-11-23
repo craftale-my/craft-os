@@ -26,6 +26,9 @@ import PosPage from './features/pos/order/PosPage'
 import PosSettingsPage from './features/pos/order/PosSettingsPage'
 import DevicesPage from './features/pos/devices/DevicesPage'
 import ReportsPage from './features/pos/reports/ReportsPage'
+import MembersPage from './features/pos/members/MembersPage'
+import EinvoicePage from './features/pos/einvoice/EinvoicePage'
+import { EinvoiceProblemBanner } from './features/pos/einvoice/EinvoiceProblemBanner'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
@@ -63,6 +66,7 @@ function AppLayout({ children }: { children: ReactNode }) {
       <Sidebar />
       {/* key=pathname:换页即复位。Sidebar(含反馈按钮)在 boundary 之外,页面崩了仍可用。 */}
       <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen pb-[calc(5rem+env(safe-area-inset-bottom))]">
+        <EinvoiceProblemBanner />
         <ErrorBoundary key={pathname}>{children}</ErrorBoundary>
       </main>
     </div>
@@ -299,13 +303,22 @@ function AppRoutes() {
         }
       />
 
-      <Route path="/pos" element={<ProtectedRoute><PosPage /></ProtectedRoute>} />
+      <Route path="/pos" element={<ProtectedRoute><AppLayout><PosPage /></AppLayout></ProtectedRoute>} />
 
       <Route
         path="/pos/reports"
         element={
           <ProtectedRoute requireCap="access_settings">
             <AppLayout><ReportsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/pos/members"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><MembersPage /></AppLayout>
           </ProtectedRoute>
         }
       />
@@ -324,6 +337,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="access_settings">
             <AppLayout><DevicesPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/pos/einvoice"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><EinvoicePage /></AppLayout>
           </ProtectedRoute>
         }
       />

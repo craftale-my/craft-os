@@ -30,7 +30,10 @@ export interface PosProduct {
   /** QR only (M3): the photo's public URL; the counter keeps text tiles */
   imageUrl?: string | null
 }
-export interface PosCategory { name: string; products: PosProduct[] }
+/** A category's kind (menu_categories.kind): the QR page's AI Pick suggests food with drinks and a drink
+ *  with food. null = neither (flowers, merchandise); absent = an older server. */
+export type CategoryKind = 'drink' | 'food'
+export interface PosCategory { name: string; products: PosProduct[]; kind?: CategoryKind | null }
 export interface PosMenu { categories: PosCategory[] }
 
 // ── flat rows as posApi.fetchPosMenu returns them ──────────────────────────
@@ -43,7 +46,7 @@ export interface ProductRow {
   is_addon: boolean
   is_active: boolean
   sort_order: number
-  category: { name: string; sort_order: number } | null
+  category: { name: string; sort_order: number; kind?: CategoryKind | null } | null
   menu_variants: { id: string; name: string; is_active: boolean; sort_order: number; feedme_variant_key: string }[]
 }
 export interface GroupRow {
@@ -86,7 +89,7 @@ export function buildPosMenu(
       return c && row.is_active && !row.is_addon && allowed(mode, c.availability) ? [{ row, sort: c.sort_order }] : []
     })
     .sort((a, b) => a.sort - b.sort || a.row.name.localeCompare(b.row.name))
-  const cats = new Map<string, { sort: number; products: PosProduct[] }>()
+  const cats = new Map<string, { sort: number; kind?: CategoryKind | null; products: PosProduct[] }>()
   for (const { row } of visible) {
     // a variant the catalog has no price for is not for sale in it (the server refuses it too)
     const variants = row.menu_variants.filter((v) => v.is_active && priceOf.has(v.id)).sort(bySort)
@@ -113,7 +116,7 @@ export function buildPosMenu(
       groups: posGroups,
     }
     const catName = row.category?.name ?? 'Uncategorised'
-    const cat = cats.get(catName) ?? { sort: row.category?.sort_order ?? 9999, products: [] }
+    const cat = cats.get(catName) ?? { sort: row.category?.sort_order ?? 9999, kind: row.category?.kind, products: [] }
     cat.products.push(product)
     cats.set(catName, cat)
   }
@@ -121,7 +124,7 @@ export function buildPosMenu(
   return {
     categories: [...cats.entries()]
       .sort((a, b) => a[1].sort - b[1].sort || a[0].localeCompare(b[0]))
-      .map(([name, c]) => ({ name, products: c.products })),
+      .map(([name, c]) => ({ name, products: c.products, ...(c.kind !== undefined ? { kind: c.kind } : {}) })),
   }
 }
 
@@ -135,6 +138,8 @@ export interface QrMenuJson {
   lastOrderAt?: string | null
   categories: {
     name: string
+    /** menu_categories.kind (2026-11-23); absent from an older server */
+    kind?: CategoryKind | null
     products: {
       id: string; name: string; description: string | null; soldOut: boolean
       /** M3: a path in the menu-images bucket, or null */
@@ -151,6 +156,7 @@ export function posMenuFromQr(json: QrMenuJson, photoUrl?: (path: string) => str
   return {
     categories: json.categories.map((c) => ({
       name: c.name,
+      ...(c.kind !== undefined ? { kind: c.kind } : {}),
       products: c.products.map((p) => ({
         id: p.id, name: p.name.trim(), description: p.description, soldOut: p.soldOut,
         imageUrl: p.imagePath && photoUrl ? photoUrl(p.imagePath) : null,
@@ -211,6 +217,16 @@ export function validateLine(p: PosProduct, line: OrderLine): string | null {
     if (chosen > g.max) return `Choose at most ${g.max} for ${p.name}: ${g.name}`
   }
   return null
+}
+
+/** A tap on option `id` of a group (its option ids and max): a one-of group (max 1) picks it in place of
+ *  the group's other one, or clears it when it was the chosen one; a several-of group adds or removes it.
+ *  Other groups' options are kept. Shared by the counter's item sheet and the QR item page. */
+export function toggleOption(optionIds: string[], groupOptionIds: string[], groupMax: number, id: string): string[] {
+  const inGroup = optionIds.filter((x) => groupOptionIds.includes(x))
+  const others = optionIds.filter((x) => !groupOptionIds.includes(x))
+  if (groupMax === 1) return inGroup[0] === id ? others : [...others, id]
+  return inGroup.includes(id) ? [...others, ...inGroup.filter((x) => x !== id)] : [...others, ...inGroup, id]
 }
 
 export function lineLabel(p: PosProduct, line: OrderLine): { name: string; mods: string[] } {

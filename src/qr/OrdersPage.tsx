@@ -1,9 +1,8 @@
 import { formatSen } from '../features/pos/order/cart'
 import { groupOrdered, type OrderedItem } from './qrCart'
-import { avatarEmoji } from './qrGuest'
-import { PageHeader } from './qrParts'
+import { GuestLine, ItemLine, PageHeader } from './qrParts'
 
-/** Everything the table has ordered so far, by guest (the counter last). */
+/** Everything the table has ordered so far, by guest (the counter last), in the order-details line shape. */
 export default function OrdersPage({ items, subtotalSen, onBack }: {
   items: OrderedItem[]
   subtotalSen: number
@@ -21,27 +20,24 @@ export default function OrdersPage({ items, subtotalSen, onBack }: {
     )
   }
   return (
-    <div className="pb-8">
+    <div className="pb-28">
       <PageHeader title="Orders" onBack={onBack} />
-      <div className="px-3 text-sm">
+      <div className="px-4 pt-2">
         {groupOrdered(items).map((g) => (
-          <section key={g.label ?? '-counter-'} className="mb-3">
-            <h2 className="text-xs font-semibold text-brown-muted">{g.label === null ? 'Ordered at the counter' : `${avatarEmoji(g.avatar)} ${g.label}`.trim()}</h2>
+          <section key={g.label ?? '-counter-'} className="pt-2">
+            <GuestLine avatar={g.label === null ? null : g.avatar} label={g.label ?? 'Ordered at the counter'} />
             {g.items.map((i, k) => (
-              <div key={k} className={`flex justify-between gap-2 py-1 ${i.voided ? 'line-through opacity-50' : ''}`}>
-                <div>
-                  <div>{i.qty} × {i.name}</div>
-                  {i.mods.length > 0 && <div className="text-xs text-brown-muted">{i.mods.join(', ')}</div>}
-                </div>
-                <div className="shrink-0">{formatSen(i.unitPriceSen * i.qty)}</div>
-              </div>
+              <ItemLine key={k} qty={i.qty} name={i.name} mods={i.mods} note={i.note} priceSen={i.unitPriceSen * i.qty} voided={i.voided} />
             ))}
           </section>
         ))}
-        <div className="border-t border-border pt-2">
-          <div className="flex justify-between font-semibold"><span>Subtotal</span><span>{formatSen(subtotalSen)}</span></div>
-          <p className="text-xs text-brown-muted">Before service charge and tax.</p>
-        </div>
+      </div>
+      <div className="mt-3 border-t-8 border-brown-track px-4 pt-4">
+        <div className="flex justify-between text-[17px] font-bold text-brown-dark"><span>Subtotal</span><span>{formatSen(subtotalSen)}</span></div>
+        <p className="mt-1 text-sm text-brown-muted">Before service charge and tax.</p>
+      </div>
+      <div className="fixed inset-x-0 bottom-0 z-10 mx-auto max-w-lg bg-cream px-4 pb-4 pt-3">
+        <button type="button" onClick={onBack} className="min-h-14 w-full rounded-xl bg-brown-btn text-[17px] font-semibold text-white">Back to menu</button>
       </div>
     </div>
   )
