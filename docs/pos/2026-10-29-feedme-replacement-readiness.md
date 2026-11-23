@@ -164,6 +164,24 @@ then testing and cut-over. Check items off as they land.
       verifies. After it, the verifies that run the till as a staff login (pre-device ones, menu-picks,
       device-till's "C1 transition" block, qr-table-cart L2 / L3) pass only before the switch-over; re-running
       `migration-2026-10-29-pos-device-till.sql` puts the transition back — re-run the switch-over after it.
+- [ ] Inventory on top of the POS (stocktake is already live on prod since 2026-11-23), after the POS chain and the
+      prod menu import, in a quiet window, one transaction each:
+      1. `migration-2026-11-22-menu-costing.sql` + `VERIFY-2026-11-22-menu-costing.sql` is dev-only (hard-coded dev
+         UUIDs) — on prod check the views and RPCs exist instead.
+      2. Recipes: `docs/inventory/menu-recipes-import.sql` (kitchen, also creates the items Soy Sauce and Chili Paste),
+         `drink-recipes-import.sql`, `dessert-recipes-import.sql` — git-excluded, kept in the `inventory-v2` worktree;
+         name-based (category + product + size), each stops with "Unknown …" if the prod menu names differ.
+         Re-check the open owner items first (Breadcrumb price, Soda Cylinder unit, item 'Lemon' price, cookies per jar,
+         9th tart, fruit quantities).
+      3. `migration-2026-11-23-stock-count-usage.sql` → `migration-2026-11-23-sales-depletion.sql` →
+         `migration-2026-11-23-wastage-allow-negative.sql` (changes live wastage: no on-hand refusal). Never re-run
+         `migration-2026-10-29-owner-decisions.sql` or an older file that rebuilds
+         `inventory_transactions_transaction_type_check` afterwards (drops `sale`).
+      4. Right after: a baseline FULL stock count per outlet, so the first "Since last count" period is not partial.
+      5. Only then merge feature/pos-demo into main (main deploys Craft OS to prod; the Menu Costing and usage pages
+         need the SQL above). For a week watch `bill_depletions` for `status = 'error'` and checkout speed.
+      Rehearsed on dev 2026-11-24: a POS-app bill (Carbonara + Fried Chicken, Coffee Latte COLD, cheesecake slice)
+      deducted all 26 recipe ingredients exactly; a weekly count then showed it under "Since last count".
 - [ ] Revoke the access tokens that were pasted in chat (Supabase dashboard → Account → Access tokens).
 
 ## 5. Testing
