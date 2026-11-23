@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { PosMenu } from '../features/pos/order/cart'
 import type { MenuPicks } from '../features/pos/order/picks'
 import {
+  pickersByProduct, pickersText,
   additionsToast, cartChannel, cartPairs, cartTotalSen, cartUnits, unitsByProduct, groupCart, groupOrdered, isNetworkError, lineAvailable, orderWasSent, parseCart,
   itemPairs, sendGroups, sentKey, skipIds, type CartLine, type CartState, type OrderedItem,
 } from './qrCart'
@@ -249,5 +250,24 @@ describe('itemPairs (the item page\'s Goes well with)', () => {
   it('is empty without picks or pairs', () => {
     expect(itemPairs(big, null, 'a', [])).toEqual([])
     expect(itemPairs(big, picks({}), 'a', [])).toEqual([])
+  })
+})
+
+describe('pickersByProduct', () => {
+  const menu: PosMenu = { categories: [{ name: 'C', products: [
+    { id: 'p1', name: 'P1', description: null, soldOut: false, variants: [{ id: 'v', name: 'V', priceSen: 100, isBase: true }], groups: [] },
+    { id: 'p2', name: 'P2', description: null, soldOut: true, variants: [{ id: 'v2', name: 'V', priceSen: 100, isBase: true }], groups: [] },
+  ] }] }
+  const line = (id: string, guestId: string, productId: string, qty: number): CartLine => ({
+    id, guestId, guestLabel: guestId, guestAvatar: 'a1', productId, variantId: productId === 'p1' ? 'v' : 'v2', qty, note: null, optionIds: [],
+  })
+  it('one entry per guest with their units, me first; unavailable lines left out', () => {
+    const who = pickersByProduct(menu, [line('1', 'grace', 'p1', 1), line('2', 'me', 'p1', 2), line('3', 'grace', 'p1', 3), line('4', 'me', 'p2', 1)], 'me')
+    expect(who.get('p1')).toEqual([
+      { guestId: 'me', label: 'me', avatar: 'a1', qty: 2, isMe: true },
+      { guestId: 'grace', label: 'grace', avatar: 'a1', qty: 4, isMe: false },
+    ])
+    expect(who.has('p2')).toBe(false)
+    expect(pickersText(who.get('p1')!)).toBe('You × 2, grace × 4')
   })
 })

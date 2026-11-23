@@ -64,4 +64,15 @@ describe('MenuGrid', () => {
     expect(container.querySelectorAll('img').length).toBe(1)
     expect(container.querySelectorAll('.bg-border.aspect-square').length).toBe(2)
   })
+
+  it('shows who picked a product: avatars on the photo and names in the label', () => {
+    const p = { id: 'x', name: 'Latte', description: null, soldOut: false, variants: [{ id: 'v', name: 'V', priceSen: 1200, isBase: true }], groups: [] }
+    const who = [
+      { guestId: 'me', label: 'Eric', avatar: 'a1', qty: 1, isMe: true },
+      { guestId: 'g', label: 'grace', avatar: 'a3', qty: 2, isMe: false },
+    ]
+    render(<MenuGrid products={[p]} popularIds={new Set()} units={new Map([['x', 3]])} pickers={new Map([['x', who]])} onOpen={() => {}} />)
+    expect(screen.getByTestId('picker-avatars').children).toHaveLength(2)
+    expect(screen.getByRole('button').getAttribute('aria-label')).toContain('3 in the cart (You × 1, grace × 2)')
+  })
 })

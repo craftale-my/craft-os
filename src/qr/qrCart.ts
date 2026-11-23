@@ -102,6 +102,25 @@ export function unitsByProduct(menu: PosMenu, lines: CartLine[]): Map<string, nu
   return out
 }
 
+/** Who has a product in the table's cart: one entry per guest, me first, then in cart order. */
+export interface Picker { guestId: string; label: string; avatar: string; qty: number; isMe: boolean }
+export function pickersByProduct(menu: PosMenu, lines: CartLine[], myGuestId: string): Map<string, Picker[]> {
+  const out = new Map<string, Picker[]>()
+  for (const l of lines) {
+    if (!lineAvailable(menu, l)) continue
+    const list = out.get(l.productId) ?? []
+    const found = list.find((x) => x.guestId === l.guestId)
+    if (found) found.qty += l.qty
+    else list.push({ guestId: l.guestId, label: l.guestLabel, avatar: l.guestAvatar, qty: l.qty, isMe: l.guestId === myGuestId })
+    out.set(l.productId, list)
+  }
+  for (const list of out.values()) list.sort((a, b) => Number(b.isMe) - Number(a.isMe))
+  return out
+}
+/** "You × 2, grace × 1" — for a label read aloud and the item page's line. */
+export const pickersText = (who: readonly Picker[]): string =>
+  who.map((w) => `${w.isMe ? 'You' : w.label} × ${w.qty}`).join(', ')
+
 /** Total units of the available lines (the cart button). */
 export const cartUnits = (menu: PosMenu, lines: CartLine[]): number =>
   lines.reduce((n, l) => n + (lineAvailable(menu, l) ? l.qty : 0), 0)

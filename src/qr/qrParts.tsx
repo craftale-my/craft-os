@@ -3,16 +3,37 @@ import { ChevronLeft, X } from 'lucide-react'
 import { formatSen, type PosProduct } from '../features/pos/order/cart'
 import { isAnimatedPhoto } from '../features/pos/menu/photo'
 import { avatarEmoji } from './qrGuest'
+import { pickersText, type Picker } from './qrCart'
 
 /** "RM 9.00", or "from RM 9.00" when the product has several sizes. */
 export const priceText = (p: PosProduct) =>
   p.variants.length > 1 ? `from ${formatSen(Math.min(...p.variants.map((v) => v.priceSen)))}` : formatSen(p.variants[0].priceSen)
 
 /** What a menu row / tile says to a screen reader: name, price, Popular, units in the table's cart. */
-export const productLabel = (p: PosProduct, popular: boolean, units: number) => {
+export const productLabel = (p: PosProduct, popular: boolean, units: number, who: readonly Picker[] = []) => {
   const price = priceText(p)
   return p.soldOut ? `${p.name}, ${price}, sold out`
-    : `${p.name}, ${price}${popular ? ', Popular' : ''}${units > 0 ? `, ${units} in the cart` : ''}`
+    : `${p.name}, ${price}${popular ? ', Popular' : ''}${units > 0 ? `, ${units} in the cart` : ''}${who.length > 0 ? ` (${pickersText(who)})` : ''}`
+}
+
+/** Who picked it: the guests' avatars in small overlapping circles (at most 3, then "+n"), on a menu
+ *  tile or row. Decorative — the tile's label names them. */
+export function PickerAvatars({ who, className = '' }: { who: readonly Picker[]; className?: string }) {
+  if (who.length === 0) return null
+  const shown = who.slice(0, 3)
+  return (
+    <span data-testid="picker-avatars" aria-hidden="true" className={`flex items-center ${className}`}>
+      {shown.map((w, i) => (
+        <span key={w.guestId} title={w.isMe ? 'You' : w.label}
+          className={`flex h-7 w-7 items-center justify-center rounded-full bg-card text-[15px] leading-none shadow ring-2 ${w.isMe ? 'ring-brown-btn' : 'ring-cream'} ${i > 0 ? '-ml-2' : ''}`}>
+          {avatarEmoji(w.avatar) || (w.label.trim()[0] ?? '?').toUpperCase()}
+        </span>
+      ))}
+      {who.length > shown.length && (
+        <span className="-ml-2 flex h-7 min-w-7 items-center justify-center rounded-full bg-card px-1 text-xs font-semibold text-brown-dark shadow ring-2 ring-cream">+{who.length - shown.length}</span>
+      )}
+    </span>
+  )
 }
 
 /** The round count of a product's units in the table's cart, on a menu row or tile. */

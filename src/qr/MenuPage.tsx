@@ -5,6 +5,7 @@ import { Fragment, useRef, useState } from 'react'
 import { ConciergeBell, LayoutGrid, List, ReceiptText } from 'lucide-react'
 import { formatSen, type PosProduct } from '../features/pos/order/cart'
 import { avatarEmoji, type Guest } from './qrGuest'
+import type { Picker } from './qrCart'
 import CategoryBar from './CategoryBar'
 import MenuGrid from './MenuGrid'
 import MenuList from './MenuList'
@@ -18,7 +19,7 @@ const readView = (): MenuView => {
 
 export interface MenuSection { name: string; products: PosProduct[]; /** the Popular section: no Popular pill inside it */ popular?: boolean }
 
-export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, sections, popularIds, units, onOpen,
+export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, sections, popularIds, units, pickers, onOpen,
   cartLines, subtotalSen, status, ordered, onCart, onOrders, member = 'off', memberPoints = 0, onMember }: {
   tableLabel: string
   guest: Guest
@@ -30,6 +31,7 @@ export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, s
   sections: MenuSection[]
   popularIds: ReadonlySet<string>
   units: ReadonlyMap<string, number>
+  pickers?: ReadonlyMap<string, readonly Picker[]>
   onOpen: (product: PosProduct) => void
   /** lines in the table's cart */
   cartLines: number
@@ -108,8 +110,8 @@ export default function MenuPage({ tableLabel, guest, onGuest, closed, placed, s
           <section id={ids[i]} aria-labelledby={`${ids[i]}-h`} className={view === 'grid' ? 'pb-5' : 'pb-1'}>
             <h2 id={`${ids[i]}-h`} className="px-4 pb-1 pt-5 text-[26px] font-bold leading-tight text-brown-dark">{s.name}</h2>
             {view === 'grid'
-              ? <MenuGrid products={s.products} popularIds={s.popular ? noPopular : popularIds} units={units} onOpen={onOpen} />
-              : <MenuList products={s.products} popularIds={s.popular ? noPopular : popularIds} units={units} onOpen={onOpen} />}
+              ? <MenuGrid products={s.products} popularIds={s.popular ? noPopular : popularIds} units={units} pickers={pickers} onOpen={onOpen} />
+              : <MenuList products={s.products} popularIds={s.popular ? noPopular : popularIds} units={units} pickers={pickers} onOpen={onOpen} />}
           </section>
         </Fragment>
       ))}

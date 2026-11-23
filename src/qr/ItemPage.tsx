@@ -7,12 +7,16 @@ import { ChevronLeft, Minus, Plus } from 'lucide-react'
 import { defaultLine, formatSen, linePriceSen, toggleOption, validateLine, type OrderLine, type PosProduct } from '../features/pos/order/cart'
 import PickPill from '../features/pos/order/PickPill'
 import { ProductPhoto } from './qrParts'
+import { avatarEmoji } from './qrGuest'
+import type { Picker } from './qrCart'
 
 const ruleText = (min: number, max: number) =>
   min > 0 ? `Required · choose ${min === max ? min : `${min}–${max}`}` : `Optional · up to ${max}`
 
-export default function ItemPage({ product, initial, from, mostPicked, pairs, busy, error, closed, onBack, onAdd }: {
+export default function ItemPage({ product, initial, from, mostPicked, pairs, inCart = [], busy, error, closed, onBack, onAdd }: {
   product: PosProduct
+  /** who already has this product in the table's cart */
+  inCart?: readonly Picker[]
   /** editing a line of mine: its values (Save, no pairings) */
   initial?: OrderLine
   /** where the page was opened: names the back button */
@@ -63,6 +67,16 @@ export default function ItemPage({ product, initial, from, mostPicked, pairs, bu
       <div className="px-4 pb-5 pt-4">
         <h1 className="text-[26px] font-bold leading-tight text-brown-dark">{product.name}</h1>
         {product.description && <p className="mt-1.5 text-[16px] leading-relaxed text-brown-muted">{product.description}</p>}
+        {inCart.length > 0 && (
+          <p data-testid="in-cart" className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[15px] text-brown-dark">
+            <span className="text-brown-muted">In the cart:</span>
+            {inCart.map((w) => (
+              <span key={w.guestId} className="whitespace-nowrap">
+                <span aria-hidden="true">{avatarEmoji(w.avatar)} </span>{w.isMe ? 'You' : w.label} × {w.qty}
+              </span>
+            ))}
+          </p>
+        )}
       </div>
 
       {product.variants.length > 1 && (

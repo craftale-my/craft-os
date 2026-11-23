@@ -6,7 +6,7 @@ import { mostPickedFor, visiblePopular } from '../features/pos/order/picks'
 import { loadGuest, newGuest, saveGuest, type Guest } from './qrGuest'
 import {
   additionsToast, cartPairs, cartTotalSen, groupCart, isNetworkError, itemPairs, orderWasSent, sendGroups, sentKey, skipIds,
-  unitsByProduct, type CartLine, type CartState, type GuestGroup,
+  pickersByProduct, unitsByProduct, type CartLine, type CartState, type GuestGroup,
 } from './qrCart'
 import { makeCartApi, makeCartSignal } from './qrCartApi'
 import { useCartTopic, useTableCart } from './useTableCart'
@@ -331,7 +331,7 @@ export default function QrApp() {
       {toast && <div role="status" className="fixed inset-x-3 top-3 z-30 rounded-xl bg-brown-dark px-4 py-3 text-sm text-white shadow-lg">{toast.text}</div>}
       {shown === 'menu' && (
         <MenuPage tableLabel={info.tableLabel} guest={guest} onGuest={() => setGuestEdit(true)} closed={closedMsg} placed={placed}
-          sections={sections} popularIds={popularIds} units={unitsByProduct(menu, cartLines)} onOpen={(p) => openItem(p, null)}
+          sections={sections} popularIds={popularIds} units={unitsByProduct(menu, cartLines)} pickers={pickersByProduct(menu, cartLines, guest.id)} onOpen={(p) => openItem(p, null)}
           cartLines={cartLines.length} subtotalSen={subtotal} status={table.status} ordered={!!state && state.items.length > 0}
           onCart={() => openView('cart')} onOrders={() => openView('orders')}
           member={qm.member.status} memberPoints={qm.member.me?.points ?? null} onMember={qm.openSheet} />
@@ -340,6 +340,7 @@ export default function QrApp() {
         <ItemPage key={`${item.product.id}|${item.lineId ?? ''}`} product={item.product} from={item.from}
           initial={item.lineId === null ? undefined : mine.find((l) => l.id === item.lineId)}
           mostPicked={mostPickedFor(picks, item.product.id)} pairs={itemPairs(menu, picks, item.product.id, cartLines)}
+          inCart={pickersByProduct(menu, cartLines, guest.id).get(item.product.id) ?? []}
           busy={itemBusy} error={itemError} closed={closedMsg} onBack={goMenu} onAdd={(line, pairings) => void done(line, pairings)} />
       )}
       {shown === 'cart' && (
