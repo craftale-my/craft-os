@@ -131,7 +131,7 @@ describe('MemberSheet — the code', () => {
   const verifyCases: [VerifyReason, string][] = [
     ['wrong', 'That code is not right. Try again.'],
     ['expired', 'That code has expired. Send a new one.'],
-    ['locked', 'Too many wrong tries. Send a new code.'],
+    ['locked', 'Too many wrong tries. Send a new code — if that does not work, try again in an hour or ask our staff.'],
     ['unavailable', 'Sign-in is not available yet.'],
     ['network', 'No connection. Try again.'],
   ]

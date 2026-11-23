@@ -6,6 +6,7 @@ import {
   KIND_LABELS, PLATFORM_LABELS, approveProblem, lastSeenText, mytDateTime,
   type ApproveDraft, type DeviceKind, type DeviceRow, type PendingRequest,
 } from './devices'
+import ConfirmDialog, { type ConfirmRequest } from '../shell/ConfirmDialog'
 import { approveRequest, fetchDevices, fetchPendingRequests, rejectRequest, setPrintTablet, unpairDevice } from './devicesApi'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -44,15 +45,21 @@ export default function DevicesPage() {
     try { await fn(); setOutcome({ ok: true, text: done }); await loadDevices() }
     catch (e) { setOutcome({ ok: false, text: msg(e) }) } finally { running.current = false; setBusyId(null) }
   }
-  const unpair = (d: DeviceRow) => {
-    if (!window.confirm(`Unpair ${d.name}? It stops working at once and needs a new activation.`)) return
-    void act(d, () => unpairDevice(d.id), `${d.name} unpaired`)
-  }
+  // the app's own dialog: the built-in confirm is dismissed by some iPad states and by embedded browsers
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const unpair = (d: DeviceRow) => setConfirm({
+    title: `Unpair ${d.name}?`, message: 'It stops working at once and needs a new activation.', confirmLabel: 'Unpair', danger: true,
+    onConfirm: () => void act(d, () => unpairDevice(d.id), `${d.name} unpaired`),
+  })
   const makePrinter = (d: DeviceRow) =>
     void act(d, () => setPrintTablet(d.id), `${d.name} now prints and holds the cash drawer at ${d.outletName}`)
 
   return (
     <div className="mx-auto max-w-4xl space-y-6 p-6">
+      {confirm && (
+        <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)}
+          onConfirm={() => { const c = confirm; setConfirm(null); c.onConfirm() }} />
+      )}
       <h1 className="text-2xl font-semibold">Devices</h1>
       {isHq && <PendingSection onApproved={loadDevices} />}
       <section className={box}>
@@ -120,14 +127,19 @@ function PendingSection({ onApproved }: { onApproved: () => Promise<void> }) {
     void act(async () => { await approveRequest(open.request.id, open.draft); await onApproved() },
       `${open.draft.name.trim()} approved — the device finishes activating within a few seconds`)
   }
-  const reject = (r: PendingRequest) => {
-    if (!window.confirm(`Reject the request ${r.code}?`)) return
-    void act(() => rejectRequest(r.id), `Request ${r.code} rejected`)
-  }
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const reject = (r: PendingRequest) => setConfirm({
+    title: `Reject the request ${r.code}?`, confirmLabel: 'Reject', danger: true,
+    onConfirm: () => void act(() => rejectRequest(r.id), `Request ${r.code} rejected`),
+  })
   const change = (draft: ApproveDraft) => { if (open) setOpen({ ...open, draft }); setOutcome(null) }
 
   return (
     <section className={box}>
+      {confirm && (
+        <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)}
+          onConfirm={() => { const c = confirm; setConfirm(null); c.onConfirm() }} />
+      )}
       <div className="flex items-center justify-between">
         <h2 className="font-semibold">Waiting for approval</h2>
         <button onClick={() => void load()} className="text-xs underline">Refresh</button>

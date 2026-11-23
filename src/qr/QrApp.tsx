@@ -65,6 +65,7 @@ export default function QrApp() {
   const clock = useMinuteClock()                                     // W7: the last-order banner turns on and off on the minute
   const [view, setView] = useState<View>('menu')
   const menuY = useRef(0)                                            // the menu's scroll position, restored on return
+  const cartY = useRef(0)                                            // the cart's, restored when an item page opened from it closes
   const [sentGroups, setSentGroups] = useState<GuestGroup[]>([])         // what the send sheet showed when the order went: the "Order placed" view
   // AI Pick (spec 2026-11-22-qr-ai-pick-mascot-design.md §5): hidden with ✕ for this visit; the seed keeps
   // its sentence fixed for the visit; one Add from the card at a time
@@ -171,7 +172,9 @@ export default function QrApp() {
   // the menu comes back where the guest left it; every other view starts at the top
   useLayoutEffect(() => {
     if ('scrollRestoration' in history) history.scrollRestoration = 'manual'
-    window.scrollTo(0, view === 'menu' ? menuY.current : 0)
+    const y = view === 'menu' ? menuY.current : view === 'cart' ? cartY.current : 0
+    if (view !== 'item') cartY.current = 0                             // only the return from an item page restores it
+    window.scrollTo(0, y)
   }, [view])
   // the sender's banner is for the other phones: leaving the Order placed view clears it
   const prevView = useRef<View>('menu')
@@ -320,6 +323,7 @@ export default function QrApp() {
     if (itemBusyRef.current) return                                    // one write at a time: the earlier item is still being added
     itemFrom.current = view === 'cart' ? 'cart' : 'menu'
     if (view === 'menu') menuY.current = window.scrollY
+    if (view === 'cart') cartY.current = window.scrollY
     setItemError(null); setItem({ product, lineId, from: view === 'cart' ? 'cart' : 'menu' })
     history.pushState({ qrView: 'item' }, ''); setView('item')
   }

@@ -246,7 +246,7 @@ signatures and return shapes are listed in `.superpowers/sdd/task-15-report.md`)
 |---|---|
 | Code does not arrive (no WhatsApp on the number, or not delivered) | The line under the code boxes sends the guest to staff; `Send again` after 60 s; after the per-number limit: `Too many tries. Please ask our staff to add your number.` |
 | Wrong code 5 times | The code is dead for that IP; `Send again`. |
-| More than 20 wrong codes from one IP in an hour | `Too many wrong tries. Send a new code.` for that IP; no guest's code is touched. |
+| More than 20 wrong codes from one IP in an hour | `Too many wrong tries. Send a new code — if that does not work, try again in an hour or ask our staff.` for that IP; no guest's code is touched. |
 | Too many codes from one table in a day (20) | `Sign-in is busy right now. Please ask our staff to add your number.` |
 | A request from another site (no or a foreign `Origin`), not JSON, or over 2 KB | Refused (403 / 415 / 413) before any database call. |
 | Weak connection after sign-in | `★ …` and `Loading your points…`; the read is tried again after 1 s, 3 s and 8 s. |
