@@ -424,6 +424,40 @@ roll back the front end only. If it breaks in a way traced to a database change 
 row's inverse above. Restore the database from backup only if both fail, no real bill exists yet, and the
 outlets are closed.
 
+## 6b. Rehearsal on a copy — done 2026-11-24
+
+The whole Stage A chain was run once on a throw-away local database (Supabase local stack, Postgres 17.6 — the
+same major version as prod) loaded with **prod's `public` schema as it is today, structure only** (70 tables,
+77 functions; `supabase db dump --linked -s public`, which signs in through the CLI's own short-lived login
+role), plus the rows of three small reference tables (`branches` 3, `roles` 12, `system_role_permissions` 6).
+No staff or other personal rows were copied. The copy and the dump were deleted afterwards.
+
+- [x] **#1–#42 in the order of 4b: all 42 ran without an error**, each file as one transaction
+      (`psql -1 -v ON_ERROR_STOP=1`), each in about a second or less on these table sizes.
+- [x] **Result equals dev.** 335 functions afterwards; every function that exists in both has the same body as
+      on dev except nine whose only difference is SQL comments (dev was fed some files through an editor that
+      dropped them). No later definition was reverted by the order.
+- [x] **Existing prod functions:** exactly one changed — `log_wastage` (#41, intended). None dropped.
+- [x] **Functions on dev that the chain does not create** (expected): `einvoice_call_job` (the deferred cron
+      file), `grab_menu_source` (Grab branch), `has_shop_cap`, `shop_*` (web shop branch),
+      `staff_private_sync_legacy` (no longer on prod).
+- [x] **New on prod after the chain:** 63 tables (70 → 133), bucket `menu-images` (4 MB; webp, jpeg, gif) with
+      four policies `menu_images_read / insert / update / delete` — none of these names is among prod's 22
+      storage policies today; `bills`, `orders`, `print_jobs` join the `supabase_realtime` publication (prod has
+      `tasks`, `notifications`).
+- [x] **Defaults land as intended:** `member_settings.qr_enabled = false`, `dev_codes_allowed = false`;
+      every branch `kind = 'branch'`, `einvoice_from` empty.
+- [x] **Read-only facts from prod the same day:** extensions `pg_cron`, `pgcrypto` (in schema `extensions`, as
+      on dev), `supabase_vault`, `uuid-ossp` — **`pg_net` is not installed** (only the deferred cron file needs
+      it; it is available to install); `inventory_transactions` has 0 rows, so #40's constraint rebuild and
+      index are instant; 3 branches; Postgres 17.6.
+
+What the rehearsal does **not** prove: behaviour under prod's real data in other tables (none of the 42 files
+reads them), the `-verify.sql` scripts (dev fixtures), the Edge Functions, Realtime and Auth settings, and
+anything about the front end. Prod drifts from dev in the staff app's own tables (e.g.
+`scheduled_shifts.leave_type` exists on prod, not on dev) — unrelated to this chain, but dev is not a perfect
+mirror of prod for staff-app testing.
+
 ## 7. Unknowns and risks (resolve before the day)
 
 1. Q1 PITR / backup: does the prod plan have PITR today, and when was the last daily backup? (§3)
