@@ -166,8 +166,8 @@ then testing and cut-over. Check items off as they land.
       `migration-2026-10-29-pos-device-till.sql` puts the transition back — re-run the switch-over after it.
 - [ ] Inventory on top of the POS (stocktake is already live on prod since 2026-11-23), after the POS chain and the
       prod menu import, in a quiet window, one transaction each:
-      1. `migration-2026-11-22-menu-costing.sql` + `VERIFY-2026-11-22-menu-costing.sql` is dev-only (hard-coded dev
-         UUIDs) — on prod check the views and RPCs exist instead.
+      1. `migration-2026-11-22-menu-costing.sql`. Its `VERIFY-2026-11-22-menu-costing.sql` is dev-only (hard-coded dev
+         UUIDs) — on prod check that the views and RPCs exist instead.
       2. Recipes: `docs/inventory/menu-recipes-import.sql` (kitchen, also creates the items Soy Sauce and Chili Paste),
          `drink-recipes-import.sql`, `dessert-recipes-import.sql` — git-excluded, kept in the `inventory-v2` worktree;
          name-based (category + product + size), each stops with "Unknown …" if the prod menu names differ.
