@@ -3,7 +3,7 @@
 // then keeps the device's sign-in in tools/print-agent/.device.json (git-ignored, 0600).
 // Run:  node --env-file=tools/print-agent/.env tools/print-agent/pair.ts [name]
 import { hostname } from 'node:os'
-import { assertDevDatabase } from '../../src/features/pos/guard.ts'
+import { assertAgentDatabase } from '../../src/features/pos/guard.ts'
 import { activationClient } from './activationClient.ts'
 import { hasDeviceFile, writeDeviceFile } from './deviceFile.ts'
 import { agentName, runPair } from './pairing.ts'
@@ -15,7 +15,7 @@ function env(key: string): string {
 }
 
 const url = env('SUPABASE_URL')
-assertDevDatabase(url)
+if (assertAgentDatabase(url, process.env.PRINT_AGENT_ALLOW_PROD) === 'production') console.log('*** PRODUCTION database — this pairs a print agent for a real outlet ***')
 const client = activationClient(url, env('SUPABASE_ANON_KEY'))
 const code = await runPair(agentName(process.argv[2], hostname()), {
   paired: () => hasDeviceFile(),

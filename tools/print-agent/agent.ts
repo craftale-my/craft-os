@@ -6,7 +6,7 @@ import { createClient } from '@supabase/supabase-js'
 import { renderJobDoc } from '../../src/features/pos/print/printJob.ts'
 import { encodeEscPosDoc } from '../../src/features/pos/print/escpos.ts'
 import { processJob, type PrintHostDeps, type PrintJob } from '../../src/features/pos/print/printHost.ts'
-import { assertDevDatabase } from '../../src/features/pos/guard.ts'
+import { assertAgentDatabase } from '../../src/features/pos/guard.ts'
 import { sendRaw } from './sendRaw.ts'
 import { checkPrinter, interpretStatus, PAPER_STATUS, queryStatus } from './printerStatus.ts'
 import { branchFilter, isAgentJob, staleMinutes } from './branch.ts'
@@ -31,7 +31,8 @@ function stopUnpaired(): never {
 
 async function main(): Promise<void> {
   const url = env('SUPABASE_URL')
-  assertDevDatabase(url)
+  const target = assertAgentDatabase(url, process.env.PRINT_AGENT_ALLOW_PROD)
+  if (target === 'production') console.log('*** PRODUCTION database — printing real tickets for the outlet this device is paired to ***')
   const supabase = createClient(url, env('SUPABASE_ANON_KEY'), { auth: { persistSession: false } })
   let maxAgeMin = 30
   if (process.env.MAX_AGE_MIN !== undefined) {

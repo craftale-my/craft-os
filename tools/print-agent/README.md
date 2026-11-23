@@ -11,7 +11,11 @@ kind `agent`. It needs no staff login.
 ## Setup
 
 1. Copy `.env.example` to `.env` (git-ignored) and fill in `SUPABASE_URL` and
-   `SUPABASE_ANON_KEY`. **Dev project only.** `TICKET_COLS` and `MAX_AGE_MIN` are optional.
+   `SUPABASE_ANON_KEY`. `TICKET_COLS` and `MAX_AGE_MIN` are optional.
+   **Production:** the agent refuses the production database unless the `.env` also has
+   `PRINT_AGENT_ALLOW_PROD=1`. Set that line only on an outlet's printing computer — never on a
+   developer's machine, which would print (or take) a real outlet's tickets. The pair command and
+   the agent both print a `*** PRODUCTION database ***` line when it is on.
 2. Pair, from the repo root (the name is optional; the default is this computer's name):
 
    ```bash

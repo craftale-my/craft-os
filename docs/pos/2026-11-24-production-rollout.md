@@ -28,7 +28,7 @@ types every secret. Nothing in this file has been run yet.
 | G2 On-site test done (full run sheet, two real iPads + phone, failure cases, one parallel day) | Stage B | readiness §5 (all unchecked) | Not met |
 | G3 Cheras first, Feedme kept signed in as fallback for a week | Stage B shape | readiness §1 D6, §6 | Decided |
 | G4 Real-device checks: iPad/Android add-to-home-screen + offline launch; office agent paired; real receipt + drawer kick on a ZyWell | Stage B | switchover spec §4 "Owner, later"; readiness §2 W4, W6 | Not done |
-| G5 Print agent can run against prod | Stage B if any route is kind `agent` | `tools/print-agent/pair.ts` line 18 and `agent.ts` line 34 call `assertDevDatabase(url)`, which throws for the prod ref (`src/features/pos/guard.ts`) | **Blocked: needs a code change** |
+| G5 Print agent can run against prod | Stage B if any route is kind `agent` | `assertAgentDatabase` (`src/features/pos/guard.ts`): the agent refuses the prod database unless its `.env` has `PRINT_AGENT_ALLOW_PROD=1`; set that line only on the outlet's printing computer | Fixed in code 2026-11-24; not yet run against prod |
 | G6 Prod menu import (Feedme export) + photo zip | Stage B | readiness §3 | Owner input |
 | G7 Per-outlet setup: tables/areas, payment methods, printers + IPs, tablets, PINs | Stage B | readiness §3 | Owner input |
 | G8 Meta WhatsApp setup (verified business, number, template, token) | Members QR sign-in only | `docs/pos/2026-11-23-members-whatsapp-setup.md` | Owner input; not a cut-over gate (D2 = a) |
@@ -353,8 +353,8 @@ Start only when G1, G2, G4, G6, G7 are met, and G5 if any Cheras route uses the 
        needs the print agent; otherwise the printing tablet prints.
 8. [ ] **Tablets.** On each tablet open the prod POS URL → Add to Home Screen → launch from the icon → code →
        HQ approves in Craft OS → POS → Devices; mark one as the printing tablet.
-9. [ ] **Print agent** (only after G5 is fixed and released): on the outlet computer, `tools/print-agent/.env` with
-       the prod URL and anon key, then `node --env-file=tools/print-agent/.env tools/print-agent/pair.ts "Cheras bar computer"`,
+9. [ ] **Print agent**: on the outlet computer, `tools/print-agent/.env` with the prod URL, the prod anon key
+       and the line `PRINT_AGENT_ALLOW_PROD=1` (G5), then `node --env-file=tools/print-agent/.env tools/print-agent/pair.ts "Cheras bar computer"`,
        approve as kind Print agent, then `node --env-file=tools/print-agent/.env tools/print-agent/agent.ts`
        (`tools/print-agent/README.md`). If #42 was held: run the coverage query from #42's header (every row
        `covered = true`), then #42 and the function comparison from §4b, then step 11.
@@ -431,8 +431,9 @@ outlets are closed.
    transaction? The inventory files rely on `set local lock_timeout`, which needs one.
 4. Q4 Rehearsal: replay #1–#42 plus the verifies on a fresh copy (scratch Postgres with the prod schema, or a
    Supabase branch) with the dev owner id swapped for a fixture. Not confirmed in the repo which is possible.
-5. Q5 Print agent on prod: `assertDevDatabase` blocks it (`src/features/pos/guard.ts`); the README and
-   `.env.example` say "Dev project only". Who changes this, and is Cheras's printer reachable without the agent?
+5. Q5 Print agent on prod: allowed with `PRINT_AGENT_ALLOW_PROD=1` in the outlet computer's `.env`
+   (`tools/print-agent/README.md`), but it has never been run against prod. Is Cheras's printer reachable
+   without the agent (the printing tablet) if the agent gives trouble on the day?
 6. Q6 Prod Realtime: are public Broadcast channels allowed for `anon`?
 7. Q7 Prod Auth: sessions timebox / inactivity 0; device emails `@devices.invalid` accepted.
 8. Q8 Extensions: `pgcrypto` in `extensions`, `pg_cron` on, `pg_net` installable, Vault present.
