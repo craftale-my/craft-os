@@ -101,7 +101,7 @@ returns text language sql security definer stable as $$
 $$;
 
 -- Staff policies
-create policy "staff_select" on staff for select using (true);
+create policy "staff_select" on staff for select to authenticated using (true);
 create policy "staff_insert" on staff for insert
   with check (current_rank() in ('manager'));
 -- Supervisors need staff updates too: probation hire/eliminate writes
@@ -110,7 +110,7 @@ create policy "staff_update" on staff for update
   using (id = auth.uid() or current_rank() in ('supervisor','manager'));
 
 -- Mission policies
-create policy "missions_select" on missions for select using (true);
+create policy "missions_select" on missions for select to authenticated using (true);
 create policy "missions_insert" on missions for insert
   with check (current_rank() = 'manager');
 create policy "missions_update" on missions for update
@@ -127,7 +127,7 @@ create policy "completions_update" on mission_completions for update
   using (current_rank() in ('supervisor','manager'));
 
 -- Skill rating policies
-create policy "skills_select" on skill_ratings for select using (true);
+create policy "skills_select" on skill_ratings for select to authenticated using (true);
 create policy "skills_insert" on skill_ratings for insert
   with check (current_rank() in ('supervisor','manager'));
 create policy "skills_update" on skill_ratings for update
@@ -170,11 +170,11 @@ alter table staff drop constraint if exists staff_department_check;
 -- Add onboarding + HR fields to staff
 alter table staff add column if not exists onboarding_completed boolean not null default false;
 alter table staff add column if not exists nickname            text;
-alter table staff add column if not exists ic_number          text;
-alter table staff add column if not exists address            text;
+-- IC number, address, date of birth, phone and manager notes are NOT staff
+-- columns: they live in staff_private / staff_manager_notes with their own
+-- RLS. See migration-2026-10-23-staff-private.sql (run after
+-- migration-2026-07-06-rbac.sql, which it depends on).
 alter table staff add column if not exists gender             text;
-alter table staff add column if not exists date_of_birth      date;
-alter table staff add column if not exists contact_number     text;
 alter table staff add column if not exists branch             text;
 alter table staff add column if not exists employment_type    text;
 alter table staff add column if not exists working_experience text;
@@ -189,7 +189,6 @@ update staff set onboarding_completed = true where rank = 'manager';
 -- =============================================
 
 -- Manager notes and level-up tracking
-alter table staff add column if not exists manager_notes    text;
 alter table staff add column if not exists last_level_up_at timestamptz;
 
 -- =============================================
@@ -368,11 +367,15 @@ create table if not exists branches (
   created_at timestamptz default now()
 );
 
+-- Coordinates are NOT set here: latitude/longitude/radius_meters are added to
+-- this table further down the file, so they do not exist yet at this point.
+-- Kepong's geofence is filled in right after that ALTER block.
 insert into branches (name, address)
 select v.name, v.address
 from (values
   ('Cheras', 'Taman Connaught, Cheras'),
-  ('Puchong', 'Bandar Puteri, Puchong')
+  ('Puchong', 'Bandar Puteri, Puchong'),
+  ('Kepong', 'B-G, 1, Jln Metro Perdana 1, Taman Usahawan Kepong, 52100 Kuala Lumpur')
 ) as v(name, address)
 where not exists (select 1 from branches);
 
@@ -659,6 +662,14 @@ alter table attendance add column if not exists clock_out_distance_m int;
 alter table branches add column if not exists latitude      double precision;
 alter table branches add column if not exists longitude     double precision;
 alter table branches add column if not exists radius_meters int;
+
+-- Kepong is the one branch whose coordinates we have; the other two keep null
+-- latitude/longitude, which ClockModal.tsx:111 treats as "no distance check".
+update branches
+   set latitude      = coalesce(latitude, 3.2173718),
+       longitude     = coalesce(longitude, 101.6406565),
+       radius_meters = coalesce(radius_meters, 100)
+ where name ilike 'Kepong';
 
 -- =============================================
 -- Shift Scheduling: shift_types + scheduled_shifts

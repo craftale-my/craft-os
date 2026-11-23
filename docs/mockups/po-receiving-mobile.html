@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PO Mobile Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --cream: #F5F0E8; --canvas: #FDFAF6; --card: #FFFFFF; --border: #EDE5D8; --line: #E8DDD0;
+    --dark: #3D2B1F; --header: #4A2E1A; --btn: #6B4C35; --muted: #8B7355; --faint: #A09080;
+    --accent: #C4813A; --tint: #F5EDE0; --ok: #3D7A50; --ok-bg: #EBF5EE; --bad: #9E4A30; --bad-bg: #FCF0EC;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #E9E2D6; font-family: 'DM Sans', system-ui, sans-serif; color: var(--dark); padding: 32px 16px 48px; }
+  h1.page { font-family: Archivo, sans-serif; font-weight: 800; font-stretch: 87.5%; text-transform: uppercase; font-size: 22px; text-align: center; }
+  p.sub { text-align: center; color: var(--muted); font-size: 14px; margin: 6px auto 28px; max-width: 640px; }
+  .row { display: flex; flex-wrap: wrap; gap: 32px; justify-content: center; align-items: flex-start; }
+  .col { width: 375px; max-width: 100%; }
+  .cap { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .capnote { font-size: 12.5px; color: var(--muted); margin-bottom: 12px; min-height: 34px; }
+  .phone { width: 375px; max-width: 100%; height: 760px; background: var(--cream); border-radius: 36px; border: 10px solid #2A1E16;
+           overflow: hidden; position: relative; display: flex; flex-direction: column; box-shadow: 0 12px 32px rgba(61,43,31,.25); }
+  .topbar { background: var(--header); color: #fff; padding: 14px 16px 12px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .topbar .back { font-size: 20px; opacity: .85; }
+  .topbar .t { font-weight: 700; font-size: 16px; }
+  .topbar .s { font-size: 12px; opacity: .75; }
+  .scroll { flex: 1; overflow-y: auto; padding: 12px 12px 16px; }
+  .chip-row { display: flex; gap: 8px; margin-bottom: 10px; overflow-x: auto; }
+  .chip { flex-shrink: 0; padding: 7px 12px; border-radius: 999px; background: var(--card); border: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--muted); }
+  .chip.on { background: var(--btn); border-color: var(--btn); color: #fff; }
+  .picker { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+  .picker .l { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); font-weight: 700; }
+  .picker .v { font-weight: 700; font-size: 15px; margin-top: 2px; }
+  .picker .chev { color: var(--faint); font-size: 18px; }
+  .section { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 14px 4px 8px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin-bottom: 8px; }
+  .card.low { border-color: #E9B9A8; box-shadow: inset 4px 0 0 var(--bad); }
+  .card.picked { border-color: #CDB89C; box-shadow: inset 4px 0 0 var(--accent); }
+  .name { font-weight: 700; font-size: 15px; }
+  .unit { font-size: 12px; color: var(--faint); margin-top: 1px; }
+  .stock { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .pill { font-size: 12px; padding: 3px 8px; border-radius: 6px; background: var(--tint); color: var(--muted); font-weight: 600; }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .act { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; gap: 10px; }
+  .price { font-size: 12.5px; color: var(--muted); }
+  .price b { color: var(--dark); }
+  .step { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .step button { width: 44px; height: 44px; border: 0; background: var(--canvas); font-size: 22px; color: var(--btn); font-weight: 600; }
+  .step .n { width: 46px; text-align: center; font-weight: 800; font-size: 17px; }
+  .addbtn { height: 44px; padding: 0 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--canvas); color: var(--btn); font-weight: 700; font-size: 14px; }
+  .sugg { font-size: 12px; color: var(--accent); font-weight: 700; margin-top: 6px; }
+  .bottom { flex-shrink: 0; background: var(--card); border-top: 1px solid var(--border); padding: 12px 14px 18px; }
+  .sum { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .sum b { color: var(--dark); font-size: 15px; }
+  .primary { width: 100%; height: 52px; border: 0; border-radius: 14px; background: var(--btn); color: #fff; font-weight: 700; font-size: 16px; }
+  .secondary { width: 100%; height: 44px; border: 0; background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; margin-top: 4px; }
+  .photo { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1.5px dashed #CDB89C; border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .photo .cam { width: 48px; height: 48px; border-radius: 12px; background: var(--tint); display: grid; place-items: center; flex-shrink: 0; }
+  .photo .t { font-weight: 700; font-size: 15px; }
+  .photo .s { font-size: 12px; color: var(--muted); }
+  .photo.done { border-style: solid; border-color: #B9D6C2; background: var(--ok-bg); }
+  .rline { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .tick { width: 30px; height: 30px; border-radius: 50%; background: var(--ok-bg); color: var(--ok); display: grid; place-items: center; font-weight: 800; flex-shrink: 0; }
+  .tick.warn { background: var(--bad-bg); color: var(--bad); }
+  .edit { font-size: 13px; color: var(--btn); font-weight: 700; }
+  .exp { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .exp .lbl { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+  .exp .two { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .input { height: 44px; border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; display: flex; align-items: center; font-size: 15px; width: 130px; background: var(--canvas); }
+  .note { height: 64px; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: 14px; color: var(--faint); background: var(--canvas); }
+  .banner { background: var(--bad-bg); color: var(--bad); font-size: 13px; font-weight: 600; border-radius: 10px; padding: 9px 12px; margin-bottom: 10px; }
+  .legend { max-width: 1240px; margin: 36px auto 0; background: var(--canvas); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; }
+  .legend h2 { font-size: 15px; margin-bottom: 10px; }
+  .legend li { font-size: 14px; margin: 0 0 8px 18px; line-height: 1.5; }
+  .legend .q { color: var(--accent); font-weight: 700; }
+</style>
+</head>
+<body>
+<h1 class="page">New PO &amp; Receiving — phone mockup</h1>
+<p class="sub">Mockup only, not built yet. The data is the real [TEST] stock at Cheras on craft-os-dev. Phone width is 375 px.</p>
+
+<div class="row">
+
+  <!-- 1. New PO -->
+  <div class="col">
+    <div class="cap">1 · New PO</div>
+    <div class="capnote">Each item is a card that shows stock. Items below the minimum come first and are pre-filled. Change quantities with + / −.</div>
+    <div class="phone">
+      <div class="topbar"><span class="back">←</span><div><div class="t">New purchase order</div><div class="s">Cheras</div></div></div>
+      <div class="scroll">
+        <div class="picker"><div><div class="l">Supplier</div><div class="v">Klang Valley Dairy &amp; Bakery</div></div><span class="chev">▾</span></div>
+        <div class="chip-row"><span class="chip on">All 8</span><span class="chip">Low 1</span><span class="chip">Bakery</span><span class="chip">Cafe &amp; Bar</span></div>
+
+        <div class="section">Below minimum</div>
+        <div class="card low">
+          <div class="name">Eggs Grade A</div>
+          <div class="unit">tray = 30 pcs</div>
+          <div class="stock"><span class="pill bad">On hand 2.3 trays</span><span class="pill">Min 3 trays</span><span class="pill">On order 0</span></div>
+          <div class="sugg">Suggested 4 trays · back up to 2× minimum</div>
+          <div class="act"><span class="price"><b>RM 13.50</b> / tray</span>
+            <div class="step"><button>−</button><span class="n">4</span><button>+</button></div></div>
+        </div>
+
+        <div class="section">Everything else</div>
+        <div class="card picked">
+          <div class="name">Fresh Milk</div>
+          <div class="unit">carton = 12 × 1 L</div>
+          <div class="stock"><span class="pill ok">On hand 3.8 cartons</span><span class="pill">Min 2</span></div>
+          <div class="act"><span class="price"><b>RM 78.00</b> / carton</span>
+            <div class="step"><button>−</button><span class="n">2</span><button>+</button></div></div>
+        </div>
+        <div class="card">
+          <div class="name">Unsalted Butter</div>
+          <div class="unit">box = 5 kg</div>
+          <div class="stock"><span class="pill ok">On hand 1.9 boxes</span><span class="pill">Min 0.8</span></div>
+          <div class="act"><span class="price"><b>RM 165.00</b> / box</span><button class="addbtn">+ Add</button></div>
+        </div>
+        <div class="card">
+          <div class="name">Whipping Cream</div>
+          <div class="unit">carton = 12 × 1 L</div>
+          <div class="stock"><span class="pill ok">On hand 1 carton</span><span class="pill">Min 0.5</span></div>
+          <div class="act"><span class="price"><b>RM 210.00</b> / carton</span><button class="addbtn">+ Add</button></div>
+        </div>
+        <div class="card">
+          <div class="name">Cake Flour</div>
+          <div class="unit">bag = 25 kg</div>
+          <div class="stock"><span class="pill ok">On hand 0.9 bag</span><span class="pill">Min 0.4</span></div>
+          <div class="act"><span class="price"><b>RM 72.00</b> / bag</span><button class="addbtn">+ Add</button></div>
+        </div>
+      </div>
+      <div class="bottom">
+        <div class="sum"><span>2 items</span><b>RM 210.00</b></div>
+        <button class="primary">Review &amp; send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Receiving: default -->
+  <div class="col">
+    <div class="cap">2 · Receiving: everything arrived</div>
+    <div class="capnote">Every line starts as arrived in full. Take the invoice photo, then one tap to confirm.</div>
+    <div class="phone">
+      <div class="topbar"><span class="back">←</span><div><div class="t">Receive PO-20261028-001</div><div class="s">Klang Valley Dairy · ordered today 09:12</div></div></div>
+      <div class="scroll">
+        <div class="photo">
+          <div class="cam"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#6B4C35" stroke-width="2"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div>
+          <div><div class="t">Photo of invoice</div><div class="s">Required · opens the camera</div></div>
+        </div>
+        <div class="section">3 items</div>
+        <div class="card"><div class="rline"><div><div class="name">Eggs Grade A</div><div class="unit">4 trays ordered</div></div><div style="display:flex;align-items:center;gap:10px"><span class="edit">Edit</span><span class="tick">✓</span></div></div></div>
+        <div class="card"><div class="rline"><div><div class="name">Fresh Milk</div><div class="unit">2 cartons ordered</div></div><div style="display:flex;align-items:center;gap:10px"><span class="edit">Edit</span><span class="tick">✓</span></div></div></div>
+        <div class="card"><div class="rline"><div><div class="name">Unsalted Butter</div><div class="unit">1 box ordered</div></div><div style="display:flex;align-items:center;gap:10px"><span class="edit">Edit</span><span class="tick">✓</span></div></div></div>
+        <p style="font-size:12.5px;color:var(--muted);margin:10px 4px">Something missing, extra or a different price? Tap <b>Edit</b> on that line only.</p>
+      </div>
+      <div class="bottom">
+        <div class="sum"><span>Invoice total</span><b>RM 375.00</b></div>
+        <button class="primary">All arrived — confirm</button>
+        <button class="secondary">Goods photo (optional)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Receiving: one problem -->
+  <div class="col">
+    <div class="cap">3 · Receiving: one line is short</div>
+    <div class="capnote">Edit opens just that line. The button and the warning update, and a short delivery asks for a note.</div>
+    <div class="phone">
+      <div class="topbar"><span class="back">←</span><div><div class="t">Receive PO-20261028-001</div><div class="s">Klang Valley Dairy · ordered today 09:12</div></div></div>
+      <div class="scroll">
+        <div class="photo done">
+          <div class="cam" style="background:#fff"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3D7A50" stroke-width="2.4"><path d="M5 12l5 5 9-10"/></svg></div>
+          <div><div class="t">Invoice photo added</div><div class="s">Tap to retake</div></div>
+        </div>
+        <div class="card"><div class="rline"><div><div class="name">Eggs Grade A</div><div class="unit">4 trays ordered</div></div><span class="tick">✓</span></div></div>
+        <div class="card low">
+          <div class="rline"><div><div class="name">Fresh Milk</div><div class="unit">2 cartons ordered</div></div><span class="tick warn">!</span></div>
+          <div class="exp">
+            <div class="two"><span class="lbl">Arrived</span><div class="step"><button>−</button><span class="n">1</span><button>+</button></div></div>
+            <div class="two"><span class="lbl">Price on invoice / carton</span><div class="input">RM 78.00</div></div>
+            <div class="banner">1 carton short. The PO stays open for the rest.</div>
+          </div>
+        </div>
+        <div class="card"><div class="rline"><div><div class="name">Unsalted Butter</div><div class="unit">1 box ordered</div></div><span class="tick">✓</span></div></div>
+        <div class="lbl" style="font-size:12px;color:var(--muted);font-weight:600;margin:10px 4px 6px">Note (needed when something is short or extra)</div>
+        <div class="note">e.g. Supplier will send the other carton tomorrow</div>
+      </div>
+      <div class="bottom">
+        <div class="sum"><span>Invoice total · 1 short</span><b>RM 297.00</b></div>
+        <button class="primary">Confirm delivery</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="legend">
+  <h2>What to check, and the choices for you</h2>
+  <ul>
+    <li><b>Stock in purchase units.</b> "2.3 trays" instead of "68 pcs", because ordering is done in trays. The base unit still shows on the item page.</li>
+    <li><span class="q">Choice: suggested quantity.</span> The mockup suggests enough to bring stock back up to <b>2× the minimum</b>, rounded up to whole packs (Eggs: 180 − 68 = 112 pcs → 4 trays). Other options: back up to just the minimum, or no suggestion.</li>
+    <li><b>On order</b> shows how much is already ordered but not yet received, so the same thing isn't ordered twice.</li>
+    <li><b>Price</b> defaults to the last price paid and only changes on the review step or when receiving. Ordering never asks for a price.</li>
+    <li><b>Review &amp; send</b> opens one summary page (items, total, delivery date, note), then sends. Send to supplier stays as it is today (WhatsApp / copy text).</li>
+    <li><b>Receiving</b> starts with every line arrived in full. Only problem lines need a tap. Over-delivery uses the same Edit, the note rule stays as today, and the database rules stay the same.</li>
+    <li><b>Internal transfers</b> (to HQ) use the same New PO cards. "On hand" shows the branch's own stock.</li>
+    <li><b>Desktop:</b> the same screens become a wider centred column. Items, Suppliers, Recipes and the Stock on Hand table stay as they are.</li>
+  </ul>
+</div>
+</body>
+</html>

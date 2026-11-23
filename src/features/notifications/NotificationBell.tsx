@@ -25,7 +25,11 @@ export function NotificationBell() {
         )}
       </button>
       {open && (
-        <div className="absolute right-0 mt-2 w-72 max-h-80 overflow-y-auto bg-white rounded-xl shadow-lg border border-[#E8DDD0] z-50">
+        // Mobile: the bell sits at the right edge of the top bar, so the panel
+        // hangs from its right. Desktop: the bell sits near the right edge of
+        // the left sidebar, so a right-anchored panel runs off the left of
+        // the screen — hang it from the bell's left instead.
+        <div className="absolute right-0 sm:right-auto sm:left-0 mt-2 w-72 max-h-80 overflow-y-auto bg-white rounded-xl shadow-lg border border-[#E8DDD0] z-50">
           {items.length === 0 && <p className="p-4 text-sm text-brown-faint">Nothing new.</p>}
           {items.map(n => (
             <Link
