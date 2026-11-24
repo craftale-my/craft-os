@@ -1,0 +1,113 @@
+# POS Phase 0 — spike results
+
+Spec: docs/superpowers/specs/2026-10-22-pos-demo-design.md
+Plan: docs/superpowers/plans/2026-10-22-pos-phase0-spikes.md
+
+## Setup
+
+| Item | Value |
+|---|---|
+| Date / shop | 2026-10-22 · Craft Cafe (shop LAN 192.168.0.0/24) |
+| Wi-Fi network | |
+| Mac running Vite + agent (IP) | 192.168.0.32 (MacBook, macOS — Node needs Local Network permission) |
+| iPad model / iPadOS version | |
+| Phone(s) used for QR | |
+| Bar printer — brand / model / IP / route kind | ZyWell ZY301 (generic ESC/POS, USB+RS232+LAN) / 192.168.0.8 / agent (TCP 9100) |
+| Kitchen printer — brand / model / IP / route kind | not identified yet — Kitchen route temporarily points at the bar printer 192.168.0.8 |
+| Supabase project region | ap-southeast-1 (Singapore) — project craft-os-dev, ref egznnbjmicebbhwasloy |
+| Dev Supabase verify script (spike-2026-10-22-pos-phase0-verify.sql) returned VERIFY OK | Yes — 2026-10-22, all 14 checks |
+| Dry run done off site (fake printer + dev DB) | |
+
+## Before going on site
+
+1. Run the verify script (`spike-2026-10-22-pos-phase0-verify.sql`) in the dev Supabase SQL editor and confirm `VERIFY OK`.
+2. Run Task 10's fake-printer check against the dev DB: `nc -l 9100` in one terminal, the agent in another, then press **Test print** on the POS page.
+3. Open `spike/pos.html` and `spike/qr.html` once on the Mac and confirm both load.
+4. Bring the Epson ePOS-Print and Star WebPRNT official sample pages (vendor SDK downloads), so a 1a FAIL can be told apart as a code problem or a printer problem.
+
+## Spike 1 — printing
+
+| Check | How | Result | Evidence |
+|---|---|---|---|
+| 1a Browser → printer over HTTPS | iPad: open `https://<printer-ip>` once and accept its certificate, then POS page → Test print (browser route). If the printer offers no HTTPS, record 1a FAIL — the production POS is HTTPS. | FAIL (hardware) | ZY301 answers on 9100 only; ports 80 and 443 do not respond (curl 000) — no web service, so a browser cannot print to it |
+| 1b Certificate acceptance survives closing and reopening Safari | Close Safari fully, reopen POS page, Test print again | N/A | Follows from 1a — the printer has no HTTPS at all |
+| 1c Agent → printer on TCP 9100 | Mac: run agent, POS page → Test print (agent route) | PASS | 2026-10-22 18:24 MYT: job 00e298f4 inserted into spike_print_jobs → agent (Realtime) printed it on the ZY301 at 192.168.0.8; DB status printed, attempts 1, 708 ms insert→printed_at; ticket "Order: AGENT1 (TEST)" printed with 48-column rules (photo) |
+| 1c-2 Agent: unplug the printer's network cable, then Test print again | Agent log should say the job failed, not printed; the job shows as failed in `select id, status, last_error from spike_print_jobs order by created_at desc limit 5;` (no page lists agent jobs) | NOT RUN | Not tested on site; the related failure path was seen in 1f-agent (ECONNRESET recorded failed) |
+| 1d Chinese characters | Look at the "Chinese check" line on each ticket | Prints as "?" | Test ticket 18:19: "Chinese check: ??? ??". Text ESC/POS with no code page; Feedme prints this printer "Image-based" (rasterised), which is how it shows Chinese |
+| 1e Ticket width | Does a 42-column rule fit on one line? If not, what does? | 48 columns fit | A 48-digit row printed on one line; agent TICKET_COLS set to 48 |
+| 1f-browser Failure shows and reprints (browser route) | Open the printer cover, Test print: the job shows as failed. Close the cover, press Reprint: it prints once | N/A | No browser route — the ZY301 has no web service (see 1a) |
+| 1f-agent Failure and requeue (agent route) | Open the cover or unplug the cable on an agent route, Test print, then run `select id, status, last_error from spike_print_jobs order by created_at desc limit 5;`. If failed, requeue with `select spike_requeue_print_job('<id>');` and confirm it prints once | PASS (natural failure) | 18:45: AFF004 Bar ticket 3519cc29 failed with ECONNRESET (agent sent Bar+Kitchen to the one-connection ZY301 together — bug, fixed in 8a3715d) and was recorded failed, not printed; nothing came out on paper. Requeued with spike_requeue_print_job → agent sweep printed it at 18:53:51, attempts 2; exactly one ticket came out (photo). The cable-unplug case is still covered by 1c-2 |
+
+**Spike 1 verdict:** PASS if (1a + 1b + 1f-browser) OR (1c + 1c-2 + 1f-agent).
+
+## Spike 2 — QR order → POS ≤ 2 s, tickets printed
+
+Procedure: iPad shows the POS page. On a phone on the shop Wi-Fi open the QR links. The server rejects a 6th QR order from one table within a minute, so rotate the 10 orders across tables B5, A1, A2 (in that order, repeating), about 10 s apart. Each order has one Bar and one Kitchen item. The phone shows "sent in N ms" after each order — record it as the customer send time.
+
+| # | Table | Latency on POS (ms) | Customer send time (ms) | Bar ticket printed | Kitchen ticket printed |
+|---|---|---|---|---|---|
+| 1 | B5 | 377 (03CFBD) | phone, not recorded | yes (952 ms) | — (order had no kitchen item) |
+| 2 | A1 | 396 (268C9F) | phone, not recorded | yes (920 ms) | — (order had no kitchen item) |
+| 3 | A2 | 255 (151979) | phone, not recorded | — (order had no bar item) | yes (617 ms) |
+| 4 | B5 | 458 (60DAB5) | 515 (Mac, same RPC) | yes | yes |
+| 5 | A1 | 502 (AFF004) | 461 (Mac, same RPC) | **FAILED first time** (ECONNRESET, agent bug fixed in 8a3715d); reprinted once 18:53 | yes |
+| 6 | A2 | 425 (6D11B3) | 340 (Mac, same RPC) | yes | yes |
+| 7 | B5 | 183 (B934D4) | 508 (Mac, same RPC) | yes | yes |
+| 8 | A1 | 249 (4AF627) | 476 (Mac, same RPC) | yes | yes |
+| 9 | A2 | 194 (03B265) | 825 (Mac, same RPC) | yes | yes |
+| 10 | B5 | 103 (204413) | 751 (Mac, same RPC) | yes | yes |
+
+**Round 1 (2026-10-22 18:39–18:46 MYT):** worst POS latency 502 ms (iPad photo); worst latency + send/2 = 502 + 413 = 915 ms. Order → printed_at from the database: min 561, avg 843, max 1171 ms over 16 first-time prints. Orders 1–3 were placed on the user's phone with one item each; orders 4–10 were placed from the Mac on the shop Wi-Fi through the same public RPC the QR page calls (spike_place_table_order). Latency criterion PASS. Ticket criterion NOT met in this round: 17 tickets, 16 printed first time, 1 failed (agent sent two tickets to the same one-connection printer at once) — fixed in 8a3715d; a second round with the fixed agent is needed for the Spike 2 verdict.
+
+**Round 2 (2026-10-22 18:57–18:59 MYT, fixed agent 8a3715d):** 10 QR orders (drink + food each) placed from the Mac on the shop Wi-Fi through spike_place_table_order. iPad POS latency: 365, 421, 493, 442, 468, 453, 117, 429, 290, 584 ms — worst 584 ms; send 185–1000 ms; worst latency + send/2 ≈ 1084 ms. Database: 20/20 jobs status printed on the first attempt, 0 failed; order → printed_at min 341 / avg 891 / max 1434 ms. **Paper: only 11 of 20 tickets came out** — the roll ran out during the first orders (0C3D22, 635E01, 431C0F, BA9EA3 both tickets, ABDE24 kitchen) and was replaced; the agent still recorded all 9 as printed, because raw TCP 9100 accepts bytes with no paper. The ZY301 does answer ESC/POS real-time status queries (DLE EOT 1 → 0x16 online, DLE EOT 2 → 0x12 no error/cover closed, DLE EOT 4 → 0x12 paper present), so the agent can check paper and cover before each ticket. **Spike 2 verdict pending:** latency PASS in both rounds; "every ticket printed exactly once" not met until the agent checks printer status.
+
+**Printer status follow-up (19:06 MYT):** with the ZY301 cover open, all status replies stayed "normal" (DLE EOT 1/2/3/4 → 0x16/0x12/0x12/0x12), so its LAN interface does not report cover or paper — the agent's pre-check (c8b7960) cannot catch either on this model and test job COVER1 was recorded printed. The user observed that when the paper ran out mid-round they opened the cover, loaded a new roll and closed it, and the printer carried on printing — i.e. it holds tickets and resumes. The user judged Spike 2 acceptable and asked to move on; the 9 tickets missing from the round-2 photo were not re-counted. **Spike 2 verdict: PASS on latency (both rounds); tickets accepted by the user, with the caveat that this printer gives the system no paper/cover feedback** — Phase 1 should either use a printer that reports status (e.g. Epson ePOS) or show per-ticket print status to staff.
+
+Order-to-print time from the database (paste the output):
+
+    select round(extract(epoch from (j.printed_at - o.placed_at)) * 1000) as ms_to_print, j.route
+      from spike_print_jobs j join spike_orders o on o.id = j.order_id
+     where o.source = 'qr' order by o.placed_at desc limit 20;
+
+**Spike 2 verdict:** PASS if for all 10 orders (latency + customer send time / 2) ≤ 2000 ms and all 20 tickets printed exactly once.
+
+## Spike 3 — counter orders survive an outage
+
+Note the time (UTC) here: not run (before 3a; the 3d queries use it as `<noted time>`, e.g. `2026-10-22 03:48:00+00`).
+
+| Check | How | Result | Evidence |
+|---|---|---|---|
+| 3a Queue while internet is down | Unplug the router's internet (WAN) cable — Wi-Fi stays up. Submit 3 counter orders. "queued" shows 3 | NOT RUN | Skipped at the user's request, 2026-10-22 |
+| 3b Survives closing the tab | Close the POS tab, reopen it (still no internet). "queued" still 3 | NOT RUN | Skipped at the user's request, 2026-10-22 |
+| 3c Sends on reconnect | After reopening the tab in 3b the counter restarts at 0. Plug the WAN back in and wait until a web page loads on the iPad; within 30 s of that, "queued" is 0 and "sent this session" shows 3. | NOT RUN | Skipped at the user's request, 2026-10-22 |
+| 3d No duplicates, nothing lost | Count: `select count(*) from spike_orders o where o.source = 'counter' and o.placed_at >= '<noted time>' and not exists (select 1 from spike_order_items i where i.order_id = o.id and i.note = 'duplicate test');` — expect exactly 3. Contents: `select o.id, string_agg(format('%s x %s', i.qty, i.name_snapshot), ', ' order by i.name_snapshot) from spike_orders o join spike_order_items i on i.order_id = o.id where o.source = 'counter' and o.placed_at >= '<noted time>' group by o.id;` — match against what was rung up | NOT RUN | Skipped at the user's request, 2026-10-22 |
+| 3e Duplicate test button | Press Duplicate test | NOT RUN | Skipped at the user's request, 2026-10-22 |
+
+**Spike 3 verdict:** PASS if 3a–3e all pass.
+
+**Not run (2026-10-22): the user chose to skip Spike 3.** The offline queue is covered only by unit tests (IndexedDB faked in Node: durable write before send, abort handling, retry/final classification). It has never run on iPad Safari, where site data can be evicted. One online counter order (30C89F, 18:31) went through the queue and printed. Run Spike 3 before any real shop uses the POS.
+
+## Known limitations going in
+
+- **Raw TCP 9100 cannot confirm a print.** The agent waits up to 1 s after sending; a printer that keeps the connection open and drops it later than that is reported as printed. Epson ePOS / Star WebPRNT return an explicit success, so they do not have this gap.
+- **Stuck "printing" jobs are not recovered automatically.** If the iPad or agent dies after claiming a job, it stays "printing". Note any you see (`select id, route, created_at from spike_print_jobs where status = 'printing';`).
+- **Chinese text on tickets** is sent as "?" over raw TCP (ESC/POS without a code page); Epson ePOS sends it as text with lang="zh-cn". Spike 1d records what each printer actually shows.
+- **The Supabase SQL editor may ask to confirm a "destructive operation"** when running the verify script — it is safe to confirm: the whole script is rolled back.
+
+## Outcome
+
+| Spike | Verdict |
+|---|---|
+| 1 Printing | Agent path works (1c PASS, 1f-agent PASS, 1e 48 cols); browser path impossible on this printer (1a FAIL hw); 1c-2 not run; Chinese prints as "?"; ZY301 gives no paper/cover feedback |
+| 2 Realtime | PASS on latency — worst 502 ms (round 1) and 584 ms (round 2) on the iPad, order → printed ≤ 1.43 s; tickets accepted by the user (see caveats above) |
+| 3 Offline | NOT RUN — skipped at the user's request |
+
+**Decision:**
+- All three PASS → start Phase 1 on the spec as written; the print path is whichever of 1a/1c passed.
+- Only the agent path (1c + 1c-2 + 1f-agent) passed for printing → amend the spec: Phase 1 needs an always-on print agent device in each shop.
+- Spike 1 fails entirely → stop and decide on printer hardware before Phase 1.
+- Spike 2 fails → investigate Realtime region/latency before Phase 1.
+- Spike 3 fails → fix the queue before Phase 1; do not pilot without it.
+
+
+**Outcome (2026-10-22):** the "only the agent path passed" branch applies — Phase 1 needs an always-on print agent device in each shop (or printers with a web service such as Epson ePOS). Before any pilot: run Spike 3 and 1c-2; decide how to print Chinese (image-based like Feedme, or the printer's GB18030 mode); and either pick printers that report paper/cover status or show per-ticket print status to staff.

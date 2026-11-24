@@ -1,0 +1,82 @@
+// src/features/pos/order/billActions.ts
+/** The bill actions overlay (spec §3) and what a tapped sent item offers: only what exists for this
+ *  bill right now, Feedme order. */
+import { SPLIT_ACTION_LABEL, SPLIT_OFFLINE, canSplit } from './splitSelection'
+
+export type BillAction = 'send' | 'mark_served' | 'move' | 'split' | 'discount_bill' | 'edit_bill_discount' | 'remove_bill_discount'
+  | 'void_bill' | 'close_empty' | 'pax' | 'pause_qr' | 'resume_qr' | 'clear_qr_cart' | 'member' | 'open_qr'
+
+export const BILL_ACTION_LABEL: Record<BillAction, string> = {
+  send: 'Send', mark_served: 'Mark all served', move: 'Move', split: SPLIT_ACTION_LABEL, discount_bill: 'Discount bill', edit_bill_discount: 'Edit discount',
+  remove_bill_discount: 'Remove discount', void_bill: 'Void bill', close_empty: 'Close empty bill', pax: 'Pax',
+  pause_qr: 'Pause QR', resume_qr: 'Resume QR', clear_qr_cart: 'Clear QR cart', member: 'Member', open_qr: 'Open for QR',
+}
+
+/** Send with drafts; Move with a bill; once its items are loaded: Split / Move items once loaded with
+ *  two live units or more (split spec §3.1), Discount bill when it has live items
+ *  (Edit and Remove discount when it has one), then Void bill when it has live items, Close empty
+ *  bill when it has none; on a table: Pax, Pause or Resume QR, Clear QR cart, and Open for QR while it has no bill
+ *  and the branch makes QR wait for an open bill (today's BillPanel). Member on any open bill, dine-in or takeaway,
+ *  right after Clear QR cart (members spec §3 "Staff (POS)"). */
+export function billActions(p: {
+  isTable: boolean; hasBill: boolean; loaded: boolean; liveSentCount: number; draftCount: number
+  qrPaused: boolean; qrRequiresOpenBill: boolean; billDiscount: boolean
+  unservedCount?: number   // W7: live sent lines not served yet — Mark all served right after Send
+}): BillAction[] {
+  const out: BillAction[] = []
+  if (p.draftCount > 0) out.push('send')
+  if (p.hasBill && p.loaded && (p.unservedCount ?? 0) > 0) out.push('mark_served')
+  if (p.hasBill) out.push('move')
+  if (p.hasBill && p.loaded) {
+    if (canSplit(p.liveSentCount)) out.push('split')
+    if (p.billDiscount) out.push('edit_bill_discount', 'remove_bill_discount')
+    else if (p.liveSentCount > 0) out.push('discount_bill')
+    out.push(p.liveSentCount > 0 ? 'void_bill' : 'close_empty')
+  }
+  if (p.isTable) {
+    out.push('pax', p.qrPaused ? 'resume_qr' : 'pause_qr', 'clear_qr_cart')
+  }
+  if (p.hasBill) out.push('member')
+  if (p.isTable && !p.hasBill && p.qrRequiresOpenBill) out.push('open_qr')
+  return out
+}
+
+/** The words after Clear QR cart, from the number of lines pos_clear_qr_cart removed. */
+export function clearedNotice(n: number): string {
+  if (n <= 0) return 'The QR cart was already empty'
+  return `QR cart cleared: ${n} ${n === 1 ? 'item' : 'items'} removed`
+}
+
+/** pos_no_parts' words (split spec §3.5): what the server answers while a bill has a part paid. */
+export const PART_PAID_FIRST = 'This bill has a part payment. Pay the rest first.'
+
+/** The bill actions shown off, each with why: offline, Split / Move items needs a connection; a bill with a
+ *  part paid (split spec §3.5) refuses a split, setting or editing its discount and voiding it, so those
+ *  are off with the server's words. Move and Remove discount stay (the server allows them). */
+export function billActionNotes(p: { online: boolean; partPaid: boolean }): Partial<Record<BillAction, string>> {
+  if (p.partPaid) return { split: PART_PAID_FIRST, discount_bill: PART_PAID_FIRST, edit_bill_discount: PART_PAID_FIRST, void_bill: PART_PAID_FIRST, ...(p.online ? {} : { member: MEMBER_OFFLINE }) }
+  return p.online ? {} : { split: SPLIT_OFFLINE, member: MEMBER_OFFLINE }
+}
+
+/** Member is read and written on the server: off while the till is offline. */
+export const MEMBER_OFFLINE = 'Member needs a connection'
+
+export type ItemAction = 'serve' | 'unserve' | 'discount_item' | 'edit_item_discount' | 'remove_item_discount' | 'void_item'
+
+export const ITEM_ACTION_LABEL: Record<ItemAction, string> = {
+  serve: 'Serve', unserve: 'Not served',
+  discount_item: 'Discount item', edit_item_discount: 'Edit discount', remove_item_discount: 'Remove discount', void_item: 'Void item',
+}
+
+/** A tapped sent item (W7: the Feedme long-press menu): Serve, or Not served once served; then Discount item
+ *  (Edit and Remove discount when it has one), then Void item. */
+export function itemActions(p: { discounted: boolean; served: boolean }): ItemAction[] {
+  const rest: ItemAction[] = p.discounted ? ['edit_item_discount', 'remove_item_discount', 'void_item'] : ['discount_item', 'void_item']
+  return [p.served ? 'unserve' : 'serve', ...rest]
+}
+
+/** A tapped item of a bill with a part paid: discounting it (set or edit) and voiding it are off with the
+ *  server's words; Remove discount stays. */
+export function itemActionNotes(p: { partPaid: boolean }): Partial<Record<ItemAction, string>> {
+  return p.partPaid ? { discount_item: PART_PAID_FIRST, edit_item_discount: PART_PAID_FIRST, void_item: PART_PAID_FIRST } : {}
+}

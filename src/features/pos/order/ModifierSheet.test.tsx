@@ -1,0 +1,97 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import ModifierSheet from './ModifierSheet'
+import type { PosProduct } from './cart'
+
+afterEach(cleanup)
+
+const latte: PosProduct = {
+  id: 'p1', name: 'Latte', description: null, soldOut: false,
+  variants: [{ id: 'hot', name: 'Hot', priceSen: 900, isBase: true }, { id: 'cold', name: 'Cold', priceSen: 1100, isBase: false }],
+  groups: [
+    { id: 'milk', name: 'Milk', min: 1, max: 1, options: [
+      { id: 'oat', name: 'Oat', priceDeltaSen: 200, isDefault: false, available: true },
+      { id: 'soy', name: 'Soy', priceDeltaSen: 0, isDefault: false, available: false },
+    ] },
+    { id: 'extra', name: 'Extras', min: 0, max: 2, options: [{ id: 'shot', name: 'Extra shot', priceDeltaSen: 300, isDefault: false, available: true }] },
+  ],
+}
+
+describe('ModifierSheet', () => {
+  it('shows a red SELECT badge on required groups and greys a sold-out option', () => {
+    render(<ModifierSheet product={latte} onCancel={() => {}} onDone={() => {}} />)
+    expect(screen.getAllByText('SELECT 1')).toHaveLength(2)           // the variant and Milk
+    expect(screen.getByText('UP TO 2')).toBeTruthy()
+    expect((screen.getByRole('button', { name: /Soy/ }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('Confirm with a required group missing says what is missing; once chosen it answers the line', () => {
+    const onDone = vi.fn()
+    render(<ModifierSheet product={latte} onCancel={() => {}} onDone={onDone} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm · RM 9.00' }))
+    expect(onDone).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toBe('Choose at least 1 for Latte: Milk')
+    fireEvent.click(screen.getByRole('button', { name: /Cold/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Oat/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'More' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm · RM 26.00' }))
+    expect(onDone).toHaveBeenCalledWith({ productId: 'p1', variantId: 'cold', qty: 2, note: null, optionIds: ['oat'] })
+  })
+
+  it('a draft being edited offers Remove', () => {
+    const onRemove = vi.fn()
+    render(<ModifierSheet product={latte} initial={{ productId: 'p1', variantId: 'hot', qty: 1, note: null, optionIds: ['oat'] }}
+      onCancel={() => {}} onDone={() => {}} onRemove={onRemove} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(onRemove).toHaveBeenCalledTimes(1)
+  })
+
+  it('Most picked: a pill on that option, nothing chosen for the cashier, none on a sold-out option', () => {
+    render(<ModifierSheet product={latte} mostPicked={{ milk: 'oat' }} onCancel={() => {}} onDone={() => {}} />)
+    const oat = screen.getByRole('button', { name: /Oat/ })
+    expect(oat.textContent).toContain('Most picked')
+    expect(oat.getAttribute('aria-pressed')).toBe('false')
+    cleanup()
+    render(<ModifierSheet product={latte} mostPicked={{ milk: 'soy' }} onCancel={() => {}} onDone={() => {}} />)
+    expect(screen.queryByText('Most picked')).toBeNull()
+  })
+})
+
+describe('ModifierSheet Takeaway switch (W7 spec §4)', () => {
+  const tea: PosProduct = {
+    id: 'p2', name: 'Tea', description: null, soldOut: false,
+    variants: [{ id: 't', name: 'Regular', priceSen: 500, isBase: true }], groups: [],
+  }
+  it('on a dine-in bill: a Takeaway switch, off at first; on, the line is a takeaway line', () => {
+    const onDone = vi.fn()
+    render(<ModifierSheet product={tea} takeawaySwitch onCancel={() => {}} onDone={onDone} />)
+    const sw = screen.getByRole('switch', { name: 'Takeaway' })
+    expect(sw.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(sw)
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm · RM 5.00' }))
+    expect(onDone).toHaveBeenCalledWith({ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [], takeaway: true })
+  })
+  it('switched off again, the line has no takeaway key', () => {
+    const onDone = vi.fn()
+    render(<ModifierSheet product={tea} takeawaySwitch onCancel={() => {}} onDone={onDone} />)
+    fireEvent.click(screen.getByRole('switch', { name: 'Takeaway' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Takeaway' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm · RM 5.00' }))
+    expect(onDone).toHaveBeenCalledWith({ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [] })
+  })
+  it('editing a takeaway draft shows the switch on', () => {
+    render(<ModifierSheet product={tea} takeawaySwitch initial={{ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [], takeaway: true }}
+      onCancel={() => {}} onDone={() => {}} />)
+    expect(screen.getByRole('switch', { name: 'Takeaway' }).getAttribute('aria-checked')).toBe('true')
+  })
+  it('no switch on a takeaway bill, and a line never leaves it with the flag', () => {
+    const onDone = vi.fn()
+    render(<ModifierSheet product={tea} initial={{ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [], takeaway: true }}
+      onCancel={() => {}} onDone={onDone} />)
+    expect(screen.queryByRole('switch')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm · RM 5.00' }))
+    expect(onDone).toHaveBeenCalledWith({ productId: 'p2', variantId: 't', qty: 1, note: null, optionIds: [] })
+  })
+})

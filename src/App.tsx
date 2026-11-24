@@ -21,6 +21,14 @@ import TasksArchivePage from './features/tasks/TasksArchive'
 import ProjectsPage from './features/tasks/Projects'
 import ProjectDetailPage from './features/tasks/ProjectDetail'
 import SettingsPage from './features/settings/Settings'
+import MenuRoutes from './features/pos/menu/MenuRoutes'
+import PosPage from './features/pos/order/PosPage'
+import PosSettingsPage from './features/pos/order/PosSettingsPage'
+import DevicesPage from './features/pos/devices/DevicesPage'
+import ReportsPage from './features/pos/reports/ReportsPage'
+import MembersPage from './features/pos/members/MembersPage'
+import EinvoicePage from './features/pos/einvoice/EinvoicePage'
+import { EinvoiceProblemBanner } from './features/pos/einvoice/EinvoiceProblemBanner'
 import HrAttendancePage from './features/hr/HrAttendance'
 import HrSalaryPage from './features/hr/HrSalary'
 import HrLeavePage from './features/hr/HrLeave'
@@ -46,6 +54,8 @@ import RecipesPage from './features/procurement/Recipes'
 import RecipeNewPage from './features/procurement/RecipeNew'
 import RecipeDetailPage from './features/procurement/RecipeDetail'
 import ProducePage from './features/procurement/Produce'
+import MenuCostingPage from './features/procurement/MenuCosting'
+import MenuRecipeEditorPage from './features/procurement/MenuRecipeEditor'
 import InventoryPage from './features/procurement/Inventory'
 import InventoryDetailPage from './features/procurement/InventoryDetail'
 
@@ -56,6 +66,7 @@ function AppLayout({ children }: { children: ReactNode }) {
       <Sidebar />
       {/* key=pathname:换页即复位。Sidebar(含反馈按钮)在 boundary 之外,页面崩了仍可用。 */}
       <main className="sm:ml-60 pt-14 sm:pt-0 min-h-screen pb-[calc(5rem+env(safe-area-inset-bottom))]">
+        <EinvoiceProblemBanner />
         <ErrorBoundary key={pathname}>{children}</ErrorBoundary>
       </main>
     </div>
@@ -292,6 +303,62 @@ function AppRoutes() {
         }
       />
 
+      <Route path="/pos" element={<ProtectedRoute><AppLayout><PosPage /></AppLayout></ProtectedRoute>} />
+
+      <Route
+        path="/pos/reports"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><ReportsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/pos/members"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><MembersPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/pos/settings"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><PosSettingsPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/pos/devices"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><DevicesPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/pos/einvoice"
+        element={
+          <ProtectedRoute requireCap="access_settings">
+            <AppLayout><EinvoicePage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/menu/*"
+        element={
+          <ProtectedRoute requireCap="manage_menu">
+            <AppLayout><MenuRoutes /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
       <Route
         path="/procurement/suppliers"
         element={
@@ -426,6 +493,23 @@ function AppRoutes() {
         element={
           <ProtectedRoute requireCap="use_procurement">
             <AppLayout><RecipesPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/procurement/menu-costing"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><MenuCostingPage /></AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/procurement/menu-costing/:variantId"
+        element={
+          <ProtectedRoute requireCap="manage_procurement">
+            <AppLayout><MenuRecipeEditorPage /></AppLayout>
           </ProtectedRoute>
         }
       />

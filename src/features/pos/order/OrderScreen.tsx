@@ -1,0 +1,617 @@
+// src/features/pos/order/OrderScreen.tsx
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, Search } from 'lucide-react'
+import {
+  clearQrCart, fetchBillItems, fetchBranchCatalogs, fetchMenuPicks, fetchPadProductInfo, setSoldOut, setTablePaused,
+  type BillItemRow, type OpenBillRow, type TableRow,
+} from './posApi'
+import { defaultLine, findProduct, formatSen, validateLine, type OrderLine, type PosProduct } from './cart'
+import { defaultCatalogProblem, noCatalogMessage, selectableCatalogs, SWITCH_CATALOG_CONFIRM, type BranchCatalogs } from './catalogs'
+import { newQueuedOrder, type QueuedOrder } from '../offline/orderQueue'
+import type { SubmitResult } from './useOrderQueue'
+import { usePadMenu } from './usePadMenu'
+import { usePadWindows } from './usePadWindows'
+import ProductTiles from './ProductTiles'
+import ModifierSheet from './ModifierSheet'
+import BillColumn from './BillColumn'
+import BillActionsOverlay from './BillActionsOverlay'
+import ItemActionsOverlay from './ItemActionsOverlay'
+import MoveToGrid from './MoveToGrid'
+import { billActionNotes, billActions, clearedNotice, itemActionNotes, itemActions, type BillAction, type ItemAction } from './billActions'
+import { SPLIT_ACTION_LABEL } from './splitSelection'
+import { billView, discardQuestion, draftsDiscarded, NO_SHIFT_PAY, payGate, sendFirstQuestion, unservedIds, type DraftRow, type SentRow } from './billView'
+import { moveTargets, type MoveTarget } from './moveTargets'
+import { shownChildren, shownPax, takesNewItems, TAKEAWAY_ONE_ORDER, targetBill, targetOrderType, targetTitle, type OrderTarget } from './orderTarget'
+import { withPhotos, type PadProductInfo } from './padInfo'
+import { goesWellVisible, mostPickedFor, pairsFor, visiblePopular, type MenuPicks } from './picks'
+import { tileSlotLabel } from './padSlots'
+import { padPastLastOrder } from './orderWindow'
+import type { BillSummary } from './billSummaries'
+import {
+  clearBillDiscount, clearItemDiscount, mergeBills, moveBill, openTable, setBillDiscount, setBillPax, setItemDiscount, setItemsServed, voidBill, voidItem,
+  type BillingConfig,
+} from '../checkout/checkoutApi'
+import ApprovalDialog from '../checkout/ApprovalDialog'
+import DiscountDialog from '../checkout/DiscountDialog'
+import { discountOffSen, type DiscountInput } from '../checkout/bill'
+import { discountLabel, storedDiscount } from '../checkout/discounts'
+import { payLabelFor } from '../checkout/partSplit'
+import PickerSheet from '../checkout/BillPickers'
+import ConfirmDialog, { type ConfirmRequest } from '../shell/ConfirmDialog'
+import PaxDialog from '../shell/PaxDialog'
+import MemberDialog from './MemberDialog'
+import { clearBillMember, memberLine, setBillMember } from './billMember'
+import { useBillMember } from './useBillMember'
+
+const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const BILL_GONE = 'This bill is no longer open.'
+
+type Dialog =
+  | { kind: 'void_item'; row: SentRow }
+  | { kind: 'void_bill' }
+  | { kind: 'item_actions'; row: SentRow }
+  | { kind: 'discount_item'; row: SentRow }
+  | { kind: 'approve_item_discount'; row: SentRow; discount: DiscountInput }
+  | { kind: 'discount_bill' }
+  | { kind: 'approve_bill_discount'; discount: DiscountInput }
+  | { kind: 'actions' }
+  | { kind: 'move' }
+  | { kind: 'pax'; purpose: 'set' | 'open_qr' }
+  | { kind: 'catalog' }
+  | { kind: 'member' }
+  | null
+
+/** The order screen (spec §2): categories | product tiles | bill, replacing the old BillPanel and
+ *  OrderPad. Everything OrderPad did is here unchanged — one catalog per order (the type's default,
+ *  or an additional one; switching clears the cart, an edited order no longer offered carries what
+ *  the new catalog sells), sold-out mode, time-slot greying and the pre-send slot check, the queue
+ *  (enqueue then send; a rejection keeps the cart) — and every bill action BillPanel had: void item
+ *  and void bill with approval, close an empty bill, move, merge, pause QR, open for QR — plus item and
+ *  bill discounts (docs/superpowers/specs/2026-10-30-pos-discounts-design.md "Screens"). */
+export default function OrderScreen({
+  branchId, target, tables, bills, summaries, refreshKey, billing, shiftOpen, locked = false, lastCatalogs, initialLines, initialCatalogId,
+  online = true, initialNotice = null, onSplit,
+  submit, onCatalogs, onTarget, onBack, onSent, onPay, onSendAndPay, onChanged, onDraftCount, onSending,
+}: {
+  branchId: string
+  target: OrderTarget
+  tables: TableRow[]
+  bills: OpenBillRow[]                       // the branch's open bills (PosPage keeps them fresh)
+  summaries: ReadonlyMap<string, BillSummary>
+  refreshKey: number                         // bumped on every order, bills event and 15 s sweep
+  billing: BillingConfig | null
+  shiftOpen: boolean | null
+  locked?: boolean                           // the tablet is locked (POS app): dialogs close, the cart stays for the next person
+  lastCatalogs: BranchCatalogs | null        // the last catalogs this iPad saw: used when the fresh read fails
+  initialLines?: OrderLine[]                 // a rejected order being edited
+  initialCatalogId?: string | null           // ...keeps its catalog
+  online?: boolean                           // the server answers (POS app); Split / Move items needs it
+  initialNotice?: string | null              // e.g. "Moved 2 items to T7" after a move from the picker
+  onSplit: (bill: OpenBillRow) => void       // Split / Move items: the picker (PosTill)
+  submit: (o: QueuedOrder) => Promise<SubmitResult>
+  onCatalogs: (c: BranchCatalogs) => void
+  onTarget: (t: OrderTarget) => void         // a move or merge landed elsewhere, or pax was chosen for an empty table
+  onBack: () => void
+  onSent: () => void                         // the drafts are in the queue: back to the tables
+  onPay: (bill: OpenBillRow) => void
+  onSendAndPay: (clientOrderId: string) => Promise<void>   // rejects with the words to show
+  onChanged: () => Promise<void> | void      // a bill action changed something: reload
+  onDraftCount: (n: number) => void          // PosPage guards leaving through the menu
+  onSending: (busy: boolean) => void         // ...and keeps the menu shut while an order is being sent
+}) {
+  const orderType = targetOrderType(target)
+  const bill = targetBill(target, bills)
+  const table = target.kind === 'table' ? tables.find((t) => t.id === target.tableId) ?? null : null
+
+  // ── catalogs: fetched fresh for this screen; offline, the last list this iPad saw ──
+  const [fresh, setFresh] = useState<BranchCatalogs | null>(null)
+  const [catalogsError, setCatalogsError] = useState<string | null>(null)
+  const [catalogsTry, setCatalogsTry] = useState(0)
+  useEffect(() => {
+    let live = true
+    setCatalogsError(null)
+    fetchBranchCatalogs(branchId).then(
+      (c) => { if (live) { onCatalogs(c); setFresh(c) } },
+      (e) => {
+        if (!live) return
+        if (lastCatalogs) setFresh(lastCatalogs)
+        else setCatalogsError(msg(e))
+      },
+    )
+    return () => { live = false }
+  }, [branchId, catalogsTry]) // eslint-disable-line react-hooks/exhaustive-deps
+  const catalogs = useMemo(
+    () => (fresh ? selectableCatalogs(fresh.assignments, fresh.catalogs, orderType, initialCatalogId ?? null) : null),
+    [fresh, orderType, initialCatalogId],
+  )
+  const defaultProblem = fresh ? defaultCatalogProblem(fresh.assignments, fresh.catalogs, orderType) : null
+
+  // ── the menu and the cart (OrderPad's state, unchanged) ──
+  const [catalogId, setCatalogId] = useState<string | null>(initialCatalogId ?? null)
+  const [error, setError] = useState<string | null>(null)
+  const [category, setCategory] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [lines, setLines] = useState<OrderLine[]>(initialLines ?? [])
+  const [sheet, setSheet] = useState<{ product: PosProduct; index: number | null } | null>(null)
+  const [soldOutMode, setSoldOutMode] = useState(false)
+  const [sending, setSending] = useState(false)
+  const sendingRef = useRef(false)              // synchronous guard: Send and Send & pay never run twice
+  const [carry, setCarry] = useState<{ lines: OrderLine[]; to: string } | null>(null)
+  const [notice, setNotice] = useState<string | null>(initialNotice)
+  const [info, setInfo] = useState<ReadonlyMap<string, PadProductInfo>>(new Map())
+  const slots = usePadWindows(catalogId)
+  useEffect(() => { setError(null) }, [lines])
+  useEffect(() => {
+    let live = true
+    fetchPadProductInfo().then((m) => { if (live) setInfo(m) }, () => undefined)   // without it: no photos, drafts left out of the totals
+    return () => { live = false }
+  }, [])
+  // menu picks (docs/superpowers/specs/2026-11-17-menu-picks-design.md §5): read once when the screen
+  // opens; hints only — a failed read hides them
+  const [picks, setPicks] = useState<MenuPicks | null>(null)
+  const [goesWellFor, setGoesWellFor] = useState<string | null>(null)   // the product just added: its chip row
+  useEffect(() => {
+    let live = true
+    fetchMenuPicks().then((p) => { if (live) setPicks(p) }, () => { if (live) setPicks(null) })
+    return () => { live = false }
+  }, [branchId])
+
+  // Only the order type's default is ever picked for the cashier (OrderPad's rule).
+  useEffect(() => {
+    if (!catalogs) return
+    const def = catalogs.find((c) => c.isDefault)
+    if (catalogId !== null && catalogId !== (initialCatalogId ?? null) && lines.length === 0
+        && !catalogs.some((c) => c.id === catalogId)) {
+      setCatalogId(def?.id ?? null)
+      return
+    }
+    if (catalogId === null && def) setCatalogId(def.id)
+  }, [catalogs, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // readiness W8: the menu read has its own error with Retry, and reads again when back online
+  const { menu, error: menuError, reload: load } = usePadMenu(catalogId)
+
+  const current = catalogs?.find((c) => c.id === catalogId) ?? null
+  const noCatalog = catalogs !== null && catalogId === null && !catalogs.some((c) => c.isDefault)
+
+  const doSwitch = (id: string, carrying: boolean) => {
+    setCarry(carrying ? { lines, to: id } : null)
+    if (!carrying) setLines([])
+    setSheet(null); setCategory(null); setNotice(null); setGoesWellFor(null); setCatalogId(id)
+  }
+  // One order = one catalog: switching starts the cart again (asked first, in the POS's own dialog).
+  const switchCatalog = (id: string) => {
+    if (!id || id === catalogId) return
+    const carrying = lines.length > 0 && !!current && !current.offered
+    if (!carrying && lines.length > 0) {
+      setConfirm({ title: SWITCH_CATALOG_CONFIRM, message: 'The items not sent yet are removed.', confirmLabel: 'Switch catalog', danger: true,
+        onConfirm: () => doSwitch(id, false) })
+      return
+    }
+    doSwitch(id, carrying)
+  }
+  useEffect(() => {
+    if (!carry || !menu || carry.to !== catalogId) return
+    const kept = carry.lines.filter((l) => {
+      const p = findProduct(menu, l.productId)
+      return p !== undefined && validateLine(p, l) === null
+    })
+    setLines(kept)
+    if (kept.length < carry.lines.length) setNotice(`Items not in ${current?.name ?? 'this catalog'} were removed`)
+    setCarry(null)
+  }, [menu, carry, catalogId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const shownMenu = useMemo(() => (menu ? withPhotos(menu, info) : null), [menu, info])
+  const products = useMemo(() => {
+    if (!shownMenu) return []
+    const all = shownMenu.categories.flatMap((c) => c.products.map((p) => ({ ...p, category: c.name })))
+    const q = search.trim().toLowerCase()
+    return all.filter((p) => (q ? p.name.toLowerCase().includes(q) : !category || p.category === category))
+  }, [shownMenu, category, search])
+  // the counter menu also shows products outside their time slot (greyed): no Popular pill on those
+  const popularIds = useMemo(() => new Set(shownMenu
+    ? visiblePopular(shownMenu, picks).filter((p) => tileSlotLabel(slots.windows, p.id, slots.now) === null).map((p) => p.id)
+    : []), [shownMenu, picks, slots.windows, slots.now])
+  /** A new draft line; its Goes well with chip row replaces the last one. */
+  const addDraft = (line: OrderLine) => { setLines((ls) => [...ls, line]); setGoesWellFor(line.productId) }
+
+  const tap = async (p: PosProduct, outOfSlot: boolean) => {
+    if (soldOutMode) {
+      try { await setSoldOut(branchId, p.id, !p.soldOut); await load() } catch (e) { setError(msg(e)) }
+      return
+    }
+    if (!takesNewItems(target)) { setError(TAKEAWAY_ONE_ORDER); return }
+    if (p.soldOut || outOfSlot) return
+    if (p.variants.length === 1 && p.groups.length === 0) addDraft(defaultLine(p))
+    else setSheet({ product: p, index: null })
+  }
+
+  // ── the bill: sent items from the server (BillPanel's reads, unchanged) ──
+  const [items, setItems] = useState<BillItemRow[] | null>(null)   // null = not loaded yet for this bill
+  const [itemsError, setItemsError] = useState<string | null>(null)
+  const [localKey, setLocalKey] = useState(0)
+  useEffect(() => { setItems(null); setItemsError(null) }, [bill?.id])
+  useEffect(() => {
+    if (!bill) return
+    let alive = true
+    fetchBillItems(bill.id).then(
+      (rows) => { if (alive) { setItems(rows); setItemsError(null) } },
+      (e) => { if (alive) setItemsError(msg(e)) },
+    )
+    return () => { alive = false }
+  }, [bill?.id, refreshKey, localKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  const loaded = !bill || (items !== null && !itemsError)            // only then is it known whether the bill is empty
+  // members spec §3: the bill's member for the column line and the Member dialog, per bill: the line shows only
+  // once this bill's read is done (never the previous bill's member, nothing while unknown)
+  const billMember = useBillMember(bill?.id ?? null, `${refreshKey}:${localKey}`)
+  const member = billMember.member
+
+  const billDisc = bill ? storedDiscount(bill) : null
+  const view = billView({
+    orderType: bill?.order_type ?? orderType,
+    tableId: bill ? bill.table_id : target.kind === 'table' ? target.tableId : null,
+    items: bill ? items ?? [] : [], lines, menu, info, billing,
+    billDiscount: billDisc,
+    draftCatalogDiscountBp: fresh?.catalogs.find((c) => c.id === catalogId)?.discount_bp ?? 0,
+  })
+  useEffect(() => { onDraftCount(view.draftCount) }, [view.draftCount]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── dialogs and one bill action at a time (BillPanel's run) ──
+  const [dialog, setDialog] = useState<Dialog>(null)
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  useEffect(() => { setDialog(null); setConfirm(null) }, [bill?.id])
+  // a lock closes every dialog (modifier sheet, bill actions, approvals) but keeps the unsent lines
+  useEffect(() => { if (locked) { setSheet(null); setDialog(null); setConfirm(null) } }, [locked])
+  const run = async (fn: () => Promise<void>, then?: () => void) => {
+    if (busyRef.current) return
+    busyRef.current = true; setBusy(true)
+    try {
+      try { await fn() } catch (e) { setDialog(null); setError(msg(e)); return }
+      setDialog(null); setError(null); setLocalKey((k) => k + 1)   // a done action clears an earlier refusal
+      await onChanged()
+      then?.()
+    } finally { busyRef.current = false; setBusy(false) }
+  }
+
+  const [paused, setPaused] = useState(table?.qr_paused ?? false)
+  useEffect(() => { setPaused(table?.qr_paused ?? false) }, [table?.id, table?.qr_paused])
+  const togglePause = async () => {
+    if (!table) return
+    const next = !paused
+    setPaused(next)
+    try { await setTablePaused(table.id, next); void onChanged() } catch (e) { setPaused(!next); setError(msg(e)) }
+  }
+
+  // ── Send, Send & pay, Payment, back ──
+  /** The drafts as one order through the queue; the order's id once it is stored, else null (the error shows). */
+  const sendDrafts = async (): Promise<string | null> => {
+    if (sendingRef.current || !menu || lines.length === 0) return null
+    if (!takesNewItems(target)) { setError(TAKEAWAY_ONE_ORDER); return null }
+    if (!catalogId) { setError(noCatalogMessage(orderType)); return null }
+    for (const l of lines) {
+      const p = findProduct(menu, l.productId)
+      const problem = p ? validateLine(p, l) : 'Item is no longer on the menu'
+      if (problem) { setError(problem); return null }
+    }
+    sendingRef.current = true; setSending(true)
+    try {
+      const late = await slots.check(lines, (id) => findProduct(menu, id)?.name ?? 'An item')
+      if (late) { setError(late); return null }                     // the server would refuse it with the same words
+      // the pax chosen for an empty table goes with its first order (the server only fills an empty pax)
+      const pax = target.kind === 'table' && !bill?.pax ? target.pax : null
+      const children = target.kind === 'table' && pax !== null ? target.children ?? null : null   // W7: with that pax only
+      const res = await submit(newQueuedOrder(orderType, target.kind === 'table' ? target.tableId : null, pax, lines,
+        Date.now(), crypto.randomUUID(), catalogId, children))
+      // the menu is read again first: a successful load clears the error, the rejection must stay
+      if (res.rejectedReason) { await load(); setError(`Rejected: ${res.rejectedReason} — fix the order and send again`); return null }
+      setLines([]); setError(null); setGoesWellFor(null)
+      return res.clientOrderId
+    } catch (e) {
+      setError(`Order NOT saved on this iPad: ${msg(e)}`)
+      return null
+    } finally { sendingRef.current = false; setSending(false) }
+  }
+  const send = async () => { if (await sendDrafts()) onSent() }
+  useEffect(() => { onSending(sending) }, [sending]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onSending(false), []) // eslint-disable-line react-hooks/exhaustive-deps
+  const sendAndPay = async () => {
+    const id = await sendDrafts()
+    if (!id) return
+    sendingRef.current = true; setSending(true)
+    try { await onSendAndPay(id) } catch (e) { setError(msg(e)) } finally { sendingRef.current = false; setSending(false) }
+  }
+
+  const gate = payGate({ shiftOpen, draftCount: view.draftCount, hasBill: !!bill, liveSentCount: view.liveSentCount })
+  const pay = () => {
+    if (gate === 'send_first') {
+      setConfirm({ title: sendFirstQuestion(view.draftCount), message: 'They go to the kitchen, then Payment opens.', confirmLabel: 'Send & pay',
+        onConfirm: () => void sendAndPay() })
+      return
+    }
+    if (gate === 'ready' && bill && loaded) onPay(bill)
+  }
+  const back = () => {
+    if (view.draftCount > 0) {
+      setConfirm({ title: discardQuestion(view.draftCount), confirmLabel: 'Discard', danger: true, onConfirm: onBack })
+      return
+    }
+    onBack()
+  }
+
+  // ── bill actions ──
+  const actions = billActions({
+    isTable: target.kind === 'table', hasBill: !!bill, loaded, liveSentCount: view.liveSentCount, draftCount: view.draftCount,
+    qrPaused: paused, qrRequiresOpenBill: billing?.settings.qrRequiresOpenBill ?? false, billDiscount: billDisc !== null,
+    unservedCount: unservedIds(view.sent).length,
+  })
+  const partPaid = bill ? summaries.get(bill.id)?.paidSen ?? 0 : 0       // split spec §3.5
+  // shown off with why: offline (split), or a part paid (split, discount, void: the server refuses them)
+  const actionNotes = billActionNotes({ online, partPaid: partPaid > 0 })
+  const itemNotes = itemActionNotes({ partPaid: partPaid > 0 })
+  const pickAction = (a: BillAction) => {
+    setDialog(null)
+    if (actionNotes[a]) return
+    if (a === 'send') void send()
+    else if (a === 'mark_served') {
+      const ids = unservedIds(view.sent)                              // W7: every live line not served yet
+      if (ids.length > 0) void run(async () => { await setItemsServed(ids, true) })
+    }
+    else if (a === 'move') setDialog({ kind: 'move' })
+    else if (a === 'split' && bill) {
+      if (view.draftCount > 0) {
+        setConfirm({ title: discardQuestion(view.draftCount), message: `Then ${SPLIT_ACTION_LABEL} opens.`, confirmLabel: 'Discard', danger: true,
+          onConfirm: () => onSplit(bill) })
+        return
+      }
+      onSplit(bill)
+    }
+    else if (a === 'void_bill') setDialog({ kind: 'void_bill' })
+    else if (a === 'discount_bill' || a === 'edit_bill_discount') setDialog({ kind: 'discount_bill' })
+    else if (a === 'remove_bill_discount' && bill) {
+      setConfirm({ title: 'Remove this discount?', confirmLabel: 'Remove discount', onConfirm: () => void run(() => clearBillDiscount(bill.id)) })
+    }
+    else if (a === 'close_empty' && bill) {
+      setConfirm({ title: `Close bill ${bill.bill_no}?`, message: 'It has nothing on it.', confirmLabel: 'Close bill', danger: true,
+        onConfirm: () => void run(() => voidBill(bill.id, { reason: '', approverId: null, pin: null }), () => { if (lines.length === 0) onBack() }) })
+    } else if (a === 'pax') setDialog({ kind: 'pax', purpose: 'set' })
+    else if (a === 'open_qr') setDialog({ kind: 'pax', purpose: 'open_qr' })
+    else if (a === 'pause_qr' || a === 'resume_qr') void togglePause()
+    else if (a === 'member' && bill) setDialog({ kind: 'member' })
+    else if (a === 'clear_qr_cart' && table) {
+      setConfirm({ title: 'Clear QR cart', message: `Remove everything guests have added on their phones for Table ${table.label} but not sent yet? Orders already sent are not affected.`,
+        confirmLabel: 'Clear', danger: true, onConfirm: () => {
+          let removed = 0
+          void run(async () => { removed = await clearQrCart(table.id) }, () => setNotice(clearedNotice(removed)))
+        } })
+    }
+  }
+  const pickItemAction = (row: SentRow, a: ItemAction) => {
+    if (itemNotes[a]) return
+    if (a === 'serve' || a === 'unserve') { void run(async () => { await setItemsServed([row.item.id], a === 'serve') }); return }   // W7
+    if (a === 'void_item') setDialog({ kind: 'void_item', row })
+    else if (a === 'discount_item' || a === 'edit_item_discount') setDialog({ kind: 'discount_item', row })
+    else {
+      setDialog(null)
+      setConfirm({ title: 'Remove this discount?', confirmLabel: 'Remove discount', onConfirm: () => void run(() => clearItemDiscount(row.item.id)) })
+    }
+  }
+  const pickPax = (n: number, children: number | null) => {
+    const purpose = dialog?.kind === 'pax' ? dialog.purpose : 'set'
+    setDialog(null)
+    if (purpose === 'open_qr' && table) { void run(async () => { await openTable(table.id, n, children) }); return }
+    if (bill) { void run(() => setBillPax(bill.id, n, children)); return }
+    if (target.kind === 'table') onTarget({ ...target, pax: n, children })
+  }
+  const pickMove = (m: MoveTarget) => {
+    if (!bill || busyRef.current || m.kind === 'refused') return
+    // the screen starts again on the bill moved or merged to, so unsent drafts are asked about first
+    const drafts = view.draftCount
+    if (m.kind === 'move') {
+      const to = m.tableId
+      const go = () => void run(() => moveBill(bill.id, to), () => onTarget({ kind: 'table', tableId: to, pax: null }))
+      if (drafts > 0) {
+        setConfirm({ title: discardQuestion(drafts), message: `Then bill ${bill.bill_no} moves to ${m.label}.`, confirmLabel: 'Discard & move', danger: true,
+          onConfirm: go })
+        return
+      }
+      go()
+      return
+    }
+    // the bill merged into is the target, never the table: a takeaway merge target has no table
+    const into = m.tableId !== null ? { kind: 'table' as const, tableId: m.tableId, pax: null } : { kind: 'takeaway' as const, billId: m.intoBillId }
+    setConfirm({ title: `Merge into ${m.label}?`,
+      message: `Every item of bill ${bill.bill_no} moves onto bill ${m.intoBillNo}, and this bill closes.${drafts > 0 ? ` ${draftsDiscarded(drafts)}` : ''}`,
+      confirmLabel: 'Merge', danger: drafts > 0, onConfirm: () => void run(() => mergeBills(bill.id, m.intoBillId), () => onTarget(into)) })
+  }
+  const tapDraft = (d: DraftRow) => {
+    const p = menu ? findProduct(menu, d.line.productId) : undefined
+    if (p) { setSheet({ product: p, index: d.index }); return }
+    setConfirm({ title: 'Remove this item?', message: 'It is no longer on the menu.', confirmLabel: 'Remove', danger: true,
+      onConfirm: () => setLines((ls) => ls.filter((_, k) => k !== d.index)) })
+  }
+
+  // Goes well with: the chip row for the product just added, while it is still among the drafts —
+  // what the menu offers now and inside its time slot; never in sold-out mode or when the bill takes no new items
+  const goesWell = goesWellFor && shownMenu && !sending && !soldOutMode && takesNewItems(target) && goesWellVisible(goesWellFor, lines)
+    ? pairsFor(shownMenu, picks, goesWellFor, lines).filter((p) => tileSlotLabel(slots.windows, p.id, slots.now) === null)
+    : []
+
+  const title = targetTitle(target, bill, tables)
+  const tileNotice = !takesNewItems(target) ? (bill ? TAKEAWAY_ONE_ORDER : BILL_GONE) : null
+  // W7 spec §3: past the outlet's last-order time the pad says so (the pad's server-time clock); the POS still orders
+  const pastLast = billing ? padPastLastOrder(billing.settings.ordersOpenAt, billing.settings.lastOrderAt, slots.now) : null
+  return (
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-border bg-card p-2">
+          <button type="button" onClick={back} disabled={sending} aria-label="Back to tables"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border-mid disabled:opacity-40"><ArrowLeft size={20} /></button>
+          <label className="relative flex-1">
+            <Search size={18} className="pointer-events-none absolute left-3 top-3 text-brown-muted" />
+            <input className="h-11 w-full rounded-xl border border-border-mid pl-9 pr-3 text-base" placeholder="Search menu"
+              value={search} onChange={(e) => setSearch(e.target.value)} />
+          </label>
+          <button type="button" onClick={() => setSoldOutMode((v) => !v)} aria-pressed={soldOutMode}
+            className={`h-11 shrink-0 rounded-xl px-4 text-sm font-medium ${soldOutMode ? 'bg-red-600 text-white' : 'border border-border-mid text-brown-dark'}`}>
+            {soldOutMode ? 'Sold out · Done' : 'Sold out'}
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1">
+          <nav aria-label="Categories" className="w-[200px] shrink-0 space-y-1 overflow-y-auto border-r border-border bg-card p-2">
+            {[null, ...(menu?.categories.map((c) => c.name) ?? [])].map((name) => {
+              const on = !search && category === name
+              return (
+                <button key={name ?? '*'} type="button" onClick={() => { setCategory(name); setSearch('') }}
+                  className={`min-h-12 w-full rounded-lg px-3 text-left text-sm font-medium ${on ? 'bg-brown-dark text-cream' : 'text-brown-dark hover:bg-cream'}`}>
+                  {name ?? 'All'}
+                </button>
+              )
+            })}
+          </nav>
+          <div className="flex min-w-0 flex-1 flex-col">
+            {pastLast && <p role="status" className="mx-2 mt-2 rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">{pastLast}</p>}
+            {soldOutMode && <p className="m-2 rounded bg-red-50 p-2 text-sm text-red-700">Tap items to mark them sold out, or back on sale.</p>}
+            {error && <p role="alert" className="m-2 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+            {notice && <p role="status" className="m-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{notice}</p>}
+            <div className="grid flex-1 grid-cols-4 content-start gap-2 overflow-y-auto p-3">
+              {catalogs === null && catalogsError && (
+                <p className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">
+                  Could not load the menu catalogs: {catalogsError}{' '}
+                  <button type="button" className="min-h-11 px-3 underline" onClick={() => setCatalogsTry((n) => n + 1)}>Retry</button>
+                </p>
+              )}
+              {noCatalog && (
+                <p className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">
+                  {defaultProblem ?? noCatalogMessage(orderType)}
+                  {catalogs.length > 0 && ' — or choose a catalog on the bill for this order.'}
+                </p>
+              )}
+              {menuError && (
+                <p role="alert" className="col-span-4 rounded bg-red-50 p-2 text-sm text-red-700">
+                  {menu ? 'Could not refresh the menu' : 'Could not load the menu'}: {menuError}{' '}
+                  <button type="button" className="min-h-11 px-3 underline" onClick={() => void load()}>Retry</button>
+                </p>
+              )}
+              {!menu && !menuError && !noCatalog && !(catalogs === null && catalogsError) && <p className="col-span-4 text-brown-muted">Loading menu…</p>}
+              <ProductTiles products={products} windows={slots.windows} now={slots.now} soldOutMode={soldOutMode}
+                popular={popularIds} onTap={(p, outOfSlot) => void tap(p, outOfSlot)} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <BillColumn
+        title={title}
+        billNo={bill?.bill_no ?? null}
+        pax={shownPax(target, bill)}
+        paxChildren={shownChildren(target, bill)}
+        onPax={target.kind === 'table' ? () => setDialog({ kind: 'pax', purpose: 'set' }) : null}
+        catalogName={current?.name ?? null}
+        partPaidSen={partPaid}
+        member={member ? memberLine(member.phone) : null}
+        catalogIsExtra={!!current && !current.isDefault}
+        onCatalog={catalogs && (catalogs.length > 1 || (catalogId === null && catalogs.length > 0)) && !sending && takesNewItems(target) ? () => setDialog({ kind: 'catalog' }) : null}
+        view={view}
+        loading={!!bill && items === null && !itemsError}
+        loadError={itemsError}
+        notice={tileNotice}
+        onSentTap={(row) => setDialog({ kind: 'item_actions', row })}
+        onDraftTap={tapDraft}
+        onActions={() => setDialog({ kind: 'actions' })}
+        onSend={() => void send()}
+        sendDisabled={sending || lines.length === 0}
+        sending={sending}
+        payLabel={view.totals ? payLabelFor(view.totals.totalSen, partPaid) : 'Payment'}
+        payDisabled={sending || gate === 'no_shift' || gate === 'empty' || (gate === 'ready' && !loaded)}
+        payHint={gate === 'no_shift' ? NO_SHIFT_PAY : null}
+        onPay={pay}
+        goesWell={goesWell.length > 0 ? {
+          products: goesWell.map((p) => ({ id: p.id, name: p.name })),
+          onPick: (id) => { const p = goesWell.find((g) => g.id === id); if (p) void tap(p, false) },   // as from its tile
+        } : null}
+      />
+
+      {sheet && (
+        <ModifierSheet product={sheet.product} initial={sheet.index === null ? undefined : lines[sheet.index]}
+          mostPicked={mostPickedFor(picks, sheet.product.id)}
+          takeawaySwitch={orderType === 'dine_in'}
+          onCancel={() => setSheet(null)}
+          onRemove={sheet.index === null ? undefined : () => { const i = sheet.index; setLines((ls) => ls.filter((_, k) => k !== i)); setSheet(null) }}
+          onDone={(line) => {
+            if (sheet.index === null) addDraft(line)
+            else { const i = sheet.index; setLines((ls) => ls.map((x, k) => (k === i ? line : x))) }
+            setSheet(null)
+          }} />
+      )}
+      {dialog?.kind === 'actions' && (
+        <BillActionsOverlay title={title} actions={actions} disabled={busy || sending} notes={actionNotes}
+          onPick={pickAction} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'move' && (
+        <MoveToGrid billNo={bill.bill_no} targets={moveTargets(bill, tables, bills, summaries, billDisc !== null)} busy={busy}
+          onPick={pickMove} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'pax' && (
+        <PaxDialog title={title} current={shownPax(target, bill)} currentChildren={shownChildren(target, bill)} onPick={pickPax} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'member' && (
+        <MemberDialog billNo={bill.bill_no} status={billMember.state.status} current={member} onRetry={billMember.retry}
+          onAttach={async (phone) => { const m = await setBillMember(bill.id, phone); billMember.set(m); setLocalKey((k) => k + 1); return m }}
+          onRemove={async () => { await clearBillMember(bill.id); billMember.set(null); setLocalKey((k) => k + 1) }}
+          onClose={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'catalog' && (
+        <PickerSheet title="Catalog" hint="This order is priced from the catalog you choose."
+          options={(catalogs ?? []).map((c) => ({ id: c.id, label: c.name, detail: c.isDefault ? 'Default' : c.offered ? 'Additional' : 'No longer offered' }))}
+          empty="No catalog is set for this branch." onClose={() => setDialog(null)}
+          onPick={(id) => { setDialog(null); switchCatalog(id) }} />
+      )}
+      {bill && dialog?.kind === 'item_actions' && (
+        <ItemActionsOverlay title={`${dialog.row.qty} × ${dialog.row.name}`}
+          actions={itemActions({ discounted: storedDiscount(dialog.row.item) !== null, served: dialog.row.served })}
+          notes={itemNotes}
+          disabled={busy || sending} onPick={(a) => pickItemAction(dialog.row, a)} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'discount_item' && (
+        <DiscountDialog title="Discount item" summary={`${dialog.row.qty} × ${dialog.row.name} · ${formatSen(dialog.row.afterCatalogSen)}`}
+          baseSen={dialog.row.afterCatalogSen} initial={storedDiscount(dialog.row.item)}
+          onNext={(d) => setDialog({ kind: 'approve_item_discount', row: dialog.row, discount: d })} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'approve_item_discount' && (
+        <ApprovalDialog branchId={branchId} action="discount" title="Discount item"
+          summary={`${discountLabel({ ...dialog.discount, reason: null }, false)} on ${dialog.row.qty} × ${dialog.row.name} · −${formatSen(discountOffSen(dialog.discount, dialog.row.afterCatalogSen))}`}
+          onApprove={(a) => setItemDiscount(dialog.row.item.id, dialog.discount, a)} onClose={() => setDialog(null)}
+          onDone={() => { setDialog(null); setLocalKey((k) => k + 1); void onChanged() }} />
+      )}
+      {bill && dialog?.kind === 'discount_bill' && (
+        <DiscountDialog title="Discount bill" summary={`Bill ${bill.bill_no} · ${formatSen(view.sentSubtotalSen)}`}
+          baseSen={view.sentSubtotalSen} initial={billDisc}
+          onNext={(d) => setDialog({ kind: 'approve_bill_discount', discount: d })} onClose={() => setDialog(null)} />
+      )}
+      {bill && dialog?.kind === 'approve_bill_discount' && (
+        <ApprovalDialog branchId={branchId} action="discount" title="Discount bill"
+          summary={`${discountLabel({ ...dialog.discount, reason: null }, false)} on bill ${bill.bill_no} · −${formatSen(discountOffSen(dialog.discount, view.sentSubtotalSen))}`}
+          onApprove={(a) => setBillDiscount(bill.id, dialog.discount, a)} onClose={() => setDialog(null)}
+          onDone={() => { setDialog(null); setLocalKey((k) => k + 1); void onChanged() }} />
+      )}
+      {bill && dialog?.kind === 'void_item' && (
+        <ApprovalDialog branchId={branchId} action="void_item" title="Void item"
+          summary={`${dialog.row.qty} × ${dialog.row.name} · ${formatSen(dialog.row.amountSen)} — the kitchen gets a VOID ticket`}
+          onApprove={(a) => voidItem(dialog.row.item.id, a)} onClose={() => setDialog(null)}
+          onDone={() => { setDialog(null); setLocalKey((k) => k + 1); void onChanged() }} />
+      )}
+      {bill && dialog?.kind === 'void_bill' && (
+        <ApprovalDialog branchId={branchId} action="void_bill" title="Void bill"
+          summary={`Bill ${bill.bill_no} · ${view.liveSentCount} item${view.liveSentCount === 1 ? '' : 's'}${summaries.get(bill.id) ? ` · ${formatSen(summaries.get(bill.id)?.totalSen ?? 0)}` : ''} — every item is voided and the table is freed`}
+          onApprove={(a) => voidBill(bill.id, a)} onClose={() => setDialog(null)}
+          onDone={() => { setDialog(null); void onChanged(); if (lines.length === 0) onBack() }} />
+      )}
+      {confirm && (
+        <ConfirmDialog {...confirm} busy={busy} onCancel={() => setConfirm(null)}
+          onConfirm={() => { const c = confirm; setConfirm(null); c.onConfirm() }} />
+      )}
+    </div>
+  )
+}

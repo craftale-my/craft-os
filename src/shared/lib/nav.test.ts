@@ -8,9 +8,10 @@ const canWith = (...caps: Capability[]) => (c: Capability) => caps.includes(c)
 const ids = (entries: ReturnType<typeof visibleNav>) => entries.map(e => e.id)
 
 describe('visibleNav', () => {
-  it('无任何 capability 的店员只看到 People(仅 Org Chart)、Time & Pay 与固定项', () => {
+  it('无任何 capability 的店员只看到 People(仅 Org Chart)、Time & Pay、POS(仅 Register)与固定项', () => {
     const nav = visibleNav(canWith())
-    expect(ids(nav)).toEqual(['people', 'time-pay', 'profile', 'feedback'])
+    // POS 模块的 Register 不带 cap,店员也看得到。
+    expect(ids(nav)).toEqual(['people', 'time-pay', 'pos', 'profile', 'feedback'])
     const people = nav.find(e => e.id === 'people')!
     expect(isGroup(people) && people.children.map(c => c.id)).toEqual(['org-chart'])
   })
@@ -54,13 +55,24 @@ describe('visibleNav', () => {
     // Reviews 要 view_team + conduct_reviews 两个都有;只有后者时不该冒出来,
     // Work 模块也因为子项全被滤掉而整个消失。
     const nav = visibleNav(canWith('conduct_reviews'))
-    expect(ids(nav)).toEqual(['people', 'time-pay', 'profile', 'feedback'])
+    expect(ids(nav)).toEqual(['people', 'time-pay', 'pos', 'profile', 'feedback'])
     const people = nav.find(e => e.id === 'people')!
     expect(isGroup(people) && people.children.map(c => c.id)).toEqual(['org-chart'])
   })
 
   it('access_settings 控制 Settings 叶子项', () => {
-    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['people', 'time-pay', 'profile', 'settings', 'feedback'])
+    expect(ids(visibleNav(canWith('access_settings')))).toEqual(['people', 'time-pay', 'pos', 'profile', 'settings', 'feedback'])
+  })
+
+  it('POS groups the register, reports, menu, POS settings, devices and E-invoice; staff see only the register', () => {
+    const pos = (can: (c: Capability) => boolean) => {
+      const g = visibleNav(can).find(e => e.id === 'pos')
+      return g && isGroup(g) ? g.children.map(c => c.id) : []
+    }
+    expect(pos(canWith())).toEqual(['pos-register'])
+    expect(pos(canWith('access_settings'))).toEqual(['pos-register', 'pos-reports', 'pos-members', 'pos-settings', 'pos-devices', 'pos-einvoice'])
+    expect(pos(canWith('manage_menu'))).toEqual(['pos-register', 'menu'])
+    expect(pos(canWith('access_settings', 'manage_menu'))).toEqual(['pos-register', 'pos-reports', 'pos-members', 'menu', 'pos-settings', 'pos-devices', 'pos-einvoice'])
   })
 
   it('Feedback 对所有人可见,排在最后', () => {
@@ -105,6 +117,11 @@ describe('activeEntry', () => {
     expect(activeEntry(full, '/team/projects')).toEqual({ leafId: 'team-projects', groupId: 'work' })
   })
 
+  it('/pos/reports lights Reports, not the Register (longest prefix wins)', () => {
+    expect(activeEntry(full, '/pos/reports')).toEqual({ leafId: 'pos-reports', groupId: 'pos' })
+    expect(activeEntry(full, '/pos/members')).toEqual({ leafId: 'pos-members', groupId: 'pos' })
+  })
+
   it('专案详情页 /team/projects/:id 一样归 Projects', () => {
     expect(activeEntry(full, '/team/projects/abc-123')).toEqual({ leafId: 'team-projects', groupId: 'work' })
   })
@@ -119,6 +136,21 @@ describe('activeEntry', () => {
 
   it('未知路径返回 null', () => {
     expect(activeEntry(full, '/nowhere')).toBeNull()
+  })
+})
+
+describe('POS Register before an outlet uses the POS', () => {
+  const posIds = (nav: ReturnType<typeof visibleNav>) => {
+    const g = nav.find(e => e.id === 'pos')
+    return g && isGroup(g) ? g.children.map(c => c.id) : null
+  }
+  it('without a POS app address nobody sees Register; staff with no POS capability see no POS module at all', () => {
+    expect(posIds(visibleNav(canWith(), false))).toBeNull()
+    expect(posIds(visibleNav(canWith('access_settings'), false))).toEqual(['pos-reports', 'pos-members', 'pos-settings', 'pos-devices', 'pos-einvoice'])
+  })
+  it('with the address everyone sees Register (My PIN lives there)', () => {
+    expect(posIds(visibleNav(canWith(), true))).toEqual(['pos-register'])
+    expect(posIds(visibleNav(canWith()))).toEqual(['pos-register'])
   })
 })
 
@@ -149,7 +181,7 @@ describe('Inventory module', () => {
   it('shows managers (both capabilities) every procurement page', () => {
     expect(childIds(visibleNav(canWith('manage_procurement', 'use_procurement')))).toEqual([
       'proc-orders', 'proc-receiving', 'proc-transfers', 'proc-wastage', 'proc-stockcount', 'proc-inventory', 'proc-recipes',
-      'proc-items', 'proc-suppliers',
+      'proc-menu-costing', 'proc-items', 'proc-suppliers',
     ])
   })
 
@@ -163,6 +195,7 @@ describe('Inventory module', () => {
     expect(activeEntry(full, '/procurement/stock-counts/count-1')).toEqual({ leafId: 'proc-stockcount', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/transfers/po-1/ship')).toEqual({ leafId: 'proc-transfers', groupId: 'inventory' })
     expect(activeEntry(full, '/procurement/recipes/item-1/produce')).toEqual({ leafId: 'proc-recipes', groupId: 'inventory' })
+    expect(activeEntry(full, '/procurement/menu-costing/v-1')).toEqual({ leafId: 'proc-menu-costing', groupId: 'inventory' })
   })
 })
 
@@ -170,14 +203,14 @@ describe('navShell', () => {
   it('店员页面少,平铺不出切换器', () => {
     const shell = navShell(visibleNav(canWith()))
     expect(shell.flat).toBe(true)
-    expect(shell.modules.map(m => m.id)).toEqual(['people', 'time-pay'])
+    expect(shell.modules.map(m => m.id)).toEqual(['people', 'time-pay', 'pos'])
     expect(shell.pinned.map(p => p.id)).toEqual(['profile', 'feedback'])
   })
 
-  it('全权限时四个模块进切换器,固定项单独列出', () => {
+  it('全权限时五个模块进切换器,固定项单独列出', () => {
     const shell = navShell(visibleNav(() => true))
     expect(shell.flat).toBe(false)
-    expect(shell.modules.map(m => m.id)).toEqual(['people', 'time-pay', 'work', 'inventory'])
+    expect(shell.modules.map(m => m.id)).toEqual(['people', 'time-pay', 'work', 'inventory', 'pos'])
     expect(shell.pinned.map(p => p.id)).toEqual(['profile', 'settings', 'feedback'])
   })
 

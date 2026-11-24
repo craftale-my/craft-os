@@ -1,0 +1,156 @@
+import { describe, expect, it } from 'vitest'
+import { billView, discardQuestion, draftsDiscarded, itemsWord, payGate, sendFirstQuestion, TAKEAWAY_SUFFIX, unservedIds } from './billView'
+import type { BillingConfig } from '../checkout/checkoutApi'
+import { DEFAULT_POS_SETTINGS } from '../checkout/checkoutApi'
+import type { PosMenu } from './cart'
+import type { BillItemRow } from './posApi'
+import type { PadProductInfo } from './padInfo'
+
+const billing: BillingConfig = { settings: { ...DEFAULT_POS_SETTINGS, sstRegistered: true, cashRounding: 'nearest_5_sen' }, rules: [] }
+const menu: PosMenu = { categories: [{ name: 'FOOD', products: [{
+  id: 'p1', name: 'Nasi Lemak', description: null, soldOut: false,
+  variants: [{ id: 'v1', name: 'Regular', priceSen: 500, isBase: true }],
+  groups: [{ id: 'g1', name: 'Add-on', min: 0, max: 2, options: [{ id: 'o1', name: 'Egg', priceDeltaSen: 200, isDefault: false, available: true }] }],
+}] }] }
+const info = new Map<string, PadProductInfo>([['p1', { sstRateBp: 600, takeawayFeeSen: 100, imageUrl: null }]])
+const item = (id: string, voided = false, extra: Partial<BillItemRow> = {}): BillItemRow => ({
+  id, order_id: 'o-1', product_id: 'p1', name_snapshot: 'Nasi Lemak', unit_price_sen: 1000, sst_rate_bp: 600, takeaway_fee_sen: 0,
+  order_type: 'dine_in', qty: 2, note: 'less spicy', modifiers_snapshot: [{ name: 'Egg' }], voided_at: voided ? '2026-10-26T03:00:00Z' : null,
+  catalog_discount_bp: 0, catalog_discount_name: null, discount_kind: null, discount_value: null, discount_reason: null,
+  orders: { order_no: '1', source: 'counter', placed_at: '2026-10-26T02:00:00Z' },
+  ...extra,
+})
+const draft = { productId: 'p1', variantId: 'v1', qty: 1, note: null, optionIds: ['o1'] }
+
+describe('billView', () => {
+  it('lists sent items with their modifiers and note, and drafts priced from the menu', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1'), item('i2', true)], lines: [draft], menu, info, billing })
+    expect(v.sent.map((s) => [s.name, s.qty, s.mods, s.note, s.amountSen, s.voided])).toEqual([
+      ['Nasi Lemak', 2, ['Egg'], 'less spicy', 2000, false],
+      ['Nasi Lemak', 2, ['Egg'], 'less spicy', 2000, true],
+    ])
+    expect(v.drafts.map((d) => [d.index, d.name, d.mods, d.unitSen])).toEqual([[0, 'Nasi Lemak', ['Egg'], 700]])
+    expect(v.liveSentCount).toBe(2)
+    expect(v.draftCount).toBe(1)
+  })
+  it('counts drafts in the preview with the server\'s rules (dine-in: no packaging fee)', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1')], lines: [draft], menu, info, billing })
+    // 20.00 + 7.00 = 27.00, SST 6% 1.62 = 28.62 → 28.60
+    expect(v.totalsIncludeDrafts).toBe(true)
+    expect([v.totals?.subtotalSen, v.totals?.sstSen, v.totals?.totalSen]).toEqual([2700, 162, 2860])
+  })
+  it('a takeaway draft carries its packaging fee, taxed at its SST rate', () => {
+    const v = billView({ orderType: 'takeaway', tableId: null, items: [], lines: [draft], menu, info, billing })
+    // 7.00 + fee 1.00, SST 6% of 8.00 = 0.48 → 8.48 → 8.50
+    expect([v.totals?.subtotalSen, v.totals?.takeawayFeeSen, v.totals?.sstSen, v.totals?.totalSen]).toEqual([700, 100, 48, 850])
+  })
+  it('without a product\'s SST rate the preview leaves every draft out and says so', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1')], lines: [draft], menu, info: new Map(), billing })
+    expect(v.totalsIncludeDrafts).toBe(false)
+    expect(v.totals?.totalSen).toBe(2120)
+  })
+  it('a draft the menu no longer has is shown as unavailable and not priced', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [], lines: [{ ...draft, productId: 'gone' }], menu, info, billing })
+    expect(v.drafts[0]).toMatchObject({ name: 'Unavailable item', unitSen: null })
+    expect(v.totalsIncludeDrafts).toBe(false)
+  })
+  it('no billing config yet: no totals', () => {
+    expect(billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1')], lines: [], menu, info, billing: null }).totals).toBeNull()
+  })
+})
+
+describe('payGate', () => {
+  const base = { shiftOpen: true, draftCount: 0, hasBill: true, liveSentCount: 2 }
+  it('no open shift (or not known yet) disables Payment first of all', () => {
+    expect(payGate({ ...base, shiftOpen: false })).toBe('no_shift')
+    expect(payGate({ ...base, shiftOpen: null, draftCount: 3 })).toBe('no_shift')
+  })
+  it('drafts are sent first, even on a table with no bill yet', () => {
+    expect(payGate({ ...base, draftCount: 1 })).toBe('send_first')
+    expect(payGate({ ...base, draftCount: 1, hasBill: false, liveSentCount: 0 })).toBe('send_first')
+  })
+  it('a bill with nothing live cannot be paid; otherwise it is ready', () => {
+    expect(payGate({ ...base, liveSentCount: 0 })).toBe('empty')
+    expect(payGate({ ...base, hasBill: false })).toBe('empty')
+    expect(payGate(base)).toBe('ready')
+  })
+})
+
+describe('words', () => {
+  it('singular and plural', () => {
+    expect(itemsWord(1)).toBe('1 item')
+    expect(itemsWord(3)).toBe('3 items')
+    expect(sendFirstQuestion(1)).toBe('Send 1 new item first?')
+    expect(sendFirstQuestion(4)).toBe('Send 4 new items first?')
+    expect(discardQuestion(2)).toBe('Discard 2 unsent items?')
+    expect(draftsDiscarded(1)).toBe('1 unsent item will be discarded.')
+    expect(draftsDiscarded(2)).toBe('2 unsent items will be discarded.')
+  })
+})
+
+describe('billView discounts', () => {
+  const staff = { catalog_discount_bp: 5000, catalog_discount_name: 'Staff Meal' }
+  it('rows under each discounted line, the subtotal a bill discount applies to, and the catalog tag', () => {
+    const v = billView({
+      orderType: 'dine_in', tableId: 't1', lines: [], menu, info, billing,
+      items: [item('i1', false, staff), item('i2', false, { discount_kind: 'amount', discount_value: 300, discount_reason: 'Regular' })],
+      billDiscount: { kind: 'percent', value: 1000, reason: 'Late food' },
+    })
+    expect(v.sent[0].discountRows).toEqual([{ label: 'Staff Meal 50%', amountSen: 1000 }])
+    expect(v.sent[0].afterCatalogSen).toBe(1000)
+    expect(v.sent[1].discountRows).toEqual([{ label: 'Discount (Regular)', amountSen: 300 }])
+    expect(v.sentSubtotalSen).toBe(2700)                       // 10.00 + 17.00
+    expect(v.billDiscount).toEqual({ label: 'Discount 10% (Late food)', amountSen: 270 })
+    expect(v.catalogTag).toBe('Staff Meal 50%')
+    expect(v.totals?.billDiscountSen).toBe(270)
+  })
+  it('a draft ordered from a discounted catalog is previewed at its discount', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [], lines: [draft], menu, info, billing, draftCatalogDiscountBp: 5000 })
+    expect(v.totals?.catalogDiscountSen).toBe(350)              // 7.00 at 50%
+  })
+  it('a voided line counts for nothing', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1', true, staff)], lines: [], menu, info, billing })
+    expect(v.sentSubtotalSen).toBe(0)
+    expect(v.catalogTag).toBeNull()
+  })
+})
+
+describe('a takeaway line inside a dine-in bill (W7 spec §4)', () => {
+  const sc: BillingConfig = {
+    settings: { ...billing.settings, sstRegistered: false },
+    rules: [{ rateBp: 1000, orderTypes: ['dine_in'], tableIds: null, productIds: null }],
+  }
+  const ta = item('i3', false, { order_type: 'takeaway', takeaway_fee_sen: 100 })
+  it('a sent takeaway line reads " (Takeaway)" on a dine-in bill, not on a takeaway bill', () => {
+    expect(TAKEAWAY_SUFFIX).toBe(' (Takeaway)')
+    expect(billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1'), ta], lines: [], menu, info, billing }).sent.map((s) => s.name))
+      .toEqual(['Nasi Lemak', 'Nasi Lemak (Takeaway)'])
+    expect(billView({ orderType: 'takeaway', tableId: null, items: [ta], lines: [], menu, info, billing }).sent[0].name).toBe('Nasi Lemak')
+  })
+  it('a takeaway draft: named so, its packaging fee, no dine-in service charge', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [], lines: [draft, { ...draft, takeaway: true }], menu, info, billing: sc })
+    expect(v.drafts.map((d) => d.name)).toEqual(['Nasi Lemak', 'Nasi Lemak (Takeaway)'])
+    // 7.00 + 7.00; service charge 10% of the dine-in 7.00 only = 0.70; packaging 1.00
+    expect([v.totals?.subtotalSen, v.totals?.serviceChargeSen, v.totals?.takeawayFeeSen]).toEqual([1400, 70, 100])
+  })
+  it('a sent takeaway line is priced by its own type', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1'), ta], lines: [], menu, info, billing: sc })
+    // 20.00 + 20.00; service charge 10% of the dine-in 20.00 = 2.00; packaging 1.00 × 2
+    expect([v.totals?.serviceChargeSen, v.totals?.takeawayFeeSen]).toEqual([200, 200])
+  })
+})
+
+describe('served lines (W7 spec §6)', () => {
+  const at = '2026-11-22T03:00:00Z'
+  it('a line with served_at is served; a voided one never is; Mark all served takes the live unserved lines', () => {
+    const v = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1', false, { served_at: at }), item('i2'), item('i3', true, { served_at: at })],
+      lines: [], menu, info, billing })
+    expect(v.sent.map((s) => s.served)).toEqual([true, false, false])
+    expect(unservedIds(v.sent)).toEqual(['i2'])
+  })
+  it('money is the same served or not', () => {
+    const open = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1')], lines: [], menu, info, billing })
+    const served = billView({ orderType: 'dine_in', tableId: 't1', items: [item('i1', false, { served_at: at })], lines: [], menu, info, billing })
+    expect(served.totals).toEqual(open.totals)
+  })
+})

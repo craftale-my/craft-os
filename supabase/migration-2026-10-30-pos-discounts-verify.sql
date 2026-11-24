@@ -1,0 +1,311 @@
+-- Self-check for POS discounts. Run on craft-os-dev after
+-- migration-2026-10-30-pos-discounts.sql. Everything is rolled back. Success = a result row
+-- "VERIFY OK". Sections: A schema and grants; B the shared bill vectors; C the catalog discount
+-- copied at order time; D item and bill discounts; E receipt and Z report.
+-- The vectors below are a copy of src/features/pos/checkout/billVectors.json (bill.test.ts fails
+-- if the two differ). They replace the totals checks of migration-2026-10-24-pos-checkout-verify.sql
+-- and migration-2026-10-25-pos-hardening-verify.sql: those compare whole totals objects, which now
+-- carry the discount fields, so re-running them reports a totals failure.
+begin;
+
+-- expect_error(sql, message, label): runs sql and insists it raises exactly message.
+create function pg_temp.expect_error(p_sql text, p_message text, p_label text) returns void
+language plpgsql as $$
+begin
+  execute p_sql;
+  raise exception 'FAIL %: no error (expected "%")', p_label, p_message using errcode = 'assert_failure';
+exception when raise_exception then
+  if sqlerrm is distinct from p_message then
+    raise exception 'FAIL %: got "%" (expected "%")', p_label, sqlerrm, p_message;
+  end if;
+end $$;
+
+-- act(user id): the next calls run as this signed-in user (a staff login or a POS device)
+create function pg_temp.act(p_user uuid) returns void
+language sql as $$
+  select set_config('request.jwt.claims', json_build_object('sub', p_user, 'role', 'authenticated')::text, true);
+$$;
+
+do $$
+declare
+  v_vectors jsonb := $vectors$
+[
+  {"name": "receipt #87846: dine-in, 10% service charge, 6% SST", "input": {"orderType": "dine_in", "tableId": "t-7", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-b", "unitPriceSen": 2500, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-c", "unitPriceSen": 1800, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-d", "unitPriceSen": 1300, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 8000, "serviceChargeSen": 800, "sstSen": 480, "takeawayFeeSen": 0, "beforeRoundingSen": 9280, "roundingSen": 0, "totalSen": 9280, "sstGroups": [{"rateBp": 600, "baseSen": 8000, "amountSen": 480}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 8000, "amountSen": 800}], "grossSen": 8000, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2400}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2500}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1800}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1300}]}},
+  {"name": "takeaway: packaging fee per unit carries SST, no service charge, rounds 4399 up to 4400", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-latte", "unitPriceSen": 1300, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}, {"productId": "p-cake", "unitPriceSen": 1250, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 3850, "serviceChargeSen": 0, "sstSen": 249, "takeawayFeeSen": 300, "beforeRoundingSen": 4399, "roundingSen": 1, "totalSen": 4400, "sstGroups": [{"rateBp": 600, "baseSen": 4150, "amountSen": 249}], "serviceChargeGroups": [], "grossSen": 3850, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2600}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1250}]}},
+  {"name": "0% SST item pays service charge but no SST", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-keychain", "unitPriceSen": 3500, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 5900, "serviceChargeSen": 590, "sstSen": 144, "takeawayFeeSen": 0, "beforeRoundingSen": 6634, "roundingSen": 1, "totalSen": 6635, "sstGroups": [{"rateBp": 600, "baseSen": 2400, "amountSen": 144}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 5900, "amountSen": 590}], "grossSen": 5900, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2400}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 3500}]}},
+  {"name": "rounding: 1001 sen -> 1000 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1001, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1001, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1001, "roundingSen": -1, "totalSen": 1000, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1001, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1001}]}},
+  {"name": "rounding: 1002 sen -> 1000 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1002, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1002, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1002, "roundingSen": -2, "totalSen": 1000, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1002, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1002}]}},
+  {"name": "rounding: 1003 sen -> 1005 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1003, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1003, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1003, "roundingSen": 2, "totalSen": 1005, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1003, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1003}]}},
+  {"name": "rounding: 1004 sen -> 1005 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1004, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1004, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1004, "roundingSen": 1, "totalSen": 1005, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1004, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1004}]}},
+  {"name": "rounding: 1005 sen -> 1005 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1005, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1005, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1005, "roundingSen": 0, "totalSen": 1005, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1005, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1005}]}},
+  {"name": "rounding: 1006 sen -> 1005 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1006, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1006, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1006, "roundingSen": -1, "totalSen": 1005, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1006, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1006}]}},
+  {"name": "rounding: 1007 sen -> 1005 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1007, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1007, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1007, "roundingSen": -2, "totalSen": 1005, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1007, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1007}]}},
+  {"name": "rounding: 1008 sen -> 1010 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1008, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1008, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1008, "roundingSen": 2, "totalSen": 1010, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1008, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1008}]}},
+  {"name": "rounding: 1009 sen -> 1010 sen", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1009, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1009, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1009, "roundingSen": 1, "totalSen": 1010, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1009, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1009}]}},
+  {"name": "rounding off: 1003 sen stays 1003", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "none", "rules": [], "lines": [{"productId": "p-x", "unitPriceSen": 1003, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1003, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1003, "roundingSen": 0, "totalSen": 1003, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 1003, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1003}]}},
+  {"name": "voided line is excluded", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": true}, {"productId": "p-b", "unitPriceSen": 1300, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1300, "serviceChargeSen": 130, "sstSen": 78, "takeawayFeeSen": 0, "beforeRoundingSen": 1508, "roundingSen": 2, "totalSen": 1510, "sstGroups": [{"rateBp": 600, "baseSen": 1300, "amountSen": 78}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 1300, "amountSen": 130}], "grossSen": 1300, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1300}]}},
+  {"name": "service-charge rules: table rule matches first on the VIP table", "input": {"orderType": "dine_in", "tableId": "t-vip", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": ["t-vip"], "productIds": null}, {"rateBp": 500, "orderTypes": ["dine_in"], "tableIds": null, "productIds": ["p-cake"]}], "lines": [{"productId": "p-latte", "unitPriceSen": 1300, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-cake", "unitPriceSen": 1500, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 2800, "serviceChargeSen": 280, "sstSen": 168, "takeawayFeeSen": 0, "beforeRoundingSen": 3248, "roundingSen": 2, "totalSen": 3250, "sstGroups": [{"rateBp": 600, "baseSen": 2800, "amountSen": 168}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 2800, "amountSen": 280}], "grossSen": 2800, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1300}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1500}]}},
+  {"name": "service-charge rules: elsewhere only the cake rule matches", "input": {"orderType": "dine_in", "tableId": "t-2", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": ["t-vip"], "productIds": null}, {"rateBp": 500, "orderTypes": ["dine_in"], "tableIds": null, "productIds": ["p-cake"]}], "lines": [{"productId": "p-latte", "unitPriceSen": 1300, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-cake", "unitPriceSen": 1500, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 2800, "serviceChargeSen": 75, "sstSen": 168, "takeawayFeeSen": 0, "beforeRoundingSen": 3043, "roundingSen": 2, "totalSen": 3045, "sstGroups": [{"rateBp": 600, "baseSen": 2800, "amountSen": 168}], "serviceChargeGroups": [{"rateBp": 500, "baseSen": 1500, "amountSen": 75}], "grossSen": 2800, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1300}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1500}]}},
+  {"name": "SST per rate group, not per line: 2 x 11.55 at 6% is 1.39 (per line would be 1.38)", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1155, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-b", "unitPriceSen": 1155, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-c", "unitPriceSen": 990, "qty": 1, "sstRateBp": 800, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 3300, "serviceChargeSen": 330, "sstSen": 218, "takeawayFeeSen": 0, "beforeRoundingSen": 3848, "roundingSen": 2, "totalSen": 3850, "sstGroups": [{"rateBp": 600, "baseSen": 2310, "amountSen": 139}, {"rateBp": 800, "baseSen": 990, "amountSen": 79}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 3300, "amountSen": 330}], "grossSen": 3300, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1155}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1155}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 990}]}},
+  {"name": "half a sen rounds up: 24.75 x 6% = 1.485 -> 1.49", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-a", "unitPriceSen": 2475, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 2475, "serviceChargeSen": 0, "sstSen": 149, "takeawayFeeSen": 0, "beforeRoundingSen": 2624, "roundingSen": 1, "totalSen": 2625, "sstGroups": [{"rateBp": 600, "baseSen": 2475, "amountSen": 149}], "serviceChargeGroups": [], "grossSen": 2475, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2475}]}},
+  {"name": "branch not SST-registered: no SST", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": false, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 2400, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 2400, "serviceChargeSen": 240, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 2640, "roundingSen": 0, "totalSen": 2640, "sstGroups": [], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 2400, "amountSen": 240}], "grossSen": 2400, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2400}]}},
+  {"name": "takeaway rule: service charge on the item only, SST on item + fee", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in", "takeaway"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 1000, "serviceChargeSen": 100, "sstSen": 66, "takeawayFeeSen": 100, "beforeRoundingSen": 1266, "roundingSen": -1, "totalSen": 1265, "sstGroups": [{"rateBp": 600, "baseSen": 1100, "amountSen": 66}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 1000, "amountSen": 100}], "grossSen": 1000, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1000}]}},
+  {"name": "takeaway: the fee of a 0% SST item is untaxed", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}, {"productId": "p-keychain", "unitPriceSen": 2000, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 50, "voided": false}]}, "expected": {"subtotalSen": 3000, "serviceChargeSen": 0, "sstSen": 66, "takeawayFeeSen": 150, "beforeRoundingSen": 3216, "roundingSen": -1, "totalSen": 3215, "sstGroups": [{"rateBp": 600, "baseSen": 1100, "amountSen": 66}], "serviceChargeGroups": [], "grossSen": 3000, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1000}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2000}]}},
+  {"name": "packaging fee is ignored on a dine-in bill", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"productId": "p-a", "unitPriceSen": 1000, "qty": 2, "sstRateBp": 0, "takeawayFeeSen": 100, "voided": false}]}, "expected": {"subtotalSen": 2000, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 2000, "roundingSen": 0, "totalSen": 2000, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 2000, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2000}]}},
+  {"name": "merge: a takeaway merged into table t-1 keeps its packaging fee, the fee's SST and its own service-charge rule", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in", "takeaway"], "tableIds": ["t-1"], "productIds": null}, {"rateBp": 500, "orderTypes": ["takeaway"], "tableIds": null, "productIds": null}], "lines": [{"productId": "p-a", "unitPriceSen": 1200, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"productId": "p-b", "unitPriceSen": 1000, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false, "orderType": "takeaway"}, {"productId": "p-c", "unitPriceSen": 500, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 50, "voided": false, "orderType": "takeaway"}]}, "expected": {"subtotalSen": 3700, "serviceChargeSen": 245, "sstSen": 204, "takeawayFeeSen": 250, "beforeRoundingSen": 4399, "roundingSen": 1, "totalSen": 4400, "sstGroups": [{"rateBp": 600, "baseSen": 3400, "amountSen": 204}], "serviceChargeGroups": [{"rateBp": 500, "baseSen": 2500, "amountSen": 125}, {"rateBp": 1000, "baseSen": 1200, "amountSen": 120}], "grossSen": 3700, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1200}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2000}, {"id": null, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 500}]}},
+  {"name": "staff meal: a 50% catalog discount halves each line before service charge and SST", "input": {"orderType": "dine_in", "tableId": "t-1", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 4300, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false, "catalogDiscountBp": 5000}, {"id": "i-2", "productId": "p-i-2", "unitPriceSen": 1300, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false, "catalogDiscountBp": 5000}]}, "expected": {"subtotalSen": 3450, "serviceChargeSen": 345, "sstSen": 207, "takeawayFeeSen": 0, "beforeRoundingSen": 4002, "roundingSen": -2, "totalSen": 4000, "sstGroups": [{"rateBp": 600, "baseSen": 3450, "amountSen": 207}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 3450, "amountSen": 345}], "grossSen": 6900, "catalogDiscountSen": 3450, "itemDiscountSen": 0, "billDiscountSen": 0, "lines": [{"id": "i-1", "catalogDiscountSen": 2150, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 2150}, {"id": "i-2", "catalogDiscountSen": 1300, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1300}]}},
+  {"name": "item amount and item percent, then a 10% bill discount shared pro rata", "input": {"orderType": "dine_in", "tableId": "t-2", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 2000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false, "discount": {"kind": "amount", "value": 500}}, {"id": "i-2", "productId": "p-i-2", "unitPriceSen": 1500, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false, "discount": {"kind": "percent", "value": 1000}}, {"id": "i-3", "productId": "p-i-3", "unitPriceSen": 800, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}], "billDiscount": {"kind": "percent", "value": 1000}}, "expected": {"subtotalSen": 5000, "serviceChargeSen": 450, "sstSen": 270, "takeawayFeeSen": 0, "beforeRoundingSen": 5220, "roundingSen": 0, "totalSen": 5220, "sstGroups": [{"rateBp": 600, "baseSen": 4500, "amountSen": 270}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 4500, "amountSen": 450}], "grossSen": 5800, "catalogDiscountSen": 0, "itemDiscountSen": 800, "billDiscountSen": 500, "lines": [{"id": "i-1", "catalogDiscountSen": 0, "itemDiscountSen": 500, "billShareSen": 150, "netSen": 1350}, {"id": "i-2", "catalogDiscountSen": 0, "itemDiscountSen": 300, "billShareSen": 270, "netSen": 2430}, {"id": "i-3", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 80, "netSen": 720}]}},
+  {"name": "a bill discount over two SST rates: each rate is taxed on its shared-down base", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 3000, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}, {"id": "i-2", "productId": "p-i-2", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 800, "takeawayFeeSen": 0, "voided": false}, {"id": "i-3", "productId": "p-i-3", "unitPriceSen": 500, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}], "billDiscount": {"kind": "amount", "value": 1000}}, "expected": {"subtotalSen": 4500, "serviceChargeSen": 0, "sstSen": 202, "takeawayFeeSen": 0, "beforeRoundingSen": 3702, "roundingSen": -2, "totalSen": 3700, "sstGroups": [{"rateBp": 600, "baseSen": 2333, "amountSen": 140}, {"rateBp": 800, "baseSen": 778, "amountSen": 62}], "serviceChargeGroups": [], "grossSen": 4500, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 1000, "lines": [{"id": "i-1", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 667, "netSen": 2333}, {"id": "i-2", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 222, "netSen": 778}, {"id": "i-3", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 111, "netSen": 389}]}},
+  {"name": "an amount bill discount is capped at what is left after an item is voided", "input": {"orderType": "dine_in", "tableId": "t-3", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 1000, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": true}, {"id": "i-2", "productId": "p-i-2", "unitPriceSen": 600, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}], "billDiscount": {"kind": "amount", "value": 1000}}, "expected": {"subtotalSen": 600, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 0, "roundingSen": 0, "totalSen": 0, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 600, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 600, "lines": [{"id": "i-2", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 600, "netSen": 0}]}},
+  {"name": "an item amount discount larger than the line stops at the line", "input": {"orderType": "dine_in", "tableId": "t-4", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 900, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false, "discount": {"kind": "amount", "value": 1500}}, {"id": "i-2", "productId": "p-i-2", "unitPriceSen": 1100, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false}]}, "expected": {"subtotalSen": 1100, "serviceChargeSen": 0, "sstSen": 66, "takeawayFeeSen": 0, "beforeRoundingSen": 1166, "roundingSen": -1, "totalSen": 1165, "sstGroups": [{"rateBp": 600, "baseSen": 1100, "amountSen": 66}], "serviceChargeGroups": [], "grossSen": 2000, "catalogDiscountSen": 0, "itemDiscountSen": 900, "billDiscountSen": 0, "lines": [{"id": "i-1", "catalogDiscountSen": 0, "itemDiscountSen": 900, "billShareSen": 0, "netSen": 0}, {"id": "i-2", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1100}]}},
+  {"name": "takeaway: the packaging fee is never discounted", "input": {"orderType": "takeaway", "tableId": null, "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 500, "orderTypes": ["takeaway"], "tableIds": null, "productIds": null}], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 1300, "qty": 2, "sstRateBp": 600, "takeawayFeeSen": 100, "voided": false}], "billDiscount": {"kind": "percent", "value": 5000}}, "expected": {"subtotalSen": 2600, "serviceChargeSen": 65, "sstSen": 90, "takeawayFeeSen": 200, "beforeRoundingSen": 1655, "roundingSen": 0, "totalSen": 1655, "sstGroups": [{"rateBp": 600, "baseSen": 1500, "amountSen": 90}], "serviceChargeGroups": [{"rateBp": 500, "baseSen": 1300, "amountSen": 65}], "grossSen": 2600, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 1300, "lines": [{"id": "i-1", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 1300, "netSen": 1300}]}},
+  {"name": "leftover sen of a bill discount: a tie goes to the earlier line", "input": {"orderType": "dine_in", "tableId": "t-5", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 100, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}, {"id": "i-2", "productId": "p-i-2", "unitPriceSen": 100, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}, {"id": "i-3", "productId": "p-i-3", "unitPriceSen": 100, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}], "billDiscount": {"kind": "amount", "value": 100}}, "expected": {"subtotalSen": 300, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 200, "roundingSen": 0, "totalSen": 200, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 300, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 100, "lines": [{"id": "i-1", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 34, "netSen": 66}, {"id": "i-2", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 33, "netSen": 67}, {"id": "i-3", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 33, "netSen": 67}]}},
+  {"name": "leftover sen on a tiny bill: the largest line runs out of room and the next takes the rest", "input": {"orderType": "dine_in", "tableId": "t-6", "sstRegistered": true, "cashRounding": "none", "rules": [], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 1, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}, {"id": "i-2", "productId": "p-i-2", "unitPriceSen": 1, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}, {"id": "i-3", "productId": "p-i-3", "unitPriceSen": 1, "qty": 1, "sstRateBp": 0, "takeawayFeeSen": 0, "voided": false}], "billDiscount": {"kind": "amount", "value": 2}}, "expected": {"subtotalSen": 3, "serviceChargeSen": 0, "sstSen": 0, "takeawayFeeSen": 0, "beforeRoundingSen": 1, "roundingSen": 0, "totalSen": 1, "sstGroups": [], "serviceChargeGroups": [], "grossSen": 3, "catalogDiscountSen": 0, "itemDiscountSen": 0, "billDiscountSen": 2, "lines": [{"id": "i-1", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 1, "netSen": 0}, {"id": "i-2", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 1, "netSen": 0}, {"id": "i-3", "catalogDiscountSen": 0, "itemDiscountSen": 0, "billShareSen": 0, "netSen": 1}]}},
+  {"name": "staff meal 50%, a 10% item discount and an amount bill discount, rounded up", "input": {"orderType": "dine_in", "tableId": "t-7", "sstRegistered": true, "cashRounding": "nearest_5_sen", "rules": [{"rateBp": 1000, "orderTypes": ["dine_in"], "tableIds": null, "productIds": null}], "lines": [{"id": "i-1", "productId": "p-i-1", "unitPriceSen": 2500, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false, "catalogDiscountBp": 5000, "discount": {"kind": "percent", "value": 1000}}, {"id": "i-2", "productId": "p-i-2", "unitPriceSen": 1890, "qty": 1, "sstRateBp": 600, "takeawayFeeSen": 0, "voided": false, "catalogDiscountBp": 5000}], "billDiscount": {"kind": "amount", "value": 300}}, "expected": {"subtotalSen": 2070, "serviceChargeSen": 177, "sstSen": 106, "takeawayFeeSen": 0, "beforeRoundingSen": 2053, "roundingSen": 2, "totalSen": 2055, "sstGroups": [{"rateBp": 600, "baseSen": 1770, "amountSen": 106}], "serviceChargeGroups": [{"rateBp": 1000, "baseSen": 1770, "amountSen": 177}], "grossSen": 4390, "catalogDiscountSen": 2195, "itemDiscountSen": 125, "billDiscountSen": 300, "lines": [{"id": "i-1", "catalogDiscountSen": 1250, "itemDiscountSen": 125, "billShareSen": 164, "netSen": 961}, {"id": "i-2", "catalogDiscountSen": 945, "itemDiscountSen": 0, "billShareSen": 136, "netSen": 809}]}}
+]
+$vectors$;
+  v_owner uuid := '76cbcf9f-905e-450d-9f5e-1c9e72a9373d';   -- dev test login (owner)
+  v_cash  uuid := 'eeeeeeee-0000-0000-0000-0000000000a1';   -- cashier of VERIFY D
+  v_sup   uuid := 'eeeeeeee-0000-0000-0000-0000000000a2';   -- supervisor of VERIFY D (approves)
+  v_dev   uuid := 'eeeeeeee-0000-0000-0000-0000000000a3';   -- a tablet of VERIFY D
+  v_a uuid; v_t1 uuid; v_t2 uuid; v_cat uuid; v_catalog uuid; v_plate uuid; v_plate_v uuid; v_card uuid;
+  v_items jsonb; v_order uuid; v_order2 uuid; v_bill uuid; v_bill2 uuid; v_item uuid; v_item2 uuid; v_shift uuid;
+  v_res jsonb; v_tot jsonb; r record;
+begin
+  -- ── A. schema and grants ──────────────────────────────────────────────────
+  for r in select t, c from (values
+      ('menu_catalogs', 'discount_bp'), ('order_items', 'catalog_discount_bp'), ('order_items', 'catalog_discount_name'),
+      ('order_items', 'discount_kind'), ('order_items', 'discount_value'), ('order_items', 'discount_reason'),
+      ('order_items', 'discount_approved_by'), ('order_items', 'discount_by'), ('order_items', 'discount_at'),
+      ('bills', 'discount_kind'), ('bills', 'discount_value'), ('bills', 'discount_reason'),
+      ('bills', 'discount_approved_by'), ('bills', 'discount_by'), ('bills', 'discount_at')) as x(t, c) loop
+    if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = r.t and column_name = r.c) then
+      raise exception 'FAIL schema: %.% is missing', r.t, r.c;
+    end if;
+  end loop;
+  if not exists (select 1 from pg_constraint where conname = 'menu_catalogs_discount_bp_check')
+     or not exists (select 1 from pg_constraint where conname = 'order_items_discount_check')
+     or not exists (select 1 from pg_constraint where conname = 'bills_discount_check')
+     or not exists (select 1 from pg_trigger where tgname = 'order_items_catalog_discount' and tgrelid = 'order_items'::regclass) then
+    raise exception 'FAIL schema: a discount check or the catalog-discount trigger is missing';
+  end if;
+  if not (select relrowsecurity from pg_class where relname = 'pos_discount_log' and relnamespace = 'public'::regnamespace)
+     or has_table_privilege('authenticated', 'pos_discount_log', 'insert') then
+    raise exception 'FAIL rls: pos_discount_log must have RLS on and no client writes';
+  end if;
+  if has_function_privilege('authenticated', 'pos_check_discount(text,integer)', 'execute') then
+    raise exception 'FAIL grants: pos_check_discount is internal';
+  end if;
+  begin
+    insert into reason_templates(branch_id, action) values ((select id from branches limit 1), 'discount');
+  exception when unique_violation then null;   -- the branch already has one: the action is allowed
+  end;
+
+  -- ── B. totals: the shared vectors ─────────────────────────────────────────
+  if jsonb_array_length(v_vectors) <> 32 then raise exception 'FAIL vectors: expected 32, got %', jsonb_array_length(v_vectors); end if;
+  for r in select v from jsonb_array_elements(v_vectors) v loop
+    if pos_compute_bill(r.v->'input') <> r.v->'expected' then
+      raise exception 'FAIL vector "%": got %', r.v->>'name', pos_compute_bill(r.v->'input');
+    end if;
+  end loop;
+
+  -- ── fixture: outlet VERIFY D, two tables, a 43.00 plate, a card method, a cashier and a supervisor
+  --    with PINs, one tablet with the cashier signed in and a shift open ──
+  update system_role_permissions set permissions = permissions - 'pos_login' - 'all_branches' - 'access_settings' - 'pos_supervise'
+   where true;                                                                         -- code defaults
+  insert into branches(name, address) values ('VERIFY D', 'd') returning id into v_a;
+  insert into dining_tables(branch_id, label, sort_order) values (v_a, 'D1', 1) returning id into v_t1;
+  insert into dining_tables(branch_id, label, sort_order) values (v_a, 'D2', 2) returning id into v_t2;
+  insert into print_routes(branch_id, name, kind, address) values (v_a, 'Bar', 'agent', '127.0.0.1:9100');
+  insert into branch_pos_settings(branch_id, receipt_route) values (v_a, 'Bar');
+  insert into service_charge_rules(branch_id, rate_bp, order_types, sort_order) values (v_a, 1000, array['dine_in'], 1);
+  insert into menu_categories(name, sort_order) values ('VERIFY D FOOD', 900) returning id into v_cat;
+  insert into menu_products(name, category_id, sst_rate_bp) values ('Verify D Plate', v_cat, 600) returning id into v_plate;
+  insert into menu_variants(product_id, feedme_variant_key, name, price_sen) values (v_plate, '', 'Regular', 4300) returning id into v_plate_v;
+  insert into menu_catalogs(name, sort_order) values ('VERIFY D STAFF MEAL', 900) returning id into v_catalog;
+  insert into catalog_products(catalog_id, product_id, availability) values (v_catalog, v_plate, 'all');
+  insert into catalog_variant_prices(catalog_id, variant_id, price_sen) values (v_catalog, v_plate_v, 4300);
+  insert into branch_catalogs(branch_id, role, catalog_id) values (v_a, 'dine_in', v_catalog), (v_a, 'takeaway', v_catalog), (v_a, 'qr', v_catalog);
+  insert into payment_methods(branch_id, name, kind, sort_order) values (v_a, 'D Card', 'card', 1) returning id into v_card;
+  v_items := jsonb_build_array(jsonb_build_object('productId', v_plate, 'variantId', v_plate_v));
+  update staff set branch_id = v_a where id = v_owner;
+  perform pg_temp.act(v_owner);
+  insert into auth.users (id) values (v_cash), (v_sup), (v_dev);
+  insert into staff (id, name, rank, onboarding_completed, joined_at, system_role, branch_id) values
+    (v_cash, 'Verify D Cashier',    'trainee', true, current_date, 'staff', v_a),
+    (v_sup,  'Verify D Supervisor', 'trainee', true, current_date, 'staff', v_a);
+  update staff set system_role = 'supervisor' where id = v_sup;
+  for r in select * from (values (v_cash, '1111'), (v_sup, '2222')) as x(id, pin) loop
+    perform pg_temp.act(r.id);
+    if not coalesce((set_my_pos_pin(r.pin, null)->>'ok')::boolean, false) then raise exception 'FAIL fixture: PIN of %', r.id; end if;
+  end loop;
+  insert into pos_devices(id, branch_id, kind, name, platform, prints, approved_by) values (v_dev, v_a, 'pos', 'D Counter', 'ipad', true, v_owner);
+  perform pg_temp.act(v_dev);
+  v_res := pos_start_session(v_cash, '1111');
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL fixture: cashier sign-in: %', v_res; end if;
+  v_res := open_shift(10000);
+  v_shift := (v_res->'shift'->>'id')::uuid;
+  -- ── C. the catalog discount is copied onto each item when it is ordered ───
+  perform pg_temp.act(v_owner);
+  perform pg_temp.expect_error(format('select menu_set_catalog_discount(%L, 5050)', v_catalog),
+    'Enter a whole percent from 0 to 100', 'C a percent with a fraction');
+  perform menu_set_catalog_discount(v_catalog, 5000);
+  perform pg_temp.act(v_dev);
+  v_order := place_counter_order(v_t1, 'dine_in', 2, v_items, gen_random_uuid());
+  v_bill := (select bill_id from orders where id = v_order);
+  v_item := (select id from order_items where order_id = v_order);
+  if (select catalog_discount_bp from order_items where id = v_item) is distinct from 5000
+     or (select catalog_discount_name from order_items where id = v_item) is distinct from 'VERIFY D STAFF MEAL' then
+    raise exception 'FAIL C: the catalog discount was not copied onto the item';
+  end if;
+  perform pg_temp.act(v_owner);
+  perform menu_set_catalog_discount(v_catalog, 0);
+  perform pg_temp.act(v_dev);
+  v_order2 := place_counter_order(v_t1, 'dine_in', null, v_items, gen_random_uuid());
+  v_item2 := (select id from order_items where order_id = v_order2);
+  if (select bill_id from orders where id = v_order2) is distinct from v_bill
+     or (select catalog_discount_bp from order_items where id = v_item) is distinct from 5000
+     or (select catalog_discount_bp from order_items where id = v_item2) is distinct from 0
+     or (select catalog_discount_name from order_items where id = v_item2) is not null then
+    raise exception 'FAIL C: a later catalog change touched an ordered item, or a 0%% catalog left a name';
+  end if;
+  -- 43.00 at 50% + 43.00 = 64.50; service charge 10% 6.45; SST 6% 3.87; 74.82 → 74.80
+  v_tot := pos_bill_totals(v_bill);
+  if (v_tot->>'grossSen')::int is distinct from 8600 or (v_tot->>'catalogDiscountSen')::int is distinct from 2150
+     or (v_tot->>'subtotalSen')::int is distinct from 6450 or (v_tot->>'totalSen')::int is distinct from 7480
+     or jsonb_array_length(v_tot->'lines') <> 2
+     or not exists (select 1 from jsonb_array_elements(v_tot->'lines') l where l->>'id' = v_item::text and (l->>'netSen')::int = 2150) then
+    raise exception 'FAIL C totals: %', v_tot;
+  end if;
+  -- a catalog percent rounds half up: 10.01 at 50% takes 5.01 off (500.5 → 501), leaving 5.00
+  v_tot := pos_compute_bill(jsonb_build_object('orderType', 'dine_in', 'tableId', null, 'sstRegistered', true,
+    'cashRounding', 'nearest_5_sen', 'rules', '[]'::jsonb,
+    'lines', jsonb_build_array(jsonb_build_object('productId', null, 'unitPriceSen', 1001, 'qty', 1,
+      'sstRateBp', 0, 'takeawayFeeSen', 0, 'voided', false, 'catalogDiscountBp', 5000))));
+  if (v_tot->>'catalogDiscountSen')::int is distinct from 501 or (v_tot->>'subtotalSen')::int is distinct from 500 then
+    raise exception 'FAIL C half-sen: %', v_tot;
+  end if;
+  -- ── D. item and bill discounts: value, reason, PIN, open bills only, logged; merge rule ──
+  perform pg_temp.act(v_dev);
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 150, %L, %L, %L)', v_item2, 'percent', 'Regular', v_sup, '2222'),
+    'Enter a whole percent from 1 to 100', 'D percent with a fraction');
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 0, %L, %L, %L)', v_item2, 'amount', 'Regular', v_sup, '2222'),
+    'Enter an amount above RM 0.00', 'D zero amount');
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item2, 'percent', '', v_sup, '2222'),
+    'Choose a reason', 'D no reason');
+  v_res := set_item_discount(v_item2, 'percent', 1000, 'Regular', v_sup, '9999');
+  if coalesce((v_res->>'ok')::boolean, true) then raise exception 'FAIL D: a wrong PIN was accepted: %', v_res; end if;
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item2, 'percent', 'Regular', v_cash, '1111'),
+    'This person cannot approve voids or refunds', 'D a cashier without pos_supervise as approver');
+  perform pg_temp.expect_error(format('select menu_set_catalog_discount(%L, 1000)', v_catalog),
+    'Not allowed to edit the menu', 'D a non-editor setting the catalog discount');
+  update bills set updated_at = now() - interval '1 day' where id = v_bill;           -- now() is fixed in this transaction: age the row first
+  v_res := set_item_discount(v_item2, 'percent', 1000, 'Regular', v_sup, '2222');
+  if (select updated_at from bills where id = v_bill) is distinct from now() then
+    raise exception 'FAIL D: setting an item discount did not bump bills.updated_at';
+  end if;
+  if not coalesce((v_res->>'ok')::boolean, false)
+     or (select discount_kind || ':' || discount_value || ':' || discount_reason from order_items where id = v_item2) is distinct from 'percent:1000:Regular'
+     or (select discount_approved_by from order_items where id = v_item2) is distinct from v_sup
+     or (select discount_by from order_items where id = v_item2) is distinct from v_cash then
+    raise exception 'FAIL D: the item discount: %', v_res;
+  end if;
+  v_res := set_item_discount(v_item2, 'amount', 500, 'Regular', v_sup, '2222');   -- set again: replaces
+  if (select discount_kind || ':' || discount_value from order_items where id = v_item2) is distinct from 'amount:500' then
+    raise exception 'FAIL D: setting again did not replace the item discount';
+  end if;
+  -- clearing an item discount: all six columns back to null, one log row; a retry is ok and writes nothing
+  update bills set updated_at = now() - interval '1 day' where id = v_bill;
+  v_res := clear_item_discount(v_item2);
+  if not coalesce((v_res->>'ok')::boolean, false)
+     or exists (select 1 from order_items where id = v_item2
+                 and (discount_kind is not null or discount_value is not null or discount_reason is not null
+                      or discount_approved_by is not null or discount_by is not null or discount_at is not null)) then
+    raise exception 'FAIL D: clearing the item discount: %', v_res;
+  end if;
+  if (select updated_at from bills where id = v_bill) is distinct from now() then
+    raise exception 'FAIL D: clearing an item discount did not bump bills.updated_at';
+  end if;
+  if (select count(*) from pos_discount_log where order_item_id = v_item2 and action = 'clear' and kind = 'amount'
+         and value = 500 and reason = 'Regular' and actor = v_cash and approved_by is null) <> 1 then
+    raise exception 'FAIL D: the clear did not log the discount it removed';
+  end if;
+  v_res := clear_item_discount(v_item2);                                               -- a retry: nothing to clear
+  if not coalesce((v_res->>'ok')::boolean, false)
+     or (select count(*) from pos_discount_log where order_item_id = v_item2 and action = 'clear') <> 1 then
+    raise exception 'FAIL D: clearing an item with no discount: %', v_res;
+  end if;
+  v_res := set_item_discount(v_item2, 'amount', 500, 'Regular', v_sup, '2222');         -- back again for the totals below
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL D: setting after a clear: %', v_res; end if;
+  -- 21.50 + (43.00 − 5.00) = 59.50; a 10% bill discount = 5.95
+  v_res := set_bill_discount(v_bill, 'percent', 1000, 'Regular', v_sup, '2222');
+  v_tot := pos_bill_totals(v_bill);
+  if not coalesce((v_res->>'ok')::boolean, false) or (v_tot->>'itemDiscountSen')::int is distinct from 500
+     or (v_tot->>'subtotalSen')::int is distinct from 5950 or (v_tot->>'billDiscountSen')::int is distinct from 595 then
+    raise exception 'FAIL D: the bill discount: % %', v_res, v_tot;
+  end if;
+  v_order := place_counter_order(v_t2, 'dine_in', 1, v_items, gen_random_uuid());
+  v_bill2 := (select bill_id from orders where id = v_order);
+  perform pg_temp.expect_error(format('select merge_bills(%L, %L)', v_bill, v_bill2),
+    'Remove the bill discount before merging', 'D merge with a bill discount');
+  v_res := clear_bill_discount(v_bill);                                               -- no PIN
+  if not coalesce((v_res->>'ok')::boolean, false) or (select discount_kind from bills where id = v_bill) is not null then
+    raise exception 'FAIL D: clearing the bill discount: %', v_res;
+  end if;
+  v_res := clear_bill_discount(v_bill);                                               -- a retry
+  if not coalesce((v_res->>'ok')::boolean, false) then raise exception 'FAIL D: clearing twice: %', v_res; end if;
+  -- one row per effective call: item set ×2, item clear, item set, bill set, bill clear = 6; refused calls and no-op retries write none
+  if (select count(*) from pos_discount_log where bill_id = v_bill) <> 6
+     or (select count(*) from pos_discount_log where bill_id = v_bill and order_item_id is null
+                and action = 'clear' and actor = v_cash and approved_by is null) <> 1 then
+    raise exception 'FAIL D: the discount log';
+  end if;
+  perform merge_bills(v_bill, v_bill2);                                               -- the item discount travels
+  if (select bill_id from order_items where id = v_item2) is distinct from v_bill2
+     or (select discount_kind from order_items where id = v_item2) is distinct from 'amount' then
+    raise exception 'FAIL D: the item discount did not travel with its item';
+  end if;
+  -- 21.50 + 38.00 + 43.00 = 102.50; RM 10.00 off shared 2.09 / 3.70 / 4.21 (the 2 leftover sen to 43.00);
+  -- 92.50 + service charge 9.25 + SST 5.55 = 107.30
+  v_res := set_bill_discount(v_bill2, 'amount', 1000, 'Regular', v_sup, '2222');
+  v_tot := pos_bill_totals(v_bill2);
+  if (v_tot->>'totalSen')::int is distinct from 10730 then raise exception 'FAIL D: totals after the merge: %', v_tot; end if;
+  v_res := checkout_bill(v_bill2, jsonb_build_array(jsonb_build_object('methodId', v_card, 'amountSen', 10730)), gen_random_uuid());
+  if (v_res->>'billId')::uuid is distinct from v_bill2 then raise exception 'FAIL D checkout: %', v_res; end if;
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item2, 'percent', 'Regular', v_sup, '2222'),
+    'Only an open bill can be discounted', 'D paid bill');
+  perform pg_temp.expect_error(format('select clear_bill_discount(%L)', v_bill2),
+    'Discounts can only change on an open bill', 'D paid bill clear');
+  -- a voided item cannot be discounted: a fresh bill on the freed table, its only item voided (the numbers above are untouched)
+  perform pg_temp.act(v_dev);
+  v_order := place_counter_order(v_t2, 'dine_in', 1, v_items, gen_random_uuid());
+  v_item := (select id from order_items where order_id = v_order);
+  v_res := void_order_item(v_item, 'Wrong item keyed', v_sup, '2222');
+  if not coalesce((v_res->>'ok')::boolean, false) or (select voided_at from order_items where id = v_item) is null then
+    raise exception 'FAIL D: voiding the extra item: %', v_res;
+  end if;
+  perform pg_temp.expect_error(format('select set_item_discount(%L, %L, 1000, %L, %L, %L)', v_item, 'percent', 'Regular', v_sup, '2222'),
+    'A voided item cannot be discounted', 'D voided item');
+  -- ── E. receipt and Z report ───────────────────────────────────────────────
+  v_res := pos_receipt_payload(v_bill2, false);
+  if (v_res->>'billDiscountSen')::int is distinct from 1000
+     or (select count(*) from jsonb_array_elements(v_res->'items') i, jsonb_array_elements(i->'discounts') d) <> 2
+     or not exists (select 1 from jsonb_array_elements(v_res->'items') i, jsonb_array_elements(i->'discounts') d
+                     where d->>'label' = 'VERIFY D STAFF MEAL 50%' and (d->>'amountSen')::int = 2150)
+     or not exists (select 1 from jsonb_array_elements(v_res->'items') i, jsonb_array_elements(i->'discounts') d
+                     where d->>'label' = 'Discount' and (d->>'amountSen')::int = 500) then
+    raise exception 'FAIL E receipt: %', v_res;
+  end if;
+  v_res := pos_shift_report(v_shift);
+  if v_res->'discounts' is distinct from
+       '{"catalogSen": 2150, "catalogBills": 1, "itemSen": 500, "itemCount": 1, "billSen": 1000, "billCount": 1}'::jsonb
+     or (v_res->'sales'->>'beforeDiscountsSen')::int is distinct from 12900
+     or (v_res->'sales'->>'discountSen')::int is distinct from 3650
+     or (v_res->'sales'->>'grossSen')::int is distinct from 9250 then
+    raise exception 'FAIL E Z report: % %', v_res->'discounts', v_res->'sales';
+  end if;
+  raise notice 'VERIFY OK';
+end $$;
+
+select 'VERIFY OK' as result;
+rollback;

@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  content: ['./index.html', './qr/index.html', './pos/index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
@@ -44,6 +44,15 @@ export default {
         brand:   ['Archivo', '"LiHei Pro"', '"PingFang SC"', '"Noto Sans SC"', 'system-ui', 'sans-serif'],
         label:   ['"STIX Two Text"', 'Georgia', '"LiHei Pro"', '"PingFang SC"', 'serif'],
       },
+      // the QR mascot's small bounce when it appears (src/qr/Mascot.tsx; motion-safe only)
+      keyframes: {
+        'mascot-pop': {
+          '0%': { transform: 'translateY(6px) scale(0.92)', opacity: '0' },
+          '60%': { transform: 'translateY(-3px) scale(1.03)', opacity: '1' },
+          '100%': { transform: 'translateY(0) scale(1)', opacity: '1' },
+        },
+      },
+      animation: { 'mascot-pop': 'mascot-pop 420ms ease-out both' },
       boxShadow: {
         card: '0 1px 4px rgba(61,43,31,0.08), 0 0 0 1px rgba(61,43,31,0.04)',
         'card-hover': '0 4px 12px rgba(61,43,31,0.12), 0 0 0 1px rgba(61,43,31,0.06)',

@@ -6,11 +6,13 @@ import {
   CalendarCheck, Wallet, Palmtree, Receipt, CalendarDays, Network,
   ShoppingBasket, Truck, Package, ShoppingCart, PackageCheck, Boxes, Trash2, ArrowLeftRight,
   ChefHat, Headset, ExternalLink, MessageSquare,
+  UtensilsCrossed, Store, MonitorSmartphone, Printer, ChartColumn, Star, FileCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuth } from '../../features/auth/AuthContext'
 import { useCan } from '../../shared/lib/permissions'
 import { visibleNav, activeEntry, navShell } from '../lib/nav'
+import { posAppUrl } from '../../features/pos/order/posAppUrl'
 import type { NavLeaf, NavGroup } from '../lib/nav'
 import { AddToHomeScreenLogo } from './AddToHomeScreen'
 import { RankBadge } from './RankBadge'
@@ -47,6 +49,13 @@ const ICONS: Record<string, LucideIcon> = {
   'proc-wastage': Trash2,
   'proc-recipes': ChefHat,
   'proc-inventory': Boxes,
+  pos: Store,
+  'pos-register': MonitorSmartphone,
+  'pos-reports': ChartColumn,
+  'pos-members': Star,
+  menu: UtensilsCrossed,
+  'pos-settings': Printer,
+  'pos-einvoice': FileCheck,
   settings: Settings,
   feedback: MessageSquare,
 }
@@ -196,7 +205,7 @@ export function SidebarContent({ onNavigate, onClose }: {
   const { can } = useCan()
   const newFeedback = useNewFeedbackCount(staff?.system_role === 'owner', pathname + search)
 
-  const nav = visibleNav(can)
+  const nav = visibleNav(can, posAppUrl(import.meta.env.VITE_POS_APP_URL as string | undefined) !== null)
   const { modules, pinned, flat } = navShell(nav)
   const active = activeEntry(nav, pathname)
 

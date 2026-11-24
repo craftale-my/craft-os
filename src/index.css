@@ -30,6 +30,11 @@
   }
 }
 
+@media print {
+  body * { visibility: hidden; }
+  .print-card, .print-card * { visibility: visible; }
+  .print-card { position: fixed; inset: 0; margin: auto; height: fit-content; width: fit-content; }
+}
 /* Brand type roles (Archivo widths: 87.5% = semi-condensed, 75% = condensed). */
 @layer components {
   /* Logo-style heavy caps: CRAFT wordmark, page titles, staff name. */

@@ -53,6 +53,9 @@ export type Capability =
   | 'access_settings'  // company settings
   | 'manage_system_roles' // owner-only; assign system roles + edit matrix
   | 'manage_projects'  // create/edit/delete Projects; edit the Tasks tag vocabulary
+  | 'pos_supervise'    // approve POS voids & refunds with a PIN (SQL: has_menu_cap / staff_has_cap)
+  | 'manage_menu'      // edit the company-wide menu and its catalogs (SQL: has_menu_cap / staff_has_cap)
+  | 'pos_login'        // sign in to the POS with a PIN where one may work (SQL: has_menu_cap / staff_has_cap)
   | 'manage_procurement'  // supplier & item master data
   | 'use_procurement'     // raise POs, receive goods, view inventory
 
@@ -68,6 +71,9 @@ export const CAPABILITIES: { key: Capability; label: string }[] = [
   { key: 'all_branches',        label: 'All Branches' },
   { key: 'access_settings',     label: 'Access Settings' },
   { key: 'manage_system_roles', label: 'Manage System Roles' },
+  { key: 'pos_supervise',       label: 'Approve POS voids & refunds' },
+  { key: 'manage_menu',         label: 'Edit menu' },
+  { key: 'pos_login',           label: 'Sign in to the POS' },
   { key: 'manage_procurement',  label: 'Manage Procurement' },
   { key: 'use_procurement',     label: 'Use Procurement' },
 ]
@@ -80,30 +86,45 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: true, manage_projects: true,
+    pos_supervise: true,
+    manage_menu: true,
+    pos_login: true,
     manage_procurement: true, use_procurement: true,
   },
   admin: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: false, manage_projects: true,
+    pos_supervise: true,
+    manage_menu: true,
+    pos_login: true,
     manage_procurement: true, use_procurement: true,
   },
   hr: {
     view_team: true, manage_staff: true, manage_schedule: false, conduct_reviews: false,
     manage_missions: false, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: false, manage_system_roles: false, manage_projects: true,
+    pos_supervise: false,
+    manage_menu: false,
+    pos_login: false,
     manage_procurement: false, use_procurement: false,
   },
   manager: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: true, view_salary: true, manage_hr: true, all_branches: true,
     access_settings: true, manage_system_roles: false, manage_projects: true,
+    pos_supervise: true,
+    manage_menu: false,
+    pos_login: true,
     manage_procurement: true, use_procurement: true,
   },
   supervisor: {
     view_team: true, manage_staff: true, manage_schedule: true, conduct_reviews: true,
     manage_missions: false, view_salary: false, manage_hr: true, all_branches: false,
     access_settings: false, manage_system_roles: false, manage_projects: true,
+    pos_supervise: true,
+    manage_menu: false,
+    pos_login: true,
     // Supervisors raise POs and receive goods, but don't own the master data.
     manage_procurement: false, use_procurement: true,
   },
@@ -111,6 +132,9 @@ export const DEFAULT_SYSTEM_ROLE_CAPS: Record<SystemRole, CapMap> = {
     view_team: false, manage_staff: false, manage_schedule: false, conduct_reviews: false,
     manage_missions: false, view_salary: false, manage_hr: false, all_branches: false,
     access_settings: false, manage_system_roles: false, manage_projects: false,
+    pos_supervise: false,
+    manage_menu: false,
+    pos_login: true,
     manage_procurement: false, use_procurement: false,
   },
 }
@@ -972,3 +996,4 @@ export const SKILL_STATUS_ICONS: Record<SkillAssessmentStatus, string> = {
   passed:         '✅',
   failed:         '❌',
 }
+export * from './menuCosting'

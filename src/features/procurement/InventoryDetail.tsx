@@ -237,7 +237,7 @@ export default function InventoryDetailPage() {
                             Open count
                           </Link>
                         )
-                      ) : t.reference_type && t.reference_type !== t.transaction_type && (
+                      ) : t.reference_type && t.reference_type !== 'bill' && t.reference_type !== t.transaction_type && (
                         <span className="text-xs text-brown-faint font-normal ml-2">
                           from {t.reference_type}
                         </span>

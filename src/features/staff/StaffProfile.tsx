@@ -14,7 +14,7 @@ import {
 } from '../../shared/types'
 import { useLookups } from '../../shared/lib/lookups'
 import type { Option } from '../../shared/lib/lookups'
-import { canReviewStaff, canReadStaffPrivate } from '../../shared/lib/permissions'
+import { canReviewStaff, canReadStaffPrivate, useCan } from '../../shared/lib/permissions'
 import { fetchStaffPrivate, saveStaffPrivate, fetchManagerNotes, saveManagerNotes } from './privateApi'
 import { RankBadge } from '../../shared/components/RankBadge'
 import { XPBar } from '../../shared/components/XPBar'
@@ -23,6 +23,7 @@ import { Avatar } from '../../shared/components/Avatar'
 import { canPromote } from '../../shared/lib/xp'
 import { branchIdForLabel } from '../../shared/lib/branchLookup'
 import { CareerProgress } from './CareerProgress'
+import { ExtraOutletsCard } from '../pos/outlets/ExtraOutletsCard'
 import { Badge, Button, ButtonLink, Card, SegmentedTabs } from '../../shared/components/ui'
 
 type Tab = 'missions' | 'skills' | 'career' | 'personal' | 'reviews' | 'history'
@@ -69,6 +70,7 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
 
   const isSelf       = selfView || staffId === currentStaff?.id
   const isManager    = currentStaff?.rank === 'manager'
+  const { can }      = useCan()
   // hr/manager/admin/owner (or rank manager): may read staff_private and manager notes.
   const canSeePrivate = canReadStaffPrivate(currentStaff)
   // Scope-aware review permission: mirrors canReviewStaff (manager tier is
@@ -337,6 +339,11 @@ export function StaffProfilePage({ selfView = false }: { selfView?: boolean }) {
             )}
             {isManager && <EmploymentStatusCard staff={staff} onSetStatus={handleSetStatus} />}
             {isManager && <DangerZoneCard staff={staff} onReset={handleReset} />}
+          </div>
+        )}
+        {can('access_settings') && !isSelf && (
+          <div className="mt-4">
+            <ExtraOutletsCard staffId={staff.id} homeBranchId={staff.branch_id ?? null} />
           </div>
         )}
       </div>

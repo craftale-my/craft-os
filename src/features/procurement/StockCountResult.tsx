@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../../shared/lib/supabase'
 import { money, qty, packs } from '../../shared/lib/procurement'
 import { sortResultLines } from '../../shared/lib/stocktake'
+import StockCountUsage from './StockCountUsage'
 import type { StockCount, StockCountItem, Item } from '../../shared/types'
 import { STOCK_COUNT_KIND_LABELS } from '../../shared/types'
 
@@ -104,6 +105,8 @@ export default function StockCountResult({ count, branchName }: { count: StockCo
           )
         })}
       </ul>
+
+      <StockCountUsage countId={count.id} />
     </div>
   )
 }

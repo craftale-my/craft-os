@@ -1,0 +1,207 @@
+# Replacing the Feedme POS — what is not ready yet
+
+Date: 2026-10-29 · Branch: `feature/pos-demo` · Sources: a read-only walk through every Feedme back-office page
+(Craft Cafe – Cheras, 2026-10-29), the 2026-10-23 back-office teardown, the 2026-10-26 iPad teardown and the POS
+specs on this branch.
+
+"Replaced" means: Craft Cafe outlets take every walk-in, table, QR and takeaway order on the Craft POS, print
+tickets and receipts, close the day with our Z report, and the accountant gets sales and SST figures from Craft OS.
+Feedme may stay for whatever the owner decides below (Grab, members).
+
+Work runs top to bottom: decisions first (they change what gets built), then build, then data and setup, then prod,
+then testing and cut-over. Check items off as they land.
+
+## 1. Owner decisions (block the build)
+
+**Answers 2026-10-29:**
+- D1 = (c). Grab orders must come into our POS through Grab's API **before** the switch; this is a hard gate
+  for cut-over. Grab integrations go through Grab's developer portal (developer.grab.com); eligibility of an own
+  in-house POS as an integration partner is not confirmed yet — the owner applies first. Fallback if Grab will
+  not let an in-house POS connect: a middleware that is already a Grab partner (e.g. Deliverect) and offers an
+  API for a custom POS — costs a subscription, check before building.
+- D2 = (a). Few Feedme members; points are kept by hand or recalculated later. Not a cut-over gate.
+- D3 = no online payment for now (QR stays pay at the counter). Pickup orders are not needed on day one.
+- D4 = confirmed as designed, plus: the Staff Meal catalog sells at 50% off the normal price.
+- D5 = no accountant export today (figures by hand). Craft OS will get its own Accounting module later, so
+  reports and sales data must be ledger-friendly (per bill, per line, per tax rate, per payment method).
+- D6 = Cheras first, Feedme kept as fallback.
+- D7 = owner asked for a recommendation: switch Manager "All branches" off on prod, as on dev. Only owner and
+  admin are HQ (approve tablets, clear HQ PINs); outlet managers keep `access_settings` for their own outlets
+  and `pos_supervise` for approvals. Set it in System Roles on prod when the POS chain goes to prod (step 4).
+- Test kit ready: one Android tablet, one Mac, one iPad, one Wi-Fi printer. Testing waits until the build items
+  below are done.
+
+- [x] **D1 Grab orders.** Feedme receives Grab Food and Grab Mart orders straight into the POS (active at Cheras).
+      Craft POS has no delivery-platform link. Choose: (a) keep a Grab tablet / Feedme for Grab only, staff key
+      nothing into our POS; (b) staff re-key Grab orders into a "Grab" catalog on our POS (tickets print, sales
+      counted, double work); (c) build a Grab integration (needs Grab partner API access — weeks, not days).
+- [x] **D2 Members and points.** Feedme loyalty (about 1k members, vouchers, points) only works with the Feedme POS
+      and Feedme has no API. Once bills move to our POS, members stop earning. Choose: (a) accept a pause in
+      earning until our own Loyalty module (build order: POS → Inventory → Loyalty); (b) keep a Feedme device
+      to record member purchases (double entry); (c) pull Loyalty forward before cut-over.
+- [x] **D3 QR payment and online pickup.** Feedme lets QR diners pay online and runs scheduled pickup orders with
+      SMS. Ours: QR orders only, pay at the counter, no pickup. Decide whether either is needed on day one.
+- [x] **D4 Discount rules.** Discounts are used daily. Confirm the paused design: amount or percent, reason,
+      supervisor PIN every time, service charge after the discount, one discount per bill; and decide whether an
+      item-level discount and staff-meal / staff discount are also needed.
+- [x] **D5 Accountant hand-off.** Which figures the accountant takes today from Feedme (daily sales, SST
+      6% / 8% / exempt, payment methods, Xero?) — this fixes the report list in W3.
+- [x] **D6 Cut-over style.** One outlet first (Cheras) with Feedme kept signed in for a week as a fallback, then
+      Puchong and Kepong; and the Feedme licence end date.
+- [x] **D7 Prod roles.** Manager "All branches" off on prod (only owner/admin are HQ), as on dev.
+
+## 2. Build (in this order)
+
+- [x] **W1 POS app, Part C** — separate `craft-pos` app, tablets sign in as devices, staff name + PIN, the RPC
+      swap to `pos_ctx`, scoped read policies. C1–C2 live on dev 2026-10-30; C3 switch-over done on dev
+      2026-11-23 (plan docs/superpowers/plans/2026-11-22-pos-agent-pairing-switchover.md): a staff email login no
+      longer runs the till or prints (device_unpaired); the back office (settings, menu, reports, Devices, My PIN,
+      test print from POS Settings) is unchanged; Craft OS → POS → Register says "The POS has moved to its own
+      app." with the POS app address (`VITE_POS_APP_URL`).
+- [x] **W2 Bill discount** — spec from the paused design (D4), server totals, PIN approval, receipt and Z report
+      lines, discount report; Staff Meal catalog at 50% off the normal price. Built on dev 2026-10-30 (plan
+      docs/superpowers/plans/2026-10-30-pos-discounts.md); prod runs with the POS chain (step 4). The full
+      discount report (every discount, approver, reason) moves to W3.
+- [ ] **WG Grab integration (cut-over gate, D1)** — owner applies for Grab API access now (long lead); then a
+      spec: menu sync from our catalogs, order webhook into a Grab bill with tickets, accept/reject and
+      ready status, Grab payment type, sold-out sync. Built as soon as access is granted, in parallel with W3–W6.
+- [x] **W3 Sales reports** — at least: daily sales, hourly sales, product and add-on sales, category sales, payment
+      methods, discounts, voids, refunds, cash drawer, SST by rate (6% / 8% / exempt), per outlet and date range.
+      Built 2026-11-18: Craft OS → POS → Reports (12 tabs, CSV, ledger export of bills / lines / payments up to
+      92 days); spec docs/superpowers/specs/2026-11-18-pos-sales-reports-design.md; dev SQL + verify OK, browser-checked.
+- [x] **W4 Receipt and numbers** — receipt template (logo, header, address, phone, email, hide zero-price add-ons,
+      footer text, footer QR, font size); order numbers per channel (takeaway TA001–TA999, pickup P001–P999) with
+      auto reset; an "open drawer" button and per-payment-method drawer pulse.
+      Built on dev 2026-11-22 (plan docs/superpowers/plans/2026-11-22-pos-receipt-numbers.md): TA001–TA999 per outlet
+      and business day on the open bills, bill header, tickets, receipts and Transactions; logo, footer QR, font size
+      and hide-free-add-ons in POS Settings → Receipt (ZyWell / print agent; Epson and Star print the text);
+      "Opens the cash drawer" per payment method, Open drawer with a reason, no-sale opens on the Z report and in
+      Reports → Cash drawer. Pickup numbers wait for a pickup channel. Order on rollout: SQL first, then the POS
+      and Craft OS builds, then restart the print agent. Still to check with the owner: the till flow (takeaway
+      numbers, Open drawer, Z report line) and a real receipt + drawer kick on the office ZyWell.
+- [ ] **W5 E-invoice** — merge `feature/einvoice` into this branch, add MyInvois sandbox secrets and company
+      details, then production credentials.
+      Catch-up and automation built and live on dev 2026-11-23 (plan docs/superpowers/plans/2026-11-23-einvoice-w5.md;
+      feature/einvoice merged in 979c4e2): lines from the sales ledger (`pos_ledger_lines`, shared with Reports →
+      Ledger export), per-outlet "Report e-invoices from" dates (HQ only; can only move later once sent), the daily
+      07:00 job (`einvoice-daily` → `run`: refresh, consolidate every closed month not yet reported, credit notes for
+      refunds split so a bill's notes add up to it exactly, 3 attempts then stop), a draft is claimed before every send
+      and an unknown LHDN answer is flagged "needs checking" (never resent by itself), bills over RM 10,000 kept out
+      with a buyer form, banner cases on the E-invoice page. Reconciliation over 25 paid dev bills: 24 single invoices
+      and both Demo outlet-months equal Reports → Overview to the sen; the one exception is seed bill
+      [TEST]BROWSER-1 (RM 0.00, no checkout totals — refused by design). Dev runs record "not set up" until the
+      owner adds the sandbox credentials (MYINVOIS_CLIENT_ID / MYINVOIS_CLIENT_SECRET) and the company details.
+      Next: first sandbox submission (W5.8), then the production switch. Before the production switch: scope links
+      and the start-date guard to the environment (spec "Before the production switch"); a release-links recovery
+      for a document whose link release failed; guard the migration's needs_check backfill to first apply; decide
+      whether a late bill may get a second consolidated invoice for an already-reported month. Prod: run both W5 SQL
+      files after the POS chain, set EINVOICE_JOB_SECRET and the two Vault secrets (einvoice_function_url = the prod
+      function URL), deploy with --no-verify-jwt, then the cron file, then the app build.
+- [x] **W6 Print agent pairing, Part D** — the agent pairs like a device instead of an email/password login; one
+      printing tablet per outlet also kicks the cash drawer. Done on dev 2026-11-23: `pair.ts` asks for a pairing
+      code, the owner approves it in Craft OS → Devices (kind Print agent), the agent keeps its device login in
+      `tools/print-agent/.device.json` (git-ignored, 0600) and finds its outlet itself (`pos_agent_whoami`). This
+      Mac's agent is paired to Demo on dev; the office computer's agent still needs pairing (and a real print).
+- [x] **W7 Smaller Feedme habits** — customer item remark on QR orders; last-order time before closing; takeaway
+      line inside a dine-in bill (Feedme "Takeaway 1.06" add-on); adults / children pax; "Serve" marking;
+      member lookup (only if D2 = c).
+      Built on dev 2026-11-22 (spec docs/superpowers/specs/2026-11-22-pos-feedme-habits-design.md): QR Remark;
+      Orders open at / Last order at per outlet (QR refused outside, POS banner only); Takeaway switch on a
+      dine-in line (packaging fee, no service charge, TAKEAWAY on the ticket); Of which children in the pax;
+      Serve / Not served / Mark all served. Member lookup skipped (D2 = a). Browser-checked with the owner.
+- [x] **W8 Known defects** — order pad opened while offline shows no menu and no Retry; a stalled "Check bill"
+      shows the raw "AbortError" text. Fixed 2026-11-18: the pad says "Could not load the menu" with Retry and
+      reads the menu again when the iPad is back online; no-reply errors read as plain words.
+
+## 3. Data and setup (per outlet)
+
+- [ ] Prod menu import from Feedme, then `menu-data-2026-10-25-packaging-fee.sql` and
+      `menu-data-2026-10-25-print-routes.sql`; rebuild the photo zip for prod.
+- [ ] 32 on-sale products still without a photo; Mi-4 / Mi-7 / Mi-8 and Staff Meal prices.
+- [ ] Tables and areas per outlet (Cheras uses Ground Floor, Beside Floor, Upstairs, Staff, Grab).
+- [ ] Payment methods to match Feedme (cash, e-wallets, online banking, Maybank and Pine Labs terminals, Grab
+      payment types — depends on D1).
+- [ ] Staff Meal catalog: confirm it holds the normal prices (not prices already halved), then set Back office →
+      Catalogs → Staff Meal → Discount % = 50 at a time with no Staff Meal bill open (items ordered before the
+      change keep 0%). Already 50% on dev.
+- [ ] Service-charge rules (by order type, table and product), reason templates, rounding (5 sen), receipt text.
+- [ ] Every cashier and supervisor has their own PIN; supervisors hold `pos_supervise`.
+- [ ] Printer IP per route per outlet (Cheras: Bar and Kitchen on one printer for now); tablets activated and one
+      marked as the printing tablet.
+
+## 4. Prod rollout
+
+- [ ] Run the whole POS SQL chain on prod in order (menu → catalogs → ordering → checkout → shifts → hardening →
+      front end → outlets → devices → device-till (`migration-2026-10-29-pos-device-till.sql`) → POS app
+      (`migration-2026-10-30-pos-app.sql`) → discounts (`migration-2026-10-30-pos-discounts.sql`) → split bill
+      (`migration-2026-11-16-pos-split-bill.sql`) → bill parts (`migration-2026-11-17-pos-bill-parts.sql`) → menu
+      picks (`migration-2026-11-17-menu-picks.sql`, which drops and re-creates `pos_picks_rules()` on a re-run) →
+      sales reports (`migration-2026-11-18-pos-reports.sql`) → receipt numbers and cash drawer
+      (`migration-2026-11-22-pos-receipt-numbers.sql`, then the POS builds, then restart the print agent) →
+      QR table cart (`migration-2026-11-22-qr-table-cart.sql`, which re-creates `pos_insert_order` and
+      `qr_table_state`; SQL before the front end) → Feedme habits (`migration-2026-11-22-pos-feedme-habits.sql`;
+      SQL first, then the POS, Craft OS and QR builds, then restart the print agent)),
+      each with its `-verify.sql`, after the prod menu import. After the QR table cart file, never re-run
+      `migration-2026-10-24-pos-slots-photos-fn.sql` or `migration-2026-10-30-pos-discounts.sql`: they would
+      silently put back `pos_insert_order` and `qr_table_state` without the guest fields (the verify script
+      checks for this).
+- [ ] Split bill (11-16) and bill parts (11-17) run as a pair, 11-16 then 11-17; never re-run 11-16 alone once 11-17
+      is installed (it reverts `checkout_bill` and other functions Part B re-creates).
+- [ ] In every environment the SQL runs before the app that needs it is deployed: the discounts build reads new
+      columns (`discount_*`, `catalog_discount_*`, `menu_catalogs.discount_bp`), and the home and order screens fail
+      without them.
+- [ ] The four discount RPCs (`set_item_discount`, `clear_item_discount`, `set_bill_discount`, `clear_bill_discount`)
+      and the re-defined `merge_bills` are front-of-house RPCs and belong in W1 Part C's switch to `pos_ctx`.
+- [ ] Deploy Edge Functions `pos-device-activation` (with `--no-verify-jwt`) and `einvoice`.
+- [ ] Redeploy tools/print-agent together with the POS build (new 'part' receipt kind).
+- [ ] Create the `craft-pos` Vercel project; staff email logins lose front-of-house RPCs at the same time.
+- [ ] Device switch-over, last of all, in this order (the server cannot tell whether a staff-login print agent
+      still runs somewhere): print agent pairing SQL (`migration-2026-11-22-pos-agent-pairing.sql` + verify) →
+      pair every outlet's print agent (`tools/print-agent/pair.ts`, approve in Devices) and give every
+      browser-printed route a POS-app tablet set to print → deploy the Craft OS build with the /pos notice
+      (`VITE_POS_APP_URL` = the prod POS app address) → the pre-C3 coverage query in plan Task 6 Step 6 (every
+      row `covered = true`) → `migration-2026-11-22-pos-switchover.sql` + verify, then re-run the device-fixture
+      verifies. After it, the verifies that run the till as a staff login (pre-device ones, menu-picks,
+      device-till's "C1 transition" block, qr-table-cart L2 / L3) pass only before the switch-over; re-running
+      `migration-2026-10-29-pos-device-till.sql` puts the transition back — re-run the switch-over after it.
+- [ ] Inventory on top of the POS (stocktake is already live on prod since 2026-11-23), after the POS chain and the
+      prod menu import, in a quiet window, one transaction each:
+      1. `migration-2026-11-22-menu-costing.sql`. Its `VERIFY-2026-11-22-menu-costing.sql` is dev-only (hard-coded dev
+         UUIDs) — on prod check that the views and RPCs exist instead.
+      2. Recipes: `docs/inventory/menu-recipes-import.sql` (kitchen, also creates the items Soy Sauce and Chili Paste),
+         `drink-recipes-import.sql`, `dessert-recipes-import.sql` — git-excluded, kept in the `inventory-v2` worktree;
+         name-based (category + product + size), each stops with "Unknown …" if the prod menu names differ.
+         Re-check the open owner items first (Breadcrumb price, Soda Cylinder unit, item 'Lemon' price, cookies per jar,
+         9th tart, fruit quantities).
+      3. `migration-2026-11-23-stock-count-usage.sql` → `migration-2026-11-23-sales-depletion.sql` →
+         `migration-2026-11-23-wastage-allow-negative.sql` (changes live wastage: no on-hand refusal). Never re-run
+         `migration-2026-10-29-owner-decisions.sql` or an older file that rebuilds
+         `inventory_transactions_transaction_type_check` afterwards (drops `sale`).
+      4. Right after: a baseline FULL stock count per outlet, so the first "Since last count" period is not partial.
+      5. Only then merge feature/pos-demo into main (main deploys Craft OS to prod; the Menu Costing and usage pages
+         need the SQL above). For a week watch `bill_depletions` for `status = 'error'` and checkout speed.
+      Rehearsed on dev 2026-11-24: a POS-app bill (Carbonara + Fried Chicken, Coffee Latte COLD, cheesecake slice)
+      deducted all 26 recipe ingredients exactly; a weekly count then showed it under "Since last count".
+- [ ] Revoke the access tokens that were pasted in chat (Supabase dashboard → Account → Access tokens).
+
+## 5. Testing
+
+- [ ] Full run sheet (`docs/pos/2026-10-25-simulated-run-sheet.md`) on two real iPads and a phone, results filled in.
+- [ ] Steps 14–15 again on iPad Safari with real Wi-Fi off/on ("Load failed" lock).
+- [ ] Void and refund approvals with a real supervisor PIN; offline queue on the new order screen.
+- [ ] Failure cases: printer off or out of paper, print agent / printing tablet down, shop internet down
+      (orders queue, no tickets print until it is back).
+- [ ] Discount, reports and receipt template once built; Z report matches the reports for the same day.
+- [ ] One parallel day: same orders on Feedme and Craft POS, compare totals and SST.
+
+## 6. Cut-over
+
+- [ ] Staff training (cashier flow, void/refund, shift close) and a one-page cheat sheet.
+- [ ] Day 0: open shift with float, Feedme kept signed in as fallback; end of day Z report checked against cash.
+- [ ] After a clean week: next outlet; stop Feedme POS use per D1/D2.
+
+## Not needed (Feedme has it, Cheras does not use it)
+
+Deposits, currency exchange, kitchen display (ODS/KDS), serving sequence, cooking guide, variants page, price groups,
+member price, linked-product rule groups, self-order kiosk machines, reservations, Feedme discount rules (empty),
+order pacing (one 10-minute delay on one product).

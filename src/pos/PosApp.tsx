@@ -1,0 +1,298 @@
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
+import PosTill from '../features/pos/order/PosTill'
+import PrintHostPanel from '../features/pos/order/PrintHostPanel'
+import ConfirmDialog, { type ConfirmRequest } from '../features/pos/shell/ConfirmDialog'
+import { createIdbStore } from '../features/pos/offline/idbStore'
+import type { QueuedOrder } from '../features/pos/offline/orderQueue'
+import { fetchProductNames } from '../features/pos/checkout/checkoutApi'
+import { contextCode } from '../features/pos/deviceErrors'
+import ActivationScreen from './ActivationScreen'
+import LockScreen from './LockScreen'
+import { loadPending, type ActivationState } from './activation'
+import {
+  clearPendingLock, forgetContext, holdQueued, loadContext, loadProductNames, pendingLock, saveContext,
+  saveProductNames, setPendingLock, UNPAIRED_REASON, type LockReason,
+} from './deviceStore'
+import { CONTEXT_EVENT, NOT_PRINTING, reachability, supabase, type PosSignal } from './posSupabase'
+import type { RosterReply } from './roster'
+import {
+  endSession, fetchRoster, fetchWhoAmI, forgetDevice, hasDeviceSession, unpairThisDevice, type WhoAmI,
+} from './sessionApi'
+import { reloadForUpdate, useAppUpdate } from './useAppUpdate'
+import { useIdleLock } from './useIdleLock'
+
+const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const ACCESS_CHANGED = 'Your access here has changed. Ask your manager.'
+const ROSTER_MS = 60_000
+const PROBE_MS = 15_000
+
+type Phase =
+  | { kind: 'boot' }
+  | { kind: 'activation'; start: ActivationState; unsent: QueuedOrder[] }
+  | { kind: 'device' }
+
+/** Online means the server answers: the network is up (navigator.onLine) and the last call
+ *  through the POS client got a reply (a café Wi-Fi with no internet still says online). */
+function useOnline(): { online: boolean; reachable: boolean } {
+  const [net, setNet] = useState(navigator.onLine)
+  useEffect(() => {
+    const on = () => setNet(true)
+    const off = () => setNet(false)
+    window.addEventListener('online', on)
+    window.addEventListener('offline', off)
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off) }
+  }, [])
+  const reachable = useSyncExternalStore(reachability.subscribe, reachability.get)
+  return { online: net && reachable, reachable }
+}
+
+/** Craft POS (spec §2, §3): activation → lock screen ⇄ the till. The till mounts at the first
+ *  sign-in and stays mounted under the lock screen, so unsent items wait for the next person.
+ *  The printing tablet's print host runs here, apart from the till: a locked iPad still prints. */
+export default function PosApp() {
+  const [phase, setPhase] = useState<Phase>({ kind: 'boot' })
+  const [roster, setRoster] = useState<RosterReply | null>(null)
+  const [who, setWho] = useState<WhoAmI | null>(null)          // null: locked
+  const [till, setTill] = useState<WhoAmI | null>(null)        // the last signed-in context: keeps the till mounted
+  const [lockNote, setLockNote] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
+  const [drafts, setDrafts] = useState(0)                      // the till's unsent items: an update waits for none
+  const [printProblems, setPrintProblems] = useState(0)
+  const [printSlot] = useState(() => document.createElement('div'))   // the staff panel shows the print host in it
+  const { online, reachable } = useOnline()
+  const updateReady = useAppUpdate()
+  const whoRef = useRef(who)
+  whoRef.current = who
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
+  const leavingRef = useRef(false)      // toActivation has started: until the next activation, nothing else leaves or loads
+  const unpairedSeen = useRef(false)    // a device_unpaired code came: a SIGNED_OUT after it is the same unpair
+  const seq = useRef(0)                 // the latest refresh: an older one that finishes late changes nothing
+  const loadedOnce = useRef(false)      // a context was shown in this page: a failed read keeps it instead of the cache
+  const ending = useRef(false)          // a session is being ended here: a second refusal starts no second end
+
+  const signedIn = (w: WhoAmI | null) => {
+    setWho(w)
+    if (w) { setTill(w); setLockNote(null) }
+  }
+
+  /** The roster and, when someone is signed in, who it is. A Lock that could not reach the
+   *  server is finished first. A tablet that boots with the server unreachable opens the last
+   *  context it saved; a reply (a refusal, a 401, a 5xx) never signs anyone in from the cache. */
+  const refresh = useCallback(async () => {
+    const id = ++seq.current
+    const current = () => id === seq.current && !leavingRef.current
+    let r: RosterReply
+    try {
+      r = await fetchRoster()
+      const pending = pendingLock(localStorage)
+      if (pending && r.session) { await endSession(pending); r = await fetchRoster() }
+    } catch (e) {
+      if (!current()) return
+      const c = !loadedOnce.current && !reachability.get() ? loadContext(localStorage) : null
+      if (c) {
+        loadedOnce.current = true
+        setRoster(c.roster)
+        if (!pendingLock(localStorage)) signedIn(c.who)
+      }
+      setLoadError(msg(e))
+      return
+    }
+    if (!current()) return
+    clearPendingLock(localStorage)
+    let w: WhoAmI | null = null
+    let error: string | null = null
+    if (r.session) {
+      // outlet_closed, no_session…: the lock screen, which says why from the roster
+      try { w = await fetchWhoAmI() } catch (e) {
+        const code = contextCode(msg(e))
+        // the session stays open on the server: end it (pos_end_session does not check the outlet)
+        if (code === 'outlet_closed' && current()) void endSession('locked').catch(() => undefined)
+        if (!code) {
+          // a network blip (refresh runs on every 'online') keeps whoever is signed in here
+          if (whoRef.current?.staffId === r.session.staffId) w = whoRef.current
+          else error = msg(e)
+        }
+      }
+      if (!current()) return
+    }
+    loadedOnce.current = true
+    setRoster(r); signedIn(w); setLoadError(error)
+    saveContext(localStorage, { roster: r, who: w })
+  }, [])
+
+  const toActivation = useCallback(async (start: ActivationState, hold: boolean) => {
+    if (leavingRef.current) return
+    leavingRef.current = true                                         // once, whichever signal comes first
+    const before = phaseRef.current
+    phaseRef.current = { kind: 'activation', start, unsent: [] }
+    let switched = false
+    try {
+      setConfirm(null); setLoadError(null); setLockNote(null)
+      const unsent = hold ? await holdQueued(createIdbStore()).catch(() => []) : []
+      await forgetDevice().catch(() => undefined)
+      forgetContext(localStorage)
+      setWho(null); setTill(null); setRoster(null); setDrafts(0)
+      setPhase({ kind: 'activation', start, unsent })
+      switched = true
+    } finally {
+      // something threw before the switch: the next signal may try again
+      if (!switched) { leavingRef.current = false; phaseRef.current = before }
+    }
+  }, [])
+
+  // boot
+  useEffect(() => {
+    void (async () => {
+      if (!hasDeviceSession()) {
+        const p = loadPending(localStorage)
+        // orders held back when this tablet was unpaired stay listed until it is activated again
+        const unsent = (await createIdbStore().all().catch(() => [] as QueuedOrder[]))
+          .filter((o) => o.failedReason === UNPAIRED_REASON).sort((a, b) => a.queuedAt - b.queuedAt)
+        setPhase({ kind: 'activation', start: p ? { kind: 'waiting', pending: p, note: null } : { kind: 'choose' }, unsent })
+        return
+      }
+      phaseRef.current = { kind: 'device' }
+      setPhase({ kind: 'device' })
+      await refresh()
+    })()
+  }, [refresh])
+
+  const lock = useCallback(async (reason: LockReason, note: string | null = null) => {
+    // before any await: parallel refusals start one Lock, and a read in flight cannot sign them back in
+    whoRef.current = null; seq.current++
+    setWho(null); setLockNote(note); setConfirm(null)                 // e.g. "Unpair this device?" must not stay above the lock
+    setPendingLock(localStorage, reason)
+    ending.current = true
+    try {
+      try { await endSession(reason); clearPendingLock(localStorage) } catch { /* offline: ended on the next roster read */ }
+      await refresh()
+    } finally { ending.current = false }
+  }, [refresh])
+
+  // a coded error from any call (posSupabase.ts)
+  useEffect(() => {
+    const on = (e: Event) => {
+      const code = (e as CustomEvent<PosSignal>).detail
+      if (phaseRef.current.kind !== 'device' || leavingRef.current) return
+      if (code === NOT_PRINTING) {
+        void refresh()                                                // HQ moved the printing role: the roster says where
+      } else if (code === 'device_unpaired') {
+        unpairedSeen.current = true
+        void toActivation({ kind: 'ended', reason: 'unpaired' }, true)
+      } else if (code === 'access_changed') {
+        if (whoRef.current) void lock('access_changed', ACCESS_CHANGED)
+        else if (!ending.current) {
+          // nobody signed in in this page (e.g. at boot): the server session still ends
+          ending.current = true
+          setLockNote(ACCESS_CHANGED)
+          void endSession('access_changed').catch(() => undefined).finally(() => { ending.current = false })
+        }
+      } else if (code === 'outlet_closed') {
+        if (whoRef.current) void lock('locked')                       // the lock screen says the outlet is closed
+      } else if (whoRef.current) {                                    // no_session: the server already ended it
+        setWho(null)
+        void refresh()
+      }
+    }
+    window.addEventListener(CONTEXT_EVENT, on)
+    return () => window.removeEventListener(CONTEXT_EVENT, on)
+  }, [lock, refresh, toActivation])
+
+  // an unpaired device's token can no longer refresh: Supabase signs it out. Without a
+  // device_unpaired code first, the screen says only that it was signed out.
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT' && phaseRef.current.kind === 'device' && !leavingRef.current) {
+        void toActivation({ kind: 'ended', reason: unpairedSeen.current ? 'unpaired' : 'signed_out' }, true)
+      }
+    })
+    return () => data.subscription.unsubscribe()
+  }, [toActivation])
+
+  // the roster and whoami stay fresh, signed in or not (prints, canUnpair, idleLockMinutes…);
+  // back online: the session token too
+  useEffect(() => {
+    if (phase.kind !== 'device') return
+    const timer = window.setInterval(() => void refresh(), ROSTER_MS)
+    return () => window.clearInterval(timer)
+  }, [phase.kind, refresh])
+  // the server unreachable: probe it every 15 s, and at once when the network comes back
+  useEffect(() => {
+    if (phase.kind !== 'device' || reachable) return
+    const probe = () => void refresh()
+    const timer = window.setInterval(probe, PROBE_MS)
+    window.addEventListener('online', probe)
+    return () => { window.clearInterval(timer); window.removeEventListener('online', probe) }
+  }, [phase.kind, reachable, refresh])
+  useEffect(() => {
+    if (!online || phase.kind !== 'device') return
+    void supabase.auth.getSession().then(() => refresh())
+  }, [online, phase.kind, refresh])
+
+  // product names for the unpaired screen's list
+  const whoId = who?.staffId
+  useEffect(() => {
+    if (whoId) fetchProductNames().then((rows) => saveProductNames(localStorage, rows), () => undefined)
+  }, [whoId])
+
+  // a downloaded update opens on the lock screen only, never mid-order, over unsent items, or
+  // during an activation (a reload there could lose the approved sign-in)
+  useEffect(() => {
+    if (updateReady && phase.kind === 'device' && !who && drafts === 0) reloadForUpdate(updateReady)
+  }, [updateReady, phase.kind, who, drafts])
+
+  useIdleLock(roster?.idleLockMinutes ?? 10, who !== null, online, () => void lock('idle'))
+
+  if (phase.kind === 'boot') return <div className="flex min-h-dvh items-center justify-center bg-cream text-brown-muted">Craft POS</div>
+  if (phase.kind === 'activation') {
+    return <ActivationScreen start={phase.start} unsent={phase.unsent} names={loadProductNames(localStorage)}
+      onActivated={() => {
+        leavingRef.current = false
+        unpairedSeen.current = false
+        loadedOnce.current = false                                    // nothing is shown yet for the new device
+        phaseRef.current = { kind: 'device' }
+        setPhase({ kind: 'device' }); void refresh()
+      }} />
+  }
+
+  const requestLock = () => {
+    if (online) { void lock('locked'); return }
+    setConfirm({ title: "You're offline — nobody can sign in until the network is back.", confirmLabel: 'Lock anyway',
+      onConfirm: () => void lock('locked') })
+  }
+  const requestUnpair = () => setConfirm({
+    title: 'Unpair this device?', message: 'It stops working until HQ activates it again.', confirmLabel: 'Unpair', danger: true,
+    onConfirm: async () => {
+      // its waiting orders are held back, as for an unpair from HQ
+      try { await unpairThisDevice(); await toActivation({ kind: 'choose' }, true) }
+      catch (e) { setConfirm({ title: 'Could not unpair this device', message: msg(e), confirmLabel: 'OK', onConfirm: () => undefined }) }
+    },
+  })
+
+  // the printing tablet prints whether or not anyone is signed in (pos_print_branch() needs no session)
+  const printing = roster?.device.prints ?? false
+  return (
+    <>
+      {printing && roster && createPortal(<PrintHostPanel branchId={roster.outlet.id} inline onProblems={setPrintProblems} />, printSlot)}
+      {till && (
+        <PosTill branchId={till.outletId} branchName={till.outletName} staffId={who?.staffId ?? till.staffId}
+          staffName={who?.staffName ?? till.staffName}
+          can={{ manageMenu: false, supervise: who?.canSupervise ?? false, settings: false }}
+          prints={printing} locked={who === null} printHost={printing ? { slot: printSlot, problems: printProblems } : undefined}
+          onLock={requestLock} onUnpair={who?.canUnpair ? requestUnpair : undefined} onDraftCount={setDrafts}
+          online={online} />
+      )}
+      {!who && (
+        <LockScreen roster={roster} note={lockNote} offline={!online} loadError={loadError}
+          onSignedIn={() => void refresh()} onRefresh={() => void refresh()} />
+      )}
+      {confirm && (
+        <ConfirmDialog {...confirm} onCancel={() => setConfirm(null)}
+          onConfirm={() => { const c = confirm; setConfirm(null); c.onConfirm() }} />
+      )}
+    </>
+  )
+}

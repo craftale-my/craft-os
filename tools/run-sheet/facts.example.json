@@ -1,0 +1,136 @@
+{
+  "rules": [
+    {
+      "rateBp": 1000,
+      "tableIds": null,
+      "orderTypes": [
+        "dine_in"
+      ],
+      "productIds": null
+    }
+  ],
+  "tables": {
+    "T1": "1b3862da-918d-4392-bce9-c102591dc313",
+    "T2": "a4895eb1-2a1d-447c-8767-e6eb79c2f6da",
+    "T3": "a2ac38a5-cf20-4024-b067-21c5d45599e1",
+    "T4": "a28dcc41-e7ce-4b28-b444-dac8ab6192b1",
+    "T5": "7495c17a-536a-4bbe-bb31-fd5d6a86d9c1",
+    "T6": "3ba10094-d28d-4fd5-abbd-2d69e1dc14fe",
+    "T7": "fd00d3b0-f95d-4e14-bea5-27554feb6794",
+    "T8": "4f5b1ff5-8b1b-4a97-83b7-fba5d6a8f0a4",
+    "T9": "95c6f258-035d-4f11-a764-8db59ffe4731",
+    "T10": "d1576817-0562-4efd-99a8-0ebbcf17ab50"
+  },
+  "methods": [
+    {
+      "kind": "cash",
+      "name": "Cash"
+    },
+    {
+      "kind": "card",
+      "name": "Maybank Terminal"
+    },
+    {
+      "kind": "duitnow",
+      "name": "DuitNow QR"
+    },
+    {
+      "kind": "ewallet",
+      "name": "Touch 'n Go"
+    }
+  ],
+  "branchId": "0b161497-5069-46a7-a2d9-bf13dfcb9845",
+  "settings": {
+    "cashRounding": "nearest_5_sen",
+    "receiptRoute": "Bar",
+    "sstRegistered": true,
+    "cashVarianceLimitSen": 500
+  },
+  "lastClose": null,
+  "openBills": 0,
+  "openShift": false,
+  "candidates": {
+    "fee": [
+      {
+        "name": "Chicken Chop",
+        "qrSen": 2290,
+        "required": [],
+        "dineInSen": 2290,
+        "productId": "a2400bf8-3360-4a9a-9477-ac83a245be71",
+        "sstRateBp": 600,
+        "printRoute": "Kitchen",
+        "takeawaySen": 2340,
+        "nameSnapshot": "Chicken Chop",
+        "takeawayFeeSen": 100
+      }
+    ],
+    "set": [
+      {
+        "name": "Set Lunch A",
+        "qrSen": 1890,
+        "required": [
+          {
+            "group": "Set drink",
+            "option": {
+              "name": "Iced Lemon Tea",
+              "deltaSen": 0
+            },
+            "minSelect": 1
+          }
+        ],
+        "dineInSen": 1890,
+        "productId": "f2a08d48-54c6-4aff-b42e-511217a55f42",
+        "sstRateBp": 600,
+        "printRoute": "Kitchen",
+        "takeawaySen": 1940,
+        "nameSnapshot": "Set Lunch A",
+        "takeawayFeeSen": 0
+      }
+    ],
+    "zero": [
+      {
+        "name": "Mineral Water",
+        "qrSen": 350,
+        "required": [],
+        "dineInSen": 350,
+        "productId": "bba3985e-e911-48f6-a202-8cbbaf74dc2b",
+        "sstRateBp": 0,
+        "printRoute": "Bar",
+        "takeawaySen": 400,
+        "nameSnapshot": "Mineral Water",
+        "takeawayFeeSen": 0
+      }
+    ],
+    "plain": [
+      {
+        "name": "Coffee Latte",
+        "qrSen": 1200,
+        "required": [],
+        "dineInSen": 1200,
+        "productId": "737dd75a-a398-4788-9675-f8560f64ea27",
+        "sstRateBp": 600,
+        "printRoute": "Bar",
+        "takeawaySen": 1250,
+        "nameSnapshot": "Coffee Latte (HOT)",
+        "takeawayFeeSen": 0
+      },
+      {
+        "name": "Teh Tarik",
+        "qrSen": 690,
+        "required": [],
+        "dineInSen": 690,
+        "productId": "593a08d7-d035-417c-97ad-f8793a7bae6c",
+        "sstRateBp": 600,
+        "printRoute": "Bar",
+        "takeawaySen": 740,
+        "nameSnapshot": "Teh Tarik",
+        "takeawayFeeSen": 0
+      }
+    ]
+  },
+  "earlierVoids": {
+    "items": 0,
+    "valueSen": 0
+  },
+  "earlierVoidBills": 0
+}

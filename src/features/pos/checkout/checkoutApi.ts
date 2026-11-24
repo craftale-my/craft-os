@@ -1,0 +1,477 @@
+// src/features/pos/checkout/checkoutApi.ts — Supabase calls for checkout, receipts,
+// approvals, voids, move/merge, refunds and the checkout sections of /pos/settings.
+import { supabase } from '../../../shared/lib/supabase'
+import { writeOutcome } from '../../../shared/lib/db-write'
+import type { BillOrderType, BillTotals, CashRounding, DiscountInput, DiscountKind, ServiceChargeRuleInput } from './bill'
+import { storedDiscount, type StoredDiscount } from './discounts'
+import type { PaymentKind } from './tender'
+import type { ReasonAction, ReasonTemplate } from './reasons'
+import { parseCheckoutResult, parseRefundResult, readableError, unwrapAction, type CheckoutResult, type RefundResult } from './rpcResult'
+import { parseCheckoutState, type CheckoutState } from './follow'
+import type { SplitItem } from '../order/splitSelection'
+import { parsePartQuote, parsePartResult, type PartQuote, type PartResult } from './partSplit'
+import type { FontSize } from '../print/doc'
+import type { ReceiptLogo } from '../print/logo'
+import { hhmm } from '../order/orderWindow'
+
+const CHECKOUT_TIMEOUT_MS = 10_000
+const DEFAULT_FOOTER = 'This is an official receipt. Thank you for visiting us.'
+
+function fail(error: { message: string } | null): never {
+  throw new Error(error ? readableError(new Error(error.message)) : 'Unknown error')
+}
+
+function saved(res: { data: unknown[] | null; error: { message: string } | null }, what: string): void {
+  const out = writeOutcome(res)
+  if (!out.ok) throw new Error(`${what} failed: ${out.reason}`)
+}
+
+export interface PosSettings {
+  sstRegistered: boolean
+  cashRounding: CashRounding
+  receiptRoute: string | null
+  receiptFooter: string
+  qrRequiresOpenBill: boolean
+  receiptLogo: ReceiptLogo | null   // W4 receipt template
+  footerQr: string
+  fontSize: FontSize
+  hideFreeMods: boolean
+  ordersOpenAt: string | null       // W7: "HH:MM" Malaysia time; both null = QR orders at any time
+  lastOrderAt: string | null
+}
+export const DEFAULT_POS_SETTINGS: PosSettings = {
+  sstRegistered: true, cashRounding: 'nearest_5_sen', receiptRoute: null, receiptFooter: DEFAULT_FOOTER, qrRequiresOpenBill: false,
+  receiptLogo: null, footerQr: '', fontSize: 'normal', hideFreeMods: false, ordersOpenAt: null, lastOrderAt: null,
+}
+
+export interface PaymentMethodRow {
+  id: string
+  branch_id: string
+  name: string
+  kind: PaymentKind
+  needs_reference: boolean
+  sort_order: number
+  is_active: boolean
+  opens_drawer: boolean   // W4: a payment, part or refund with it kicks the cash drawer
+}
+
+export interface ServiceChargeRuleRow {
+  id: string
+  branch_id: string
+  rate_bp: number
+  order_types: BillOrderType[]
+  table_ids: string[] | null
+  product_ids: string[] | null
+  sort_order: number
+  is_active: boolean
+}
+
+export interface ReasonTemplateRow {
+  branch_id: string
+  action: ReasonAction
+  reasons: string[]
+  compulsory: boolean
+  allow_other: boolean
+}
+
+export interface ReceiptDetails {
+  receiptTitle: string
+  legalName: string
+  registrationNo: string
+  sstNo: string
+  address: string
+  phone: string
+  email: string
+  footer: string
+  receiptRoute: string | null
+  sstRegistered: boolean
+  cashRounding: CashRounding
+  qrRequiresOpenBill: boolean
+  receiptLogo: ReceiptLogo | null   // W4: null = no logo
+  footerQr: string                  // W4: '' = no QR code
+  fontSize: FontSize                // W4
+  hideFreeMods: boolean             // W4
+  ordersOpenAt: string | null       // W7: "HH:MM"; null with lastOrderAt = no limit
+  lastOrderAt: string | null        // W7
+}
+
+export interface BillingConfig { settings: PosSettings; rules: ServiceChargeRuleInput[] }
+export interface Approver { staffId: string; name: string; hasPin: boolean }
+export interface PaymentInput { methodId: string; amountSen: number; tenderedSen: number | null; reference: string | null }
+export interface ClosedBillRow {
+  id: string
+  bill_no: string
+  table_id: string | null
+  order_type: BillOrderType
+  status: 'paid' | 'voided' | 'merged'
+  closed_at: string
+  total_sen: number | null
+  refunded_sen: number
+  merged_into: string | null
+  call_no?: string | null   // W4: TA012 on a takeaway bill; null for dine-in and bills made before W4
+  dining_tables: { label: string } | null
+}
+export type { CheckoutResult }
+
+interface SettingsRow {
+  sst_registered: boolean; cash_rounding: CashRounding; receipt_route: string | null; receipt_footer: string; qr_requires_open_bill: boolean
+  receipt_logo: ReceiptLogo | null; receipt_footer_qr: string | null; receipt_font_size: FontSize; receipt_hide_free_mods: boolean
+  orders_open_at: string | null; last_order_at: string | null   // W7: Postgres times, "09:00:00"
+}
+const toSettings = (r: SettingsRow | null): PosSettings => (r ? {
+  sstRegistered: r.sst_registered, cashRounding: r.cash_rounding, receiptRoute: r.receipt_route,
+  receiptFooter: r.receipt_footer, qrRequiresOpenBill: r.qr_requires_open_bill,
+  receiptLogo: r.receipt_logo, footerQr: r.receipt_footer_qr ?? '', fontSize: r.receipt_font_size ?? 'normal',
+  hideFreeMods: r.receipt_hide_free_mods ?? false,
+  ordersOpenAt: hhmm(r.orders_open_at), lastOrderAt: hhmm(r.last_order_at),
+} : DEFAULT_POS_SETTINGS)
+
+export async function fetchPosSettings(branchId: string): Promise<PosSettings> {
+  const { data, error } = await supabase.from('branch_pos_settings')
+    .select('sst_registered, cash_rounding, receipt_route, receipt_footer, qr_requires_open_bill, receipt_logo, receipt_footer_qr, receipt_font_size, receipt_hide_free_mods, orders_open_at, last_order_at')
+    .eq('branch_id', branchId).maybeSingle()
+  if (error) fail(error)
+  return toSettings(data as SettingsRow | null)
+}
+
+export async function fetchServiceChargeRules(branchId: string): Promise<ServiceChargeRuleRow[]> {
+  const { data, error } = await supabase.from('service_charge_rules')
+    .select('id, branch_id, rate_bp, order_types, table_ids, product_ids, sort_order, is_active')
+    .eq('branch_id', branchId).order('sort_order').order('created_at').order('id')
+  if (error) fail(error)
+  return (data ?? []) as ServiceChargeRuleRow[]
+}
+
+/** Settings + active rules in sort order: the input computeBill needs besides the lines. */
+export async function fetchBillingConfig(branchId: string): Promise<BillingConfig> {
+  const [settings, rules] = await Promise.all([fetchPosSettings(branchId), fetchServiceChargeRules(branchId)])
+  return {
+    settings,
+    rules: rules.filter((r) => r.is_active).map((r) => ({ rateBp: r.rate_bp, orderTypes: r.order_types, tableIds: r.table_ids, productIds: r.product_ids })),
+  }
+}
+
+export async function fetchPaymentMethods(branchId: string, activeOnly: boolean): Promise<PaymentMethodRow[]> {
+  let q = supabase.from('payment_methods').select('id, branch_id, name, kind, needs_reference, sort_order, is_active, opens_drawer').eq('branch_id', branchId)
+  if (activeOnly) q = q.eq('is_active', true)
+  const { data, error } = await q.order('sort_order').order('name')
+  if (error) fail(error)
+  return (data ?? []) as PaymentMethodRow[]
+}
+
+export async function fetchReasonTemplates(branchId: string): Promise<ReasonTemplateRow[]> {
+  const { data, error } = await supabase.from('reason_templates')
+    .select('branch_id, action, reasons, compulsory, allow_other').eq('branch_id', branchId)
+  if (error) fail(error)
+  return (data ?? []) as ReasonTemplateRow[]
+}
+
+/** null = no template saved for the action (the server then requires any reason). */
+export async function fetchReasonTemplate(branchId: string, action: ReasonAction): Promise<ReasonTemplate | null> {
+  const row = (await fetchReasonTemplates(branchId)).find((t) => t.action === action)
+  return row ? { reasons: row.reasons, compulsory: row.compulsory, allowOther: row.allow_other } : null
+}
+
+export async function fetchReceiptDetails(branchId: string): Promise<ReceiptDetails> {
+  const [b, s] = await Promise.all([
+    supabase.from('branches').select('name, receipt_title, legal_name, registration_no, sst_no, address, phone, email').eq('id', branchId).maybeSingle(),
+    fetchPosSettings(branchId),
+  ])
+  if (b.error) fail(b.error)
+  const r = (b.data ?? {}) as Record<string, string | null>
+  return {
+    receiptTitle: r.receipt_title ?? r.name ?? '', legalName: r.legal_name ?? '', registrationNo: r.registration_no ?? '',
+    sstNo: r.sst_no ?? '', address: r.address ?? '', phone: r.phone ?? '', email: r.email ?? '',
+    footer: s.receiptFooter, receiptRoute: s.receiptRoute, sstRegistered: s.sstRegistered,
+    cashRounding: s.cashRounding, qrRequiresOpenBill: s.qrRequiresOpenBill,
+    receiptLogo: s.receiptLogo, footerQr: s.footerQr, fontSize: s.fontSize, hideFreeMods: s.hideFreeMods,
+    ordersOpenAt: s.ordersOpenAt, lastOrderAt: s.lastOrderAt,
+  }
+}
+
+/** The bill as the checkout sheet follows it (pos_checkout_state): its status, the totals
+ *  while it is open, and the checkout result when one of checkoutIds (every id the sheet
+ *  has used — paySession's checkoutIds) paid it. Times out like checkoutBill: Check bill is
+ *  pressed on a bad network and must hand the cashier back Try again / Check bill / Back. */
+export async function fetchCheckoutState(billId: string, checkoutIds: string[]): Promise<CheckoutState> {
+  const { data, error } = await supabase
+    .rpc('pos_checkout_state', { p_bill_id: billId, p_checkout_ids: checkoutIds })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  return parseCheckoutState(data)
+}
+
+/** The selected part's totals (pos_split_totals, split spec §4.2): the picker's footer and the Payment
+ *  screen's split mode. Raises the server's words for a selection it refuses. */
+export async function splitTotals(billId: string, items: SplitItem[]): Promise<BillTotals> {
+  const { data, error } = await supabase
+    .rpc('pos_split_totals', { p_bill_id: billId, p_items: items })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  if (typeof data !== 'object' || data === null || typeof (data as { totalSen?: unknown }).totalSen !== 'number') {
+    throw new Error('Unexpected reply from the server')
+  }
+  return data as BillTotals
+}
+
+/** A timeout or dropped connection throws — the sheet then offers Pay again with the
+ *  SAME checkoutId, which the server answers with the first result (never charges twice). */
+export async function checkoutBill(billId: string, payments: PaymentInput[], checkoutId: string): Promise<CheckoutResult> {
+  const { data, error } = await supabase
+    .rpc('checkout_bill', { p_bill_id: billId, p_payments: payments, p_checkout_id: checkoutId })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  return parseCheckoutResult(data)
+}
+
+/** Pay selected (checkout_items, split spec §4.3): the units become their own bill, paid. A timeout or a
+ *  dropped connection throws — Try again resends with the SAME checkoutId, which the server answers
+ *  with the first result (never charges twice). */
+export async function checkoutItems(billId: string, items: SplitItem[], payments: PaymentInput[], checkoutId: string): Promise<CheckoutResult> {
+  const { data, error } = await supabase
+    .rpc('checkout_items', { p_bill_id: billId, p_items: items, p_payments: payments, p_checkout_id: checkoutId })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  return parseCheckoutResult(data)
+}
+
+/** The equal share (pos_part_quote, split spec §4.6); ways null = the by-amount view (no share). */
+export async function partQuote(billId: string, ways: number | null): Promise<PartQuote> {
+  const { data, error } = await supabase
+    .rpc('pos_part_quote', { p_bill_id: billId, p_ways: ways })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  return parsePartQuote(data)
+}
+
+/** One part payment on the open bill (pay_bill_part). partId is the attempt's id: a lost reply is
+ *  resent with the SAME id and gets the first answer (never charged twice). paidSen is what the parts
+ *  had paid when the screen started this part: the server refuses ("The bill changed. Check the split
+ *  again.") when the bill's parts no longer sum to it. */
+export async function payBillPart(billId: string, partId: string, amountSen: number, ways: number | null,
+                                  payments: PaymentInput[], paidSen: number): Promise<PartResult> {
+  const { data, error } = await supabase
+    .rpc('pay_bill_part', { p_bill_id: billId, p_part_id: partId, p_amount_sen: amountSen, p_ways: ways, p_payments: payments,
+                            p_paid_sen: paidSen })
+    .abortSignal(AbortSignal.timeout(CHECKOUT_TIMEOUT_MS))
+  if (error) fail(error)
+  return parsePartResult(data)
+}
+
+export async function reprintReceipt(billId: string): Promise<void> {
+  const { error } = await supabase.rpc('reprint_receipt', { p_bill_id: billId })
+  if (error) fail(error)
+}
+
+export async function fetchApprovers(): Promise<Approver[]> {
+  const { data, error } = await supabase.rpc('pos_approvers')
+  if (error) fail(error)
+  return ((data ?? []) as { staff_id: string; name: string; has_pin: boolean }[]).map((a) => ({ staffId: a.staff_id, name: a.name, hasPin: a.has_pin }))
+}
+
+export async function setMyPin(newPin: string, currentPin: string | null): Promise<void> {
+  const { data, error } = await supabase.rpc('set_my_pos_pin', { p_new_pin: newPin, p_current_pin: currentPin })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function clearPin(staffId: string): Promise<void> {
+  const { error } = await supabase.rpc('clear_pos_pin', { p_staff_id: staffId })
+  if (error) fail(error)
+}
+
+export interface Approval { reason: string; approverId: string | null; pin: string | null }
+
+export async function voidItem(itemId: string, a: Approval): Promise<void> {
+  const { data, error } = await supabase.rpc('void_order_item', { p_item_id: itemId, p_reason: a.reason, p_approver_id: a.approverId, p_pin: a.pin })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function voidBill(billId: string, a: Approval): Promise<void> {
+  const { data, error } = await supabase.rpc('void_bill', { p_bill_id: billId, p_reason: a.reason, p_approver_id: a.approverId, p_pin: a.pin })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function setItemDiscount(itemId: string, d: DiscountInput, a: Approval): Promise<void> {
+  const { data, error } = await supabase.rpc('set_item_discount', {
+    p_item_id: itemId, p_kind: d.kind, p_value: d.value, p_reason: a.reason, p_approver_id: a.approverId, p_pin: a.pin,
+  })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function clearItemDiscount(itemId: string): Promise<void> {
+  const { data, error } = await supabase.rpc('clear_item_discount', { p_item_id: itemId })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function setBillDiscount(billId: string, d: DiscountInput, a: Approval): Promise<void> {
+  const { data, error } = await supabase.rpc('set_bill_discount', {
+    p_bill_id: billId, p_kind: d.kind, p_value: d.value, p_reason: a.reason, p_approver_id: a.approverId, p_pin: a.pin,
+  })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function clearBillDiscount(billId: string): Promise<void> {
+  const { data, error } = await supabase.rpc('clear_bill_discount', { p_bill_id: billId })
+  if (error) fail(error)
+  unwrapAction(data)
+}
+
+export async function moveBill(billId: string, tableId: string): Promise<void> {
+  const { error } = await supabase.rpc('move_bill', { p_bill_id: billId, p_table_id: tableId })
+  if (error) fail(error)
+}
+
+export async function mergeBills(fromBillId: string, intoBillId: string): Promise<void> {
+  const { error } = await supabase.rpc('merge_bills', { p_from_bill: fromBillId, p_into_bill: intoBillId })
+  if (error) fail(error)
+}
+
+/** One payment method a paid bill was paid with, and what it can still give back
+ *  (refunds go back the original route, capped per method — owner, 2026-10-24). */
+export interface RefundableMethod {
+  methodId: string
+  methodName: string
+  kind: PaymentKind
+  paidSen: number
+  refundedSen: number
+  leftSen: number
+}
+
+export async function fetchRefundableMethods(billId: string): Promise<RefundableMethod[]> {
+  const { data, error } = await supabase.rpc('pos_refundable_methods', { p_bill_id: billId })
+  if (error) fail(error)
+  return ((data ?? []) as { method_id: string; method_name: string; kind: PaymentKind; paid_sen: number; refunded_sen: number; left_sen: number }[])
+    .map((m) => ({ methodId: m.method_id, methodName: m.method_name, kind: m.kind, paidSen: m.paid_sen, refundedSen: m.refunded_sen, leftSen: m.left_sen }))
+}
+
+/** Answers what the server recorded — on a resend after a lost reply, that is the
+ *  FIRST call's refund, so the till pays out the recorded amount, not the typed one. */
+export async function refundBill(refundId: string, billId: string, amountSen: number, methodId: string, a: Approval): Promise<RefundResult> {
+  const { data, error } = await supabase.rpc('refund_bill', {
+    p_refund_id: refundId, p_bill_id: billId, p_amount_sen: amountSen, p_method_id: methodId,
+    p_reason: a.reason, p_approver_id: a.approverId, p_pin: a.pin,
+  })
+  if (error) fail(error)
+  return parseRefundResult(data)
+}
+
+/** Change the guests of an open dine-in bill (pos_set_bill_pax: 1–99, staff of its branch). */
+/** The pax of an open dine-in bill and, W7, of which children (null = none given; the server clamps to the pax). */
+export async function setBillPax(billId: string, pax: number, children: number | null = null): Promise<void> {
+  const { error } = await supabase.rpc('pos_set_bill_pax', { p_bill_id: billId, p_pax: pax, p_children: children })
+  if (error) fail(error)
+}
+
+export async function openTable(tableId: string, pax: number | null, children: number | null = null): Promise<string> {
+  const { data, error } = await supabase.rpc('open_table', { p_table_id: tableId, p_pax: pax, p_children: children })
+  if (error) fail(error)
+  return data as string
+}
+
+/** W7 spec §6: mark sent, live lines of one open bill served (or not served); how many changed. No PIN. */
+export async function setItemsServed(itemIds: string[], served: boolean): Promise<number> {
+  const { data, error } = await supabase.rpc('set_items_served', { p_item_ids: itemIds, p_served: served })
+  if (error) fail(error)
+  return Number(data ?? 0)
+}
+
+/** Paid, voided and merged bills of the branch closed since `sinceIso` (newest first). */
+export async function fetchClosedBillsSince(branchId: string, sinceIso: string): Promise<ClosedBillRow[]> {
+  const { data, error } = await supabase.from('bills')
+    .select('id, bill_no, table_id, order_type, status, closed_at, total_sen, refunded_sen, merged_into, call_no, dining_tables(label)')
+    .eq('branch_id', branchId).in('status', ['paid', 'voided', 'merged']).gte('closed_at', sinceIso)
+    .order('closed_at', { ascending: false })
+  if (error) fail(error)
+  return (data ?? []) as unknown as ClosedBillRow[]
+}
+
+/** One payment of a closed bill, as the receipt lists it. */
+export interface PaymentRow {
+  id: string
+  method_name: string
+  kind: PaymentKind
+  amount_sen: number
+  tendered_sen: number | null
+  change_sen: number
+  reference: string | null
+  line_no: number
+  taken_at: string
+  part: { partNo: number; ways: number | null } | null   // the part it paid on the open bill; null for the final payment
+}
+export interface RefundRow { id: string; method_name: string; amount_sen: number; reason: string | null; created_at: string }
+/** What the Transaction screen shows of a closed bill besides its items: the totals stored at
+ *  checkout (bills.totals, null on a voided or merged bill), the bill it was merged into, its
+ *  payments and its refunds. */
+export interface ClosedBillDetail {
+  totals: BillTotals | null; billDiscount: StoredDiscount | null; mergedIntoBillNo: string | null
+  splitFromBillNo: string | null   // a part paid by item: the table bill it came from
+  payments: PaymentRow[]; refunds: RefundRow[]
+}
+
+export async function fetchClosedBillDetail(billId: string): Promise<ClosedBillDetail> {
+  const [b, p, r] = await Promise.all([
+    supabase.from('bills').select('totals, merged_into, split_from, discount_kind, discount_value, discount_reason').eq('id', billId).maybeSingle(),
+    supabase.from('payments').select('id, method_name, kind, amount_sen, tendered_sen, change_sen, reference, line_no, taken_at, bill_parts(part_no, ways)')
+      .eq('bill_id', billId).order('taken_at').order('line_no'),
+    supabase.from('refunds').select('id, method_name, amount_sen, reason, created_at').eq('bill_id', billId).order('created_at'),
+  ])
+  if (b.error) fail(b.error)
+  if (p.error) fail(p.error)
+  if (r.error) fail(r.error)
+  const row = b.data as {
+    totals: BillTotals | null; merged_into: string | null; split_from: string | null
+    discount_kind: DiscountKind | null; discount_value: number | null; discount_reason: string | null
+  } | null
+  let mergedIntoBillNo: string | null = null
+  if (row?.merged_into) {
+    const m = await supabase.from('bills').select('bill_no').eq('id', row.merged_into).maybeSingle()
+    if (m.error) fail(m.error)
+    mergedIntoBillNo = (m.data as { bill_no: string } | null)?.bill_no ?? null
+  }
+  let splitFromBillNo: string | null = null
+  if (row?.split_from) {
+    const f = await supabase.from('bills').select('bill_no').eq('id', row.split_from).maybeSingle()
+    if (f.error) fail(f.error)
+    splitFromBillNo = (f.data as { bill_no: string } | null)?.bill_no ?? null
+  }
+  type PaymentRead = Omit<PaymentRow, 'part'> & { bill_parts: { part_no: number; ways: number | null } | null }
+  const payments = ((p.data ?? []) as unknown as PaymentRead[]).map(({ bill_parts: bp, ...rest }) =>
+    ({ ...rest, part: bp ? { partNo: bp.part_no, ways: bp.ways } : null }))
+  return { totals: row?.totals ?? null, billDiscount: row ? storedDiscount(row) : null, mergedIntoBillNo, splitFromBillNo, payments, refunds: (r.data ?? []) as RefundRow[] }
+}
+
+// ── /pos/settings ───────────────────────────────────────────────────────────
+/** Orderable products (no add-ons), for choosing which products a service-charge rule covers. */
+export async function fetchProductNames(): Promise<{ id: string; name: string }[]> {
+  const { data, error } = await supabase.from('menu_products').select('id, name')
+    .eq('is_active', true).eq('is_addon', false).order('name')
+  if (error) fail(error)
+  return (data ?? []) as { id: string; name: string }[]
+}
+
+export async function saveReceiptDetails(branchId: string, d: ReceiptDetails): Promise<void> {
+  const { error } = await supabase.rpc('save_receipt_settings', { p_branch_id: branchId, p: d })
+  if (error) fail(error)
+}
+
+export async function savePaymentMethod(row: Omit<PaymentMethodRow, 'id'> & { id?: string }): Promise<void> {
+  saved(await supabase.from('payment_methods').upsert(row).select('id'), 'Saving the payment method')
+}
+
+export async function saveServiceChargeRule(row: Omit<ServiceChargeRuleRow, 'id'> & { id?: string }): Promise<void> {
+  saved(await supabase.from('service_charge_rules').upsert(row).select('id'), 'Saving the service-charge rule')
+}
+
+export async function deleteServiceChargeRule(id: string): Promise<void> {
+  saved(await supabase.from('service_charge_rules').delete().eq('id', id).select('id'), 'Removing the rule')
+}
+
+export async function saveReasonTemplate(row: ReasonTemplateRow): Promise<void> {
+  saved(await supabase.from('reason_templates').upsert(row).select('action'), 'Saving the reasons')
+}

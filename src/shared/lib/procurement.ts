@@ -358,10 +358,9 @@ export function validateWastage({ quantity, reason, note, onHand, baseUnit = '' 
   if (!reason) return 'Pick a reason'
   if (!(WASTAGE_REASONS as string[]).includes(reason)) return `Unknown wastage reason: ${reason}`
   if (reason === 'other' && !note?.trim()) return 'A note is required when the reason is Other'
-  if (onHand != null && quantity > onHand) {
-    const unit = baseUnit ? ` ${baseUnit}` : ''
-    return `Cannot log ${qty(quantity)}${unit} of wastage: only ${qty(Math.max(onHand, 0))}${unit} on hand at this branch`
-  }
+  // Owner decision 2026-11-23: wastage may exceed the system on-hand (stock goes negative,
+  // like sales); onHand / baseUnit are kept for callers but no longer refuse.
+  void onHand; void baseUnit
   return null
 }
 

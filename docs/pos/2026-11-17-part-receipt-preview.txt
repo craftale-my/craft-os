@@ -1,0 +1,84 @@
+Part receipt preview (sample bill, part 2 of 4, paid in cash). Rendered 2026-11-17 by the same code the printers use.
+42 columns = 80 mm printers as the iPad print host drives them; 32 columns = 58 mm printers.
+
+===== 42 columns =====
+           Craft Cafe - Cheras
+             Craftale Sdn Bhd
+             REG NO: 000000-X
+        SST NO: W10-0000-00000000
+   Taman Connaught, 56000 Cheras, Kuala
+                  Lumpur
+            TEL: 03-0000 0000
+            cheras@example.com
+
+Invoice no                           87846
+Date                      22/10/2026 13:12
+Cashier                               Aina
+Table pax                                4
+                 ORDER T7
+------------------------------------------
+1 Chicken Chop (24.00/ea)            24.00
+1 Beef Lasagna (25.00/ea)            25.00
+1 Carbonara (18.00/ea)               18.00
+1 Coffee Latte (COLD) (13.00/ea)     13.00
+   + Oat milk
+------------------------------------------
+Item count                               4
+Subtotal                             80.00
+SST (6%)                              4.80
+SERVICE CHARGE (10%)                  8.00
+Bill rounding                         0.00
+==========================================
+Total (MYR)                          92.80
+==========================================
+               Part 2 of 4
+This part (MYR)                      23.20
+Cash                                 50.00
+Change                               26.80
+Paid before                          23.20
+Balance due                          46.40
+------------------------------------------
+Part payment - the official receipt prints
+      when the bill is paid in full.
+
+===== 32 columns =====
+      Craft Cafe - Cheras
+        Craftale Sdn Bhd
+        REG NO: 000000-X
+   SST NO: W10-0000-00000000
+ Taman Connaught, 56000 Cheras,
+          Kuala Lumpur
+       TEL: 03-0000 0000
+       cheras@example.com
+
+Invoice no                 87846
+Date            22/10/2026 13:12
+Cashier                     Aina
+Table pax                      4
+            ORDER T7
+--------------------------------
+1 Chicken Chop (24.00/ea)  24.00
+1 Beef Lasagna (25.00/ea)  25.00
+1 Carbonara (18.00/ea)     18.00
+1 Coffee Latte (COLD)      13.00
+   (13.00/ea)
+   + Oat milk
+--------------------------------
+Item count                     4
+Subtotal                   80.00
+SST (6%)                    4.80
+SERVICE CHARGE (10%)        8.00
+Bill rounding               0.00
+================================
+Total (MYR)                92.80
+================================
+          Part 2 of 4
+This part (MYR)            23.20
+Cash                       50.00
+Change                     26.80
+Paid before                23.20
+Balance due                46.40
+--------------------------------
+  Part payment - the official
+receipt prints when the bill is
+         paid in full.

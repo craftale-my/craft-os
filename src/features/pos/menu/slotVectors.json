@@ -1,0 +1,21 @@
+[
+  {"name": "inside a weekday window: Mon 09:00", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "11:30", "at": "2026-10-26T01:00:00Z", "open": true},
+  {"name": "the start minute counts: Mon 08:00", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "11:30", "at": "2026-10-26T00:00:00Z", "open": true},
+  {"name": "the end minute counts, to its last second: Mon 11:30:59", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "11:30", "at": "2026-10-26T03:30:59Z", "open": true},
+  {"name": "a minute after the end: Mon 11:31", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "11:30", "at": "2026-10-26T03:31:00Z", "open": false},
+  {"name": "a minute before the start: Mon 07:59 (still Sunday in UTC)", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "11:30", "at": "2026-10-25T23:59:00Z", "open": false},
+  {"name": "Malaysian day, not the UTC day: Mon 00:30 is Sunday 16:30 UTC", "days": [1], "start": "00:00", "end": "08:00", "at": "2026-10-25T16:30:00Z", "open": true},
+  {"name": "a day that is not listed: Sat 09:00", "days": [1, 2, 3, 4, 5], "start": "08:00", "end": "11:30", "at": "2026-10-24T01:00:00Z", "open": false},
+  {"name": "crossing midnight, before midnight on the start day: Fri 23:00", "days": [5], "start": "22:00", "end": "02:00", "at": "2026-10-23T15:00:00Z", "open": true},
+  {"name": "crossing midnight, after midnight belongs to the start day: Sat 01:00", "days": [5], "start": "22:00", "end": "02:00", "at": "2026-10-23T17:00:00Z", "open": true},
+  {"name": "crossing midnight, the end minute counts: Sat 02:00", "days": [5], "start": "22:00", "end": "02:00", "at": "2026-10-23T18:00:00Z", "open": true},
+  {"name": "crossing midnight, a minute after the end: Sat 02:01", "days": [5], "start": "22:00", "end": "02:00", "at": "2026-10-23T18:01:00Z", "open": false},
+  {"name": "crossing midnight, early morning of the start day belongs to the day before: Fri 01:00", "days": [5], "start": "22:00", "end": "02:00", "at": "2026-10-22T17:00:00Z", "open": false},
+  {"name": "crossing midnight, evening of a day that is not listed: Sat 23:00", "days": [5], "start": "22:00", "end": "02:00", "at": "2026-10-24T15:00:00Z", "open": false},
+  {"name": "Sunday is day 7: Sun 12:00", "days": [7], "start": "10:00", "end": "23:59", "at": "2026-10-25T04:00:00Z", "open": true},
+  {"name": "Sunday night into Monday: Mon 01:30", "days": [7], "start": "22:00", "end": "02:00", "at": "2026-10-25T17:30:00Z", "open": true},
+  {"name": "Feedme's 10:00–23:59 runs to midnight: Sat 23:59:30", "days": [1, 2, 3, 4, 5, 6, 7], "start": "10:00", "end": "23:59", "at": "2026-10-24T15:59:30Z", "open": true},
+  {"name": "Feedme's 10:00–23:59 is closed at midnight: Sun 00:00", "days": [1, 2, 3, 4, 5, 6, 7], "start": "10:00", "end": "23:59", "at": "2026-10-24T16:00:00Z", "open": false},
+  {"name": "an end of 00:00 is the first minute of the next day: Tue 00:00", "days": [1], "start": "18:00", "end": "00:00", "at": "2026-10-26T16:00:00Z", "open": true},
+  {"name": "an end of 00:00, a minute later: Tue 00:01", "days": [1], "start": "18:00", "end": "00:00", "at": "2026-10-26T16:01:00Z", "open": false}
+]
