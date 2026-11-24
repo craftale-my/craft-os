@@ -82,8 +82,10 @@ export const validationLink = (d: Pick<EinvoiceDoc, 'environment' | 'lhdn_uuid' 
 // ── W5: outlets' start dates, the daily run, stopped attempts, bills over RM 10,000 ──
 export interface OutletRow { id: string; name: string; einvoice_from: string | null }
 
+/** Outlets in use, plus closed ones that still carry a start date (their months may still need reporting). */
 export async function fetchOutlets(): Promise<OutletRow[]> {
-  const { data, error } = await supabase.from('branches').select('id, name, einvoice_from').order('name')
+  const { data, error } = await supabase.from('branches').select('id, name, einvoice_from')
+    .or('is_active.eq.true,einvoice_from.not.is.null').order('name')
   if (error) throw new Error(`Loading the outlets failed: ${error.message}`)
   return (data ?? []) as OutletRow[]
 }
